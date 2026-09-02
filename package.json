@@ -1,7 +1,7 @@
 {
   "name": "dsh-tiddlywiki",
   "description": "TiddlyWiki 5 as the DSH persistent knowledge base: tiddlywiki_* agent tools (search/get/put/delete + git sync), a full TiddlyWiki editor embedded in the GUI center column, a floating quick-note widget in the chat area, and git-based sync with auto-commit. Mounts via the official dsh plugin system — no DSH source changes.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "keywords": [
     "dsh",
