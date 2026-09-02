@@ -29,6 +29,14 @@
     "README.md"
   ],
   "license": "MIT",
+  "homepage": "https://github.com/bbqisbbq/dsh-tiddlywiki#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bbqisbbq/dsh-tiddlywiki.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bbqisbbq/dsh-tiddlywiki/issues"
+  },
   "engines": {
     "node": ">=22"
   },
