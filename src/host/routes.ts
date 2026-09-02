@@ -39,7 +39,7 @@ export interface RouteDeps {
   git: GitFace
   autoCommit: () => void
   noteDefaults: () => { tag: string }
-  uiDefaults: () => { showQuickNote: boolean }
+  uiDefaults: () => { showQuickNote: boolean; showPanelStatus: boolean }
   getWikiPath: () => string
 }
 

@@ -79,6 +79,7 @@ interface StatusPayload {
   wikiPath?: string
   error?: string
   note?: { tag?: string }
+  ui?: { showPanelStatus?: boolean }
 }
 
 function conversationColumn(): HTMLElement | undefined {
@@ -115,6 +116,8 @@ export function mountPanel(state: PanelState): () => void {
   let frameArea: HTMLDivElement | undefined
   let errorArea: HTMLDivElement | undefined
   let chip: HTMLSpanElement | undefined
+  let statusDot: HTMLSpanElement | undefined
+  let statusFloater: HTMLDivElement | undefined
   let refreshTimer: number | undefined
   let refreshAttempts = 0
 
@@ -122,27 +125,6 @@ export function mountPanel(state: PanelState): () => void {
     const view = document.createElement('div')
     view.dataset.dshTwView = ''
     view.className = 'dsh-tw-view'
-
-    const bar = document.createElement('div')
-    bar.className = 'dsh-tw-panel-bar'
-    const title = document.createElement('span')
-    title.className = 'dsh-tw-panel-title'
-    title.textContent = 'TiddlyWiki 知识库'
-    chip = document.createElement('span')
-    chip.className = 'dsh-tw-status-chip'
-    chip.dataset.state = 'unknown'
-    chip.textContent = '—'
-    const reload = document.createElement('button')
-    reload.type = 'button'
-    reload.textContent = '重载'
-    reload.addEventListener('click', () => {
-      if (iframe !== undefined && !iframe.hidden) iframe.src = iframe.src
-    })
-    const refresh = document.createElement('button')
-    refresh.type = 'button'
-    refresh.textContent = '状态'
-    refresh.addEventListener('click', () => { void doRefresh() })
-    bar.append(title, chip, refresh, reload)
 
     frameArea = document.createElement('div')
     frameArea.className = 'dsh-tw-panel-frame-wrap'
@@ -157,14 +139,50 @@ export function mountPanel(state: PanelState): () => void {
     errorArea.className = 'dsh-tw-panel-error'
     errorArea.hidden = true
 
-    view.append(bar, frameArea, errorArea)
+    view.append(frameArea, errorArea)
     return view
   }
 
+  /**
+   * Bottom-right floating status/reload buttons (same visual language as the
+   * quick-note toggle) — the top panel bar is gone, so TW's menubar reaches
+   * the very top of the panel and clears the host's top-right buttons. Mount
+   * is gated by `ui.showPanelStatus` (settings page toggle).
+   */
+  const buildStatusFloater = (): HTMLDivElement => {
+    const wrap = document.createElement('div')
+    wrap.className = 'dsh-tw-panel-status'
+
+    const statusBtn = document.createElement('button')
+    statusBtn.type = 'button'
+    statusBtn.className = 'dsh-tw-panel-status-btn'
+    statusBtn.title = '刷新状态'
+    statusDot = document.createElement('span')
+    statusDot.className = 'dsh-tw-status-dot'
+    statusDot.dataset.state = 'unknown'
+    chip = document.createElement('span')
+    chip.className = 'dsh-tw-panel-status-text'
+    chip.textContent = '—'
+    statusBtn.append(statusDot, chip)
+    statusBtn.addEventListener('click', () => { void doRefresh() })
+
+    const reloadBtn = document.createElement('button')
+    reloadBtn.type = 'button'
+    reloadBtn.className = 'dsh-tw-panel-status-btn'
+    reloadBtn.textContent = '重载'
+    reloadBtn.title = '重载 TiddlyWiki 面板'
+    reloadBtn.addEventListener('click', () => {
+      if (iframe !== undefined && !iframe.hidden) iframe.src = iframe.src
+    })
+
+    wrap.append(statusBtn, reloadBtn)
+    document.body.append(wrap)
+    return wrap
+  }
+
   const setChip = (stateName: string, text: string): void => {
-    if (chip === undefined) return
-    chip.dataset.state = stateName
-    chip.textContent = text
+    if (statusDot !== undefined) statusDot.dataset.state = stateName
+    if (chip !== undefined) chip.textContent = text
   }
 
   /** Pin the overlay to the center column's current viewport rect. */
@@ -329,6 +347,13 @@ export function mountPanel(state: PanelState): () => void {
   ensure()
   applyActive()
 
+  // Bottom-right status/reload buttons, gated by ui.showPanelStatus.
+  void (async () => {
+    const payload = await fetchStatus()
+    if (payload?.ui?.showPanelStatus === false) return
+    statusFloater = buildStatusFloater()
+  })()
+
   return () => {
     if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
     window.clearInterval(syncInterval)
@@ -341,5 +366,6 @@ export function mountPanel(state: PanelState): () => void {
     unsubscribe()
     document.documentElement.removeAttribute(ACTIVE_ATTR)
     container?.remove()
+    statusFloater?.remove()
   }
 }

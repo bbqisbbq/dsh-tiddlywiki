@@ -51,31 +51,28 @@ html[data-dsh-tw-active] [data-pane="conversation"] > :not([data-dsh-tw-view]),
 html[data-dsh-tw-active] [class*="centerCol"] > :not([data-dsh-tw-view]),
 html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view]) { display: none !important; }
 
-.dsh-tw-panel-bar {
-  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
-  border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.18));
-  background: var(--dsw-alias-bg-layer-1, transparent);
-  font-size: 12px; color: var(--dsw-alias-label-secondary, inherit);
-  flex: none;
+/* ── bottom-right status / reload floating buttons ───────────────────
+   The top panel bar (title + status + reload row) is gone so TW's menubar
+   reaches the panel top; status/reload now live here as floating buttons,
+   same visual language as the quick-note toggle. The ui.showPanelStatus
+   setting controls whether they mount at all. */
+.dsh-tw-panel-status {
+  position: fixed; right: 24px; bottom: 40px; z-index: 950;
+  display: flex; align-items: center; gap: 8px;
 }
-.dsh-tw-panel-bar button {
-  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25));
-  background: transparent; color: inherit; font: inherit; font-size: 12px;
-  padding: 2px 8px; border-radius: 6px; cursor: pointer;
+.dsh-tw-panel-status-btn {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 7px 12px; border-radius: 999px;
+  box-shadow: var(--dsw-shadow-lv3, 0 4px 16px rgba(0,0,0,.16)); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background-color 120ms ease;
 }
-.dsh-tw-panel-bar button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
-.dsh-tw-panel-title { font-weight: 600; margin-right: auto; }
-/* dsh-better-sidebar coexistence: the floating toggle cluster (two 28px
-   buttons at the viewport's top-right) lives above the panel (z-index is
-   handled in JS — the panel stays below the host layer), so reserve the
-   cluster's width at the panel bar's right end — mirroring how
-   dsh-better-sidebar pads the DSH session header — and the panel's own
-   状态/重载 buttons never sit underneath it. */
-.dsh-tw-view[data-sidebar-host] .dsh-tw-panel-bar { padding-right: 80px; }
-.dsh-tw-status-chip { font-variant-numeric: tabular-nums; }
-.dsh-tw-status-chip[data-state="running"] { color: var(--dsw-alias-state-success-primary, #3eaa5f); }
-.dsh-tw-status-chip[data-state="starting"] { color: var(--dsw-alias-state-warning-primary, #d9822b); }
-.dsh-tw-status-chip[data-state="failed"], .dsh-tw-status-chip[data-state="stopped"] { color: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-panel-status-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
+.dsh-tw-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; flex: none; }
+.dsh-tw-status-dot[data-state="running"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-status-dot[data-state="starting"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
+.dsh-tw-status-dot[data-state="failed"], .dsh-tw-status-dot[data-state="stopped"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
 
 .dsh-tw-panel-frame { flex: 1; min-height: 0; border: 0; width: 100%; display: block; background: #fff; }
 /* [hidden] must beat the author display rules above (UA hidden is overridden). */

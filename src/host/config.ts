@@ -25,6 +25,8 @@ export interface PluginConfigShape {
     showQuickNote?: boolean
     /** 是否启用「侧边移到左侧.css」默认 CSS；被删除后随启动补丁还原（默认 true）。 */
     sidebarLeftCss?: boolean
+    /** 是否显示 TW 面板右下角的「状态/重载」悬浮按钮（默认 true）。 */
+    showPanelStatus?: boolean
   }
   uiLanguage?: string
   [key: string]: unknown

@@ -87,6 +87,7 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
       tag: "inbox"
     ui:
       showQuickNote: true           # 是否显示右下角「快速笔记」按钮
+      showPanelStatus: true         # 是否显示 TW 面板右下角「状态/重载」悬浮按钮
       sidebarLeftCss: true          # 是否启用「侧边移到左侧.css」补丁（被删后随启动还原）
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非 loopback 时才需要

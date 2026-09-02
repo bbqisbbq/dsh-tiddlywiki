@@ -55,7 +55,7 @@ export interface TiddlywikiConfig {
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
-  ui?: { showQuickNote?: boolean; sidebarLeftCss?: boolean }
+  ui?: { showQuickNote?: boolean; sidebarLeftCss?: boolean; showPanelStatus?: boolean }
   auth?: { username?: string; password?: string }
 }
 
@@ -76,7 +76,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
-  ui: { showQuickNote: boolean; sidebarLeftCss: boolean }
+  ui: { showQuickNote: boolean; sidebarLeftCss: boolean; showPanelStatus: boolean }
   auth: { username?: string; password?: string }
 }
 
@@ -86,7 +86,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
-  ui: { showQuickNote: true, sidebarLeftCss: true },
+  ui: { showQuickNote: true, sidebarLeftCss: true, showPanelStatus: true },
   auth: { username: '', password: '' },
 }
 
@@ -181,9 +181,10 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
   }
-  const effectiveUi = (): { showQuickNote: boolean; sidebarLeftCss: boolean } => ({
+  const effectiveUi = (): { showQuickNote: boolean; sidebarLeftCss: boolean; showPanelStatus: boolean } => ({
     showQuickNote: eff().ui?.showQuickNote !== false,
     sidebarLeftCss: eff().ui?.sidebarLeftCss !== false,
+    showPanelStatus: eff().ui?.showPanelStatus !== false,
   })
 
   const disposers: Array<() => void> = []
