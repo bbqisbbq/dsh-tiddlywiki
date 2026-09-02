@@ -35,6 +35,12 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 dsh plugin --profile web add dsh-tiddlywiki
 ```
 
+## 发布 / 仓库
+
+- **GitHub（公开）**：https://github.com/bbqisbbq/dsh-tiddlywiki
+- **npm**：`dsh-tiddlywiki`（`npm i dsh-tiddlywiki`；https://www.npmjs.com/package/dsh-tiddlywiki ）
+- **说明笔记**：插件在首次启动时向 wiki **幂等写入**一篇「`dsh-tiddlywiki 插件说明`」笔记（tag `docs`）——不存在才写、手动编辑不被覆盖、删除后重启会重建；当前 live wiki 里已有一份。
+
 ## 配置
 
 插件行默认如下（缺省即用默认值，无需手动配置）。如需自定义，编辑
