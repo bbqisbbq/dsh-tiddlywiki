@@ -1,0 +1,233 @@
+/**
+ * DSH webserver routes for dsh-tiddlywiki (design doc §10).
+ *
+ * | route                     | method | purpose                                  |
+ * |---------------------------|--------|------------------------------------------|
+ * | /dsh-tiddlywiki/status    | GET    | panel health (service / url / git / tag) |
+ * | /dsh-tiddlywiki/note      | POST   | quick-note → independent tiddler         |
+ * | /dsh-tiddlywiki/restart   | POST   | one-click retry/restart of the TW child  |
+ * | /dsh-tiddlywiki/api/*     | any    | passthrough to the TW service (JSON)     |
+ *
+ * Matching is exact-over-prefix, so the exact routes win and the `/api`
+ * prefix catches the rest. Client calls are same-origin (the DSH web server),
+ * so no CORS is involved.
+ *
+ * @module dsh-tiddlywiki/host/routes
+ */
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { TiddlyWebClient } from './tw-api.ts'
+import type { WikiServer } from './wiki.ts'
+import type { GitFace } from './git.ts'
+import { PATH_PREFIX } from './wiki.ts'
+
+export const ROUTE_PREFIX = PATH_PREFIX
+
+/** Max JSON body for note/restart. */
+const MAX_BODY_BYTES = 2 * 1024 * 1024
+
+/** Max passthrough body (tiddler content can be large). */
+const MAX_PROXY_BODY_BYTES = 16 * 1024 * 1024
+
+/** Structural webserver face (a subset of dsh-host-webserver). */
+export interface WebServerFace {
+  register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }): () => void
+}
+
+export interface RouteDeps {
+  server: WikiServer
+  getClient: () => TiddlyWebClient | undefined
+  git: GitFace
+  autoCommit: () => void
+  noteDefaults: () => { tag: string }
+  getWikiPath: () => string
+}
+
+function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<string> {
+  return new Promise((resolveP, rejectP) => {
+    let size = 0
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > limit) {
+        rejectP(new Error('body too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => resolveP(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', rejectP)
+  })
+}
+
+function json(res: ServerResponse, payload: unknown, status = 200): void {
+  const body = JSON.stringify(payload)
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(body)
+}
+
+function pad(n: number): string {
+  return n < 10 ? `0${n}` : String(n)
+}
+
+/** Default note title: `YYYY-MM-DD HH:mm` (design doc D6). */
+function timestampTitle(date = new Date()): string {
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+/**
+ * Open a tiddler in TW's NATIVE editor: save the tiddler (when text is
+ * non-empty), reuse or create a DRAFT tiddler carrying `draft.of`/`draft.title`
+ * (TW's story view renders drafts with the EditTemplate — list.js:
+ * `isDraft && editTemplate`), and return the draft title so the client can
+ * navigate the panel iframe to `#<draftTitle>`.
+ */
+export async function openInTwEditor(
+  client: TiddlyWebClient,
+  title: string,
+  text: string,
+  tag: string,
+): Promise<{ title: string; draftTitle: string }> {
+  if (text.trim().length > 0) {
+    await client.put({ title, text, tags: [tag] })
+  }
+  // Draft content: the provided text, else the existing tiddler's content.
+  let draftText = text
+  if (draftText.trim().length === 0) {
+    const existing = await client.get(title)
+    draftText = existing?.text ?? ''
+  }
+  // Reuse an existing draft for this title (mirrors wiki.findDraft).
+  let draftTitle: string | undefined
+  try {
+    const items = await client.list(undefined, true)
+    for (const item of items) {
+      if (item['draft.of'] === title && typeof item.title === 'string') {
+        draftTitle = item.title
+        break
+      }
+    }
+  } catch {
+    /* fall back to a fresh draft */
+  }
+  if (draftTitle === undefined) draftTitle = `Draft of "${title}" ${Date.now()}`
+  await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: 'text/vnd.tiddlywiki' })
+  return { title, draftTitle }
+}
+
+export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDeps): () => void {
+  const handleStatus = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const view = deps.server.status()
+    let gitSummary: GitStatusViewPublic | null = null
+    try {
+      gitSummary = await deps.git.status(deps.getWikiPath())
+    } catch {
+      gitSummary = null
+    }
+    json(res, { ok: true, ...view, git: gitSummary, note: { tag: deps.noteDefaults().tag } })
+  }
+
+  const handleNote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; text?: unknown }
+      const text = typeof body.text === 'string' && body.text.trim().length > 0 ? body.text.trim() : null
+      if (text === null) {
+        json(res, { ok: false, error: 'text is required' }, 400)
+        return
+      }
+      const client = deps.getClient()
+      if (client === undefined) {
+        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        return
+      }
+      const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
+      const tag = typeof body.tag === 'string' && body.tag.trim().length > 0 ? body.tag.trim() : deps.noteDefaults().tag
+      await client.put({ title, text, tags: [tag] })
+      deps.autoCommit()
+      json(res, { ok: true, title, tag, text })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  const handleEdit = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; text?: unknown }
+      const client = deps.getClient()
+      if (client === undefined) {
+        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        return
+      }
+      const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
+      const tag = typeof body.tag === 'string' && body.tag.trim().length > 0 ? body.tag.trim() : deps.noteDefaults().tag
+      const text = typeof body.text === 'string' ? body.text : ''
+      const result = await openInTwEditor(client, title, text, tag)
+      deps.autoCommit()
+      json(res, { ok: true, ...result, twUrl: deps.server.url })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  const handleRestart = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      await deps.server.restart()
+      json(res, { ok: true, status: deps.server.status().status })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /** Passthrough /dsh-tiddlywiki/api/<rest> → TW root /<rest>. */
+  const handleApiProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const client = deps.getClient()
+    if (client === undefined) {
+      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      return
+    }
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const rest = url.pathname.replace(/^\/dsh-tiddlywiki\/api/, '') || '/'
+    try {
+      const headers: Record<string, string> = {}
+      const ct = req.headers['content-type']
+      if (typeof ct === 'string') headers['content-type'] = ct
+      const method = (req.method ?? 'GET').toUpperCase()
+      // TW's CSRF gate requires X-Requested-With on writes; forward it through.
+      if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
+      const init: RequestInit = { method, headers, signal: AbortSignal.timeout(15_000) }
+      if (method === 'PUT' || method === 'POST') init.body = await readBody(req, MAX_PROXY_BODY_BYTES)
+      const upstream = await fetch(`${deps.server.url}${rest}${url.search}`, init)
+      const data = await upstream.text()
+      res.writeHead(upstream.status, {
+        'content-type': upstream.headers.get('content-type') ?? 'application/json; charset=utf-8',
+        'cache-control': 'no-store',
+      })
+      res.end(data)
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 502)
+    }
+  }
+
+  const disposers = [
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/status`, handler: (req, res) => { void handleStatus(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/note`, handler: (req, res) => { void handleNote(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/edit`, handler: (req, res) => { void handleEdit(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
+    ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: (req, res) => { void handleApiProxy(req, res) } }),
+  ]
+  return () => {
+    for (const dispose of disposers) dispose()
+  }
+}
+
+/** Public shape of the git status summary sent to the panel. */
+export interface GitStatusViewPublic {
+  exists: boolean
+  branch: string
+  dirty: boolean
+  dirtyFiles: string[]
+  remote: string
+  lastCommit?: string
+  ahead?: number
+  behind?: number
+}

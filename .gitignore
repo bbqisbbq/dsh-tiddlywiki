@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Build output (regenerate with `npm run build`)
+lib/
+
+# Logs / editor noise
+*.log
+*.tsbuildinfo
+.DS_Store
+Thumbs.db

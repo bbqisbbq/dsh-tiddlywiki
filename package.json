@@ -1,0 +1,55 @@
+{
+  "name": "dsh-tiddlywiki",
+  "description": "TiddlyWiki 5 as the DSH persistent knowledge base: tiddlywiki_* agent tools (search/get/put/delete + git sync), a full TiddlyWiki editor embedded in the GUI center column, a floating quick-note widget in the chat area, and git-based sync with auto-commit. Mounts via the official dsh plugin system — no DSH source changes.",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.js.map",
+    "src",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "tiddlywiki": "^5.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "@types/react": "^19.1.0",
+    "react": "^19.1.0",
+    "tsdown": "0.22.2",
+    "tsx": "^4.19.2",
+    "typescript": "~5.7.2",
+    "unrun": "*"
+  },
+  "scripts": {
+    "build": "node scripts/clean-lib.mjs && npm run build:host && npm run build:client",
+    "build:host": "tsdown -c tsdown.host.config.ts",
+    "build:client": "tsdown -c tsdown.client.config.ts && node scripts/wrap-client.mjs",
+    "watch": "tsdown -c tsdown.host.config.ts --watch",
+    "typecheck": "tsc --noEmit",
+    "selftest": "node scripts/selftest.mjs"
+  }
+}
