@@ -25,7 +25,7 @@ import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type WebServerFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
-import { seedDocNote, seedSidebarLeftCss, DOC_NOTE_TITLE } from './host/seed-notes.ts'
+import { seedDocNote, DOC_NOTE_TITLE } from './host/seed-notes.ts'
 import { TiddlyWebClient } from './host/tw-api.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
@@ -42,7 +42,7 @@ export { AutoCommitter, GitFace, PATH_PREFIX, TiddlyWebClient, WikiServer, dshHo
 export { ConfigStore, deepMerge } from './host/config.ts'
 export { openInTwEditor } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
-export { seedDocNote, seedSidebarLeftCss, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT, SIDEBAR_LEFT_CSS_TITLE, SIDEBAR_LEFT_CSS } from './host/seed-notes.ts'
+export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
 export type { Tiddler } from './host/tw-api.ts'
@@ -55,7 +55,7 @@ export interface TiddlywikiConfig {
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
-  ui?: { showQuickNote?: boolean; sidebarLeftCss?: boolean; showPanelStatus?: boolean }
+  ui?: { showQuickNote?: boolean; showPanelStatus?: boolean }
   auth?: { username?: string; password?: string }
 }
 
@@ -76,7 +76,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
-  ui: { showQuickNote: boolean; sidebarLeftCss: boolean; showPanelStatus: boolean }
+  ui: { showQuickNote: boolean; showPanelStatus: boolean }
   auth: { username?: string; password?: string }
 }
 
@@ -86,7 +86,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
-  ui: { showQuickNote: true, sidebarLeftCss: true, showPanelStatus: true },
+  ui: { showQuickNote: true, showPanelStatus: true },
   auth: { username: '', password: '' },
 }
 
@@ -181,9 +181,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
   }
-  const effectiveUi = (): { showQuickNote: boolean; sidebarLeftCss: boolean; showPanelStatus: boolean } => ({
+  const effectiveUi = (): { showQuickNote: boolean; showPanelStatus: boolean } => ({
     showQuickNote: eff().ui?.showQuickNote !== false,
-    sidebarLeftCss: eff().ui?.sidebarLeftCss !== false,
     showPanelStatus: eff().ui?.showPanelStatus !== false,
   })
 
@@ -277,16 +276,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // Seeds (run after the effective config is loaded):
       //  - doc note: ONE-SHOT — a fresh wiki gets the plugin guide; deleting
       //    it afterwards survives restarts (see seedDocNote).
-      //  - sidebar-left CSS: PATCH-REPAIR while ui.sidebarLeftCss is on —
-      //    re-seeds when missing (fresh install OR user deleted it).
       try {
         const seedClient = client()
         if (seedClient !== undefined) {
           await seedDocNote(seedClient)
-          await seedSidebarLeftCss(seedClient, effectiveUi().sidebarLeftCss)
         }
       } catch (err) {
-        console.warn('[dsh-tiddlywiki] seeding doc note / css:', err)
+        console.warn('[dsh-tiddlywiki] seeding doc note:', err)
       }
       // Apply the configured UI language (e.g. "zh-Hans"): enable the bundled
       // language plugin in tiddlywiki.info.languages + restart once so TW loads

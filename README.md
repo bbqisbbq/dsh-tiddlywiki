@@ -43,7 +43,7 @@ dsh plugin --profile web add github:bbqisbbq/dsh-tiddlywiki
 dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 ```
 
-首次启动会向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`），并默认安装「侧边移到左侧.css」界面补丁（把 TW 右侧栏移到左边；被删除后，只要设置页「侧边栏移左 CSS」开关开着就会随启动补丁还原）。
+首次启动会向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`）。
 
 ## 发布 / 仓库
 
@@ -88,7 +88,6 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
     ui:
       showQuickNote: true           # 是否显示右下角「快速笔记」按钮
       showPanelStatus: true         # 是否显示 TW 面板右下角「状态/重载」悬浮按钮
-      sidebarLeftCss: true          # 是否启用「侧边移到左侧.css」补丁（被删后随启动还原）
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非 loopback 时才需要
       password: ""

@@ -1,16 +1,12 @@
 /**
- * Built-in doc note + optional UI-patch seeds for the plugin (design doc §14).
+ * Built-in doc note for the plugin (design doc §14): a short user-facing
+ * "how to use dsh-tiddlywiki" note seeded into the wiki the first time the
+ * plugin runs on a wiki.
  *
- * Two seeds, deliberately different lifetimes:
- *
- * 1. DOC NOTE (`dsh-tiddlywiki 插件说明`) — ONE-SHOT: seeded only the first
- *    time this plugin runs on a wiki (guarded by a `seed-doc-note` marker
- *    tiddler). After that the note is the user's own content: deleting it and
- *    restarting dsh web does NOT recreate it.
- * 2. SIDEBAR-LEFT CSS (`侧边移到左侧.css`) — PATCH-REPAIR: written whenever
- *    the wiki lacks it while the `ui.sidebarLeftCss` option is enabled
- *    (default on). The user may delete it; a restart with the option still on
- *    re-seeds it (the "补丁选项"). Turning the option off stops re-seeding.
+ * ONE-SHOT seed: a marker tiddler (`seed-doc-note`) records that the note has
+ * been offered once; after that the note is the user's own content — deleting
+ * it and restarting dsh web does NOT recreate it, and edits are never
+ * overwritten.
  *
  * @module dsh-tiddlywiki/host/seed-notes
  */
@@ -36,7 +32,7 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
 * **TW 编辑器面板**：侧边栏「TiddlyWiki」按钮 → 在界面中央打开完整版 TW 编辑器。
 * **快速笔记**：右下角悬浮「📝 快速笔记」写随手记（可多选/自动补全 tag），\`Ctrl+Enter\` 保存；点「✏️ 在 TW 中编辑」会弹出独立小窗用 TW 原生编辑器编辑。
 * **git 同步**：写入自动防抖 commit（默认 60 秒）；手动 \`tiddlywiki_git_sync action=sync\` 做 pull → commit → push。
-* **设置页**：DSH 设置 → 「TiddlyWiki 知识库」管理插件/主题/语言与运行配置（含「快速笔记」显示开关、侧边栏移左 CSS 补丁开关）。
+* **设置页**：DSH 设置 → 「TiddlyWiki 知识库」管理插件/主题/语言与运行配置（含「快速笔记」显示开关、面板「状态/重载」悬浮按钮开关）。
 
 !! 知识库纪律（三条）
 
@@ -52,7 +48,6 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
 !! 说明
 
 * 本笔记由插件在**首次启动**时自动写入（一次性：只写一次）。删除后重启 dsh web **不会自动恢复**——它从此归你所有。
-* 「\`侧边移到左侧.css\`」是插件默认安装的界面补丁（把 TW 右侧栏移到左边）；可在设置页关闭「侧边栏移左 CSS」开关来停用补丁还原。
 * 更多细节见插件仓库 README。`
 
 /**
@@ -81,56 +76,4 @@ export async function seedDocNote(client: TiddlyWebClient): Promise<boolean> {
     .put({ title: SEED_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
     .catch(() => undefined)
   return wrote
-}
-
-/** Sidebar-left CSS tiddler: moves TW's sidebar (侧栏) to the LEFT so the
- *  host's top-right floating toggle cluster never covers TW content. Theme
- *  AGNOSTIC by design: it overrides TW's CORE layout classes
- *  (`.tc-sidebar-scrollable` / `.tc-story-river`), which every theme shares —
- *  only the positioning *values* differ per theme (vanilla family uses logical
- *  `inset-inline-start/end`, centralised family uses physical `left/right`),
- *  so we write BOTH and let `!important` win on either. A normal tiddler (tag
- *  `$:/tags/Stylesheet`, type text/css) — same pattern as hand-made
- *  `编辑界面微调：小标题·大编辑器.css`, easy to find and delete. */
-export const SIDEBAR_LEFT_CSS_TITLE = '侧边移到左侧.css'
-
-/** The stylesheet body. Hardcoded 960px breakpoint (vanilla default
- *  sidebarbreakpoint) and 350px sidebar width (vanilla default sidebarwidth) —
- *  plain text/css tiddlers don't process `{{...}}` transclusions. */
-export const SIDEBAR_LEFT_CSS = `/* 由 dsh-tiddlywiki 插件默认安装：把 TW 侧栏从右侧移到左侧，正文右移让位。
-   主题无关：覆盖 TW 核心布局的通用类（.tc-sidebar-scrollable / .tc-story-river），
-   逻辑属性（vanilla 系）与物理属性（centralised 系）双写，对所有主题生效。
-   删除后，只要设置页「侧边栏移左 CSS」补丁开关开着，插件会在下次启动时重建本 tiddler。 */
-@media (min-width: 960px) {
-  /* 侧栏：固定到左侧 350px（各主题默认 sidebarwidth） */
-  html .tc-sidebar-scrollable {
-    inset-inline-start: 0 !important;
-    inset-inline-end: auto !important;
-    left: 0 !important;
-    right: auto !important;
-    width: 350px !important;
-    margin: 0 !important;
-  }
-  /* 正文（story river）：右移 350px 让出侧栏位置（relative 元素用 margin 位移最稳） */
-  html .tc-story-river {
-    margin-left: 350px !important;
-  }
-}`
-
-/**
- * Patch-repair the sidebar-left CSS while the option is enabled: write it
- * whenever it is missing (fresh installs and deleted-by-user both re-seed).
- * Returns whether it was written. Never throws.
- */
-export async function seedSidebarLeftCss(client: TiddlyWebClient, enabled: boolean): Promise<boolean> {
-  if (!enabled) return false
-  const existing = await client.get(SIDEBAR_LEFT_CSS_TITLE).catch(() => undefined)
-  if (existing !== undefined) return false
-  await client.put({
-    title: SIDEBAR_LEFT_CSS_TITLE,
-    text: SIDEBAR_LEFT_CSS,
-    type: 'text/css',
-    tags: ['$:/tags/Stylesheet'],
-  })
-  return true
 }

@@ -8,7 +8,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, seedDocNote, seedSidebarLeftCss, DOC_NOTE_TITLE, DOC_NOTE_TAG, SIDEBAR_LEFT_CSS_TITLE, ConfigStore, deepMerge } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -163,14 +163,6 @@ try {
   await seedApi.delete(DOC_NOTE_TITLE)
   assert(await seedDocNote(seedApi) === false, 'deleted doc note does NOT re-seed (one-shot marker set)')
   await seedApi.delete(DOC_NOTE_TITLE)
-
-  // 5b2. Sidebar-left CSS seed: patch-repair while enabled, no-op while off.
-  assert(await seedSidebarLeftCss(seedApi, true) === true, 'sidebar-left css seeded when enabled')
-  assert(await seedSidebarLeftCss(seedApi, true) === false, 'sidebar-left css not re-written while present')
-  await seedApi.delete(SIDEBAR_LEFT_CSS_TITLE)
-  assert(await seedSidebarLeftCss(seedApi, true) === true, 'deleted sidebar-left css re-seeds while enabled')
-  assert(await seedSidebarLeftCss(seedApi, false) === false, 'sidebar-left css not seeded while disabled')
-  await seedApi.delete(SIDEBAR_LEFT_CSS_TITLE)
 
   // 6. Teardown: no orphan process
   const pidBefore = view.pid

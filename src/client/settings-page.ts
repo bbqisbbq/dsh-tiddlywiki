@@ -183,7 +183,6 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   textField('git.branch', 'git 分支', typeof git.branch === 'string' ? git.branch : 'main')
   checkField('ui.showQuickNote', '显示「快速笔记」悬浮按钮', ui.showQuickNote !== false)
   checkField('ui.showPanelStatus', '显示 TW 面板右下角「状态/重载」悬浮按钮', ui.showPanelStatus !== false)
-  checkField('ui.sidebarLeftCss', '侧边栏移左 CSS（随启动补丁还原被删除的样式）', ui.sidebarLeftCss !== false)
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
 
   const save = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '保存配置')
