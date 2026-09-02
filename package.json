@@ -1,8 +1,24 @@
 {
   "name": "dsh-tiddlywiki",
   "description": "TiddlyWiki 5 as the DSH persistent knowledge base: tiddlywiki_* agent tools (search/get/put/delete + git sync), a full TiddlyWiki editor embedded in the GUI center column, a floating quick-note widget in the chat area, and git-based sync with auto-commit. Mounts via the official dsh plugin system — no DSH source changes.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "tiddlywiki",
+    "knowledge-base",
+    "note-taking",
+    "notes",
+    "wiki",
+    "git-sync",
+    "agent-tools",
+    "plugin"
+  ],
+  "author": {
+    "name": "bbqisbbq",
+    "url": "https://github.com/bbqisbbq"
+  },
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -58,6 +74,7 @@
     "build:client": "tsdown -c tsdown.client.config.ts && node scripts/wrap-client.mjs",
     "watch": "tsdown -c tsdown.host.config.ts --watch",
     "typecheck": "tsc --noEmit",
-    "selftest": "node scripts/selftest.mjs"
+    "selftest": "node scripts/selftest.mjs",
+    "prepare": "npm run build"
   }
 }

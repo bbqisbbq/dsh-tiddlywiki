@@ -10,6 +10,14 @@ between machines through **dsh-market**.
 
 ---
 
+## 为什么做这个（初衷）
+
+等 agent 干活的时候，人常是干坐着的——想随手写点什么，又不想切来切去：开个便签、再切到笔记软件、再切回来，思路早断了。市面上没找到一款专门给这种「陪跑式摸鱼」用的 DSH 插件；去联动别的笔记软件，又总觉得隔了一层、动静太大。
+
+TiddlyWiki 的特性正好合适：单文件、纯文本、wiki 语法、自带 git 同步，天生适合**随手写点小东西**。于是把它做成 DSH 的原生插件——不用离开当前界面，聊天区右下角就有个快速笔记，想写就写；要正经编辑，弹出 TW 原生编辑器；写下的东西自动进 git，既是知识库也是备份。
+
+---
+
 ## 它能做什么
 
 | 能力 | 说明 |
@@ -22,24 +30,39 @@ between machines through **dsh-market**.
 
 ## 安装
 
-```bash
-# 本地开发 / 本机安装（link 方式，改源码后重新 build 即生效）
-dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
-
-# 重启 dsh web（会重新加载 profile 与插件）
-```
-
-从 npm 发布包安装则是：
+插件随 dsh 插件系统安装，三种方式任选（装完**重启 dsh web** 生效；把 `--profile web` 换成你自己的 profile 名）：
 
 ```bash
+# ① npm 发布包（推荐）
 dsh plugin --profile web add dsh-tiddlywiki
+
+# ② 直接从 GitHub 安装（需要 git 与 Node ≥22；安装时自动跑 prepare 构建 lib）
+dsh plugin --profile web add github:bbqisbbq/dsh-tiddlywiki
+
+# ③ 本地开发 / 改源码（link 方式：改完 src 后 npm run build 即生效，免重装）
+dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 ```
+
+首次启动会向 wiki **幂等写入**一篇「dsh-tiddlywiki 插件说明」笔记（tag `docs`）。
 
 ## 发布 / 仓库
 
 - **GitHub（公开）**：https://github.com/bbqisbbq/dsh-tiddlywiki
 - **npm**：`dsh-tiddlywiki`（`npm i dsh-tiddlywiki`；https://www.npmjs.com/package/dsh-tiddlywiki ）
 - **说明笔记**：插件在首次启动时向 wiki **幂等写入**一篇「`dsh-tiddlywiki 插件说明`」笔记（tag `docs`）——不存在才写、手动编辑不被覆盖、删除后重启会重建；当前 live wiki 里已有一份。
+
+## 可被检索的标准字段
+
+为方便 GitHub / npm / 搜索引擎发现，包与仓库带以下标准元数据：
+
+| 字段 | 值 |
+|---|---|
+| npm 包名 | `dsh-tiddlywiki` |
+| npm `keywords` | `dsh` `dsh-plugin` `tiddlywiki` `knowledge-base` `note-taking` `notes` `wiki` `git-sync` `agent-tools` `plugin` |
+| GitHub topics | `dsh` `dsh-plugin` `tiddlywiki` `knowledge-base` `note-taking` `wiki` `agent` |
+| `description` | 见 package.json（一句话说明插件的用途） |
+| `license` | MIT |
+| `homepage` / `repository` / `bugs` | 均指向 https://github.com/bbqisbbq/dsh-tiddlywiki |
 
 ## 配置
 
