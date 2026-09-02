@@ -3,8 +3,16 @@
  * collapsible, independent of any shell DOM. Lets the human jot drafts /
  * scratch notes while waiting for the AI or drafting the next prompt.
  *
- * Save posts to /dsh-tiddlywiki/note → an independent tiddler (title & tag
+ * Save posts to /dsh-tiddlywiki/note → an independent tiddler (title & tags
  * editable; defaults: timestamp title + config tag, usually "inbox").
+ *
+ * ui.showQuickNote config: the widget is mounted async and stays hidden (and
+ * never appended) when the option is off, so the toggle button can be disabled
+ * from the settings page without touching the shell.
+ *
+ * Tag editor: multi-select chips + autocomplete from the wiki's existing tags
+ * (GET /dsh-tiddlywiki/tags). Enter/`,` commits the typed value; Backspace on
+ * an empty field removes the last chip; the dropdown filters on typing.
  *
  * @module dsh-tiddlywiki/client/note-widget
  */
@@ -14,6 +22,7 @@ import { openEditorPopup } from './editor-popup.ts'
 const NOTE_ENDPOINT = '/dsh-tiddlywiki/note'
 const EDIT_ENDPOINT = '/dsh-tiddlywiki/edit'
 const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
+const TAGS_ENDPOINT = '/dsh-tiddlywiki/tags'
 
 function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n)
@@ -24,18 +33,157 @@ function timestampTitle(date = new Date()): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-async function fetchDefaultTag(): Promise<string> {
+interface UiOptions {
+  showQuickNote: boolean
+  defaultTag: string
+}
+
+async function fetchUiOptions(): Promise<UiOptions> {
+  const fallback: UiOptions = { showQuickNote: true, defaultTag: 'inbox' }
   try {
     const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
-    if (!res.ok) return 'inbox'
-    const payload = (await res.json()) as { note?: { tag?: string } }
-    return payload.note?.tag ?? 'inbox'
+    if (!res.ok) return fallback
+    const payload = (await res.json()) as { ui?: { showQuickNote?: boolean }; note?: { tag?: string } }
+    return {
+      showQuickNote: payload.ui?.showQuickNote !== false,
+      defaultTag: payload.note?.tag ?? 'inbox',
+    }
   } catch {
-    return 'inbox'
+    return fallback
   }
 }
 
-export function mountNoteWidget(): () => void {
+/** Multi-tag chip editor with autocomplete from the wiki's existing tags. */
+function buildTagEditor(): {
+  el: HTMLDivElement
+  getTags: () => string[]
+  setDefault: (tag: string) => void
+} {
+  const wrap = document.createElement('div')
+  wrap.className = 'dsh-tw-note-tags'
+
+  const chipWrap = document.createElement('div')
+  chipWrap.className = 'dsh-tw-note-chips'
+  const input = document.createElement('input')
+  input.className = 'dsh-tw-note-taginput'
+  input.placeholder = 'tag（可多选，自动补全）'
+  const suggest = document.createElement('div')
+  suggest.className = 'dsh-tw-note-tagsuggest'
+  suggest.hidden = true
+  wrap.append(chipWrap, input, suggest)
+
+  const chips: string[] = []
+  const hideSuggest = (): void => { suggest.hidden = true }
+
+  const renderChips = (): void => {
+    chipWrap.replaceChildren()
+    for (const tag of chips) {
+      const chip = document.createElement('span')
+      chip.className = 'dsh-tw-note-tagchip'
+      chip.textContent = tag
+      const x = document.createElement('span')
+      x.className = 'dsh-tw-note-tagchip-x'
+      x.textContent = '×'
+      x.title = `移除 tag「${tag}」`
+      x.addEventListener('click', (event) => {
+        event.stopPropagation()
+        const i = chips.indexOf(tag)
+        if (i >= 0) {
+          chips.splice(i, 1)
+          renderChips()
+        }
+      })
+      chip.append(x)
+      chipWrap.append(chip)
+    }
+  }
+
+  const addTag = (tag: string): void => {
+    const t = tag.trim()
+    if (t.length === 0 || chips.includes(t)) return
+    chips.push(t)
+    input.value = ''
+    renderChips()
+    hideSuggest()
+    input.focus()
+  }
+
+  const commitInput = (): void => {
+    for (const raw of input.value.split(/\s+/)) addTag(raw)
+  }
+
+  // Existing tags, fetched lazily once per widget lifetime.
+  let knownTags: string[] = []
+  let tagsPromise: Promise<string[]> | undefined
+  const ensureTags = (): Promise<string[]> => {
+    tagsPromise ??= fetch(TAGS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
+      .then((r) => (r.ok ? (r.json() as Promise<{ tags?: string[] }>) : Promise.resolve<{ tags?: string[] }>({})))
+      .then((p) => [...(p.tags ?? [])].sort((a, b) => a.localeCompare(b, 'zh')))
+      .catch(() => [])
+    void tagsPromise.then((list) => { knownTags = list })
+    return tagsPromise
+  }
+
+  const showSuggest = (): void => {
+    const q = input.value.trim().toLowerCase()
+    const matches = knownTags
+      .filter((t) => !chips.includes(t) && (q.length === 0 || t.toLowerCase().includes(q)))
+      .slice(0, 8)
+    suggest.replaceChildren()
+    for (const tag of matches) {
+      const item = document.createElement('div')
+      item.className = 'dsh-tw-note-tagsuggest-item'
+      item.textContent = tag
+      item.addEventListener('mousedown', (event) => {
+        event.preventDefault()
+        addTag(tag)
+      })
+      suggest.append(item)
+    }
+    suggest.hidden = matches.length === 0
+  }
+
+  input.addEventListener('focus', () => { void ensureTags().then(showSuggest) })
+  input.addEventListener('input', () => {
+    if (knownTags.length === 0) void ensureTags().then(showSuggest)
+    else showSuggest()
+  })
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ',') {
+      event.preventDefault()
+      commitInput()
+    } else if (event.key === 'Backspace' && input.value.length === 0 && chips.length > 0) {
+      chips.pop()
+      renderChips()
+    } else if (event.key === 'Escape') {
+      hideSuggest()
+    }
+  })
+  document.addEventListener('click', (event) => {
+    if (!wrap.contains(event.target as Node)) hideSuggest()
+  }, true)
+
+  return {
+    el: wrap,
+    getTags: () => {
+      commitInput()
+      return [...chips]
+    },
+    setDefault: (tag: string) => {
+      // Only pre-fill when nothing is chosen yet; never steal focus.
+      if (chips.length === 0) {
+        const t = tag.trim()
+        if (t.length > 0) {
+          chips.push(t)
+          renderChips()
+        }
+      }
+    },
+  }
+}
+
+/** Build the whole widget DOM and wire it up (returns the appended root). */
+function buildWidget(): HTMLDivElement {
   const root = document.createElement('div')
   root.className = 'dsh-tw-note'
 
@@ -60,10 +208,8 @@ export function mountNoteWidget(): () => void {
   const titleInput = document.createElement('input')
   titleInput.className = 'dsh-tw-note-title'
   titleInput.placeholder = '标题（默认时间戳）'
-  const tagInput = document.createElement('input')
-  tagInput.className = 'dsh-tw-note-tag'
-  tagInput.placeholder = 'tag（默认 inbox）'
-  fields.append(titleInput, tagInput)
+  const tagEditor = buildTagEditor()
+  fields.append(titleInput, tagEditor.el)
 
   const textarea = document.createElement('textarea')
   textarea.className = 'dsh-tw-note-text'
@@ -106,11 +252,10 @@ export function mountNoteWidget(): () => void {
     card.hidden = false
     opened = true
     resetTitle()
-    if (tagInput.value.length === 0) tagInput.value = defaultTag
     textarea.focus()
-    // Refresh the configured default tag on each open (cheap, best effort).
-    defaultTag = await fetchDefaultTag()
-    if (tagInput.value.length === 0) tagInput.value = defaultTag
+    // Fetch the effective default tag once, then pre-fill if nothing is chosen.
+    defaultTag = (await fetchUiOptions()).defaultTag
+    tagEditor.setDefault(defaultTag)
   }
 
   const close = (): void => {
@@ -135,7 +280,7 @@ export function mountNoteWidget(): () => void {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           title: titleInput.value.trim(),
-          tag: tagInput.value.trim(),
+          tags: tagEditor.getTags(),
           text,
         }),
         signal: AbortSignal.timeout(10_000),
@@ -169,14 +314,14 @@ export function mountNoteWidget(): () => void {
   const doEdit = async (): Promise<void> => {
     const title = titleInput.value.trim().length > 0 ? titleInput.value.trim() : timestampTitle()
     const text = textarea.value
-    const tag = tagInput.value.trim()
+    const tags = tagEditor.getTags()
     edit.disabled = true
     edit.textContent = '打开中…'
     try {
       const res = await fetch(EDIT_ENDPOINT, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title, tag, text }),
+        body: JSON.stringify({ title, tags, text }),
         signal: AbortSignal.timeout(10_000),
       })
       const payload = (await res.json().catch(() => null)) as
@@ -202,9 +347,27 @@ export function mountNoteWidget(): () => void {
 
   edit.addEventListener('click', () => { void doEdit() })
 
-  return () => {
-    root.remove()
+  return root
+}
+
+/**
+ * Mount the floating quick-note widget. Fetches /status first: when
+ * `ui.showQuickNote` is off the widget is never created (no DOM side effects).
+ * Returns a disposer that removes it.
+ */
+export function mountNoteWidget(): () => void {
+  let disposed = false
+  let root: HTMLDivElement | undefined
+  const disposer = (): void => {
+    disposed = true
+    root?.remove()
     const toastEl = document.querySelector<HTMLElement>('.dsh-tw-toast')
     toastEl?.remove()
   }
+  void (async () => {
+    const ui = await fetchUiOptions()
+    if (disposed || !ui.showQuickNote) return
+    root = buildWidget()
+  })()
+  return disposer
 }

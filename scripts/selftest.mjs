@@ -8,7 +8,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, seedDocNote, seedSidebarLeftCss, DOC_NOTE_TITLE, DOC_NOTE_TAG, SIDEBAR_LEFT_CSS_TITLE, ConfigStore, deepMerge } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -128,7 +128,7 @@ try {
 
   // 5c. Open in native editor: draft creation, reuse, no-clobber.
   const editApi = new TiddlyWebClient(server.url)
-  const editResult = await openInTwEditor(editApi, 'EditTarget', 'initial body', 'inbox')
+  const editResult = await openInTwEditor(editApi, 'EditTarget', 'initial body', ['inbox'])
   assert(editResult.draftTitle.startsWith('Draft of "EditTarget"'), `draft title generated (${editResult.draftTitle})`)
   const draft1 = await editApi.get(editResult.draftTitle)
   assert(draft1 !== undefined, 'draft tiddler exists')
@@ -136,21 +136,22 @@ try {
   const draft1Title = draft1['draft.title'] ?? draft1.fields?.['draft.title']
   assert(draft1Of === 'EditTarget' && draft1Title === 'EditTarget', 'draft carries draft.of/draft.title')
   assert((draft1.text ?? '') === 'initial body', 'draft starts from provided text')
-  const editResult2 = await openInTwEditor(editApi, 'EditTarget', 'updated body', 'inbox')
+  const editResult2 = await openInTwEditor(editApi, 'EditTarget', 'updated body', ['inbox'])
   assert(editResult2.draftTitle === editResult.draftTitle, 'existing draft is reused')
   const draft2 = await editApi.get(editResult2.draftTitle)
   assert((draft2.text ?? '') === 'updated body', 'draft updated in place')
   const target = await editApi.get('EditTarget')
   assert((target.text ?? '') === 'updated body', 'real tiddler saved with latest text')
   // Empty-text open must NOT clobber an existing tiddler.
-  const noClobber = await openInTwEditor(editApi, 'EditTarget', '', 'inbox')
+  const noClobber = await openInTwEditor(editApi, 'EditTarget', '', ['inbox'])
   assert(noClobber.draftTitle === editResult.draftTitle, 'empty-text open reuses draft')
   const afterNoClobber = await editApi.get('EditTarget')
   assert((afterNoClobber.text ?? '') === 'updated body', 'empty-text open does not wipe existing tiddler')
   await editApi.delete('EditTarget')
   await editApi.delete(editResult.draftTitle)
 
-  // 5b. Doc-note seed: idempotent create-if-missing, never overwrites edits.
+  // 5b. Doc-note seed: ONE-SHOT — a fresh wiki gets the guide, then the note
+  // is user-owned: editing never overwrites, deleting survives restarts.
   const seedApi = new TiddlyWebClient(view.url)
   assert(await seedDocNote(seedApi) === true, 'doc note seeded on first run')
   const seedNote = await seedApi.get(DOC_NOTE_TITLE)
@@ -160,8 +161,16 @@ try {
   await seedApi.put({ title: DOC_NOTE_TITLE, text: 'user edit', tags: ['docs'] })
   assert(await seedDocNote(seedApi) === false, 'edited doc note is never overwritten by the seed')
   await seedApi.delete(DOC_NOTE_TITLE)
-  assert(await seedDocNote(seedApi) === true, 'deleted doc note re-seeds on next start')
+  assert(await seedDocNote(seedApi) === false, 'deleted doc note does NOT re-seed (one-shot marker set)')
   await seedApi.delete(DOC_NOTE_TITLE)
+
+  // 5b2. Sidebar-left CSS seed: patch-repair while enabled, no-op while off.
+  assert(await seedSidebarLeftCss(seedApi, true) === true, 'sidebar-left css seeded when enabled')
+  assert(await seedSidebarLeftCss(seedApi, true) === false, 'sidebar-left css not re-written while present')
+  await seedApi.delete(SIDEBAR_LEFT_CSS_TITLE)
+  assert(await seedSidebarLeftCss(seedApi, true) === true, 'deleted sidebar-left css re-seeds while enabled')
+  assert(await seedSidebarLeftCss(seedApi, false) === false, 'sidebar-left css not seeded while disabled')
+  await seedApi.delete(SIDEBAR_LEFT_CSS_TITLE)
 
   // 6. Teardown: no orphan process
   const pidBefore = view.pid

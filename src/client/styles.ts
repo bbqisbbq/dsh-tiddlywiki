@@ -24,6 +24,21 @@ const CSS_TEXT = `
 .dsh-tw-entry[data-active="true"] { background: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.18)); color: var(--dsw-alias-label-primary, inherit); font-weight: 500; }
 .dsh-tw-entry svg { flex: none; }
 .dsh-tw-entry .dsh-tw-entry-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Collapsed rail: the shell narrows the sidebar to a 56px icon rail (dual
+   signals — the frame's data-sidebar-collapsed + the sidebar root's hashed
+   *_collapsed class, same doctrine as dsh-taskboard 0.4.3). Mirror the
+   native 36×36 icon-button geometry: center the icon, hide the label, and
+   scale it up to match the shell's 18px rail icons. */
+[data-sidebar-collapsed] [data-dsh-tw-entry],
+[class*="_collapsed"] [data-dsh-tw-entry] {
+  width: 36px; height: 36px; min-width: 36px;
+  margin: 0 0 12px; padding: 0;
+  justify-content: center; gap: 0; text-align: center;
+}
+[data-sidebar-collapsed] [data-dsh-tw-entry] .dsh-tw-entry-label,
+[class*="_collapsed"] [data-dsh-tw-entry] .dsh-tw-entry-label { display: none; }
+[data-sidebar-collapsed] [data-dsh-tw-entry] svg,
+[class*="_collapsed"] [data-dsh-tw-entry] svg { width: 18px; height: 18px; }
 
 /* ── center-column panel (fixed overlay, JS-pinned to the column rect) ── */
 .dsh-tw-view {
@@ -139,6 +154,34 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-note-edit:hover:not(:disabled) { filter: brightness(.96); }
 .dsh-tw-note-edit:disabled { opacity: .55; cursor: default; }
+/* ── Multi-tag chip editor (quick-note tags) ─────────────────────────────── */
+.dsh-tw-note-tags { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.dsh-tw-note-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.dsh-tw-note-tagchip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px 2px 8px; border-radius: 999px; font-size: 11px; line-height: 1.4;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 10%, var(--dsw-alias-bg-layer-1, #fff));
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 30%, transparent);
+  color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-note-tagchip-x {
+  cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; border-radius: 50%;
+  color: var(--dsw-alias-label-secondary, #888);
+}
+.dsh-tw-note-tagchip-x:hover { color: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-note-taginput { width: 100%; box-sizing: border-box; }
+.dsh-tw-note-tagsuggest {
+  position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 60;
+  max-height: 168px; overflow-y: auto; border-radius: 8px; padding: 4px;
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  box-shadow: var(--dsw-shadow-lv2, 0 4px 16px rgba(0,0,0,.16));
+  font-size: 12px;
+}
+.dsh-tw-note-tagsuggest-item {
+  padding: 6px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dsh-tw-note-tagsuggest-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 /* ── Native-editor popup iframe (quick-note "在 TW 中编辑") ──────────────── */
 .dsh-tw-editor-popup {
   position: fixed; left: 0; right: 0; top: 0; bottom: 0; margin: auto;

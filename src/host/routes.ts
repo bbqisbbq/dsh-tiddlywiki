@@ -39,6 +39,7 @@ export interface RouteDeps {
   git: GitFace
   autoCommit: () => void
   noteDefaults: () => { tag: string }
+  uiDefaults: () => { showQuickNote: boolean }
   getWikiPath: () => string
 }
 
@@ -86,10 +87,10 @@ export async function openInTwEditor(
   client: TiddlyWebClient,
   title: string,
   text: string,
-  tag: string,
+  tags: string[],
 ): Promise<{ title: string; draftTitle: string }> {
   if (text.trim().length > 0) {
-    await client.put({ title, text, tags: [tag] })
+    await client.put({ title, text, tags })
   }
   // Draft content: the provided text, else the existing tiddler's content.
   let draftText = text
@@ -115,6 +116,22 @@ export async function openInTwEditor(
   return { title, draftTitle }
 }
 
+/** Resolve note tags from the request body: `tags` array wins, then the
+ *  legacy single `tag` string, then the configured default tag. */
+function resolveTags(
+  body: { tag?: unknown; tags?: unknown },
+  defaultTag: string,
+): string[] {
+  if (Array.isArray(body.tags)) {
+    const tags = body.tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim())
+    if (tags.length > 0) return tags
+  }
+  if (typeof body.tag === 'string' && body.tag.trim().length > 0) {
+    return body.tag.trim().split(/\s+/).filter(Boolean)
+  }
+  return [defaultTag]
+}
+
 export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDeps): () => void {
   const handleStatus = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const view = deps.server.status()
@@ -124,12 +141,12 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     } catch {
       gitSummary = null
     }
-    json(res, { ok: true, ...view, git: gitSummary, note: { tag: deps.noteDefaults().tag } })
+    json(res, { ok: true, ...view, git: gitSummary, note: { tag: deps.noteDefaults().tag }, ui: deps.uiDefaults() })
   }
 
   const handleNote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; text?: unknown }
+      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown }
       const text = typeof body.text === 'string' && body.text.trim().length > 0 ? body.text.trim() : null
       if (text === null) {
         json(res, { ok: false, error: 'text is required' }, 400)
@@ -141,10 +158,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         return
       }
       const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
-      const tag = typeof body.tag === 'string' && body.tag.trim().length > 0 ? body.tag.trim() : deps.noteDefaults().tag
-      await client.put({ title, text, tags: [tag] })
+      const tags = resolveTags(body, deps.noteDefaults().tag)
+      await client.put({ title, text, tags })
       deps.autoCommit()
-      json(res, { ok: true, title, tag, text })
+      json(res, { ok: true, title, tag: tags.join(' '), tags, text })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -152,18 +169,39 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   const handleEdit = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; text?: unknown }
+      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown }
       const client = deps.getClient()
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
       }
       const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
-      const tag = typeof body.tag === 'string' && body.tag.trim().length > 0 ? body.tag.trim() : deps.noteDefaults().tag
+      const tags = resolveTags(body, deps.noteDefaults().tag)
       const text = typeof body.text === 'string' ? body.text : ''
-      const result = await openInTwEditor(client, title, text, tag)
+      const result = await openInTwEditor(client, title, text, tags)
       deps.autoCommit()
       json(res, { ok: true, ...result, twUrl: deps.server.url })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /** Distinct non-system tags for the quick-note tag autocomplete. */
+  const handleTags = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const client = deps.getClient()
+    if (client === undefined) {
+      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      return
+    }
+    try {
+      const items = await client.list(undefined, false)
+      const tags = new Set<string>()
+      for (const item of items) {
+        for (const tag of item.tags ?? []) {
+          if (tag.length > 0 && !tag.startsWith('$:/')) tags.add(tag)
+        }
+      }
+      json(res, { ok: true, tags: [...tags].sort((a, b) => a.localeCompare(b, 'zh')) })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -212,6 +250,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/status`, handler: (req, res) => { void handleStatus(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/note`, handler: (req, res) => { void handleNote(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/edit`, handler: (req, res) => { void handleEdit(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/tags`, handler: (req, res) => { void handleTags(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
     ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: (req, res) => { void handleApiProxy(req, res) } }),
   ]

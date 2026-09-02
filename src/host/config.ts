@@ -20,6 +20,12 @@ export const CONFIG_TIDDLER = '$:/plugins/dsh-tiddlywiki/config'
 export interface PluginConfigShape {
   note?: { tag?: string }
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
+  ui?: {
+    /** 是否在界面右下角显示「快速笔记」悬浮按钮（默认 true）。 */
+    showQuickNote?: boolean
+    /** 是否启用「侧边移到左侧.css」默认 CSS；被删除后随启动补丁还原（默认 true）。 */
+    sidebarLeftCss?: boolean
+  }
   uiLanguage?: string
   [key: string]: unknown
 }

@@ -24,7 +24,7 @@ TiddlyWiki 的特性正好合适：单文件、纯文本、wiki 语法、自带 
 |---|---|
 | Agent 工具 | `tiddlywiki_search` / `get` / `put` / `delete` / `git_sync` |
 | 人编辑 | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 编辑器（iframe 直连 TW 服务） |
-| 快速笔记 | 聊天区右下角常驻悬浮控件（可折叠，标题/tag 可自定义，Ctrl+Enter 保存） |
+| 快速笔记 | 聊天区右下角常驻悬浮控件（可折叠，可多选/自动补全 tag，Ctrl+Enter 保存；设置页可整体隐藏） |
 | 零摩擦生命周期 | 随 dsh 自动启动/关闭；TW 子进程崩溃自动重启（退避）；端口/目录/首次 git init 全自动 |
 | 同步 | 单线程交替模型：开工 pull，收工 commit+push，自动 commit（60s 防抖，可关） |
 
@@ -43,13 +43,13 @@ dsh plugin --profile web add github:bbqisbbq/dsh-tiddlywiki
 dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 ```
 
-首次启动会向 wiki **幂等写入**一篇「dsh-tiddlywiki 插件说明」笔记（tag `docs`）。
+首次启动会向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`），并默认安装「侧边移到左侧.css」界面补丁（把 TW 右侧栏移到左边；被删除后，只要设置页「侧边栏移左 CSS」开关开着就会随启动补丁还原）。
 
 ## 发布 / 仓库
 
 - **GitHub（公开）**：https://github.com/bbqisbbq/dsh-tiddlywiki
 - **npm**：`dsh-tiddlywiki`（`npm i dsh-tiddlywiki`；https://www.npmjs.com/package/dsh-tiddlywiki ）
-- **说明笔记**：插件在首次启动时向 wiki **幂等写入**一篇「`dsh-tiddlywiki 插件说明`」笔记（tag `docs`）——不存在才写、手动编辑不被覆盖、删除后重启会重建；当前 live wiki 里已有一份。
+- **说明笔记**：插件在**首次启动**时向 wiki **写入一次**「`dsh-tiddlywiki 插件说明`」笔记（tag `docs`）——只写一次、手动编辑不被覆盖、**删除后重启不会自动恢复**（一次性标记；清空 wiki 重装会再写入）。当前 live wiki 里已有一份。
 
 ## 可被检索的标准字段
 
@@ -85,6 +85,9 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
       branch: "main"
     note:
       tag: "inbox"
+    ui:
+      showQuickNote: true           # 是否显示右下角「快速笔记」按钮
+      sidebarLeftCss: true          # 是否启用「侧边移到左侧.css」补丁（被删后随启动还原）
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非 loopback 时才需要
       password: ""
@@ -95,7 +98,7 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 
 > 运行时配置：设置页（见「设置页」）写入的 `$:/plugins/dsh-tiddlywiki/config`
 > tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki 的 git 同步）。
-> 无需改动 cordis 也能改 note tag / git 开关等。
+> 无需改动 cordis 也能改 note tag / git 开关 / ui 开关等。
 
 ## 使用
 

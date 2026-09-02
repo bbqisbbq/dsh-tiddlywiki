@@ -25,7 +25,7 @@ import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type WebServerFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
-import { seedDocNote, DOC_NOTE_TITLE } from './host/seed-notes.ts'
+import { seedDocNote, seedSidebarLeftCss, DOC_NOTE_TITLE } from './host/seed-notes.ts'
 import { TiddlyWebClient } from './host/tw-api.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
@@ -42,7 +42,7 @@ export { AutoCommitter, GitFace, PATH_PREFIX, TiddlyWebClient, WikiServer, dshHo
 export { ConfigStore, deepMerge } from './host/config.ts'
 export { openInTwEditor } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
-export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
+export { seedDocNote, seedSidebarLeftCss, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT, SIDEBAR_LEFT_CSS_TITLE, SIDEBAR_LEFT_CSS } from './host/seed-notes.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
 export type { Tiddler } from './host/tw-api.ts'
@@ -55,6 +55,7 @@ export interface TiddlywikiConfig {
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
+  ui?: { showQuickNote?: boolean; sidebarLeftCss?: boolean }
   auth?: { username?: string; password?: string }
 }
 
@@ -75,6 +76,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
+  ui: { showQuickNote: boolean; sidebarLeftCss: boolean }
   auth: { username?: string; password?: string }
 }
 
@@ -84,6 +86,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
+  ui: { showQuickNote: true, sidebarLeftCss: true },
   auth: { username: '', password: '' },
 }
 
@@ -163,6 +166,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     port: rawConfig.port ?? DEFAULTS.port,
     git: { ...DEFAULTS.git, ...(rawConfig.git ?? {}) },
     note: { ...DEFAULTS.note, ...(rawConfig.note ?? {}) },
+    ui: { ...DEFAULTS.ui, ...(rawConfig.ui ?? {}) },
     auth: { ...DEFAULTS.auth, ...(rawConfig.auth ?? {}) },
   }
   const wikiPath = join(config.wikiRoot, config.wiki)
@@ -171,12 +175,16 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // Runtime-editable config (settings page): the cordis `config:` block is the
   // BASE; a config tiddler ($:/plugins/dsh-tiddlywiki/config) written by the
   // settings page overlays it. Effective values come from configStore.get().
-  const configStore = new ConfigStore({ note: config.note, git: config.git } satisfies PluginConfigShape)
+  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui } satisfies PluginConfigShape)
   const eff = (): PluginConfigShape => configStore.get()
   const effectiveNoteTag = (): string => {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
   }
+  const effectiveUi = (): { showQuickNote: boolean; sidebarLeftCss: boolean } => ({
+    showQuickNote: eff().ui?.showQuickNote !== false,
+    sidebarLeftCss: eff().ui?.sidebarLeftCss !== false,
+  })
 
   const disposers: Array<() => void> = []
   const disposeAll = (): void => {
@@ -265,13 +273,19 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     try {
       await server.start()
       await configStore.load(client())
-      // Seed the built-in doc note (idempotent, create-if-missing) so a fresh
-      // wiki gets the plugin guide by default.
+      // Seeds (run after the effective config is loaded):
+      //  - doc note: ONE-SHOT — a fresh wiki gets the plugin guide; deleting
+      //    it afterwards survives restarts (see seedDocNote).
+      //  - sidebar-left CSS: PATCH-REPAIR while ui.sidebarLeftCss is on —
+      //    re-seeds when missing (fresh install OR user deleted it).
       try {
         const seedClient = client()
-        if (seedClient !== undefined) await seedDocNote(seedClient)
+        if (seedClient !== undefined) {
+          await seedDocNote(seedClient)
+          await seedSidebarLeftCss(seedClient, effectiveUi().sidebarLeftCss)
+        }
       } catch (err) {
-        console.warn('[dsh-tiddlywiki] seeding doc note:', err)
+        console.warn('[dsh-tiddlywiki] seeding doc note / css:', err)
       }
       // Apply the configured UI language (e.g. "zh-Hans"): enable the bundled
       // language plugin in tiddlywiki.info.languages + restart once so TW loads
@@ -307,6 +321,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       git,
       autoCommit: () => committer?.touch(),
       noteDefaults: () => ({ tag: effectiveNoteTag() }),
+      uiDefaults: () => effectiveUi(),
       getWikiPath: () => wikiPath,
     })
     const adminDeps: AdminDeps = {
