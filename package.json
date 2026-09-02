@@ -74,7 +74,6 @@
     "build:client": "tsdown -c tsdown.client.config.ts && node scripts/wrap-client.mjs",
     "watch": "tsdown -c tsdown.host.config.ts --watch",
     "typecheck": "tsc --noEmit",
-    "selftest": "node scripts/selftest.mjs",
-    "prepare": "npm run build"
+    "selftest": "node scripts/selftest.mjs"
   }
 }

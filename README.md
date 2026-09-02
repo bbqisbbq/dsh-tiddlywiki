@@ -36,7 +36,7 @@ TiddlyWiki 的特性正好合适：单文件、纯文本、wiki 语法、自带 
 # ① npm 发布包（推荐）
 dsh plugin --profile web add dsh-tiddlywiki
 
-# ② 直接从 GitHub 安装（需要 git 与 Node ≥22；安装时自动跑 prepare 构建 lib）
+# ② 直接从 GitHub 安装（需要 git；仓库已含预构建的 lib，开箱即用）
 dsh plugin --profile web add github:bbqisbbq/dsh-tiddlywiki
 
 # ③ 本地开发 / 改源码（link 方式：改完 src 后 npm run build 即生效，免重装）
