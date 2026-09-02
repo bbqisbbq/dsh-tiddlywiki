@@ -50,6 +50,13 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-panel-bar button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 .dsh-tw-panel-title { font-weight: 600; margin-right: auto; }
+/* dsh-better-sidebar coexistence: the floating toggle cluster (two 28px
+   buttons at the viewport's top-right) lives above the panel (z-index is
+   handled in JS — the panel stays below the host layer), so reserve the
+   cluster's width at the panel bar's right end — mirroring how
+   dsh-better-sidebar pads the DSH session header — and the panel's own
+   状态/重载 buttons never sit underneath it. */
+.dsh-tw-view[data-sidebar-host] .dsh-tw-panel-bar { padding-right: 80px; }
 .dsh-tw-status-chip { font-variant-numeric: tabular-nums; }
 .dsh-tw-status-chip[data-state="running"] { color: var(--dsw-alias-state-success-primary, #3eaa5f); }
 .dsh-tw-status-chip[data-state="starting"] { color: var(--dsw-alias-state-warning-primary, #d9822b); }

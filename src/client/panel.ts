@@ -40,11 +40,37 @@ const PANEL_NAME = 'dsh-tiddlywiki'
 
 /** Overlay z-index: above the shell content, below the note widget (950). */
 const PANEL_Z_INDEX = 40
+/**
+ * dsh-better-sidebar's unified fixed host layer (its persistent
+ * expand/collapse toggle cluster lives inside it, at a global z-index of 25
+ * — its internal 45 is trapped by the host's stacking context). When this
+ * host is present the panel must stay BELOW it, so the sidebar toggle
+ * buttons stay visible and clickable above the full-screen TW panel.
+ */
+const PANEL_HOST_SELECTOR = '[data-dsh-panel-host]'
+/** The app's own shell overlay layer (dsh-client-ui-layout pins it at 20). */
+const APP_OVERLAY_Z_INDEX = 20
 /** Safety re-measure cadence for shell layout changes CSS can't see. */
 const SYNC_INTERVAL_MS = 2_000
 
 const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
 const RESTART_ENDPOINT = '/dsh-tiddlywiki/restart'
+
+/**
+ * The panel's z-index: below any dsh-better-sidebar host layer so its
+ * persistent toggle cluster (top-right corner) stays visible and clickable
+ * above the full-screen TW panel, otherwise the default 40. The host's live
+ * computed z-index is read instead of hardcoding 25, so the rule tracks
+ * plugin updates; the panel is still clamped above the app's own shell
+ * overlay layer (dsh-client-ui-layout pins it at 20).
+ */
+function resolvePanelZIndex(): number {
+  const host = document.querySelector<HTMLElement>(PANEL_HOST_SELECTOR)
+  if (host === null) return PANEL_Z_INDEX
+  const parsed = parseInt(getComputedStyle(host).zIndex, 10)
+  if (!Number.isFinite(parsed)) return PANEL_Z_INDEX
+  return Math.max(APP_OVERLAY_Z_INDEX, Math.min(PANEL_Z_INDEX, parsed - 1))
+}
 
 interface StatusPayload {
   ok?: boolean
@@ -156,13 +182,27 @@ export function mountPanel(state: PanelState): () => void {
     if (container.style.height !== height) container.style.height = height
   }
 
+  /**
+   * Coexist with dsh-better-sidebar: keep the panel's z-index below the
+   * host layer (so its toggle cluster stays clickable above the panel) and
+   * flag the host's presence so CSS can reserve the cluster's width at the
+   * panel bar's right end. Re-run whenever the host mounts/unmounts.
+   */
+  const applyChrome = (): void => {
+    if (container === undefined) return
+    container.style.zIndex = String(resolvePanelZIndex())
+    const hasHost = document.querySelector(PANEL_HOST_SELECTOR) !== null
+    if (hasHost) container.dataset.sidebarHost = '1'
+    else delete container.dataset.sidebarHost
+  }
+
   const ensure = (): void => {
     if (container !== undefined) return
     columnEl = conversationColumn()
     if (columnEl === undefined) return
     container = build()
     container.style.position = 'fixed'
-    container.style.zIndex = String(PANEL_Z_INDEX)
+    applyChrome()
     document.body.append(container)
     syncRect()
   }
@@ -269,8 +309,9 @@ export function mountPanel(state: PanelState): () => void {
     if (target.closest(SIDEBAR_ROW_SELECTOR) !== null) state.closePanel()
   }
 
-  // Mount the container once the column exists; self-heal on re-renders.
-  const waitObserver = new MutationObserver(() => { ensure() })
+  // Mount the container once the column exists; self-heal on re-renders and
+  // re-resolve the coexistence chrome when better-sidebar mounts/unmounts.
+  const waitObserver = new MutationObserver(() => { ensure(); applyChrome() })
   waitObserver.observe(document.body, { childList: true, subtree: true })
 
   // Keep the overlay pinned to the column: resize, layout mutations, scroll.
