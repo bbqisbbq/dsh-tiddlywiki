@@ -59,10 +59,12 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 |---|---|
 | npm 包名 | `dsh-tiddlywiki` |
 | npm `keywords` | `dsh` `dsh-plugin` `tiddlywiki` `knowledge-base` `note-taking` `notes` `wiki` `git-sync` `agent-tools` `plugin` |
-| GitHub topics | `dsh` `dsh-plugin` `tiddlywiki` `knowledge-base` `note-taking` `wiki` `agent` |
+| GitHub topics | `dsh` `dsh-plugin` `tiddlywiki` `wiki` `knowledge-base` `knowledge-management` `note-taking` `notes` `second-brain` `productivity` `git` `git-sync` `plugin` `agent` `agent-tools` `ai` `typescript` `nodejs`（共 18 个） |
 | `description` | 见 package.json（一句话说明插件的用途） |
 | `license` | MIT |
 | `homepage` / `repository` / `bugs` | 均指向 https://github.com/bbqisbbq/dsh-tiddlywiki |
+
+> GitHub topics 规范（[官方文档](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics)）：仅小写字母/数字/连字符、≤50 字符、每仓库 ≤20 个；用官方 **Replace all repository topics** 端点（`PUT /repos/{owner}/{repo}/topics`）设置。上表已按此执行并覆盖「用途 / 主题 / 语言 / 技术栈」。
 
 ## 配置
 
