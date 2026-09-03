@@ -48,7 +48,7 @@
   "homepage": "https://github.com/bbqisbbq/dsh-tiddlywiki#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/bbqisbbq/dsh-tiddlywiki.git"
+    "url": "git+https://github.com/bbqisbbq/dsh-tiddlywiki.git"
   },
   "bugs": {
     "url": "https://github.com/bbqisbbq/dsh-tiddlywiki/issues"
