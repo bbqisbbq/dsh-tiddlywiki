@@ -14,9 +14,10 @@
  * (GET /dsh-tiddlywiki/tags). Enter/`,` commits the typed value; Backspace on
  * an empty field removes the last chip; the dropdown filters on typing.
  *
- * Markdown editing: a "highlighted textarea" overlay (a `<pre>` rendered
- * behind a transparent-text `<textarea>`, see markdown.ts) so Markdown is
- * syntax-highlighted as you type — no dependencies, perfect alignment.
+ * Markdown editing: a CodeMirror 6 editor (see markdown-editor.ts) with real
+ * Lezer-based syntax highlighting (GFM: headings, lists, code, links, tables,
+ * task lists, strikethrough…) plus undo/redo, wired into the same
+ * `.dsh-tw-note-editor` surface the widget reads/writes.
  *
  * File upload: the body accepts files via the 📎 button or drag-and-drop;
  * each file is POSTed raw to /dsh-tiddlywiki/upload (saved under the wiki's
@@ -27,7 +28,8 @@
  */
 import { toast } from './toast.ts'
 import { openEditorPopup } from './editor-popup.ts'
-import { highlightMarkdown } from './markdown.ts'
+import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
+import type { EditorView } from '@codemirror/view'
 
 const NOTE_ENDPOINT = '/dsh-tiddlywiki/note'
 const EDIT_ENDPOINT = '/dsh-tiddlywiki/edit'
@@ -195,54 +197,23 @@ function buildTagEditor(): {
 }
 
 /**
- * Markdown editor: a `<pre>` overlay (highlighted by markdown.ts) rendered
- * behind a transparent-text `<textarea>` with identical metrics. Scroll is
- * mirrored; on every input the overlay is re-rendered. The text layer stays
- * exactly aligned with the highlight layer because the highlighter never
- * changes the user's characters.
+ * Build the CodeMirror 6 Markdown editor for the quick-note widget. The editor
+ * lives inside `.dsh-tw-note-editor`; the widget reads/writes through
+ * getValue/setValue and inserts uploaded files at the caret via insertAtCaret.
+ * Mod-Enter (save) is routed through `onSave`.
  */
-function buildEditor(): {
-  el: HTMLDivElement
-  textarea: HTMLTextAreaElement
-  render: () => void
-  focus: () => void
-} {
-  const wrap = document.createElement('div')
-  wrap.className = 'dsh-tw-note-editor'
-
-  const hl = document.createElement('pre')
-  hl.className = 'dsh-tw-note-hl'
-  hl.setAttribute('aria-hidden', 'true')
-
-  const textarea = document.createElement('textarea')
-  textarea.className = 'dsh-tw-note-text'
-  textarea.placeholder = '写点东西… Markdown 高亮，可 📎/拖入文件\nCtrl+Enter 保存'
-
-  wrap.append(hl, textarea)
-
-  const render = (): void => {
-    hl.innerHTML = `${highlightMarkdown(textarea.value)}\n`
-    hl.scrollTop = textarea.scrollTop
-    hl.scrollLeft = textarea.scrollLeft
-  }
-
-  const syncScroll = (): void => {
-    hl.scrollTop = textarea.scrollTop
-    hl.scrollLeft = textarea.scrollLeft
-  }
-
-  textarea.addEventListener('input', render)
-  textarea.addEventListener('scroll', syncScroll)
-  render()
-
-  return { el: wrap, textarea, render, focus: () => textarea.focus() }
+function buildEditor(onSave: () => void): MarkdownEditor {
+  return buildMarkdownEditor({
+    placeholder: '写点东西… Markdown 高亮，可 📎/拖入文件\nCtrl+Enter 保存',
+    onSave,
+  })
 }
 
 /**
  * Upload one file to the wiki (raw body, name in ?name=), then insert a
  * Markdown image/link line at the caret of the given editor.
  */
-async function uploadInto(file: File, editor: { textarea: HTMLTextAreaElement; render: () => void }): Promise<void> {
+async function uploadInto(file: File, editor: MarkdownEditor): Promise<void> {
   if (file.size > MAX_UPLOAD_BYTES) {
     toast(`文件过大（≤ ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`)
     return
@@ -263,26 +234,15 @@ async function uploadInto(file: File, editor: { textarea: HTMLTextAreaElement; r
     const markdown = file.type.startsWith('image/')
       ? `![${name}](${payload.url})`
       : `[${name}](${payload.url})`
-    const ta = editor.textarea
-    const start = ta.selectionStart ?? ta.value.length
-    const end = ta.selectionEnd ?? start
-    const before = ta.value.slice(0, start)
-    const after = ta.value.slice(end)
-    const needsLead = start > 0 && !before.endsWith('\n')
-    const insert = `${needsLead ? '\n' : ''}${markdown}\n`
-    ta.value = `${before}${insert}${after}`
-    const caret = (before + insert).length
-    ta.setSelectionRange(caret, caret)
-    ta.focus()
-    editor.render()
+    editor.insertAtCaret(markdown)
     toast(`已上传「${name}」并插入链接`)
   } catch (err) {
     toast(`上传失败：${err instanceof Error ? err.message : String(err)}`)
   }
 }
 
-/** Build the whole widget DOM and wire it up (returns the appended root). */
-function buildWidget(): HTMLDivElement {
+/** Build the whole widget DOM and wire it up (returns root + editor view). */
+function buildWidget(): { root: HTMLDivElement; editorView: EditorView } {
   const root = document.createElement('div')
   root.className = 'dsh-tw-note'
 
@@ -310,8 +270,10 @@ function buildWidget(): HTMLDivElement {
   const tagEditor = buildTagEditor()
   fields.append(titleInput, tagEditor.el)
 
-  const editor = buildEditor()
-  const textarea = editor.textarea
+  // Mod-Enter save routes through doSave, which is assigned below (the editor
+  // keymap only runs after the widget is fully wired, so this is safe).
+  let doSave: () => Promise<void> | undefined
+  const editor = buildEditor(() => { void doSave?.() })
 
   // ── file upload (button + drag & drop onto the editor) ────────────────
   const uploadBtn = document.createElement('button')
@@ -407,8 +369,8 @@ function buildWidget(): HTMLDivElement {
   toggle.addEventListener('click', () => { void (opened ? close() : open()) })
   closeBtn.addEventListener('click', close)
 
-  const doSave = async (): Promise<void> => {
-    const text = textarea.value.trim()
+  doSave = async (): Promise<void> => {
+    const text = editor.getValue().trim()
     if (text.length === 0) {
       toast('内容为空，未保存')
       return
@@ -431,8 +393,7 @@ function buildWidget(): HTMLDivElement {
         toast(`保存失败：${payload?.error ?? `HTTP ${res.status}`}`)
         return
       }
-      textarea.value = ''
-      editor.render()
+      editor.setValue('')
       resetTitle()
       toast(`已保存「${payload.title ?? titleInput.value}」`)
       close()
@@ -444,18 +405,12 @@ function buildWidget(): HTMLDivElement {
     }
   }
 
-  save.addEventListener('click', () => { void doSave() })
-  textarea.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-      event.preventDefault()
-      void doSave()
-    }
-  })
+  save.addEventListener('click', () => { void doSave?.() })
 
   /** Save (if non-empty) and open the tiddler in TW's native editor. */
   const doEdit = async (): Promise<void> => {
     const title = titleInput.value.trim().length > 0 ? titleInput.value.trim() : timestampTitle()
-    const text = textarea.value
+    const text = editor.getValue()
     const tags = tagEditor.getTags()
     edit.disabled = true
     edit.textContent = '打开中…'
@@ -489,19 +444,22 @@ function buildWidget(): HTMLDivElement {
 
   edit.addEventListener('click', () => { void doEdit() })
 
-  return root
+  return { root, editorView: editor.view }
 }
 
 /**
  * Mount the floating quick-note widget. Fetches /status first: when
  * `ui.showQuickNote` is off the widget is never created (no DOM side effects).
- * Returns a disposer that removes it.
+ * Returns a disposer that removes it (and destroys the CodeMirror view).
  */
 export function mountNoteWidget(): () => void {
   let disposed = false
   let root: HTMLDivElement | undefined
+  let editorView: EditorView | undefined
   const disposer = (): void => {
     disposed = true
+    // CodeMirror holds a ResizeObserver + timers; destroy it, not just the DOM.
+    editorView?.destroy()
     root?.remove()
     const toastEl = document.querySelector<HTMLElement>('.dsh-tw-toast')
     toastEl?.remove()
@@ -509,7 +467,9 @@ export function mountNoteWidget(): () => void {
   void (async () => {
     const ui = await fetchUiOptions()
     if (disposed || !ui.showQuickNote) return
-    root = buildWidget()
+    const widget = buildWidget()
+    root = widget.root
+    editorView = widget.editorView
   })()
   return disposer
 }

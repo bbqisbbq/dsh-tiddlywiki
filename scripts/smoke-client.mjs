@@ -23,7 +23,9 @@ const stubEl = () => ({
 global.document = {
   createElement: stubEl, createElementNS: stubEl,
   body: { appendChild: noop, classList: { add: noop, remove: noop, contains: () => false } },
-  head: { appendChild: noop }, documentElement: { classList: { add: noop } },
+  head: { appendChild: noop },
+  // CodeMirror 6 feature-detects the CSSOM on module scope ("X" in style).
+  documentElement: { style: {}, classList: { add: noop } },
   querySelector: () => null, querySelectorAll: () => [],
   getElementById: () => null, addEventListener: noop, removeEventListener: noop,
 }

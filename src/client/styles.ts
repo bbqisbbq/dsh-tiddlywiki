@@ -137,68 +137,43 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, inherit);
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.dsh-tw-note-fields input:focus, .dsh-tw-note-text:focus {
+.dsh-tw-note-fields input:focus, .dsh-tw-note-editor .cm-editor.cm-focused {
   outline: none; border-color: var(--dsw-alias-brand-primary, #3e63dd);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 25%, transparent);
 }
-.dsh-tw-note-text::placeholder { color: var(--dsw-alias-label-dimmed, #999); }
-/* ── Markdown editor (highlighted-textarea overlay) ────────────────
-   The <pre> highlight layer and the transparent <textarea> share identical
-   metrics (border/padding/font/line-height/white-space) so lines align 1:1. */
+/* ── Markdown editor (CodeMirror 6, see markdown-editor.ts) ──────────
+   The .cm-editor box carries the border/radius/min-height the old textarea
+   had; font metrics live on the scroller so lines/selection stay aligned. */
 .dsh-tw-note-editor { position: relative; min-width: 0; }
-.dsh-tw-note-editor pre,
-.dsh-tw-note-editor textarea {
-  margin: 0; box-sizing: border-box; width: 100%;
+.dsh-tw-note-editor .cm-editor {
   border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18)); border-radius: 8px;
-  padding: 8px 9px; font: inherit; font-size: 13px; line-height: 1.5; min-height: 120px;
-  white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; tab-size: 4;
+  background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #222);
+  font-size: 13px; min-height: 120px;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.dsh-tw-note-editor .dsh-tw-note-hl {
-  position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 0;
-  background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #222);
-  pointer-events: none; overflow: hidden;
+.dsh-tw-note-editor .cm-scroller {
+  font-family: inherit; font-size: 13px; line-height: 1.5;
+  min-height: 120px; overflow: auto;
 }
-.dsh-tw-note-editor .dsh-tw-note-text {
-  position: relative; z-index: 1; resize: vertical;
-  background: transparent; color: transparent; caret-color: var(--dsw-alias-label-primary, #222);
-  overflow: auto;
+.dsh-tw-note-editor .cm-content {
+  caret-color: var(--dsw-alias-label-primary, #222);
+  padding: 8px 9px;
 }
-.dsh-tw-note-editor .dsh-tw-note-text:focus { outline: none; }
-.dsh-tw-note-drop .dsh-tw-note-text,
-.dsh-tw-note-drop .dsh-tw-note-hl {
+.dsh-tw-note-editor .cm-placeholder { color: var(--dsw-alias-label-dimmed, #999); }
+.dsh-tw-note-editor .cm-line { padding: 0; }
+/* Selection + active line follow the theme. */
+.dsh-tw-note-editor .cm-editor .cm-selectionBackground,
+.dsh-tw-note-editor .cm-editor.cm-focused .cm-selectionBackground {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 22%, transparent) !important;
+}
+.dsh-tw-note-editor .cm-editor .cm-activeLine {
+  background: color-mix(in srgb, var(--dsw-alias-label-secondary, #888) 8%, transparent);
+}
+/* Drag-over highlight (file upload) targets the CodeMirror box now. */
+.dsh-tw-note-drop .cm-editor {
   border-color: var(--dsw-alias-brand-primary, #3e63dd);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 25%, transparent);
 }
-/* ── markdown highlight tokens (colors only — never size/height, so the
-      overlay keeps line-for-line alignment with the invisible textarea) ── */
-.dsh-tw-note-hl .md-heading { font-weight: 700; color: var(--dsw-alias-brand-primary, #3e63dd); }
-.dsh-tw-note-hl .md-hash { font-weight: 700; color: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 55%, transparent); }
-.dsh-tw-note-hl .md-code,
-.dsh-tw-note-hl .md-code-block,
-.dsh-tw-note-hl .md-fence {
-  font-family: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
-}
-.dsh-tw-note-hl .md-code {
-  background: color-mix(in srgb, var(--dsw-alias-label-secondary, #888) 14%, transparent);
-  border-radius: 4px; padding: 0 3px;
-}
-.dsh-tw-note-hl .md-code-block,
-.dsh-tw-note-hl .md-fence {
-  display: block; background: color-mix(in srgb, var(--dsw-alias-label-secondary, #888) 8%, transparent);
-}
-.dsh-tw-note-hl .md-bold { font-weight: 700; }
-.dsh-tw-note-hl .md-italic { font-style: italic; }
-.dsh-tw-note-hl .md-strike { text-decoration: line-through; opacity: .75; }
-.dsh-tw-note-hl .md-link { color: var(--dsw-alias-brand-primary, #3e63dd); text-decoration: underline; }
-.dsh-tw-note-hl .md-url { color: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 70%, #999); text-decoration: underline dotted; }
-.dsh-tw-note-hl .md-image { color: var(--dsw-alias-state-success-primary, #3eaa5f); font-weight: 600; }
-.dsh-tw-note-hl .md-bullet { font-weight: 700; color: var(--dsw-alias-brand-primary, #3e63dd); }
-.dsh-tw-note-hl .md-number { font-weight: 700; color: var(--dsw-alias-state-warning-primary, #d9822b); }
-.dsh-tw-note-hl .md-quote { font-style: italic; color: var(--dsw-alias-label-secondary, #888); }
-.dsh-tw-note-hl .md-hr { color: var(--dsw-alias-label-dimmed, #999); text-decoration: line-through; }
-.dsh-tw-note-hl .md-task { color: var(--dsw-alias-label-secondary, #888); }
-.dsh-tw-note-hl .md-task-checked { color: var(--dsw-alias-state-success-primary, #3eaa5f); font-weight: 600; }
 .dsh-tw-note-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .dsh-tw-note-foot-left, .dsh-tw-note-foot-right { display: flex; align-items: center; gap: 8px; }
 .dsh-tw-note-hint { font-size: 11px; color: var(--dsw-alias-label-dimmed, #999); }
