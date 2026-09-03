@@ -6,3 +6,6 @@ node_modules/
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+
+# Local PR-submission working copy (awesome-dsh-plugin clone + entry yml)
+awesome-dsh-plugin-submission/

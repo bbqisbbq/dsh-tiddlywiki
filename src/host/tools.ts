@@ -366,7 +366,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           }
         }
       }
-      await wiki.put(cleanTiddler(existing))
+      await wiki.put({ ...cleanTiddler(existing), title: newTitle })
       await wiki.delete(oldTitle)
       if (refsTiddlers === 0) {
         warning = '未找到任何其他 tiddler 引用旧标题；如确实需要，可手动补充链接。'

@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -56,6 +56,32 @@ try {
   await api.delete('Hello')
   const gone = await api.get('Hello')
   assert(gone === undefined, 'delete removes tiddler')
+
+  // 2a. tiddlywiki_rename through the REAL tool registry (regression: the
+  // tool once re-put the tiddler under its OLD title and then deleted it, so
+  // the note vanished and the new title was never created).
+  const toolsByName = new Map()
+  registerTiddlywikiTools(
+    { tools: { register: (tool) => { toolsByName.set(tool.name, tool); return () => {} } } },
+    { wiki: () => api, git: new GitFace(), wikiPath: () => wikiDir, noteTag: () => 'inbox', autoCommit: () => {} },
+  )
+  const renameTool = toolsByName.get('tiddlywiki_rename')
+  assert(renameTool !== undefined, 'rename tool registered through the registry')
+  await api.put({ title: 'RenameMe', text: 'rename payload', tags: ['inbox'] })
+  await api.put({ title: 'RefHolder', text: 'see [[RenameMe]] and {{RenameMe}} here' })
+  const renamed = await renameTool.execute({ oldTitle: 'RenameMe', newTitle: 'RenamedTitle' }, undefined)
+  assert(renamed.ok === true && renamed.to === 'RenamedTitle', `rename reports success (to=${renamed.to})`)
+  const newTid = await api.get('RenamedTitle')
+  assert(newTid !== undefined && (newTid.text ?? '').includes('rename payload'), 'new title holds the content after rename')
+  const oldTid = await api.get('RenameMe')
+  assert(oldTid === undefined, 'old title removed after rename')
+  const refTid = await api.get('RefHolder')
+  assert((refTid.text ?? '').includes('[[RenamedTitle]]') && (refTid.text ?? '').includes('{{RenamedTitle}}'), 'references migrated to the new title')
+  assert(renamed.refsTiddlers >= 1 && renamed.refsUpdated >= 2, `refs migrated (${renamed.refsTiddlers} tiddlers / ${renamed.refsUpdated} hits)`)
+  const sameTitle = await renameTool.execute({ oldTitle: 'RenamedTitle', newTitle: 'RenamedTitle' }, undefined)
+  assert(sameTitle.ok === true && (await api.get('RenamedTitle')) !== undefined, 'same-title rename is a safe no-op')
+  await api.delete('RenamedTitle')
+  await api.delete('RefHolder')
 
   // 3. Git face over the wiki folder
   const git = new GitFace()
