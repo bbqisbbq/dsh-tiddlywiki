@@ -40,7 +40,7 @@ export const inject = ['tools', 'systemPrompt']
 /** Re-exports for the headless selftest and future consumers. */
 export { AutoCommitter, GitFace, PATH_PREFIX, TiddlyWebClient, WikiServer, dshHomePath, defineTool }
 export { ConfigStore, deepMerge } from './host/config.ts'
-export { openInTwEditor } from './host/routes.ts'
+export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
 export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
 export type { PluginConfigShape } from './host/config.ts'
@@ -55,7 +55,7 @@ export interface TiddlywikiConfig {
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
-  ui?: { showQuickNote?: boolean; showPanelStatus?: boolean }
+  ui?: { showQuickNote?: boolean; showPanelStatus?: boolean; showSyncButton?: boolean }
   auth?: { username?: string; password?: string }
 }
 
@@ -76,7 +76,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
-  ui: { showQuickNote: boolean; showPanelStatus: boolean }
+  ui: { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean }
   auth: { username?: string; password?: string }
 }
 
@@ -86,7 +86,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
-  ui: { showQuickNote: true, showPanelStatus: true },
+  ui: { showQuickNote: true, showPanelStatus: true, showSyncButton: true },
   auth: { username: '', password: '' },
 }
 
@@ -181,9 +181,10 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
   }
-  const effectiveUi = (): { showQuickNote: boolean; showPanelStatus: boolean } => ({
+  const effectiveUi = (): { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean } => ({
     showQuickNote: eff().ui?.showQuickNote !== false,
     showPanelStatus: eff().ui?.showPanelStatus !== false,
+    showSyncButton: eff().ui?.showSyncButton !== false,
   })
 
   const disposers: Array<() => void> = []

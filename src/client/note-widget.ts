@@ -14,15 +14,27 @@
  * (GET /dsh-tiddlywiki/tags). Enter/`,` commits the typed value; Backspace on
  * an empty field removes the last chip; the dropdown filters on typing.
  *
+ * Markdown editing: a "highlighted textarea" overlay (a `<pre>` rendered
+ * behind a transparent-text `<textarea>`, see markdown.ts) so Markdown is
+ * syntax-highlighted as you type — no dependencies, perfect alignment.
+ *
+ * File upload: the body accepts files via the 📎 button or drag-and-drop;
+ * each file is POSTed raw to /dsh-tiddlywiki/upload (saved under the wiki's
+ * `files/` folder, git-tracked and served at `/files/<name>`) and a Markdown
+ * image/link line is inserted at the caret.
+ *
  * @module dsh-tiddlywiki/client/note-widget
  */
 import { toast } from './toast.ts'
 import { openEditorPopup } from './editor-popup.ts'
+import { highlightMarkdown } from './markdown.ts'
 
 const NOTE_ENDPOINT = '/dsh-tiddlywiki/note'
 const EDIT_ENDPOINT = '/dsh-tiddlywiki/edit'
 const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
 const TAGS_ENDPOINT = '/dsh-tiddlywiki/tags'
+const UPLOAD_ENDPOINT = '/dsh-tiddlywiki/upload'
+const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n)
@@ -182,6 +194,93 @@ function buildTagEditor(): {
   }
 }
 
+/**
+ * Markdown editor: a `<pre>` overlay (highlighted by markdown.ts) rendered
+ * behind a transparent-text `<textarea>` with identical metrics. Scroll is
+ * mirrored; on every input the overlay is re-rendered. The text layer stays
+ * exactly aligned with the highlight layer because the highlighter never
+ * changes the user's characters.
+ */
+function buildEditor(): {
+  el: HTMLDivElement
+  textarea: HTMLTextAreaElement
+  render: () => void
+  focus: () => void
+} {
+  const wrap = document.createElement('div')
+  wrap.className = 'dsh-tw-note-editor'
+
+  const hl = document.createElement('pre')
+  hl.className = 'dsh-tw-note-hl'
+  hl.setAttribute('aria-hidden', 'true')
+
+  const textarea = document.createElement('textarea')
+  textarea.className = 'dsh-tw-note-text'
+  textarea.placeholder = '写点东西… Markdown 高亮，可 📎/拖入文件\nCtrl+Enter 保存'
+
+  wrap.append(hl, textarea)
+
+  const render = (): void => {
+    hl.innerHTML = `${highlightMarkdown(textarea.value)}\n`
+    hl.scrollTop = textarea.scrollTop
+    hl.scrollLeft = textarea.scrollLeft
+  }
+
+  const syncScroll = (): void => {
+    hl.scrollTop = textarea.scrollTop
+    hl.scrollLeft = textarea.scrollLeft
+  }
+
+  textarea.addEventListener('input', render)
+  textarea.addEventListener('scroll', syncScroll)
+  render()
+
+  return { el: wrap, textarea, render, focus: () => textarea.focus() }
+}
+
+/**
+ * Upload one file to the wiki (raw body, name in ?name=), then insert a
+ * Markdown image/link line at the caret of the given editor.
+ */
+async function uploadInto(file: File, editor: { textarea: HTMLTextAreaElement; render: () => void }): Promise<void> {
+  if (file.size > MAX_UPLOAD_BYTES) {
+    toast(`文件过大（≤ ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`)
+    return
+  }
+  try {
+    const res = await fetch(`${UPLOAD_ENDPOINT}?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'content-type': file.type || 'application/octet-stream' },
+      body: file,
+      signal: AbortSignal.timeout(120_000),
+    })
+    const payload = (await res.json().catch(() => null)) as { ok?: boolean; name?: string; url?: string; error?: string } | null
+    if (!res.ok || payload?.ok !== true) {
+      toast(`上传失败：${payload?.error ?? `HTTP ${res.status}`}`)
+      return
+    }
+    const name = payload.name ?? file.name
+    const markdown = file.type.startsWith('image/')
+      ? `![${name}](${payload.url})`
+      : `[${name}](${payload.url})`
+    const ta = editor.textarea
+    const start = ta.selectionStart ?? ta.value.length
+    const end = ta.selectionEnd ?? start
+    const before = ta.value.slice(0, start)
+    const after = ta.value.slice(end)
+    const needsLead = start > 0 && !before.endsWith('\n')
+    const insert = `${needsLead ? '\n' : ''}${markdown}\n`
+    ta.value = `${before}${insert}${after}`
+    const caret = (before + insert).length
+    ta.setSelectionRange(caret, caret)
+    ta.focus()
+    editor.render()
+    toast(`已上传「${name}」并插入链接`)
+  } catch (err) {
+    toast(`上传失败：${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 /** Build the whole widget DOM and wire it up (returns the appended root). */
 function buildWidget(): HTMLDivElement {
   const root = document.createElement('div')
@@ -211,15 +310,56 @@ function buildWidget(): HTMLDivElement {
   const tagEditor = buildTagEditor()
   fields.append(titleInput, tagEditor.el)
 
-  const textarea = document.createElement('textarea')
-  textarea.className = 'dsh-tw-note-text'
-  textarea.placeholder = '写点东西…（Ctrl+Enter 保存）'
+  const editor = buildEditor()
+  const textarea = editor.textarea
+
+  // ── file upload (button + drag & drop onto the editor) ────────────────
+  const uploadBtn = document.createElement('button')
+  uploadBtn.type = 'button'
+  uploadBtn.className = 'dsh-tw-note-upload'
+  uploadBtn.title = '上传文件到 wiki 并插入 Markdown 链接（也可直接拖入编辑器）'
+  uploadBtn.textContent = '📎 上传'
+  const fileInput = document.createElement('input')
+  fileInput.type = 'file'
+  fileInput.multiple = true
+  fileInput.hidden = true
+  uploadBtn.addEventListener('click', () => { fileInput.click() })
+  fileInput.addEventListener('change', () => {
+    for (const file of Array.from(fileInput.files ?? [])) void uploadInto(file, editor)
+    fileInput.value = ''
+  })
+
+  let dragDepth = 0
+  editor.el.addEventListener('dragenter', (event) => {
+    event.preventDefault()
+    dragDepth++
+    editor.el.classList.add('dsh-tw-note-drop')
+  })
+  editor.el.addEventListener('dragover', (event) => { event.preventDefault() })
+  editor.el.addEventListener('dragleave', (event) => {
+    event.preventDefault()
+    dragDepth = Math.max(0, dragDepth - 1)
+    if (dragDepth === 0) editor.el.classList.remove('dsh-tw-note-drop')
+  })
+  editor.el.addEventListener('drop', (event) => {
+    event.preventDefault()
+    dragDepth = 0
+    editor.el.classList.remove('dsh-tw-note-drop')
+    const files = event.dataTransfer?.files
+    if (files === undefined || files.length === 0) return
+    for (const file of Array.from(files)) void uploadInto(file, editor)
+  })
 
   const foot = document.createElement('div')
   foot.className = 'dsh-tw-note-foot'
+  const footLeft = document.createElement('div')
+  footLeft.className = 'dsh-tw-note-foot-left'
   const hint = document.createElement('span')
   hint.className = 'dsh-tw-note-hint'
   hint.textContent = 'Ctrl+Enter'
+  footLeft.append(uploadBtn, hint)
+  const footRight = document.createElement('div')
+  footRight.className = 'dsh-tw-note-foot-right'
   const edit = document.createElement('button')
   edit.type = 'button'
   edit.className = 'dsh-tw-note-edit'
@@ -229,9 +369,10 @@ function buildWidget(): HTMLDivElement {
   save.type = 'button'
   save.className = 'dsh-tw-note-save'
   save.textContent = '保存'
-  foot.append(hint, edit, save)
+  footRight.append(edit, save)
+  foot.append(footLeft, footRight)
 
-  card.append(head, fields, textarea, foot)
+  card.append(head, fields, editor.el, foot)
 
   const toggle = document.createElement('button')
   toggle.type = 'button'
@@ -252,7 +393,7 @@ function buildWidget(): HTMLDivElement {
     card.hidden = false
     opened = true
     resetTitle()
-    textarea.focus()
+    editor.focus()
     // Fetch the effective default tag once, then pre-fill if nothing is chosen.
     defaultTag = (await fetchUiOptions()).defaultTag
     tagEditor.setDefault(defaultTag)
@@ -291,6 +432,7 @@ function buildWidget(): HTMLDivElement {
         return
       }
       textarea.value = ''
+      editor.render()
       resetTitle()
       toast(`已保存「${payload.title ?? titleInput.value}」`)
       close()

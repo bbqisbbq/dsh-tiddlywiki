@@ -5,10 +5,11 @@
  *
  * Requires a prior `npm run build` (imports the public host exports).
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { EventEmitter } from 'node:events'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -106,6 +107,14 @@ try {
   assert(!conflict.ok, 'pull with diverging same file reports failure')
   assert(conflict.conflictFiles?.includes('tiddlers/Conflict.tid'), `conflict files listed (${conflict.conflictFiles?.join(', ')})`)
 
+  // 5aa. files/ folder is served by TW without restart (validates the quick-note
+  // upload approach: writing under <wiki>/files/ is enough for /files/<name>).
+  const filesDir = join(wikiDir, 'files')
+  await mkdir(filesDir, { recursive: true })
+  await writeFile(join(filesDir, 'hello-upload.txt'), 'served via files/')
+  const filesRes = await fetch(`${server.url}/files/hello-upload.txt`)
+  assert(filesRes.ok && (await filesRes.text()) === 'served via files/', 'TW serves files/ without restart')
+
   // 5b. UI language: enable bundled zh-Hans → restart → pin $:/language
   const langTwRoot = resolveTwRoot()
   const langCatalog = await bundledCatalog(langTwRoot)
@@ -150,18 +159,113 @@ try {
   await editApi.delete('EditTarget')
   await editApi.delete(editResult.draftTitle)
 
-  // 5b. Doc-note seed: ONE-SHOT — a fresh wiki gets the guide, then the note
-  // is user-owned: editing never overwrites, deleting survives restarts.
+  // 5d. registerRoutes: exercise the new /upload and /sync handlers through
+  // the webserver face (mock), so the quick-note upload + one-click sync
+  // routes are covered headlessly end to end.
+  const routeHandlers = new Map()
+  const mockCtx = {
+    webServer: {
+      register: (route) => { routeHandlers.set(route.path, route.handler); return () => {} },
+    },
+  }
+  const makeReq = (url, body) => {
+    const req = new EventEmitter()
+    req.url = url
+    req.headers = {}
+    req.destroy = () => {}
+    queueMicrotask(() => { if (body !== undefined) req.emit('data', body); req.emit('end') })
+    return req
+  }
+  const makeRes = () => {
+    const res = { _status: 200, _payload: null }
+    res.writeHead = (code) => { res._status = code }
+    res.end = (body) => { res._payload = body }
+    return res
+  }
+  const disposeRoutes = registerRoutes(mockCtx, {
+    server,
+    getClient: () => new TiddlyWebClient(server.url),
+    git,
+    autoCommit: () => {},
+    noteDefaults: () => ({ tag: 'inbox' }),
+    uiDefaults: () => ({ showQuickNote: true, showPanelStatus: true, showSyncButton: true }),
+    getWikiPath: () => wikiDir,
+  })
+  assert(routeHandlers.has('/dsh-tiddlywiki/upload') && routeHandlers.has('/dsh-tiddlywiki/sync'), 'upload + sync routes registered')
+
+  // Routes are registered fire-and-forget (`void handleX(req,res)`), so poll
+  // the mock response until the handler has written it.
+  const callRoute = async (handler, req, res, ms = 8000) => {
+    handler(req, res)
+    const deadline = Date.now() + ms
+    while (res._payload === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+    if (res._payload === null) throw new Error('route did not respond in time')
+    return JSON.parse(res._payload)
+  }
+
+  // /upload: raw bytes land under <wiki>/files/ with a /files/<name> URL;
+  // a name collision gets a -1 suffix instead of overwriting.
+  const up = await callRoute(
+    routeHandlers.get('/dsh-tiddlywiki/upload'),
+    makeReq('/dsh-tiddlywiki/upload?name=hello%20notes.txt', Buffer.from('file content here')),
+    makeRes(),
+  )
+  assert(up.ok === true && up.name === 'hello notes.txt' && up.url === '/files/hello%20notes.txt', `upload returns name+url (${JSON.stringify(up)})`)
+  assert(await readFile(join(wikiDir, 'files', 'hello notes.txt'), 'utf8') === 'file content here', 'uploaded bytes saved under wiki files/')
+  const up2 = await callRoute(
+    routeHandlers.get('/dsh-tiddlywiki/upload'),
+    makeReq('/dsh-tiddlywiki/upload?name=hello%20notes.txt', Buffer.from('second')),
+    makeRes(),
+  )
+  assert(up2.ok === true && up2.name === 'hello notes-1.txt', `upload collision gets -1 suffix (${JSON.stringify(up2)})`)
+  const upBad = await callRoute(
+    routeHandlers.get('/dsh-tiddlywiki/upload'),
+    makeReq('/dsh-tiddlywiki/upload?name=..%2F..%2Fevil.txt', Buffer.from('x')),
+    makeRes(),
+  )
+  assert(upBad.ok === true && upBad.name === 'evil.txt', `path-traversal name sanitized to a bare name (${JSON.stringify(upBad.name)})`)
+  const upDotdot = await callRoute(
+    routeHandlers.get('/dsh-tiddlywiki/upload'),
+    makeReq('/dsh-tiddlywiki/upload?name=..', Buffer.from('x')),
+    makeRes(),
+  )
+  assert(upDotdot.ok === false, 'bare ".." filename rejected')
+
+  // /sync: pull a change made on the clone side, then commit + push. The wiki
+  // is still mid-divergence from the step-5 conflict test, so first align it
+  // onto origin (a /sync on a genuinely conflicted repo MUST fail — the
+  // conflict policy aborts rather than auto-merging — so run this on a clean
+  // baseline instead). Also drop untracked artifacts (files/ uploads from the
+  // tests above, the lang test's $__language.* tiddlers) so the baseline is
+  // truly clean.
+  await git.exec(['fetch', 'origin'], { cwd: wikiDir, timeout: 15_000 })
+  await git.exec(['reset', '--hard', 'origin/main'], { cwd: wikiDir, timeout: 15_000 })
+  await git.exec(['clean', '-fd'], { cwd: wikiDir, timeout: 15_000 })
+  const syncBefore = await git.status(wikiDir)
+  assert(!syncBefore.dirty && !syncBefore.dirtyFiles.includes('tiddlers/Conflict.tid'), `wiki aligned to origin/main (dirty=${syncBefore.dirty} files=${JSON.stringify(syncBefore.dirtyFiles)})`)
+  await writeFile(join(clonePath, 'tiddlers', 'SyncTest.tid'), 'from clone\n')
+  await gclone.commit(clonePath, 'sync-test remote change')
+  assert((await gclone.push(clonePath)).ok, 'clone pushes change for sync test')
+  const sync = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync'), makeRes())
+  assert(sync.ok === true && sync.pull === 'ok' && sync.status?.branch === 'main', `sync pulls+commits+pushes (${JSON.stringify(sync.message ?? sync.error)})`)
+  const syncText = (await readFile(join(wikiDir, 'tiddlers', 'SyncTest.tid'), 'utf8')).replace(/\r/g, '')
+  assert(syncText === 'from clone\n', 'sync pulled the remote change into the wiki')
+  disposeRoutes()
+
+  // 5b. Doc-note seed: ONE-SHOT (marker-gated), never overwrites edits.
+  const SEED_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-doc-note'
   const seedApi = new TiddlyWebClient(view.url)
   assert(await seedDocNote(seedApi) === true, 'doc note seeded on first run')
   const seedNote = await seedApi.get(DOC_NOTE_TITLE)
   assert(seedNote !== undefined && seedNote.text.includes('TiddlyWiki 5'), 'doc note has guide content')
   assert(Array.isArray(seedNote.tags) && seedNote.tags.includes(DOC_NOTE_TAG), 'doc note carries its tag')
-  assert(await seedDocNote(seedApi) === false, 'doc note NOT re-seeded while present (idempotent)')
+  assert(await seedDocNote(seedApi) === false, 'doc note NOT re-seeded while marker present')
   await seedApi.put({ title: DOC_NOTE_TITLE, text: 'user edit', tags: ['docs'] })
   assert(await seedDocNote(seedApi) === false, 'edited doc note is never overwritten by the seed')
   await seedApi.delete(DOC_NOTE_TITLE)
-  assert(await seedDocNote(seedApi) === false, 'deleted doc note does NOT re-seed (one-shot marker set)')
+  assert(await seedDocNote(seedApi) === false, 'deleted doc note NOT re-created (one-shot marker stays)')
+  await seedApi.delete(SEED_MARKER_TITLE)
+  assert(await seedDocNote(seedApi) === true, 'doc note re-seeds after marker removed (fresh wiki)')
   await seedApi.delete(DOC_NOTE_TITLE)
 
   // 6. Teardown: no orphan process

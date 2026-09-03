@@ -25,6 +25,8 @@ export interface PluginConfigShape {
     showQuickNote?: boolean
     /** 是否显示 TW 面板右下角的「状态/重载」悬浮按钮（默认 true）。 */
     showPanelStatus?: boolean
+    /** 是否在界面右下角显示「同步」悬浮按钮（默认 true）。 */
+    showSyncButton?: boolean
   }
   uiLanguage?: string
   [key: string]: unknown

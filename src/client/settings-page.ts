@@ -23,6 +23,7 @@ const STATE_ENDPOINT = '/dsh-tiddlywiki/admin/state'
 const INFO_ENDPOINT = '/dsh-tiddlywiki/admin/info'
 const CONFIG_ENDPOINT = '/dsh-tiddlywiki/admin/config'
 const RESTART_ENDPOINT = '/dsh-tiddlywiki/admin/restart'
+const SYNC_ENDPOINT = '/dsh-tiddlywiki/sync'
 
 interface CatalogEntry {
   name: string
@@ -119,6 +120,27 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
     state.git?.dirty === true ? '有未提交改动' : '',
   ].filter(Boolean).join(' · ')
   const label = make('span', 'dsh-tw-settings-muted', info)
+  const sync = make('button', 'dsh-tw-settings-btn', '同步')
+  sync.type = 'button'
+  sync.title = 'git 同步（pull → commit → push）'
+  sync.addEventListener('click', () => {
+    sync.disabled = true
+    sync.textContent = '同步中…'
+    void (async () => {
+      try {
+        const res = await fetch(SYNC_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean; message?: string; error?: string } | null
+        if (!res.ok || payload?.ok !== true) toast(`同步失败：${payload?.error ?? payload?.message ?? `HTTP ${res.status}`}`)
+        else toast(`同步完成：${payload.message ?? 'OK'}`)
+      } catch (err) {
+        toast(`同步失败：${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        sync.disabled = false
+        sync.textContent = '同步'
+        void refresh()
+      }
+    })()
+  })
   const restart = make('button', 'dsh-tw-settings-btn', '重启 TW')
   restart.type = 'button'
   restart.addEventListener('click', () => {
@@ -137,7 +159,7 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
       }
     })()
   })
-  row.append(chip, label, restart)
+  row.append(chip, label, sync, restart)
 }
 
 /** Config section: fields bound to effective config, changed-only save. */
@@ -183,6 +205,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   textField('git.branch', 'git 分支', typeof git.branch === 'string' ? git.branch : 'main')
   checkField('ui.showQuickNote', '显示「快速笔记」悬浮按钮', ui.showQuickNote !== false)
   checkField('ui.showPanelStatus', '显示 TW 面板右下角「状态/重载」悬浮按钮', ui.showPanelStatus !== false)
+  checkField('ui.showSyncButton', '显示右下角「同步」悬浮按钮', ui.showSyncButton !== false)
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
 
   const save = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '保存配置')

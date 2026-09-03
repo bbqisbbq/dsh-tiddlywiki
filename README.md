@@ -24,7 +24,8 @@ TiddlyWiki 的特性正好合适：单文件、纯文本、wiki 语法、自带 
 |---|---|
 | Agent 工具 | `tiddlywiki_search` / `get` / `put` / `delete` / `git_sync` |
 | 人编辑 | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 编辑器（iframe 直连 TW 服务） |
-| 快速笔记 | 聊天区右下角常驻悬浮控件（可折叠，可多选/自动补全 tag，Ctrl+Enter 保存；设置页可整体隐藏） |
+| 快速笔记 | 聊天区右下角常驻悬浮控件（可折叠，**Markdown 语法高亮**、**文件上传**、可多选/自动补全 tag，Ctrl+Enter 保存；设置页可整体隐藏） |
+| 一键同步 | 右下角「同步」悬浮按钮 + 设置页「同步」按钮：点一下 pull → commit → push；按钮状态点实时反映 git 状态（待提交/可更新/已同步），可配置隐藏 |
 | 零摩擦生命周期 | 随 dsh 自动启动/关闭；TW 子进程崩溃自动重启（退避）；端口/目录/首次 git init 全自动 |
 | 同步 | 单线程交替模型：开工 pull，收工 commit+push，自动 commit（60s 防抖，可关） |
 
@@ -88,6 +89,7 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
     ui:
       showQuickNote: true           # 是否显示右下角「快速笔记」按钮
       showPanelStatus: true         # 是否显示 TW 面板右下角「状态/重载」悬浮按钮
+      showSyncButton: true          # 是否显示右下角「同步」悬浮按钮
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非 loopback 时才需要
       password: ""
@@ -116,8 +118,9 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 ### 人（GUI）
 
 - 侧边栏「TiddlyWiki」按钮开关中央编辑器面板。
-- 右下角「快速笔记」悬浮控件：写草稿/随手记，Ctrl+Enter 保存为独立 tiddler；
+- 右下角「快速笔记」悬浮控件：写草稿/随手记，**Markdown 语法高亮**（打字即高亮标题/代码/粗斜体/链接等），支持**文件上传**（点「📎 上传」或直接把文件拖进编辑器——文件存到 wiki 的 `files/` 文件夹并随 git 同步，图片插入 `![名](/files/名)`、其它文件插入 `[名](/files/名)`，在 TW 里可直接打开），Ctrl+Enter 保存为独立 tiddler；
   或点「**✏️ 在 TW 中编辑**」——保存后**弹出独立小窗**（可拖动/缩放）加载 TiddlyWiki **原生编辑器**编辑该条。
+- 右下角「**同步**」悬浮按钮：点一下对 wiki 仓库做 **pull → commit → push**，按钮上的状态点实时反映 git 状态（🟢 已同步 / 🟡 有未提交改动 / 🔴 落后于远端 / ⚪ 离线），悬停可看分支/领先/落后/上次同步时间；每 30s 自动刷新。
 - 面板服务异常时显示错误 +「重试」按钮（POST `/dsh-tiddlywiki/restart`）。
 
 ### 设置页（插件/主题管理 + 配置）
@@ -126,8 +129,8 @@ DSH **设置 → TiddlyWiki 知识库** 是插件的配置面板（`settings.sec
 
 | 区块 | 内容 |
 |---|---|
-| 状态/重启 | TW 运行状态 + git 概览 + 「重启 TW」按钮 |
-| 常规配置 | 快速笔记默认 tag、git 自动 commit/防抖/远端/分支——改了什么保存什么 |
+| 状态/重启 | TW 运行状态 + git 概览 + 「**同步**」按钮（pull→commit→push）+ 「重启 TW」按钮 |
+| 常规配置 | 快速笔记默认 tag、git 自动 commit/防抖/远端/分支、**ui 开关**（快速笔记/面板状态/同步按钮）——改了什么保存什么 |
 | 插件管理 | 自带官方插件勾选（可搜索）→ 应用并自动重启 TW |
 | 主题管理 | 自带主题**多选加载 + 单选活动** → 应用并自动重启 TW |
 | 语言管理 | 自带官方语言包勾选（含 zh-Hans/zh-CN 简体）→ 应用并自动重启 TW |

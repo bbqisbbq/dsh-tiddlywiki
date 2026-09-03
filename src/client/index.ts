@@ -16,6 +16,7 @@ import { PanelState } from './state.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountPanel } from './panel.ts'
 import { mountNoteWidget } from './note-widget.ts'
+import { mountSyncButton } from './sync-button.ts'
 import { disposeEditorPopup } from './editor-popup.ts'
 import { SettingsSection } from './settings-page.ts'
 
@@ -50,6 +51,7 @@ export function apply(ctx: ClientContextFace): void {
       disposers.push(mountSidebarEntry(state))
       disposers.push(mountPanel(state))
       disposers.push(mountNoteWidget())
+      disposers.push(mountSyncButton())
       disposers.push(disposeEditorPopup)
     } catch (error) {
       // DOM failures degrade the plugin, never the GUI.

@@ -15,6 +15,8 @@
  * @module dsh-tiddlywiki/host/routes
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { mkdir, writeFile, access } from 'node:fs/promises'
+import { basename, extname, join } from 'node:path'
 import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
@@ -28,9 +30,19 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024
 /** Max passthrough body (tiddler content can be large). */
 const MAX_PROXY_BODY_BYTES = 16 * 1024 * 1024
 
+/** Max uploaded file body. */
+const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
 /** Structural webserver face (a subset of dsh-host-webserver). */
 export interface WebServerFace {
   register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }): () => void
+}
+
+/** Effective UI visibility flags returned by /status (mirror index.ts). */
+export interface UiDefaultsPublic {
+  showQuickNote: boolean
+  showPanelStatus: boolean
+  showSyncButton: boolean
 }
 
 export interface RouteDeps {
@@ -39,7 +51,7 @@ export interface RouteDeps {
   git: GitFace
   autoCommit: () => void
   noteDefaults: () => { tag: string }
-  uiDefaults: () => { showQuickNote: boolean; showPanelStatus: boolean }
+  uiDefaults: () => UiDefaultsPublic
   getWikiPath: () => string
 }
 
@@ -59,6 +71,41 @@ function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<string>
     req.on('end', () => resolveP(Buffer.concat(chunks).toString('utf8')))
     req.on('error', rejectP)
   })
+}
+
+/** Read a raw (binary-safe) request body up to `limit` bytes. */
+function readBodyBuffer(req: IncomingMessage, limit = MAX_UPLOAD_BYTES): Promise<Buffer> {
+  return new Promise((resolveP, rejectP) => {
+    let size = 0
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length
+      if (size > limit) {
+        rejectP(new Error('file too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => resolveP(Buffer.concat(chunks)))
+    req.on('error', rejectP)
+  })
+}
+
+/**
+ * Sanitize an uploaded filename into a safe bare name (no path separators,
+ * no `..`, no control characters). Returns '' when nothing usable remains.
+ */
+function sanitizeUploadName(input: unknown): string {
+  if (typeof input !== 'string') return ''
+  const name = basename(input.trim().replace(/[\\/]+/g, '/'))
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[<>:"|?*]/g, '_')
+    .replace(/^\.+/, '')
+    .trim()
+  if (name.length === 0 || name === '.' || name === '..') return ''
+  if (name.length > 160) return name.slice(0, 160)
+  return name
 }
 
 function json(res: ServerResponse, payload: unknown, status = 200): void {
@@ -216,6 +263,91 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
   }
 
+  /** One-click git sync for the floating button / settings page: pull →
+   *  commit → push, then return the fresh status. Mirrors the agent tool's
+   *  `action=sync` (design doc §7 conflict policy — rebase conflict aborts). */
+  const handleSync = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const dir = deps.getWikiPath()
+    const status = async (): Promise<GitStatusViewPublic | null> => {
+      try { return await deps.git.status(dir) } catch { return null }
+    }
+    try {
+      const pulled = await deps.git.pull(dir)
+      if (!pulled.ok) {
+        json(res, {
+          ok: false,
+          action: 'sync',
+          message: pulled.message,
+          ...(pulled.conflictFiles !== undefined ? { conflictFiles: pulled.conflictFiles } : {}),
+          status: await status(),
+        }, 409)
+        return
+      }
+      const committed = await deps.git.commit(dir, `sync ${new Date().toISOString()}`)
+      const pushed = await deps.git.push(dir)
+      const fresh = await status()
+      json(res, {
+        ok: pushed.ok,
+        action: 'sync',
+        message: pushed.ok ? '同步完成' : pushed.message,
+        pull: 'ok',
+        commit: committed.message,
+        push: pushed.message,
+        status: fresh,
+        lastSync: new Date().toISOString(),
+      }, pushed.ok ? 200 : 502)
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /**
+   * Save an uploaded file into the wiki's `files/` folder (git-tracked; TW's
+   * core server serves it at `/files/<name>`, get-file.js — no restart
+   * needed). Body is the raw file; the name arrives in `X-Filename`. A
+   * collision appends `-1`, `-2`, … so nothing is ever overwritten.
+   */
+  const handleUpload = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      const buf = await readBodyBuffer(req)
+      // Name comes from ?name= (URL-encoded) or the X-Filename header.
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const nameParam = url.searchParams.get('name')
+      let name = sanitizeUploadName(nameParam ?? '')
+      if (name.length === 0 && typeof req.headers['x-filename'] === 'string') {
+        let decoded = ''
+        try { decoded = decodeURIComponent(req.headers['x-filename'] as string) } catch { decoded = req.headers['x-filename'] as string }
+        name = sanitizeUploadName(decoded)
+      }
+      if (name.length === 0) {
+        json(res, { ok: false, error: 'missing or invalid filename' }, 400)
+        return
+      }
+      const filesDir = join(deps.getWikiPath(), 'files')
+      await mkdir(filesDir, { recursive: true })
+      const ext = extname(name)
+      const stem = ext.length > 0 ? name.slice(0, -ext.length) : name
+      // Collision avoidance: files/some.txt, files/some-1.txt, …
+      let candidate = name
+      for (let i = 1; ; i++) {
+        try { await access(join(filesDir, candidate)) } catch { break }
+        candidate = `${stem}-${i}${ext}`
+      }
+      await writeFile(join(filesDir, candidate), buf)
+      deps.autoCommit()
+      json(res, {
+        ok: true,
+        name: candidate,
+        path: `files/${candidate}`,
+        url: `/files/${encodeURIComponent(candidate)}`,
+        size: buf.length,
+        type: req.headers['content-type'] ?? 'application/octet-stream',
+      })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, err instanceof Error && /too large/.test(err.message) ? 413 : 500)
+    }
+  }
+
   /** Passthrough /dsh-tiddlywiki/api/<rest> → TW root /<rest>. */
   const handleApiProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const client = deps.getClient()
@@ -251,6 +383,8 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/note`, handler: (req, res) => { void handleNote(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/edit`, handler: (req, res) => { void handleEdit(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/tags`, handler: (req, res) => { void handleTags(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/sync`, handler: (req, res) => { void handleSync(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
     ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: (req, res) => { void handleApiProxy(req, res) } }),
   ]
