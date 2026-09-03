@@ -210,9 +210,9 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   numField('git.debounceMs', '自动 commit 防抖(ms)', typeof git.debounceMs === 'number' ? git.debounceMs : 60_000)
   textField('git.remote', 'git 远端（空=仅本地）', typeof git.remote === 'string' ? git.remote : '')
   textField('git.branch', 'git 分支', typeof git.branch === 'string' ? git.branch : 'main')
-  checkField('ui.showQuickNote', '显示「快速笔记」悬浮按钮', ui.showQuickNote !== false)
-  checkField('ui.showPanelStatus', '显示 TW 面板右下角「状态/重载」悬浮按钮', ui.showPanelStatus !== false)
-  checkField('ui.showSyncButton', '显示右下角「同步」悬浮按钮', ui.showSyncButton !== false)
+  checkField('ui.showQuickNote', '显示「知识库」按钮里的「快速笔记」入口', ui.showQuickNote !== false)
+  checkField('ui.showPanelStatus', '显示「知识库」按钮里的 TW 面板/重载入口与状态行', ui.showPanelStatus !== false)
+  checkField('ui.showSyncButton', '显示「知识库」按钮里的「同步」入口与 git 状态点', ui.showSyncButton !== false)
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
 
   const save = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '保存配置')
