@@ -87,8 +87,9 @@ export interface RouteDeps {
   noteDefaults: () => { tag: string }
   uiDefaults: () => UiDefaultsPublic
   getWikiPath: () => string
-  /** Optional DSH sessionController service (agent-send routes only). */
-  sessionController?: SessionControllerFace
+  /** Optional DSH sessionController service (agent-send routes only); resolved
+   *  lazily per request because it may register after webServer appears. */
+  getSessionController: () => SessionControllerFace | undefined
   /** Whether the one-click send-to-agent feature is enabled (config switch). */
   sendToAgentEnabled: () => boolean
   /** Optional shared token that must match `x-send-to-agent-token` when set. */
@@ -266,7 +267,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleAgentSessions = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      const sc = deps.sessionController
+      const sc = deps.getSessionController()
       if (sc === undefined) {
         json(res, { ok: false, error: 'session service unavailable' }, 503)
         return
@@ -315,7 +316,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'sessionId and text are required' }, 400)
         return
       }
-      const sc = deps.sessionController
+      const sc = deps.getSessionController()
       if (sc === undefined) {
         json(res, { ok: false, error: 'session service unavailable' }, 503)
         return

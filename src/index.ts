@@ -353,9 +353,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // Routes + settings-panel admin surface (lazy webServer).
   ctx.inject(['webServer'], (webCtx: HostCtx) => {
     const ws = (webCtx as unknown as { webServer: WebServerFace }).webServer
-    // sessionController is a core host service; read it lazily so the existing
-    // routes keep working even if it is ever unavailable.
-    const sessionController = (webCtx.get('sessionController') as SessionControllerFace | undefined)
+    // sessionController is a core host service; read it LAZILY per request (via
+    // the plugin root ctx) because it may be registered after webServer, and the
+    // agent routes must work whenever a request actually arrives.
+    const getSessionController = (): SessionControllerFace | undefined =>
+      ctx.get('sessionController') as SessionControllerFace | undefined
     const disposeRoutes = registerRoutes({ webServer: ws }, {
       server,
       getClient: client,
@@ -364,7 +366,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       noteDefaults: () => ({ tag: effectiveNoteTag() }),
       uiDefaults: () => effectiveUi(),
       getWikiPath: () => wikiPath,
-      sessionController,
+      getSessionController,
       sendToAgentEnabled: () => eff().ui?.sendToAgent?.enabled !== false,
       sendToAgentToken: () => {
         const token = eff().ui?.sendToAgent?.token
