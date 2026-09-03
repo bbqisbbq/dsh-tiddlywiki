@@ -248,8 +248,12 @@ try {
   assert((await gclone.push(clonePath)).ok, 'clone pushes change for sync test')
   const sync = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync'), makeRes())
   assert(sync.ok === true && sync.pull === 'ok' && sync.status?.branch === 'main', `sync pulls+commits+pushes (${JSON.stringify(sync.message ?? sync.error)})`)
+  assert(sync.changed === true && sync.restarted === true, `changed pull restarts TW (changed=${sync.changed} restarted=${sync.restarted})`)
   const syncText = (await readFile(join(wikiDir, 'tiddlers', 'SyncTest.tid'), 'utf8')).replace(/\r/g, '')
   assert(syncText === 'from clone\n', 'sync pulled the remote change into the wiki')
+  // A no-op sync (nothing new on origin) must NOT restart TW.
+  const sync2 = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync'), makeRes())
+  assert(sync2.ok === true && sync2.changed !== true && sync2.restarted !== true, `no-op sync does not restart (changed=${sync2.changed} restarted=${sync2.restarted})`)
   disposeRoutes()
 
   // 5b. Doc-note seed: ONE-SHOT (marker-gated), never overwrites edits.

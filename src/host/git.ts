@@ -118,10 +118,20 @@ export class GitFace {
     return { exists: true, branch, dirty, dirtyFiles, remote, ...(lastCommit !== undefined ? { lastCommit } : {}), ...(ahead !== undefined ? { ahead } : {}), ...(behind !== undefined ? { behind } : {}) }
   }
 
-  /** `git pull --rebase --autostash`; on conflict: abort + report files. */
-  async pull(dir: string): Promise<GitActionResult> {
+  /** `git pull --rebase --autostash`; on conflict: abort + report files.
+   *  On success, `changed: true` means HEAD actually moved (files came in /
+   *  commits were replayed) — callers use it to decide whether a running TW
+   *  child needs a restart to drop its stale in-memory snapshot. */
+  async pull(dir: string): Promise<GitActionResult & { changed?: boolean }> {
+    const before = await this.exec(['rev-parse', 'HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
+    const beforeHead = before.ok ? before.stdout.trim() : ''
     const r = await this.exec(['pull', '--rebase', '--autostash'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
-    if (r.ok) return { ok: true, message: r.stdout.trim() || 'pull ok' }
+    if (r.ok) {
+      const after = await this.exec(['rev-parse', 'HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
+      const afterHead = after.ok ? after.stdout.trim() : ''
+      const changed = beforeHead.length > 0 && beforeHead !== afterHead
+      return { ok: true, message: r.stdout.trim() || 'pull ok', ...(changed ? { changed: true } : {}) }
+    }
     const conflictFiles = await this.unmergedFiles(dir)
     await this.exec(['rebase', '--abort'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
     const reason = (r.stderr.trim() || r.stdout.trim()).slice(0, 500)

@@ -265,7 +265,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   /** One-click git sync for the floating button / settings page: pull →
    *  commit → push, then return the fresh status. Mirrors the agent tool's
-   *  `action=sync` (design doc §7 conflict policy — rebase conflict aborts). */
+   *  `action=sync` (design doc §7 conflict policy — rebase conflict aborts).
+   *  When the pull actually changed the working tree, the running TW child
+   *  still holds the old in-memory snapshot — restart it (same port) so the
+   *  UI reflects the pulled files instead of looking stale. */
   const handleSync = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const dir = deps.getWikiPath()
     const status = async (): Promise<GitStatusViewPublic | null> => {
@@ -283,6 +286,16 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         }, 409)
         return
       }
+      let restarted = false
+      let restartError: string | undefined
+      if (pulled.changed === true) {
+        try {
+          await deps.server.restart()
+          restarted = true
+        } catch (err) {
+          restartError = err instanceof Error ? err.message : String(err)
+        }
+      }
       const committed = await deps.git.commit(dir, `sync ${new Date().toISOString()}`)
       const pushed = await deps.git.push(dir)
       const fresh = await status()
@@ -291,6 +304,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         action: 'sync',
         message: pushed.ok ? '同步完成' : pushed.message,
         pull: 'ok',
+        ...(pulled.changed === true ? { changed: true } : {}),
+        restarted,
+        ...(restartError !== undefined ? { restartError } : {}),
         commit: committed.message,
         push: pushed.message,
         status: fresh,

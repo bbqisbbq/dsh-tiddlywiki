@@ -266,6 +266,9 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     wikiPath: () => wikiPath,
     noteTag: effectiveNoteTag,
     autoCommit: () => committer?.touch(),
+    // After a pull that changed the working tree, restart TW so the server
+    // (and the agent's reads) see the pulled content, not the old snapshot.
+    restartWiki: async () => { await server.restart() },
   }
   disposers.push(...registerTiddlywikiTools(ctx, toolsDeps))
 

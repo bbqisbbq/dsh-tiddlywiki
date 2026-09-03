@@ -114,6 +114,8 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 
 同步纪律（三条）：开工先 `pull --rebase --autostash`；收工 `commit + push`；
 自动 commit 防抖 60s。真冲突 → abort 并报冲突文件，agent 人工处理，不自动吞数据。
+**pull 若拉到新内容，`action=pull`/`sync` 会自动重启 TW（同端口）**，后续读写/搜索
+均为最新快照，不会读到旧缓存。
 
 ### 人（GUI）
 
@@ -121,6 +123,7 @@ dsh plugin --profile web add link:C:\Users\bbq\.dsh\plugins\dsh-tiddlywiki
 - 右下角「快速笔记」悬浮控件：写草稿/随手记，**Markdown 语法高亮**（打字即高亮标题/代码/粗斜体/链接等），支持**文件上传**（点「📎 上传」或直接把文件拖进编辑器——文件存到 wiki 的 `files/` 文件夹并随 git 同步，图片插入 `![名](/files/名)`、其它文件插入 `[名](/files/名)`，在 TW 里可直接打开），Ctrl+Enter 保存为独立 tiddler；
   或点「**✏️ 在 TW 中编辑**」——保存后**弹出独立小窗**（可拖动/缩放）加载 TiddlyWiki **原生编辑器**编辑该条。
 - 右下角「**同步**」悬浮按钮：点一下对 wiki 仓库做 **pull → commit → push**，按钮上的状态点实时反映 git 状态（🟢 已同步 / 🟡 有未提交改动 / 🔴 落后于远端 / ⚪ 离线），悬停可看分支/领先/落后/上次同步时间；每 30s 自动刷新。
+  若这次 pull 实际拉到了新内容，**TW 服务会自动重启（同端口）**，保证界面显示的是最新快照而不是旧缓存（无需手动去面板点「重启 TW」）。
 - 面板服务异常时显示错误 +「重试」按钮（POST `/dsh-tiddlywiki/restart`）。
 
 ### 设置页（插件/主题管理 + 配置）

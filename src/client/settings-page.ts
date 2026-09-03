@@ -129,9 +129,16 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
     void (async () => {
       try {
         const res = await fetch(SYNC_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
-        const payload = (await res.json().catch(() => null)) as { ok?: boolean; message?: string; error?: string } | null
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean; message?: string; error?: string; changed?: boolean; restarted?: boolean; restartError?: string } | null
         if (!res.ok || payload?.ok !== true) toast(`同步失败：${payload?.error ?? payload?.message ?? `HTTP ${res.status}`}`)
-        else toast(`同步完成：${payload.message ?? 'OK'}`)
+        else {
+          let detail = ''
+          if (payload.changed === true) {
+            detail += payload.restarted === true ? '，TW 已重启' : '，TW 未自动重启'
+            if (payload.restartError) detail += `（${payload.restartError}）`
+          }
+          toast(`同步完成：${payload.message ?? 'OK'}${detail}`)
+        }
       } catch (err) {
         toast(`同步失败：${err instanceof Error ? err.message : String(err)}`)
       } finally {

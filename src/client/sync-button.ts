@@ -144,14 +144,20 @@ export function mountSyncButton(): () => void {
     try {
       const res = await fetch(SYNC_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
       const payload = (await res.json().catch(() => null)) as
-        | { ok?: boolean; message?: string; error?: string; status?: GitView; conflictFiles?: string[]; push?: string }
+        | { ok?: boolean; message?: string; error?: string; status?: GitView; conflictFiles?: string[]; push?: string; changed?: boolean; restarted?: boolean; restartError?: string }
         | null
       lastSync = new Date()
       if (payload === null || payload.ok !== true) {
         const msg = payload?.error ?? payload?.message ?? `HTTP ${res.status}`
         toast(`同步失败：${msg}`)
       } else {
-        toast(`同步完成：${payload.message ?? 'OK'}${payload.push && payload.push !== 'nothing to commit' ? `（${payload.push}）` : ''}`)
+        let detail = ''
+        if (payload.push && payload.push !== 'nothing to commit') detail = `（${payload.push}）`
+        if (payload.changed === true) {
+          detail += payload.restarted === true ? '，TW 已重启' : '，TW 未自动重启'
+          if (payload.restartError) detail += `（${payload.restartError}）`
+        }
+        toast(`同步完成：${payload.message ?? 'OK'}${detail}`)
       }
       applyStatus(await fetchStatus())
     } catch (err) {

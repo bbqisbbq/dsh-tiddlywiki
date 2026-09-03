@@ -27,6 +27,10 @@ export interface ToolsDeps {
   noteTag: () => string
   /** Debounced auto-commit touch (fires after our writes). */
   autoCommit: () => void
+  /** Restart the TW child (same port). Called after a pull that changed the
+   *  working tree, so the server drops its stale in-memory snapshot and the
+   *  agent sees the pulled content. Optional — absent in headless contexts. */
+  restartWiki?: () => Promise<void>
 }
 
 function snippetOf(text: string, max = 160): string {
@@ -180,10 +184,21 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     },
     execute: async (args: { action: 'pull' | 'push' | 'sync'; message?: string }): Promise<SyncResult> => {
       const dir = deps.wikiPath()
+      /** Restart TW after a pull that changed the tree (stale snapshot drop). */
+      const restartIfChanged = async (pulled: { changed?: boolean }): Promise<{ restarted?: boolean; restartError?: string }> => {
+        if (pulled.changed !== true || deps.restartWiki === undefined) return {}
+        try {
+          await deps.restartWiki()
+          return { restarted: true }
+        } catch (err) {
+          return { restartError: err instanceof Error ? err.message : String(err) }
+        }
+      }
       switch (args.action) {
         case 'pull': {
           const r = await deps.git.pull(dir)
-          return { action: args.action, ok: r.ok, message: r.message, ...(r.conflictFiles !== undefined ? { conflictFiles: r.conflictFiles } : {}) }
+          const restart = await restartIfChanged(r)
+          return { action: args.action, ok: r.ok, message: r.message, ...(r.conflictFiles !== undefined ? { conflictFiles: r.conflictFiles } : {}), ...(r.changed === true ? { changed: true } : {}), ...restart }
         }
         case 'push': {
           const r = await deps.git.push(dir)
@@ -192,6 +207,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         case 'sync': {
           const pulled = await deps.git.pull(dir)
           if (!pulled.ok) return { action: args.action, ok: false, message: pulled.message, ...(pulled.conflictFiles !== undefined ? { conflictFiles: pulled.conflictFiles } : {}) }
+          const restart = await restartIfChanged(pulled)
           const committed = await deps.git.commit(dir, args.message ?? `sync ${new Date().toISOString()}`)
           const pushed = await deps.git.push(dir)
           const status = await deps.git.status(dir)
@@ -200,6 +216,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
             ok: pushed.ok,
             message: pushed.ok ? '同步完成' : pushed.message,
             pull: 'ok',
+            ...(pulled.changed === true ? { changed: true } : {}),
+            ...restart,
             commit: committed.message,
             push: pushed.message,
             status,
@@ -227,6 +245,9 @@ interface SyncResult {
   pull?: string
   commit?: string
   push?: string
+  changed?: boolean
+  restarted?: boolean
+  restartError?: string
   status?: { branch: string; dirty: boolean; dirtyFiles: string[]; remote: string; lastCommit?: string; ahead?: number; behind?: number }
 }
 
@@ -240,6 +261,12 @@ function renderSync(value: SyncResult): Array<{ type: 'text'; text: string }> {
   }
   if (value.commit !== undefined) lines.push(`本地 commit: ${value.commit}`)
   if (value.push !== undefined) lines.push(`远端 push: ${value.push}`)
+  if (value.changed === true) {
+    lines.push(value.restarted === true
+      ? '本次 pull 拉取了新内容，TW 服务已自动重启（同端口），读取/搜索均为最新快照。'
+      : '本次 pull 拉取了新内容，但 TW 服务未能自动重启（如需最新快照，请手动重启 TW）。')
+  }
+  if (value.restartError !== undefined) lines.push(`TW 重启失败: ${value.restartError}`)
   if (value.status !== undefined) {
     const s = value.status
     const bits = [`分支 ${s.branch}`]
