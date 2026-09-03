@@ -15,8 +15,9 @@ import { injectStyles } from './styles.ts'
 import { PanelState } from './state.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
 import { mountPanel } from './panel.ts'
-import { mountNoteWidget } from './note-widget.ts'
-import { mountSyncButton } from './sync-button.ts'
+import { createNoteWidget } from './note-widget.ts'
+import { createSyncController } from './sync-button.ts'
+import { mountKnowledgeFab } from './knowledge-fab.ts'
 import { disposeEditorPopup } from './editor-popup.ts'
 import { SettingsSection } from './settings-page.ts'
 
@@ -48,10 +49,15 @@ export function apply(ctx: ClientContextFace): void {
     const state = new PanelState()
     const disposers: Array<() => void> = []
     try {
+      // v0.5: the quick-note card and the sync logic are owned by controllers;
+      // the single "知识库" FAB drives them (three old floating controls merged).
+      const note = createNoteWidget()
+      const sync = createSyncController()
+      disposers.push(() => note.dispose())
+      disposers.push(() => sync.dispose())
       disposers.push(mountSidebarEntry(state))
       disposers.push(mountPanel(state))
-      disposers.push(mountNoteWidget())
-      disposers.push(mountSyncButton())
+      disposers.push(mountKnowledgeFab(state, note, sync))
       disposers.push(disposeEditorPopup)
     } catch (error) {
       // DOM failures degrade the plugin, never the GUI.

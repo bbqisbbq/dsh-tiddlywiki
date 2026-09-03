@@ -154,6 +154,27 @@ export class GitFace {
       : { ok: false, message: (r.stderr.trim() || r.stdout.trim()).slice(0, 500) }
   }
 
+  /** `git fetch` (no remote configured → failure reported by the caller). */
+  async fetch(dir: string): Promise<GitActionResult> {
+    const r = await this.exec(['fetch'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
+    return r.ok
+      ? { ok: true, message: r.stdout.trim() || 'fetch ok' }
+      : { ok: false, message: (r.stderr.trim() || r.stdout.trim()).slice(0, 500) }
+  }
+
+  /**
+   * Restore the given files from the freshly fetched remote HEAD (FETCH_HEAD)
+   * into the working tree + index — the "keep remote version" half of
+   * tiddler-granular conflict resolution. Callers must `git fetch` first.
+   */
+  async checkoutFetchHead(dir: string, files: string[]): Promise<GitActionResult> {
+    if (files.length === 0) return { ok: true, message: 'no files given' }
+    const r = await this.exec(['checkout', 'FETCH_HEAD', '--', ...files], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
+    return r.ok
+      ? { ok: true, message: `已从远端检出 ${files.length} 个文件` }
+      : { ok: false, message: (r.stderr.trim() || r.stdout.trim()).slice(0, 500) }
+  }
+
   /** Ensure `origin` points at `url` (add or set-url). */
   async ensureRemote(dir: string, url: string): Promise<GitActionResult> {
     const cur = await this.exec(['remote', 'get-url', 'origin'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })

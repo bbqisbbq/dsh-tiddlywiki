@@ -144,13 +144,16 @@ const PROMPT_TEXT = `## TiddlyWiki 持久知识库
 
 本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。你可以用工具读写 tiddler：
 
-- \`tiddlywiki_search\`（query, tag?）检索；\`tiddlywiki_get\`（title）读全文；\`tiddlywiki_put\`（title, text, tags?, fields?）写/覆盖；\`tiddlywiki_delete\`（title）删除。
-- \`tiddlywiki_git_sync\`（pull|push|sync）做 git 同步。
+- \`tiddlywiki_search\`（query 必填；可选 tags[]/tag、since 修改时间、type、limit）检索；\`tiddlywiki_get\`（title）读全文；\`tiddlywiki_put\`（title, text, tags?, fields?）写/覆盖；\`tiddlywiki_batch_put\`（items[]）批量写；\`tiddlywiki_rename\`（oldTitle, newTitle, updateRefs?）重命名并尽量同步引用；\`tiddlywiki_delete\`（title）删除。
+- \`tiddlywiki_recent\`（limit?, since?）看最近修改的笔记；\`tiddlywiki_list_tags\` 看现有 tag 及计数。
+- \`tiddlywiki_git_sync\`（pull|push|sync）做 git 同步；\`tiddlywiki_git_resolve\`（files, strategy=keep-local|keep-remote|list）在 pull 冲突后按 tiddler 二选一解决。
 
 知识库同步纪律（三条）：
 1. 开工先 pull：\`tiddlywiki_git_sync action=pull\`（rebase + autostash；真冲突会自动 abort 并报冲突文件）。
 2. 收工 commit + push：\`tiddlywiki_git_sync action=sync\`（pull → commit → push）。
 3. 插件会自动防抖 commit（默认 60s），手动同步用上面的工具。
+
+pull 冲突后：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep-local\`（保留本地）或 \`strategy=keep-remote\`（改用远端版本），再重新 pull/sync 整合其余改动。
 
 把 wiki 当作长期记忆与知识沉淀的地方：会议纪要、决策记录、调研笔记、随手的想法都可存成独立 tiddler（tag 建议用 inbox/meeting/decision 等便于检索）。
 
@@ -343,7 +346,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
 
   // Teardown: everything reversible (R6 — hot reload must not leak).
   ctx.effect(() => () => {
-    disposeAll()
-    void server.stop()
+    // Flush a pending auto-commit BEFORE teardown, so a write made within the
+    // debounce window is not left uncommitted when dsh web stops (best-effort).
+    void (async () => {
+      try { await committer?.flush() } catch { /* best-effort */ }
+      disposeAll()
+      await server.stop()
+    })()
   }, 'dsh-tiddlywiki: host teardown')
 }

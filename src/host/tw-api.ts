@@ -139,19 +139,93 @@ export class TiddlyWebClient {
   /**
    * Search non-system tiddlers: one request (default listing with text) plus
    * local case-insensitive substring matching on title + text, optional exact
-   * tag, capped at `limit`. Robust against the server's external-filter 403.
+   * tags (AND), a `since` modified-time floor, an exact `type`, capped at
+   * `limit`. Robust against the server's external-filter 403.
    */
-  async search(query: string, tag?: string, limit = 30): Promise<Tiddler[]> {
+  async search(query: string, options: SearchOptions = {}): Promise<{ items: Tiddler[]; total: number }> {
     const items = await this.list(undefined, true)
     const needle = query.toLowerCase()
+    const sinceTime = parseSince(options.since)
+    const wantedTags = [...(options.tags ?? []), options.tag].filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+    const limit = options.limit ?? 30
     const matched = items.filter((t) => {
+      if (t.title.startsWith('$:/')) return false
       if (!t.title.toLowerCase().includes(needle) && !(t.text ?? '').toLowerCase().includes(needle)) return false
-      if (tag !== undefined && tag.length > 0) {
-        const tags = t.tags ?? []
-        if (!tags.some((t2) => t2.toLowerCase() === tag.toLowerCase())) return false
+      if (sinceTime !== undefined) {
+        const modified = typeof t.modified === 'string' ? new Date(t.modified).getTime() : NaN
+        if (Number.isNaN(modified) || modified < sinceTime) return false
+      }
+      if (options.type !== undefined && options.type.length > 0 && (t.type ?? 'text/vnd.tiddlywiki') !== options.type) return false
+      if (wantedTags.length > 0) {
+        const tags = (t.tags ?? []).map((tag) => tag.toLowerCase())
+        if (!wantedTags.every((w) => tags.includes(w.toLowerCase()))) return false
       }
       return true
     })
-    return matched.slice(0, limit)
+    return { items: matched.slice(0, limit), total: matched.length }
   }
+
+  /**
+   * List the most recently modified NON-SYSTEM tiddlers, newest first
+   * (missing/modified-less tiddlers sort to the tail). `since` keeps only
+   * tiddlers modified at/after that instant.
+   */
+  async recent(limit = 15, since?: string): Promise<Tiddler[]> {
+    const items = await this.list(undefined, true)
+    const sinceTime = parseSince(since)
+    const filtered = items.filter((t) => {
+      if (t.title.startsWith('$:/')) return false
+      if (sinceTime !== undefined) {
+        const modified = typeof t.modified === 'string' ? new Date(t.modified).getTime() : NaN
+        if (Number.isNaN(modified) || modified < sinceTime) return false
+      }
+      return true
+    })
+    filtered.sort((a, b) => {
+      const am = typeof a.modified === 'string' ? new Date(a.modified).getTime() : 0
+      const bm = typeof b.modified === 'string' ? new Date(b.modified).getTime() : 0
+      return bm - am
+    })
+    return filtered.slice(0, Math.max(1, Math.min(limit, 200)))
+  }
+
+  /**
+   * Distinct non-system tags with their tiddler counts, most-used first then
+   * zh-locale. One skinny listing request (no text payloads).
+   */
+  async listTags(): Promise<Array<{ tag: string; count: number }>> {
+    const items = await this.list(undefined, false)
+    const map = new Map<string, number>()
+    for (const t of items) {
+      if (t.title.startsWith('$:/')) continue
+      for (const tag of t.tags ?? []) {
+        if (tag.startsWith('$:/')) continue
+        map.set(tag, (map.get(tag) ?? 0) + 1)
+      }
+    }
+    return [...map.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
+      .map(([tag, count]) => ({ tag, count }))
+  }
+}
+
+/** Optional search / recent filters. */
+export interface SearchOptions {
+  /** Every tag in this list must be present (AND semantics). */
+  tags?: string[]
+  /** Legacy single exact tag (AND with `tags`). */
+  tag?: string
+  /** ISO 8601 instant; keep only tiddlers modified at/after it. */
+  since?: string
+  /** Exact tiddler type (default type is "text/vnd.tiddlywiki"). */
+  type?: string
+  /** Max results (search default 30, capped 200). */
+  limit?: number
+}
+
+/** Parse a `since` value into an epoch ms, or undefined when absent/invalid. */
+function parseSince(since: string | undefined): number | undefined {
+  if (typeof since !== 'string' || since.trim().length === 0) return undefined
+  const ms = new Date(since.trim()).getTime()
+  return Number.isNaN(ms) ? undefined : ms
 }

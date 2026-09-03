@@ -115,9 +115,6 @@ export function mountPanel(state: PanelState): () => void {
   let iframe: HTMLIFrameElement | undefined
   let frameArea: HTMLDivElement | undefined
   let errorArea: HTMLDivElement | undefined
-  let chip: HTMLSpanElement | undefined
-  let statusDot: HTMLSpanElement | undefined
-  let statusFloater: HTMLDivElement | undefined
   let refreshTimer: number | undefined
   let refreshAttempts = 0
 
@@ -141,48 +138,6 @@ export function mountPanel(state: PanelState): () => void {
 
     view.append(frameArea, errorArea)
     return view
-  }
-
-  /**
-   * Bottom-right floating status/reload buttons (same visual language as the
-   * quick-note toggle) — the top panel bar is gone, so TW's menubar reaches
-   * the very top of the panel and clears the host's top-right buttons. Mount
-   * is gated by `ui.showPanelStatus` (settings page toggle).
-   */
-  const buildStatusFloater = (): HTMLDivElement => {
-    const wrap = document.createElement('div')
-    wrap.className = 'dsh-tw-panel-status'
-
-    const statusBtn = document.createElement('button')
-    statusBtn.type = 'button'
-    statusBtn.className = 'dsh-tw-panel-status-btn'
-    statusBtn.title = '刷新状态'
-    statusDot = document.createElement('span')
-    statusDot.className = 'dsh-tw-status-dot'
-    statusDot.dataset.state = 'unknown'
-    chip = document.createElement('span')
-    chip.className = 'dsh-tw-panel-status-text'
-    chip.textContent = '—'
-    statusBtn.append(statusDot, chip)
-    statusBtn.addEventListener('click', () => { void doRefresh() })
-
-    const reloadBtn = document.createElement('button')
-    reloadBtn.type = 'button'
-    reloadBtn.className = 'dsh-tw-panel-status-btn'
-    reloadBtn.textContent = '重载'
-    reloadBtn.title = '重载 TiddlyWiki 面板'
-    reloadBtn.addEventListener('click', () => {
-      if (iframe !== undefined && !iframe.hidden) iframe.src = iframe.src
-    })
-
-    wrap.append(statusBtn, reloadBtn)
-    document.body.append(wrap)
-    return wrap
-  }
-
-  const setChip = (stateName: string, text: string): void => {
-    if (statusDot !== undefined) statusDot.dataset.state = stateName
-    if (chip !== undefined) chip.textContent = text
   }
 
   /** Pin the overlay to the center column's current viewport rect. */
@@ -274,18 +229,15 @@ export function mountPanel(state: PanelState): () => void {
     }
     const payload = await fetchStatus()
     if (payload === null) {
-      setChip('failed', '状态不可达')
       showError('无法访问 /dsh-tiddlywiki/status')
       return
     }
     if (payload.status === 'running' && typeof payload.url === 'string') {
-      setChip('running', '在线')
       refreshAttempts = 0
       showFrame(payload.url)
       return
     }
     if (payload.status === 'starting') {
-      setChip('starting', '启动中')
       showStarting()
       // Auto-poll while starting (bounded).
       if (refreshAttempts < 30) {
@@ -294,7 +246,6 @@ export function mountPanel(state: PanelState): () => void {
       }
       return
     }
-    setChip('failed', '离线')
     refreshAttempts = 0
     showError(payload.error ?? `服务状态：${payload.status}`)
   }
@@ -347,12 +298,12 @@ export function mountPanel(state: PanelState): () => void {
   ensure()
   applyActive()
 
-  // Bottom-right status/reload buttons, gated by ui.showPanelStatus.
-  void (async () => {
-    const payload = await fetchStatus()
-    if (payload?.ui?.showPanelStatus === false) return
-    statusFloater = buildStatusFloater()
-  })()
+  // The "知识库" FAB's 重载面板 entry dispatches this event to reload the
+  // iframe (the panel itself no longer owns a floating status/reload button).
+  const onReloadRequest = (): void => {
+    if (iframe !== undefined && !iframe.hidden) iframe.src = iframe.src
+  }
+  document.addEventListener('dsh-tw-panel-reload', onReloadRequest)
 
   return () => {
     if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
@@ -362,10 +313,10 @@ export function mountPanel(state: PanelState): () => void {
     resizeObserver.disconnect()
     document.removeEventListener('click', onClickSidebarRow, true)
     document.removeEventListener(ACTIVATE_EVENT, onOtherActivate)
+    document.removeEventListener('dsh-tw-panel-reload', onReloadRequest)
     waitObserver.disconnect()
     unsubscribe()
     document.documentElement.removeAttribute(ACTIVE_ATTR)
     container?.remove()
-    statusFloater?.remove()
   }
 }

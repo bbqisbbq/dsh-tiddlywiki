@@ -68,6 +68,8 @@ export interface MarkdownEditorOptions {
   placeholder?: string
   /** Called on Ctrl/Cmd+Enter (wired after save is defined by the widget). */
   onSave?: () => void
+  /** Called after every doc change (used for draft auto-save). */
+  onChange?: () => void
 }
 
 /**
@@ -95,6 +97,9 @@ export function buildMarkdownEditor(opts: MarkdownEditorOptions = {}): MarkdownE
           ...historyKeymap,
           { key: 'Mod-Enter', run: () => { opts.onSave?.(); return true } },
         ]),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) opts.onChange?.()
+        }),
       ],
     }),
   })

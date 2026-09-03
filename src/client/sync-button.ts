@@ -1,13 +1,12 @@
 /**
- * Floating "sync" button (bottom-right) — one click pulls + commits + pushes
- * the wiki git repository and reports the result, with a live status dot so
- * the human always sees whether the knowledge base is in sync.
+ * Sync controller — the git pull→commit→push logic + live git status, decoupled
+ * from any DOM. In v0.5 the visual (status dot, 同步 entry, syncing spinner)
+ * lives in the "知识库" FAB (knowledge-fab.ts); this module only owns state,
+ * polling and the one-click sync call.
  *
- * - honors `ui.showSyncButton`: the button is mounted async and never created
- *   when the option is off (settings page toggle);
  * - polls /dsh-tiddlywiki/status every 30s for the git state;
- * - clicking POSTs /dsh-tiddlywiki/sync (pull → commit → push) and toasts the
- *   outcome, then refreshes the dot immediately.
+ * - `trigger()` POSTs /dsh-tiddlywiki/sync (pull → commit → push), returns the
+ *   fresh state and notifies subscribers.
  *
  * Status dot mapping (git summary from /status):
  *   offline → gray   (no repo / service unreachable)
@@ -15,7 +14,7 @@
  *   behind  → red    (remote has commits we don't — pull will rebase)
  *   clean   → green  (worktree clean)
  *
- * @module dsh-tiddlywiki/client/sync-button
+ * @module dsh-tiddlywiki/client/sync-controller
  */
 import { toast } from './toast.ts'
 
@@ -42,8 +41,15 @@ interface StatusPayload {
   ui?: { showSyncButton?: boolean }
 }
 
-/** Inline sync icon (circular arrows, stroke-based, theme-colored). */
-const SYNC_ICON = '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.4-3.5"/><path d="M13 2.5v3h-3"/></svg>'
+export interface SyncStateView {
+  /** Dot color key: offline | dirty | behind | clean | syncing. */
+  state: 'offline' | 'dirty' | 'behind' | 'clean' | 'syncing'
+  /** Short label for the menu entry ("已同步" / "待提交" / "可更新" / "离线"). */
+  label: string
+  /** Full tooltip line (branch / commits / dirty files / last sync). */
+  tooltip: string
+  lastSync?: Date
+}
 
 function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n)
@@ -64,83 +70,80 @@ async function fetchStatus(): Promise<StatusPayload | null> {
   }
 }
 
+/** Map a git summary onto a SyncStateView. */
+function buildState(payload: StatusPayload | null, lastSync: Date | undefined): SyncStateView {
+  const git = payload?.git
+  const bits: string[] = ['同步知识库']
+  let state: SyncStateView['state'] = 'offline'
+  let label = '离线'
+
+  if (git === null || git === undefined || git.exists !== true) {
+    bits.push('git 仓库不可用')
+  } else {
+    bits.push(`分支 ${git.branch ?? '?'}`)
+    if (typeof git.lastCommit === 'string') bits.push(git.lastCommit)
+    const behind = typeof git.behind === 'number' ? git.behind : 0
+    const ahead = typeof git.ahead === 'number' ? git.ahead : 0
+    if (ahead > 0) bits.push(`领先 ${ahead}`)
+    if (behind > 0) bits.push(`落后 ${behind}`)
+    if (git.dirty === true) {
+      state = 'dirty'
+      label = '待提交'
+      bits.push(`有 ${git.dirtyFiles?.length ?? 0} 个未提交改动`)
+    } else if (behind > 0) {
+      state = 'behind'
+      label = '可更新'
+    } else {
+      state = 'clean'
+      label = '已同步'
+    }
+  }
+  if (lastSync !== undefined) bits.push(`上次同步 ${clock(lastSync)}`)
+  return { state, label, tooltip: bits.join(' · '), ...(lastSync !== undefined ? { lastSync } : {}) }
+}
+
+export interface SyncController {
+  /** Current state snapshot. */
+  getState(): SyncStateView
+  /** One-click pull → commit → push; returns the fresh state. */
+  trigger(): Promise<SyncStateView>
+  /** Notified whenever the state changes (including during syncing). */
+  subscribe(cb: () => void): () => void
+  dispose(): void
+}
+
 /**
- * Mount the floating sync button. Fetches /status first: when
- * `ui.showSyncButton` is off the button is never created. Returns a disposer.
+ * Create the sync controller: starts a 30s status poll immediately and exposes
+ * `trigger()` for the FAB's 同步 entry. No DOM is created here.
  */
-export function mountSyncButton(): () => void {
-  let disposed = false
-  let root: HTMLButtonElement | undefined
-  let dot: HTMLSpanElement | undefined
-  let label: HTMLSpanElement | undefined
+export function createSyncController(): SyncController {
+  let state: SyncStateView = { state: 'offline', label: '离线', tooltip: '同步知识库' }
   let lastSync: Date | undefined
   let timer: number | undefined
+  let syncing = false
+  const listeners = new Set<() => void>()
 
-  const build = (): HTMLButtonElement => {
-    const btn = document.createElement('button')
-    btn.type = 'button'
-    btn.className = 'dsh-tw-sync'
-    btn.title = '同步知识库（pull → commit → push）'
-
-    const icon = document.createElement('span')
-    icon.className = 'dsh-tw-sync-icon'
-    icon.innerHTML = SYNC_ICON
-
-    dot = document.createElement('span')
-    dot.className = 'dsh-tw-sync-dot'
-    dot.dataset.state = 'offline'
-
-    label = document.createElement('span')
-    label.className = 'dsh-tw-sync-label'
-    label.textContent = '同步'
-
-    btn.append(icon, label, dot)
-    btn.addEventListener('click', () => { void doSync() })
-    document.body.append(btn)
-    return btn
+  const emit = (): void => {
+    for (const cb of [...listeners]) cb()
   }
 
-  /** Map a git summary onto the dot + label + tooltip. */
   const applyStatus = (payload: StatusPayload | null): void => {
-    if (root === undefined || dot === undefined || label === undefined) return
-    const git = payload?.git
-    const bits: string[] = ['同步知识库']
-    let state = 'offline'
-    let word = '离线'
-
-    if (git === null || git === undefined || git.exists !== true) {
-      bits.push('git 仓库不可用')
-    } else {
-      bits.push(`分支 ${git.branch ?? '?'}`)
-      if (typeof git.lastCommit === 'string') bits.push(git.lastCommit)
-      const behind = typeof git.behind === 'number' ? git.behind : 0
-      const ahead = typeof git.ahead === 'number' ? git.ahead : 0
-      if (ahead > 0) bits.push(`领先 ${ahead}`)
-      if (behind > 0) bits.push(`落后 ${behind}`)
-      if (git.dirty === true) {
-        state = 'dirty'
-        word = '待提交'
-        bits.push(`有 ${git.dirtyFiles?.length ?? 0} 个未提交改动`)
-      } else if (behind > 0) {
-        state = 'behind'
-        word = '可更新'
-      } else {
-        state = 'clean'
-        word = '已同步'
-      }
+    const next = buildState(payload, lastSync)
+    if (next.state !== state.state || next.tooltip !== state.tooltip) {
+      state = next
+      emit()
     }
-    if (lastSync !== undefined) bits.push(`上次同步 ${clock(lastSync)}`)
-    root.title = bits.join(' · ')
-    dot.dataset.state = state
-    label.textContent = word
   }
 
-  const doSync = async (): Promise<void> => {
-    if (root === undefined) return
-    root.disabled = true
-    root.classList.add('dsh-tw-sync-spin')
-    if (label !== undefined) label.textContent = '同步中…'
-    if (dot !== undefined) dot.dataset.state = 'syncing'
+  const poll = async (): Promise<void> => {
+    applyStatus(await fetchStatus())
+  }
+
+  const doSync = async (): Promise<SyncStateView> => {
+    if (syncing) return state
+    syncing = true
+    state = { ...state, state: 'syncing', label: '同步中…' }
+    emit()
     try {
       const res = await fetch(SYNC_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
       const payload = (await res.json().catch(() => null)) as
@@ -159,30 +162,30 @@ export function mountSyncButton(): () => void {
         }
         toast(`同步完成：${payload.message ?? 'OK'}${detail}`)
       }
-      applyStatus(await fetchStatus())
+      await poll()
     } catch (err) {
       toast(`同步失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
-      root.disabled = false
-      root.classList.remove('dsh-tw-sync-spin')
+      syncing = false
+      // Re-sync the label (may still be dirty after a failed sync).
+      await poll()
     }
+    return state
   }
 
-  const poll = async (): Promise<void> => {
-    applyStatus(await fetchStatus())
-  }
+  void poll()
+  timer = window.setInterval(() => { void poll() }, POLL_MS)
 
-  void (async () => {
-    const payload = await fetchStatus()
-    if (disposed || payload?.ui?.showSyncButton === false) return
-    root = build()
-    applyStatus(payload)
-    timer = window.setInterval(() => { void poll() }, POLL_MS)
-  })()
-
-  return () => {
-    disposed = true
-    if (timer !== undefined) window.clearInterval(timer)
-    root?.remove()
+  return {
+    getState: () => state,
+    trigger: doSync,
+    subscribe(cb) {
+      listeners.add(cb)
+      return () => { listeners.delete(cb) }
+    },
+    dispose() {
+      if (timer !== undefined) { clearInterval(timer); timer = undefined }
+      listeners.clear()
+    },
   }
 }

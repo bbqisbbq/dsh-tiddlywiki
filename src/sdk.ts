@@ -38,7 +38,8 @@ interface ObjectSpec {
   readonly type: 'object'
   readonly additionalProperties: boolean
   readonly description?: string
-  readonly properties?: Readonly<Record<string, ValueSpec>>
+  /** Nested properties may also declare `required` (array items etc.). */
+  readonly properties?: Readonly<Record<string, ParameterSpec>>
 }
 
 /** Author-facing value spec. */
@@ -61,7 +62,12 @@ function compileValue(spec: ValueSpec): RawSchema {
     const objectSpec = spec as ObjectSpec
     node.type = 'object'
     node.additionalProperties = objectSpec.additionalProperties
-    if (objectSpec.properties !== undefined) node.properties = compilePropertyMap(objectSpec.properties).properties
+    if (objectSpec.properties !== undefined) {
+      const compiled = compilePropertyMap(objectSpec.properties)
+      node.properties = compiled.properties
+      // Nested objects also carry their own `required` list (array items, etc.).
+      if (compiled.required !== undefined) node.required = compiled.required
+    }
     return node
   }
   if (type === 'array') {

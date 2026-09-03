@@ -14,10 +14,10 @@
 
 | 能力 | 说明 |
 |---|---|
-| 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `delete` / `git_sync` 五个工具：检索、读写、删除、git 同步 |
+| 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `batch_put` / `rename` / `delete` / `recent` / `list_tags` / `git_sync` / `git_resolve` 十个工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
 | 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（iframe 直连 TW 服务） |
-| 📝 **快速笔记** | 聊天区右下角悬浮控件：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag，Ctrl+Enter 保存；可整体隐藏 |
-| 🔄 **一键同步** | 右下角「同步」按钮：pull → commit → push；状态点实时反映 git 状态（已同步/待提交/可更新/离线） |
+| 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
+| 🔄 **一键同步** | 「知识库」按钮 →「🔁 同步」：pull → commit → push；FAB 上的状态点实时反映 git 状态（已同步/待提交/可更新/离线） |
 | ⚙️ **设置页** | DSH 设置 →「TiddlyWiki 知识库」：插件/主题/语言管理与运行配置，应用后自动重启 TW |
 | 🛡 **零摩擦生命周期** | 随 dsh 自动启停；TW 子进程崩溃自动重启（退避）；端口/目录/首次 git init 全自动 |
 | 💾 **数据即备份** | wiki 文件夹本身就是一个 git 仓库；自动 commit（60s 防抖，可关），配置随 dsh-market 迁移 |
@@ -46,10 +46,10 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 ## 🚀 快速开始（2 分钟上手）
 
 1. **安装并重启** dsh web（见上）。
-2. 点左侧侧边栏「**TiddlyWiki**」→ 中央打开完整 TW 编辑器；此时右下角已有「📝 快速笔记」和「🔄 同步」两个悬浮按钮。
-3. **随手记**：点右下角「快速笔记」，写两行、打上 tag，`Ctrl+Enter` 保存——它成为一个独立 tiddler，并自动进入 git。
-4. **正经排版**：在笔记里点「✏️ 在 TW 中编辑」，弹出 TW 原生编辑器小窗继续写。
-5. **收工同步**：点右下角「同步」按钮，一键 pull → commit → push，把今天的记录推到远端备份。
+2. 点左侧侧边栏「**TiddlyWiki**」→ 中央打开完整 TW 编辑器；此时右下角已有「**知识库**」悬浮按钮（内含快速笔记/同步/TW 面板入口）。
+3. **随手记**：点右下角「知识库」→「📝 快速笔记」，写两行、打上 tag，`Ctrl+Enter` 保存——它成为一个独立 tiddler，并自动进入 git；草稿会自动保存到本地，关掉/刷新都不丢。
+4. **正经排版**：在笔记里点「✏️ 在 TW 中编辑」，弹出 TW 原生编辑器小窗继续写；想接着改旧笔记，点「🕘 最近」一键载入。
+5. **收工同步**：点「知识库」→「🔁 同步」，一键 pull → commit → push，把今天的记录推到远端备份。
 6. **让 Agent 参与**：直接在聊天里说「把刚才的会议纪要存进知识库」——Agent 会用 `tiddlywiki_*` 工具读写。
 
 > 想直接看 Agent 侧完整能力？跳到 [📖 使用指南](#-使用指南)。
@@ -58,21 +58,27 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 
 ## 📖 使用指南
 
-### 🤖 给 Agent：5 个工具
+### 🤖 给 Agent：10 个工具
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `tiddlywiki_search` | `query`, `tag?` | 检索非系统 tiddler，返回标题/标签/摘要 |
+| `tiddlywiki_search` | `query`, `tags?[]`, `tag?`, `since?`, `type?`, `limit?` | 检索非系统 tiddler，返回标题/标签/修改时间/摘要；`tags` 为 AND 标签，`since` 按修改时间过滤，`limit` 上限 200 |
+| `tiddlywiki_recent` | `limit?`, `since?` | 最近修改的笔记（倒序），开工快速了解近期动态 |
+| `tiddlywiki_list_tags` | — | 现有非系统 tag 及各自计数（按使用次数降序） |
 | `tiddlywiki_get` | `title` | 读单个 tiddler 全文 |
 | `tiddlywiki_put` | `title`, `text`, `tags?`, `fields?` | 写/覆盖 tiddler；`fields` 可带业务字段（如 `{"type":"meeting","date":"2026-09-02"}`） |
+| `tiddlywiki_batch_put` | `items[]`, `overwrite?` | 批量写入；`overwrite=false` 跳过已存在标题 |
+| `tiddlywiki_rename` | `oldTitle`, `newTitle`, `updateRefs?` | 重命名 + 尽量更新其他 tiddler 里的 `[[旧]]`/`{{旧}}` 引用 |
 | `tiddlywiki_delete` | `title` | 删除 tiddler（幂等） |
 | `tiddlywiki_git_sync` | `action: pull\|push\|sync`, `message?` | git 操作 |
+| `tiddlywiki_git_resolve` | `files[]`, `strategy: keep-local\|keep-remote\|list` | pull 冲突后按 tiddler 二选一解决（keep-remote 需已配置远端） |
 
-**知识库同步纪律（三条）**：
+**知识库同步纪律（四条）**：
 
 1. 开工先 `tiddlywiki_git_sync action=pull`（rebase + autostash；真冲突会自动 abort 并报冲突文件）。
-2. 收工 `tiddlywiki_git_sync action=sync`（pull → commit → push）。
-3. 插件自动 commit 兜底（60s 防抖，可关），手动 sync 用于需要主动推送的场合。
+2. 冲突后：`tiddlywiki_git_resolve files=[冲突文件] strategy=keep-local|keep-remote` 按 tiddler 二选一解决，再重新 sync。
+3. 收工 `tiddlywiki_git_sync action=sync`（pull → commit → push）。
+4. 插件自动 commit 兜底（60s 防抖，可关），手动 sync 用于需要主动推送的场合。
 
 > ⚠️ pull 若拉到新内容，`pull` / `sync` 会自动**重启 TW（同端口）**，后续读写/搜索都是最新快照，不会读到旧缓存。
 
@@ -82,15 +88,20 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 
 **🧭 中央列编辑器** — 侧边栏「TiddlyWiki」按钮开关中央编辑器面板（iframe 直连 TW 服务），完整 TW 5 编辑器。
 
-**📝 快速笔记** — 聊天区右下角悬浮控件（可折叠）：
+**📝 快速笔记** — 右下角「**知识库**」悬浮按钮 →「📝 快速笔记」（可折叠）：
 - **CodeMirror 6 编辑器**：真正的 Markdown 语法树高亮（标题/列表/代码/链接/表格/任务清单/删除线等，GFM），支持撤销/重做与行内编辑体验；
+- **草稿自动保存**：正文/标题/标签 500ms 防抖写入本地，关掉卡片或刷新页面都不丢；重开自动恢复，可一键「丢弃」；
+- **🕘 最近**：一键列出最近修改的笔记，点标题直接载入编辑器继续改（不需要开完整 TW 去找）；
 - **文件上传**：点「📎 上传」或直接把文件拖进编辑器——文件存到 wiki 的 `files/` 文件夹并随 git 同步；图片插入 `![名](/files/名)`、其它文件插入 `[名](/files/名)`，在 TW 里可直接打开；
 - **Ctrl+Enter 保存**为独立 tiddler；笔记 `type` 自动设为 `text/markdown`，所以上传的图片/链接在 TW 里按 Markdown 正常渲染；
 - 点「**✏️ 在 TW 中编辑**」→ 保存后弹出**独立小窗**（可拖动/缩放）加载 TW 原生编辑器编辑该条。
 
-**🔄 一键同步** — 右下角「同步」悬浮按钮：点一下做 pull → commit → push，按钮上的状态点实时反映 git 状态：
-🟢 已同步 · 🟡 有未提交改动 · 🔴 落后于远端 · ⚪ 离线；悬停可看分支/领先/落后/上次同步时间；每 30s 自动刷新。
-若这次 pull 拉到了新内容，TW 服务自动重启（同端口），界面立即显示最新快照（无需手动去面板点「重启 TW」）。
+**🔧 一键同步 + 面板** —「知识库」按钮是一个**统一入口**，替代了旧版三个叠在右下角的悬浮按钮：
+- **🖥 打开/收起 TW 面板** 与 **🔄 重载 TW 面板**（`ui.showPanelStatus` 控制）；
+- **📝 快速笔记**（`ui.showQuickNote` 控制）；
+- **🔁 同步**：pull → commit → push；FAB 右下角的**状态点**实时反映 git 状态：
+  🟢 已同步 · 🟡 有未提交改动 · 🔴 落后于远端 · ⚪ 离线；悬停可看分支/领先/落后/上次同步时间；每 30s 自动刷新。
+  若这次 pull 拉到了新内容，TW 服务自动重启（同端口），界面立即显示最新快照（无需手动去面板点「重启 TW」）。
 
 **🔧 面板异常** — 面板服务异常时显示错误 +「重试」按钮（POST `/dsh-tiddlywiki/restart`）。
 
@@ -99,7 +110,7 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 | 区块 | 内容 |
 |---|---|
 | 状态/重启 | TW 运行状态 + git 概览 + 「同步」按钮 + 「重启 TW」按钮 |
-| 常规配置 | 快速笔记默认 tag、git 自动 commit/防抖/远端/分支、ui 开关（快速笔记/面板状态/同步按钮）——改了什么保存什么 |
+| 常规配置 | 快速笔记默认 tag、git 自动 commit/防抖/远端/分支、ui 开关（快速笔记/面板状态/同步按钮——分别控制「知识库」按钮里的对应入口）——改了什么保存什么 |
 | 插件管理 | 自带官方插件勾选（可搜索）→ 应用并自动重启 TW |
 | 主题管理 | 自带主题**多选加载 + 单选活动** → 应用并自动重启 TW |
 | 语言管理 | 自带官方语言包勾选（含 zh-Hans 简体）→ 应用并自动重启 TW |
@@ -153,9 +164,9 @@ TW 的界面语言由**语言插件**决定，不是某个配置字符串。tidd
     note:
       tag: "inbox"
     ui:
-      showQuickNote: true           # 是否显示右下角「快速笔记」按钮
-      showPanelStatus: true         # 是否显示 TW 面板右下角「状态/重载」悬浮按钮
-      showSyncButton: true          # 是否显示右下角「同步」悬浮按钮
+      showQuickNote: true           # 是否显示「知识库」按钮里的「快速笔记」入口
+      showPanelStatus: true         # 是否显示「知识库」按钮里的 TW 面板/重载入口与状态行
+      showSyncButton: true          # 是否显示「知识库」按钮里的「同步」入口与 git 状态点
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非 loopback 时才需要
       password: ""
@@ -191,6 +202,8 @@ npm run selftest      # headless：spawn TW → REST 读写 → git → 退出�
 | `/dsh-tiddlywiki/note` | POST | 快速笔记 → 独立 tiddler |
 | `/dsh-tiddlywiki/edit` | POST | 打开 TW 原生编辑器（draft） |
 | `/dsh-tiddlywiki/tags` | GET | 现有非系统 tag（自动补全） |
+| `/dsh-tiddlywiki/recent` | GET | 最近修改的笔记（快速笔记「最近」入口） |
+| `/dsh-tiddlywiki/get` | GET | 读单个 tiddler（快速笔记「最近」载入） |
 | `/dsh-tiddlywiki/sync` | POST | 一键 pull → commit → push |
 | `/dsh-tiddlywiki/upload` | POST | 文件上传到 `files/`（原始 body + `X-Filename`） |
 | `/dsh-tiddlywiki/restart` | POST | 重启 TW 子进程 |

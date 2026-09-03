@@ -104,6 +104,9 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
   font-family: inherit;
 }
+/* The wrapper's display:flex would beat the UA [hidden]{display:none} rule,
+   so the card's show/hide (root.hidden) needs an explicit rule. */
+.dsh-tw-note[hidden] { display: none; }
 .dsh-tw-note-card {
   width: 340px; max-width: calc(100vw - 40px);
   background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
@@ -344,6 +347,113 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-settings-error { color: var(--dsw-alias-state-error-primary, #d13b3b); font-size: 12px; }
 .dsh-tw-settings-search { flex: 0 0 auto; max-width: 220px; }
 .dsh-tw-settings-check { accent-color: var(--dsw-alias-brand-primary, #3e63dd); }
+
+/* ── "知识库" FAB (v0.5: quick-note + sync + panel status merged) ──────────
+   One fixed cluster above the shutdown launcher FAB (bottom:24). The FAB
+   carries a git status dot; the menu pops upward from it. */
+.dsh-tw-fab-wrap {
+  position: fixed; right: 24px; bottom: 88px; z-index: 960;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+}
+.dsh-tw-fab {
+  position: relative;
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  box-shadow: var(--dsw-shadow-lv3, 0 4px 16px rgba(0,0,0,.16)); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background-color 120ms ease, transform 80ms ease;
+}
+.dsh-tw-fab:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
+.dsh-tw-fab:active { transform: scale(.94); }
+.dsh-tw-fab-icon { display: inline-flex; }
+.dsh-tw-fab-dot {
+  position: absolute; right: 0; bottom: 0; width: 11px; height: 11px;
+  border-radius: 50%; border: 2px solid var(--dsw-alias-bg-layer-2, #fff);
+  background: #999; box-sizing: border-box;
+}
+.dsh-tw-fab-dot[data-state="clean"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-fab-dot[data-state="dirty"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
+.dsh-tw-fab-dot[data-state="behind"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-fab-dot[data-state="syncing"] { background: var(--dsw-alias-brand-primary, #3e63dd); }
+.dsh-tw-fab-menu {
+  min-width: 220px; max-width: calc(100vw - 48px);
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  border-radius: 12px; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  box-shadow: var(--dsw-shadow-lv3, 0 8px 30px rgba(0,0,0,.22));
+  font-size: 13px;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  animation: dsh-tw-note-in 160ms ease;
+}
+.dsh-tw-fab-menu[hidden] { display: none; }
+.dsh-tw-fab-status {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 9px; font-size: 12px; color: var(--dsw-alias-label-secondary, #666);
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08));
+  margin-bottom: 4px;
+}
+.dsh-tw-fab-status + .dsh-tw-fab-status { border-bottom: 0; margin-bottom: 4px; }
+.dsh-tw-fab-status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tw-fab-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; flex: none; }
+.dsh-tw-fab-status-dot[data-state="running"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-fab-status-dot[data-state="starting"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
+.dsh-tw-fab-status-dot[data-state="failed"], .dsh-tw-fab-status-dot[data-state="stopped"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-fab-status-dot[data-state="clean"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-fab-status-dot[data-state="dirty"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
+.dsh-tw-fab-status-dot[data-state="behind"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-fab-status-dot[data-state="syncing"] { background: var(--dsw-alias-brand-primary, #3e63dd); }
+.dsh-tw-fab-item {
+  display: flex; align-items: center; gap: 6px; text-align: left;
+  border: none; background: transparent; color: inherit; font: inherit; font-size: 13px;
+  padding: 7px 9px; border-radius: 8px; cursor: pointer;
+}
+.dsh-tw-fab-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-fab-item:active { background: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.18)); }
+
+/* ── quick-note restored-draft banner ─────────────────────────────────────── */
+.dsh-tw-note-draft {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 9px; border-radius: 8px; font-size: 12px;
+  background: color-mix(in srgb, var(--dsw-alias-state-warning-primary, #d9822b) 12%, transparent);
+  color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-note-draft[hidden] { display: none; }
+.dsh-tw-note-draft-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tw-note-draft-discard {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: transparent; color: inherit; font: inherit; font-size: 12px;
+  padding: 2px 10px; border-radius: 999px; cursor: pointer; flex: none;
+}
+.dsh-tw-note-draft-discard:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+
+/* ── quick-note recent-notes picker ───────────────────────────────────────── */
+.dsh-tw-note-recent {
+  position: absolute; right: 0; bottom: calc(100% - 8px); z-index: 70;
+  width: 340px; max-width: calc(100vw - 40px); max-height: 280px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  border-radius: 12px; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  box-shadow: var(--dsw-shadow-lv3, 0 8px 30px rgba(0,0,0,.22));
+  font-size: 13px;
+}
+.dsh-tw-note-recent[hidden] { display: none; }
+.dsh-tw-note-recent-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 6px 8px; border-radius: 7px; cursor: pointer;
+}
+.dsh-tw-note-recent-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-note-recent-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tw-note-recent-meta { flex: none; font-size: 11px; color: var(--dsw-alias-label-dimmed, #999); }
+.dsh-tw-note-recent-muted { padding: 8px 10px; font-size: 12px; color: var(--dsw-alias-label-dimmed, #999); }
+.dsh-tw-note-recent-btn {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease;
+}
+.dsh-tw-note-recent-btn:hover { filter: brightness(.96); }
+.dsh-tw-note-recent-btn:active { transform: scale(.96); }
 `
 
 export function injectStyles(): void {

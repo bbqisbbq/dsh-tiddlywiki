@@ -123,6 +123,12 @@ function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n)
 }
 
+/** Flat one-line snippet for the recent-notes picker. */
+function snippetOf(text: string, max = 120): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length <= max ? flat : `${flat.slice(0, max)}…`
+}
+
 /** Default note title: `YYYY-MM-DD HH:mm` (design doc D6). */
 function timestampTitle(date = new Date()): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
@@ -257,6 +263,63 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         }
       }
       json(res, { ok: true, tags: [...tags].sort((a, b) => a.localeCompare(b, 'zh')) })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /** Recent non-system tiddlers for the quick-note "最近" picker (newest first). */
+  const handleRecent = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const client = deps.getClient()
+    if (client === undefined) {
+      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      return
+    }
+    try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const limitRaw = Number(url.searchParams.get('limit') ?? 15)
+      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(Math.floor(limitRaw), 200)) : 15
+      const items = await client.recent(limit)
+      json(res, {
+        ok: true,
+        limit,
+        items: items.map((t) => ({
+          title: t.title,
+          tags: t.tags ?? [],
+          modified: typeof t.modified === 'string' ? t.modified : null,
+          snippet: snippetOf(t.text ?? ''),
+        })),
+      })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /** Full tiddler for the quick-note "最近" picker (load into the editor). */
+  const handleGet = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const client = deps.getClient()
+    if (client === undefined) {
+      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      return
+    }
+    try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const title = url.searchParams.get('title') ?? ''
+      if (title.length === 0) {
+        json(res, { ok: false, error: 'missing title' }, 400)
+        return
+      }
+      const t = await client.get(title)
+      if (t === undefined) {
+        json(res, { ok: false, notFound: true, title }, 404)
+        return
+      }
+      const fields: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(t)) {
+        if (k === 'title' || k === 'text' || k === 'tags') continue
+        fields[k] = v
+      }
+      json(res, { ok: true, title: t.title, text: t.text ?? '', tags: t.tags ?? [], type: t.type ?? 'text/vnd.tiddlywiki', fields })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -407,6 +470,8 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/note`, handler: (req, res) => { void handleNote(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/edit`, handler: (req, res) => { void handleEdit(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/tags`, handler: (req, res) => { void handleTags(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/recent`, handler: (req, res) => { void handleRecent(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/get`, handler: (req, res) => { void handleGet(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/sync`, handler: (req, res) => { void handleSync(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),

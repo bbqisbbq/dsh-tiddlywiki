@@ -38,9 +38,17 @@ try {
 
   await api.put({ title: '第二篇', text: '一篇中文笔记' })
   const found = await api.search('hello')
-  assert(found.some((t) => t.title === 'Hello'), 'search finds by keyword')
-  const byTag = await api.search('world', 'test')
-  assert(byTag.some((t) => t.title === 'Hello'), 'search honors tag filter')
+  assert(found.items.some((t) => t.title === 'Hello') && found.total >= 1, 'search finds by keyword (items+total)')
+  const byTag = await api.search('world', { tag: 'test' })
+  assert(byTag.items.some((t) => t.title === 'Hello'), 'search honors tag filter')
+  const byTags = await api.search('world', { tags: ['inbox', 'test'] })
+  assert(byTags.items.some((t) => t.title === 'Hello'), 'search honors AND tags array')
+  const byType = await api.search('world', { type: 'text/vnd.tiddlywiki' })
+  assert(byType.total >= 1, 'search honors type filter')
+  const recent = await api.recent(5)
+  assert(recent.some((t) => t.title === 'Hello' || t.title === '第二篇'), 'recent lists newest tiddlers')
+  const tagList = await api.listTags()
+  assert(tagList.some((x) => x.tag === 'inbox' && x.count >= 1), 'listTags returns tag counts')
   const listed = await api.list()
   assert(listed.some((t) => t.title === '第二篇'), 'recipe list contains new tiddler')
 
@@ -106,6 +114,20 @@ try {
   const conflict = await git.pull(wikiDir)
   assert(!conflict.ok, 'pull with diverging same file reports failure')
   assert(conflict.conflictFiles?.includes('tiddlers/Conflict.tid'), `conflict files listed (${conflict.conflictFiles?.join(', ')})`)
+
+  // 5a'. Tiddler-granular conflict resolution: keep-remote (fetch + checkout
+  // FETCH_HEAD) then commit — the keep-local half is trivially "abort already
+  // left local content", exercised by the conflict abort above.
+  const fetchedRes = await git.fetch(wikiDir)
+  assert(fetchedRes.ok, 'resolve: git fetch succeeds')
+  const checkedRes = await git.checkoutFetchHead(wikiDir, ['tiddlers/Conflict.tid'])
+  assert(checkedRes.ok, 'resolve: checkout FETCH_HEAD takes remote version')
+  const resolveCommit = await git.commit(wikiDir, 'resolve conflict (keep remote)')
+  assert(resolveCommit.committed, 'resolve: commit created')
+  const resolvedText = (await readFile(join(wikiDir, 'tiddlers', 'Conflict.tid'), 'utf8')).replace(/\r/g, '')
+  assert(resolvedText === 'remote\n', 'resolve: keep-remote overwrote with the remote version')
+  const afterResolve = await git.status(wikiDir)
+  assert(!afterResolve.dirty, 'resolve: working tree clean after commit')
 
   // 5aa. files/ folder is served by TW without restart (validates the quick-note
   // upload approach: writing under <wiki>/files/ is enough for /files/<name>).
@@ -267,6 +289,18 @@ try {
   // A no-op sync (nothing new on origin) must NOT restart TW.
   const sync2 = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync'), makeRes())
   assert(sync2.ok === true && sync2.changed !== true && sync2.restarted !== true, `no-op sync does not restart (changed=${sync2.changed} restarted=${sync2.restarted})`)
+
+  // /recent + /get: the quick-note "最近" picker backend. Raw files written by
+  // the git tests carry NO title: line, so TW titles them by their file path —
+  // assert on a properly API-written tiddler instead.
+  const routeApi = new TiddlyWebClient(server.url)
+  await routeApi.put({ title: 'RouteNote', text: 'route probe note', tags: ['inbox'] })
+  const recentRes = await callRoute(routeHandlers.get('/dsh-tiddlywiki/recent'), makeReq('/dsh-tiddlywiki/recent?limit=10'), makeRes())
+  assert(recentRes.ok === true && Array.isArray(recentRes.items) && recentRes.items.some((i) => i.title === 'RouteNote'), `recent route returns newest notes (${recentRes.items?.length ?? 0} items)`)
+  const getRes = await callRoute(routeHandlers.get('/dsh-tiddlywiki/get'), makeReq(`/dsh-tiddlywiki/get?title=${encodeURIComponent('RouteNote')}`), makeRes())
+  assert(getRes.ok === true && getRes.title === 'RouteNote' && typeof getRes.text === 'string' && getRes.tags?.includes('inbox'), 'get route returns a full tiddler with tags')
+  const getMissing = await callRoute(routeHandlers.get('/dsh-tiddlywiki/get'), makeReq('/dsh-tiddlywiki/get?title=' + encodeURIComponent('NoSuchTiddler')), makeRes())
+  assert(getMissing.ok === false && getMissing.notFound === true, 'get route reports notFound for a missing tiddler')
   disposeRoutes()
 
   // 5b. Doc-note seed: ONE-SHOT (marker-gated), never overwrites edits.
