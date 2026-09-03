@@ -70,6 +70,7 @@ export interface SessionControllerFace {
       cwd?: string
     }>
   }>
+  create(request: { cwd?: string; workspaceId?: string }): Promise<{ sessionId: string }>
 }
 
 /** Effective UI visibility flags returned by /status (mirror index.ts). */
@@ -327,6 +328,44 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         AbortSignal.timeout(20_000),
       )
       json(res, { ok: true, requestId, sessionId })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/agent/create — create (or adopt) one ordinary session,
+   * optionally inside a workspace path. The picker uses it for "new workspace /
+   * new session"; the created session's cwd becomes its workspace. The directory
+   * is materialised so a brand-new workspace actually exists on disk.
+   */
+  const handleAgentCreate = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (!deps.sendToAgentEnabled()) {
+        json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
+        return
+      }
+      const token = deps.sendToAgentToken().trim()
+      if (token.length > 0) {
+        const got = req.headers['x-send-to-agent-token']
+        const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
+        if (value !== token) {
+          json(res, { ok: false, error: 'unauthorized' }, 401)
+          return
+        }
+      }
+      const body = JSON.parse(await readBody(req)) as { cwd?: unknown }
+      const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : ''
+      const sc = deps.getSessionController()
+      if (sc === undefined) {
+        json(res, { ok: false, error: 'session service unavailable' }, 503)
+        return
+      }
+      if (cwd.length > 0) {
+        await mkdir(cwd, { recursive: true })
+      }
+      const created = await sc.create({ cwd: cwd.length > 0 ? cwd : undefined })
+      json(res, { ok: true, sessionId: created.sessionId, cwd: cwd || null })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -651,6 +690,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/sessions`, handler: (req, res) => { void handleAgentSessions(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: (req, res) => { void handleAgentSend(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/create`, handler: (req, res) => { void handleAgentCreate(req, res) } }),
     ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: (req, res) => { void handleApiProxy(req, res) } }),
     ctx.webServer.register({ kind: 'prefix', path: `${TW_PROXY_PREFIX}`, handler: (req, res) => { void handleTwProxy(req, res) } }),
   ]
