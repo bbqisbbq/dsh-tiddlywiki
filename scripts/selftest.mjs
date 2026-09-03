@@ -149,8 +149,10 @@ try {
   assert(editResult2.draftTitle === editResult.draftTitle, 'existing draft is reused')
   const draft2 = await editApi.get(editResult2.draftTitle)
   assert((draft2.text ?? '') === 'updated body', 'draft updated in place')
+  assert((draft2.type ?? draft2.fields?.type) === 'text/markdown', 'draft carries text/markdown (keeps the type when saved in TW)')
   const target = await editApi.get('EditTarget')
   assert((target.text ?? '') === 'updated body', 'real tiddler saved with latest text')
+  assert((target.type ?? target.fields?.type) === 'text/markdown', 'native-editor target is saved as Markdown')
   // Empty-text open must NOT clobber an existing tiddler.
   const noClobber = await openInTwEditor(editApi, 'EditTarget', '', ['inbox'])
   assert(noClobber.draftTitle === editResult.draftTitle, 'empty-text open reuses draft')
@@ -230,6 +232,17 @@ try {
     makeRes(),
   )
   assert(upDotdot.ok === false, 'bare ".." filename rejected')
+
+  // /note: quick-note tiddlers are saved as Markdown so uploaded images/links
+  // actually render in TW (a type-less tiddler would show raw `![..]`).
+  const note = await callRoute(
+    routeHandlers.get('/dsh-tiddlywiki/note'),
+    makeReq('/dsh-tiddlywiki/note', Buffer.from(JSON.stringify({ title: 'NoteTypeTest', tags: ['inbox'], text: '![img](/files/a.png)' }))),
+    makeRes(),
+  )
+  assert(note.ok === true && note.type === 'text/markdown', `note response carries the markdown type (${JSON.stringify(note)})`)
+  const noteTid = await new TiddlyWebClient(server.url).get('NoteTypeTest')
+  assert((noteTid.type ?? noteTid.fields?.type) === 'text/markdown', 'note tiddler type is text/markdown on the wiki')
 
   // /sync: pull a change made on the clone side, then commit + push. The wiki
   // is still mid-divergence from the step-5 conflict test, so first align it

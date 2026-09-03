@@ -33,6 +33,11 @@ const MAX_PROXY_BODY_BYTES = 16 * 1024 * 1024
 /** Max uploaded file body. */
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
+/** Tiddler type for quick-notes: Markdown, so the uploaded images/links and
+ *  any Markdown in the note actually render in TW (a type-less tiddler is
+ *  treated as plain wiki text and shows raw `![..]`/`[..]` instead). */
+const NOTE_TYPE = 'text/markdown'
+
 /** Structural webserver face (a subset of dsh-host-webserver). */
 export interface WebServerFace {
   register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }): () => void
@@ -125,10 +130,13 @@ function timestampTitle(date = new Date()): string {
 
 /**
  * Open a tiddler in TW's NATIVE editor: save the tiddler (when text is
- * non-empty), reuse or create a DRAFT tiddler carrying `draft.of`/`draft.title`
- * (TW's story view renders drafts with the EditTemplate — list.js:
- * `isDraft && editTemplate`), and return the draft title so the client can
- * navigate the panel iframe to `#<draftTitle>`.
+ * non-empty) as Markdown, reuse or create a DRAFT tiddler carrying
+ * `draft.of`/`draft.title` (TW's story view renders drafts with the
+ * EditTemplate — list.js: `isDraft && editTemplate`), and return the draft
+ * title so the client can navigate the panel iframe to `#<draftTitle>`.
+ * The draft carries the same `text/markdown` type as the note so saving it in
+ * TW keeps Markdown (a draft without a matching type would overwrite the
+ * note's type back to plain wiki text).
  */
 export async function openInTwEditor(
   client: TiddlyWebClient,
@@ -137,7 +145,7 @@ export async function openInTwEditor(
   tags: string[],
 ): Promise<{ title: string; draftTitle: string }> {
   if (text.trim().length > 0) {
-    await client.put({ title, text, tags })
+    await client.put({ title, text, tags, type: NOTE_TYPE })
   }
   // Draft content: the provided text, else the existing tiddler's content.
   let draftText = text
@@ -159,7 +167,7 @@ export async function openInTwEditor(
     /* fall back to a fresh draft */
   }
   if (draftTitle === undefined) draftTitle = `Draft of "${title}" ${Date.now()}`
-  await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: 'text/vnd.tiddlywiki' })
+  await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: NOTE_TYPE })
   return { title, draftTitle }
 }
 
@@ -206,9 +214,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
       const tags = resolveTags(body, deps.noteDefaults().tag)
-      await client.put({ title, text, tags })
+      await client.put({ title, text, tags, type: NOTE_TYPE })
       deps.autoCommit()
-      json(res, { ok: true, title, tag: tags.join(' '), tags, text })
+      json(res, { ok: true, title, tag: tags.join(' '), tags, text, type: NOTE_TYPE })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }

@@ -152,7 +152,9 @@ const PROMPT_TEXT = `## TiddlyWiki 持久知识库
 2. 收工 commit + push：\`tiddlywiki_git_sync action=sync\`（pull → commit → push）。
 3. 插件会自动防抖 commit（默认 60s），手动同步用上面的工具。
 
-把 wiki 当作长期记忆与知识沉淀的地方：会议纪要、决策记录、调研笔记、随手的想法都可存成独立 tiddler（tag 建议用 inbox/meeting/decision 等便于检索）。`
+把 wiki 当作长期记忆与知识沉淀的地方：会议纪要、决策记录、调研笔记、随手的想法都可存成独立 tiddler（tag 建议用 inbox/meeting/decision 等便于检索）。
+
+用本插件自动创建笔记时，除了业务性 tag 外，请把「当前工作区（项目）的名字」也作为标签之一加上去（例如 \`tiddlywiki_put\` 的 tags 里带上当前 workspace 名），这样笔记能按项目归集、检索。`
 
 /**
  * Mount the host half.
