@@ -22,7 +22,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
-import { registerRoutes, type WebServerFace } from './host/routes.ts'
+import { registerRoutes, type SessionControllerFace, type WebServerFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { seedDocNote, DOC_NOTE_TITLE } from './host/seed-notes.ts'
@@ -76,7 +76,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
-  ui: { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean }
+  ui: { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean; sendToAgent: { enabled: boolean } }
   auth: { username?: string; password?: string }
 }
 
@@ -86,7 +86,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
-  ui: { showQuickNote: true, showPanelStatus: true, showSyncButton: true },
+  ui: { showQuickNote: true, showPanelStatus: true, showSyncButton: true, sendToAgent: { enabled: true } },
   auth: { username: '', password: '' },
 }
 
@@ -353,6 +353,9 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // Routes + settings-panel admin surface (lazy webServer).
   ctx.inject(['webServer'], (webCtx: HostCtx) => {
     const ws = (webCtx as unknown as { webServer: WebServerFace }).webServer
+    // sessionController is a core host service; read it lazily so the existing
+    // routes keep working even if it is ever unavailable.
+    const sessionController = (webCtx.get('sessionController') as SessionControllerFace | undefined)
     const disposeRoutes = registerRoutes({ webServer: ws }, {
       server,
       getClient: client,
@@ -361,6 +364,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       noteDefaults: () => ({ tag: effectiveNoteTag() }),
       uiDefaults: () => effectiveUi(),
       getWikiPath: () => wikiPath,
+      sessionController,
+      sendToAgentEnabled: () => eff().ui?.sendToAgent?.enabled !== false,
+      sendToAgentToken: () => {
+        const token = eff().ui?.sendToAgent?.token
+        return typeof token === 'string' ? token : ''
+      },
     })
     const adminDeps: AdminDeps = {
       server,

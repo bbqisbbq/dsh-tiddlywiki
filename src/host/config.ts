@@ -27,6 +27,13 @@ export interface PluginConfigShape {
     showPanelStatus?: boolean
     /** 是否在界面右下角显示「同步」悬浮按钮（默认 true）。 */
     showSyncButton?: boolean
+    /**
+     * 一键发送给 Agent（TW 笔记 → DSH 会话注入）。
+     * `enabled: false` 时路由 403、TW 端按钮点击提示未启用；`token` 非空时
+     * 路由要求请求头 `x-send-to-agent-token` 与之匹配；`endpoint` 可覆盖
+     * TW 端默认的 `location.origin + /dsh-tiddlywiki`。
+     */
+    sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }
   }
   uiLanguage?: string
   [key: string]: unknown

@@ -47,6 +47,31 @@ export interface WebServerFace {
   register(route: { kind: 'exact' | 'prefix'; path: string; handler: (req: IncomingMessage, res: ServerResponse) => void }): () => void
 }
 
+/**
+ * Structural face over the DSH `sessionController` service (a subset of
+ * dsh-api-session-controller). Only the methods the agent-send routes need are
+ * declared; the runtime instance is a real Service, never inspected data.
+ */
+export interface SessionControllerFace {
+  prompt(
+    request: { requestId: string; sessionId: string; mode: 'queue' | 'steer'; content: Array<{ type: 'text'; text: string }> },
+    signal: AbortSignal,
+  ): Promise<{ accepted: boolean }>
+  list(
+    request: { cursor?: string },
+    signal: AbortSignal,
+  ): Promise<{
+    items: Array<{
+      sessionId: string
+      updatedAt?: number
+      running?: boolean
+      blank?: boolean
+      parentSessionId?: string
+      cwd?: string
+    }>
+  }>
+}
+
 /** Effective UI visibility flags returned by /status (mirror index.ts). */
 export interface UiDefaultsPublic {
   showQuickNote: boolean
@@ -62,6 +87,12 @@ export interface RouteDeps {
   noteDefaults: () => { tag: string }
   uiDefaults: () => UiDefaultsPublic
   getWikiPath: () => string
+  /** Optional DSH sessionController service (agent-send routes only). */
+  sessionController?: SessionControllerFace
+  /** Whether the one-click send-to-agent feature is enabled (config switch). */
+  sendToAgentEnabled: () => boolean
+  /** Optional shared token that must match `x-send-to-agent-token` when set. */
+  sendToAgentToken: () => string
 }
 
 function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<string> {
@@ -227,6 +258,77 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       gitSummary = null
     }
     json(res, { ok: true, ...view, twProxy: TW_PROXY_PATH, git: gitSummary, note: { tag: deps.noteDefaults().tag }, ui: deps.uiDefaults() })
+  }
+
+  /**
+   * GET /dsh-tiddlywiki/agent/sessions — visible ordinary sessions for the TW
+   * one-click picker (excludes subagent sessions, activity-descending).
+   */
+  const handleAgentSessions = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      const sc = deps.sessionController
+      if (sc === undefined) {
+        json(res, { ok: false, error: 'session service unavailable' }, 503)
+        return
+      }
+      const list = await sc.list({}, AbortSignal.timeout(10_000))
+      const items = (list.items ?? [])
+        .filter((s) => s.parentSessionId === undefined)
+        .map((s) => ({
+          sessionId: s.sessionId,
+          cwd: s.cwd ?? null,
+          running: !!s.running,
+          blank: !!s.blank,
+          updatedAt: s.updatedAt ?? 0,
+        }))
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+      json(res, { ok: true, items })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/agent/send — deliver a note to one agent session as a
+   * queued user message (sessionController.prompt, the same API the GUI chat
+   * input uses). Guards: feature switch, optional shared token, body shape.
+   */
+  const handleAgentSend = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (!deps.sendToAgentEnabled()) {
+        json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
+        return
+      }
+      const token = deps.sendToAgentToken().trim()
+      if (token.length > 0) {
+        const got = req.headers['x-send-to-agent-token']
+        const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
+        if (value !== token) {
+          json(res, { ok: false, error: 'unauthorized' }, 401)
+          return
+        }
+      }
+      const body = JSON.parse(await readBody(req)) as { sessionId?: unknown; text?: unknown }
+      const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? body.sessionId.trim() : ''
+      const text = typeof body.text === 'string' && body.text.trim().length > 0 ? body.text.trim() : ''
+      if (sessionId.length === 0 || text.length === 0) {
+        json(res, { ok: false, error: 'sessionId and text are required' }, 400)
+        return
+      }
+      const sc = deps.sessionController
+      if (sc === undefined) {
+        json(res, { ok: false, error: 'session service unavailable' }, 503)
+        return
+      }
+      const requestId = `tw-send-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      await sc.prompt(
+        { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text }] },
+        AbortSignal.timeout(20_000),
+      )
+      json(res, { ok: true, requestId, sessionId })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
   }
 
   const handleNote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -546,6 +648,8 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/sync`, handler: (req, res) => { void handleSync(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/sessions`, handler: (req, res) => { void handleAgentSessions(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: (req, res) => { void handleAgentSend(req, res) } }),
     ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: (req, res) => { void handleApiProxy(req, res) } }),
     ctx.webServer.register({ kind: 'prefix', path: `${TW_PROXY_PREFIX}`, handler: (req, res) => { void handleTwProxy(req, res) } }),
   ]
