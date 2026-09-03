@@ -6,10 +6,11 @@
  * Requires a prior `npm run build` (imports the public host exports).
  */
 import { EventEmitter } from 'node:events'
+import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -187,14 +188,20 @@ try {
   // the webserver face (mock), so the quick-note upload + one-click sync
   // routes are covered headlessly end to end.
   const routeHandlers = new Map()
+  const registered = []
   const mockCtx = {
     webServer: {
-      register: (route) => { routeHandlers.set(route.path, route.handler); return () => {} },
+      register: (route) => {
+        routeHandlers.set(route.path, route.handler)
+        registered.push({ kind: route.kind, path: route.path, handler: route.handler })
+        return () => {}
+      },
     },
   }
-  const makeReq = (url, body) => {
+  const makeReq = (url, body, method = 'GET') => {
     const req = new EventEmitter()
     req.url = url
+    req.method = method
     req.headers = {}
     req.destroy = () => {}
     queueMicrotask(() => { if (body !== undefined) req.emit('data', body); req.emit('end') })
@@ -227,6 +234,15 @@ try {
     return JSON.parse(res._payload)
   }
 
+  // Like callRoute but returns the raw (possibly binary) response body.
+  const callRaw = async (handler, req, res, ms = 8000) => {
+    handler(req, res)
+    const deadline = Date.now() + ms
+    while (res._payload === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5))
+    if (res._payload === null) throw new Error('route did not respond in time')
+    return res._payload
+  }
+
   // /upload: raw bytes land under <wiki>/files/ with a /files/<name> URL;
   // a name collision gets a -1 suffix instead of overwriting.
   const up = await callRoute(
@@ -234,7 +250,7 @@ try {
     makeReq('/dsh-tiddlywiki/upload?name=hello%20notes.txt', Buffer.from('file content here')),
     makeRes(),
   )
-  assert(up.ok === true && up.name === 'hello notes.txt' && up.url === '/files/hello%20notes.txt', `upload returns name+url (${JSON.stringify(up)})`)
+  assert(up.ok === true && up.name === 'hello notes.txt' && up.url === `${TW_PROXY_PATH}files/hello%20notes.txt`, `upload returns name+proxy url (${JSON.stringify(up)})`)
   assert(await readFile(join(wikiDir, 'files', 'hello notes.txt'), 'utf8') === 'file content here', 'uploaded bytes saved under wiki files/')
   const up2 = await callRoute(
     routeHandlers.get('/dsh-tiddlywiki/upload'),
@@ -301,6 +317,78 @@ try {
   assert(getRes.ok === true && getRes.title === 'RouteNote' && typeof getRes.text === 'string' && getRes.tags?.includes('inbox'), 'get route returns a full tiddler with tags')
   const getMissing = await callRoute(routeHandlers.get('/dsh-tiddlywiki/get'), makeReq('/dsh-tiddlywiki/get?title=' + encodeURIComponent('NoSuchTiddler')), makeRes())
   assert(getMissing.ok === false && getMissing.notFound === true, 'get route reports notFound for a missing tiddler')
+
+  // /tw same-origin proxy: the embedded editor's whole frontend is served to
+  // the browser through the DSH origin (remote-access mode). Verify it strips
+  // the prefix, serves JSON + binary losslessly, and forwards writes (CSRF).
+  const proxyHandler = routeHandlers.get(TW_PROXY_PREFIX)
+  assert(proxyHandler !== undefined, 'tw same-origin proxy route registered')
+  const proxyStatus = await callRaw(proxyHandler, makeReq(`${TW_PROXY_PREFIX}/status`), makeRes())
+  const proxyStatusJson = JSON.parse(proxyStatus.toString('utf8'))
+  assert(proxyStatusJson.username !== undefined && proxyStatusJson.space !== undefined, `proxy /status returns TW status JSON (${JSON.stringify(proxyStatusJson).slice(0, 80)})`)
+  const proxyTiddler = await callRaw(proxyHandler, makeReq(`${TW_PROXY_PREFIX}/recipes/default/tiddlers/${encodeURIComponent('RouteNote')}`), makeRes())
+  assert(JSON.parse(proxyTiddler.toString('utf8')).title === 'RouteNote', 'proxy serves the TiddlyWeb read route (same content as the host client)')
+  await mkdir(join(wikiDir, 'files'), { recursive: true })
+  const binary = Buffer.from([0, 1, 2, 3, 254, 255])
+  await writeFile(join(wikiDir, 'files', 'proxy.bin'), binary)
+  const proxyFile = await callRaw(proxyHandler, makeReq(`${TW_PROXY_PREFIX}/files/proxy.bin`), makeRes())
+  assert(proxyFile.equals(binary), 'proxy serves /files/ bytes losslessly (arrayBuffer, not .text())')
+  const proxyWrite = await callRaw(proxyHandler, makeReq(`${TW_PROXY_PREFIX}/recipes/default/tiddlers/ProxyWrite`, Buffer.from(JSON.stringify({ title: 'ProxyWrite', text: 'via proxy', tags: ['test'] })), 'PUT'), makeRes())
+  assert(proxyWrite.length === 0, 'proxy PUT returns an empty body (204)')
+  const proxyWritten = await api.get('ProxyWrite')
+  assert(proxyWritten?.text === 'via proxy', 'proxy PUT reached TW (CSRF header injected)')
+
+  // ensureTwWebHost: TW's frontend API base must point at the same-origin
+  // proxy; a missing/legacy-default tiddler is replaced, a user override kept.
+  await ensureTwWebHost(api)
+  const hostTid = await api.get(TW_WEB_HOST_TIDDLER)
+  assert(hostTid?.text === TW_PROXY_PATH, `tiddlyweb/host points at the same-origin proxy (${JSON.stringify(hostTid?.text)})`)
+  await api.put({ title: TW_WEB_HOST_TIDDLER, text: '$protocol$//$host$/', type: 'text/plain', tags: [] })
+  await ensureTwWebHost(api)
+  assert((await api.get(TW_WEB_HOST_TIDDLER))?.text === TW_PROXY_PATH, 'legacy default host replaced by the proxy path')
+  await api.put({ title: TW_WEB_HOST_TIDDLER, text: 'https://custom.example/', type: 'text/plain', tags: [] })
+  await ensureTwWebHost(api)
+  assert((await api.get(TW_WEB_HOST_TIDDLER))?.text === 'https://custom.example/', 'custom tiddlyweb/host override is honored')
+
+  // Real-HTTP end-to-end: a mini node:http server replicating
+  // dsh-host-webserver's exact-then-longest-prefix match, driving the real
+  // route handlers over real sockets — the browser view of the proxy
+  // (status codes, content-type, served index HTML) rather than direct calls.
+  const mini = createServer((req, res) => {
+    const pathname = new URL(req.url ?? '/', 'http://x').pathname
+    let handler
+    const exact = registered.find((r) => r.kind === 'exact' && r.path === pathname)
+    if (exact !== undefined) handler = exact.handler
+    else {
+      let best
+      for (const r of registered) {
+        if (r.kind !== 'prefix') continue
+        if (pathname !== r.path && !pathname.startsWith(`${r.path}/`)) continue
+        if (best === undefined || r.path.length > best.path.length) best = r
+      }
+      handler = best?.handler
+    }
+    if (handler === undefined) { res.writeHead(404); res.end(); return }
+    Promise.resolve(handler(req, res)).catch((err) => {
+      if (!res.headersSent) { res.writeHead(400); res.end(String(err)) }
+      else res.destroy()
+    })
+  })
+  const miniPort = await new Promise((resolveP) => {
+    mini.listen(0, '127.0.0.1', () => resolveP(mini.address().port))
+  })
+  const miniBase = `http://127.0.0.1:${miniPort}`
+  const indexRes = await fetch(`${miniBase}/dsh-tiddlywiki/tw/`)
+  const indexHtml = await indexRes.text()
+  assert(indexRes.status === 200 && (indexRes.headers.get('content-type') ?? '').includes('text/html'), `proxy serves the TW index as html (${indexRes.status} ${indexRes.headers.get('content-type')})`)
+  assert(indexHtml.includes('<html') && indexHtml.includes('tiddlywiki'), 'proxy index HTML is the TW app (not a 404 shell)')
+  const statusRes = await fetch(`${miniBase}/dsh-tiddlywiki/tw/status`)
+  const statusJson = await statusRes.json()
+  assert(statusRes.status === 200 && statusJson.anonymous === true, `proxy /status over real HTTP (${statusRes.status} anon=${statusJson.anonymous})`)
+  const exactRes = await fetch(`${miniBase}/dsh-tiddlywiki/status`)
+  assert(exactRes.status === 200 && (await exactRes.json()).twProxy === TW_PROXY_PATH, 'exact /status route wins and reports the same-origin twProxy path')
+  await new Promise((resolveP) => mini.close(resolveP))
+
   disposeRoutes()
 
   // 5b. Doc-note seed: ONE-SHOT (marker-gated), never overwrites edits.

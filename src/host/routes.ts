@@ -7,20 +7,24 @@
  * | /dsh-tiddlywiki/note      | POST   | quick-note → independent tiddler         |
  * | /dsh-tiddlywiki/restart   | POST   | one-click retry/restart of the TW child  |
  * | /dsh-tiddlywiki/api/*     | any    | passthrough to the TW service (JSON)     |
+ * | /dsh-tiddlywiki/tw/*      | any    | SAME-ORIGIN TW proxy (index + files + TiddlyWeb API) |
  *
- * Matching is exact-over-prefix, so the exact routes win and the `/api`
- * prefix catches the rest. Client calls are same-origin (the DSH web server),
- * so no CORS is involved.
+ * Matching is exact-over-prefix, so the exact routes win and the `/api` /
+ * `/tw` prefixes catch the rest. Client calls are same-origin (the DSH web
+ * server), so no CORS is involved. The `/tw` proxy is the remote-access
+ * bridge: it serves the ENTIRE TW frontend to the browser through the DSH
+ * origin (see TW_PROXY_PATH in wiki.ts), so the embedded editor works no
+ * matter which host/domain the user reaches DSH on.
  *
  * @module dsh-tiddlywiki/host/routes
  */
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http'
 import { mkdir, writeFile, access } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
-import { PATH_PREFIX } from './wiki.ts'
+import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 
 export const ROUTE_PREFIX = PATH_PREFIX
 
@@ -95,6 +99,26 @@ function readBodyBuffer(req: IncomingMessage, limit = MAX_UPLOAD_BYTES): Promise
     req.on('end', () => resolveP(Buffer.concat(chunks)))
     req.on('error', rejectP)
   })
+}
+
+/** Header names forwarded to the upstream TW service by the proxy routes. */
+const FORWARD_HEADER_NAMES = [
+  'accept', 'accept-encoding', 'content-type', 'cookie', 'authorization',
+  'if-none-match', 'if-modified-since', 'origin', 'referer', 'user-agent',
+] as const
+
+/** Copy a safe, string-valued subset of the request headers upstream. */
+function forwardHeaders(headers: IncomingHttpHeaders): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const name of FORWARD_HEADER_NAMES) {
+    // Index through the string index signature so known header names (typed
+    // `string`) do not hide the `string[]` repeat case via their specific
+    // property declarations.
+    const value: string | string[] | undefined = headers[name as string]
+    if (typeof value === 'string') out[name] = value
+    else if (Array.isArray(value) && value.length > 0) out[name] = value.join(', ')
+  }
+  return out
 }
 
 /**
@@ -202,7 +226,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     } catch {
       gitSummary = null
     }
-    json(res, { ok: true, ...view, git: gitSummary, note: { tag: deps.noteDefaults().tag }, ui: deps.uiDefaults() })
+    json(res, { ok: true, ...view, twProxy: TW_PROXY_PATH, git: gitSummary, note: { tag: deps.noteDefaults().tag }, ui: deps.uiDefaults() })
   }
 
   const handleNote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -241,7 +265,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const text = typeof body.text === 'string' ? body.text : ''
       const result = await openInTwEditor(client, title, text, tags)
       deps.autoCommit()
-      json(res, { ok: true, ...result, twUrl: deps.server.url })
+      json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -426,7 +450,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         ok: true,
         name: candidate,
         path: `files/${candidate}`,
-        url: `/files/${encodeURIComponent(candidate)}`,
+        // Same-origin proxy URL: the embedded TW editor resolves image links
+        // against the DSH origin, so a root-absolute `/files/...` would miss.
+        url: `${TW_PROXY_PATH}files/${encodeURIComponent(candidate)}`,
         size: buf.length,
         type: req.headers['content-type'] ?? 'application/octet-stream',
       })
@@ -465,6 +491,51 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
   }
 
+  /**
+   * SAME-ORIGIN proxy /dsh-tiddlywiki/tw/<rest> → TW root /<rest>. Serves the
+   * ENTIRE TW frontend (index HTML, /files/*, the TiddlyWeb API) to the
+   * browser through the DSH origin, so the embedded editor works from any
+   * host/domain the user reaches DSH on (loopback, LAN, Tailscale, domain,
+   * HTTPS). The browser never talks to the loopback TW child directly; DSH
+   * does, on the same machine. Binary responses are buffered losslessly
+   * (arrayBuffer) — unlike the /api JSON proxy, this route must never .text().
+   */
+  const handleTwProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const client = deps.getClient()
+    if (client === undefined) {
+      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      return
+    }
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const rest = url.pathname.replace(new RegExp(`^${TW_PROXY_PREFIX}(?=/|$)`), '') || '/'
+    try {
+      const method = (req.method ?? 'GET').toUpperCase()
+      const headers = forwardHeaders(req.headers)
+      // TW's CSRF gate requires X-Requested-With on writes; forward it through.
+      if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
+      const init: RequestInit = { method, headers, signal: AbortSignal.timeout(30_000) }
+      if (method === 'PUT' || method === 'POST') init.body = await readBodyBuffer(req, MAX_UPLOAD_BYTES)
+      const upstream = await fetch(`${deps.server.url}${rest}${url.search}`, init)
+      const data = Buffer.from(await upstream.arrayBuffer())
+      const responseHeaders: Record<string, string> = {
+        'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
+        'cache-control': upstream.headers.get('cache-control') ?? 'no-store',
+      }
+      for (const name of ['etag', 'last-modified', 'content-disposition']) {
+        const value = upstream.headers.get(name)
+        if (value !== null) responseHeaders[name] = value
+      }
+      res.writeHead(upstream.status, responseHeaders)
+      res.end(data)
+    } catch (err) {
+      if (res.headersSent) {
+        res.end()
+        return
+      }
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 502)
+    }
+  }
+
   const disposers = [
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/status`, handler: (req, res) => { void handleStatus(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/note`, handler: (req, res) => { void handleNote(req, res) } }),
@@ -476,6 +547,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
     ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: (req, res) => { void handleApiProxy(req, res) } }),
+    ctx.webServer.register({ kind: 'prefix', path: `${TW_PROXY_PREFIX}`, handler: (req, res) => { void handleTwProxy(req, res) } }),
   ]
   return () => {
     for (const dispose of disposers) dispose()

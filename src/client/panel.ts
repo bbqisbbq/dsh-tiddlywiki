@@ -10,10 +10,13 @@
  * Toggling rides the shared PanelState; cross-plugin exclusivity rides the
  * `dsh-panel-activate` event (same protocol as dsh-taskboard).
  *
- * The iframe points DIRECTLY at the TW service (http://127.0.0.1:<port>),
- * bypassing reverse-proxy sensitivity (design doc R1 — proxy is only a
- * fallback). The panel reads /status first and only sets iframe.src when the
- * service is actually running.
+ * The iframe points at the SAME-ORIGIN TW proxy (`<origin>/dsh-tiddlywiki/tw/`,
+ * remote-access mode R1): the browser only talks to the DSH origin — which it
+ * already reaches over loopback, LAN, Tailscale, a domain or HTTPS — and DSH
+ * proxies to the loopback TW child. The panel reads /status first and only
+ * sets iframe.src when the service is actually running. Because the proxy URL
+ * is origin-relative and port-independent, a TW restart never reloads the
+ * iframe, so an in-progress edit keeps its unsaved state.
  *
  * @module dsh-tiddlywiki/client/panel
  */
@@ -76,6 +79,8 @@ interface StatusPayload {
   ok?: boolean
   status: string
   url?: string
+  /** Same-origin TW proxy path (e.g. /dsh-tiddlywiki/tw/); the iframe base. */
+  twProxy?: string
   wikiPath?: string
   error?: string
   note?: { tag?: string }
@@ -232,9 +237,18 @@ export function mountPanel(state: PanelState): () => void {
       showError('无法访问 /dsh-tiddlywiki/status')
       return
     }
-    if (payload.status === 'running' && typeof payload.url === 'string') {
+    if (payload.status === 'running') {
       refreshAttempts = 0
-      showFrame(payload.url)
+      // Same-origin proxy URL: build from the page's own origin so it works no
+      // matter which host/domain the user reached DSH on. Fall back to the
+      // legacy loopback `url` for older servers that do not send twProxy.
+      if (typeof payload.twProxy === 'string') {
+        showFrame(new URL(payload.twProxy, window.location.origin).href)
+      } else if (typeof payload.url === 'string') {
+        showFrame(payload.url)
+      } else {
+        showError('服务未返回编辑器地址')
+      }
       return
     }
     if (payload.status === 'starting') {

@@ -634,7 +634,11 @@ export function createNoteWidget(): NoteWidgetHandle {
         }
         clearDraft()
         hideDraftBanner()
-        openEditorPopup(`${payload.twUrl}#${encodeURIComponent(payload.draftTitle)}`, payload.title ?? title)
+        // twUrl is the same-origin proxy path (e.g. /dsh-tiddlywiki/tw/);
+        // resolve it against this page's origin so the popup works from any
+        // host/domain DSH is reached on (loopback, LAN, Tailscale, HTTPS).
+        const popupUrl = `${new URL(payload.twUrl, location.origin).href}#${encodeURIComponent(payload.draftTitle)}`
+        openEditorPopup(popupUrl, payload.title ?? title)
         toast(`已在弹出窗口打开「${payload.title ?? title}」编辑器`)
       } catch (err) {
         toast(`打开失败：${err instanceof Error ? err.message : String(err)}`)

@@ -28,7 +28,7 @@ import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } fr
 import { seedDocNote, DOC_NOTE_TITLE } from './host/seed-notes.ts'
 import { TiddlyWebClient } from './host/tw-api.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
-import { PATH_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
+import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
 
 /** Cordis plugin name (also the client loader id / profile row id). */
@@ -38,7 +38,7 @@ export const name = 'dsh-tiddlywiki'
 export const inject = ['tools', 'systemPrompt']
 
 /** Re-exports for the headless selftest and future consumers. */
-export { AutoCommitter, GitFace, PATH_PREFIX, TiddlyWebClient, WikiServer, dshHomePath, defineTool }
+export { AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, WikiServer, dshHomePath, defineTool }
 export { ConfigStore, deepMerge } from './host/config.ts'
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
@@ -88,6 +88,31 @@ const DEFAULTS: ResolvedConfig = {
   note: { tag: 'inbox' },
   ui: { showQuickNote: true, showPanelStatus: true, showSyncButton: true },
   auth: { username: '', password: '' },
+}
+
+/** Config tiddler steering TW's frontend API base (tiddlywebadaptor). */
+export const TW_WEB_HOST_TIDDLER = '$:/config/tiddlyweb/host'
+/** The legacy default value this plugin replaces with the same-origin proxy. */
+const TW_WEB_HOST_DEFAULT = '$protocol$//$host$/'
+
+/**
+ * Point TW's frontend at the same-origin DSH proxy (remote-access mode, R1).
+ * The tiddlywebadaptor builds every API URL from $:/config/tiddlyweb/host; its
+ * default `$protocol$//$host$/` resolves to the iframe's origin ROOT, which
+ * 404s whenever the browser is not on the same machine as TW. Written only
+ * when the tiddler is missing or still the legacy default — a user override is
+ * honored (e.g. someone who really does expose TW on a dedicated origin).
+ */
+export async function ensureTwWebHost(client: TiddlyWebClient | undefined): Promise<void> {
+  if (client === undefined) return
+  let current: string | undefined
+  try {
+    current = (await client.get(TW_WEB_HOST_TIDDLER))?.text
+  } catch {
+    current = undefined
+  }
+  if (current !== undefined && current.trim() !== TW_WEB_HOST_DEFAULT) return
+  await client.put({ title: TW_WEB_HOST_TIDDLER, text: TW_PROXY_PATH, type: 'text/plain', tags: [] })
 }
 
 /** Expand $VAR / ${VAR} / %VAR% from process.env (config uses $DSH_HOME). */
@@ -282,6 +307,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     try {
       await server.start()
       await configStore.load(client())
+      // Point TW's frontend at the same-origin DSH proxy (remote-access mode):
+      // runs before git bootstrap so the config tiddler joins the first commit.
+      try {
+        await ensureTwWebHost(client())
+      } catch (err) {
+        console.warn('[dsh-tiddlywiki] ensuring $:/config/tiddlyweb/host:', err)
+      }
       // Seeds (run after the effective config is loaded):
       //  - doc note: ONE-SHOT — a fresh wiki gets the plugin guide; deleting
       //    it afterwards survives restarts (see seedDocNote).

@@ -15,7 +15,7 @@
 | 能力 | 说明 |
 |---|---|
 | 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `batch_put` / `rename` / `delete` / `recent` / `list_tags` / `git_sync` / `git_resolve` 十个工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
-| 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（iframe 直连 TW 服务） |
+| 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
 | 🔄 **一键同步** | 「知识库」按钮 →「🔁 同步」：pull → commit → push；FAB 上的状态点实时反映 git 状态（已同步/待提交/可更新/离线） |
 | ⚙️ **设置页** | DSH 设置 →「TiddlyWiki 知识库」：插件/主题/语言管理与运行配置，应用后自动重启 TW |
@@ -86,13 +86,13 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 
 ### 🧑‍💻 给人：界面操作
 
-**🧭 中央列编辑器** — 侧边栏「TiddlyWiki」按钮开关中央编辑器面板（iframe 直连 TW 服务），完整 TW 5 编辑器。
+**🧭 中央列编辑器** — 侧边栏「TiddlyWiki」按钮开关中央编辑器面板（**同源代理**：iframe 指向 `<DSH origin>/dsh-tiddlywiki/tw/`，由 DSH 转发到回环上的 TW 服务），完整 TW 5 编辑器。
 
 **📝 快速笔记** — 右下角「**知识库**」悬浮按钮 →「📝 快速笔记」（可折叠）：
 - **CodeMirror 6 编辑器**：真正的 Markdown 语法树高亮（标题/列表/代码/链接/表格/任务清单/删除线等，GFM），支持撤销/重做与行内编辑体验；
 - **草稿自动保存**：正文/标题/标签 500ms 防抖写入本地，关掉卡片或刷新页面都不丢；重开自动恢复，可一键「丢弃」；
 - **🕘 最近**：一键列出最近修改的笔记，点标题直接载入编辑器继续改（不需要开完整 TW 去找）；
-- **文件上传**：点「📎 上传」或直接把文件拖进编辑器——文件存到 wiki 的 `files/` 文件夹并随 git 同步；图片插入 `![名](/files/名)`、其它文件插入 `[名](/files/名)`，在 TW 里可直接打开；
+- **文件上传**：点「📎 上传」或直接把文件拖进编辑器——文件存到 wiki 的 `files/` 文件夹并随 git 同步；图片插入 `![名](/dsh-tiddlywiki/tw/files/名)`、其它文件插入 `[名](/dsh-tiddlywiki/tw/files/名)`（**同源代理 URL**，在 TW 与快速笔记预览里都能打开）；
 - **Ctrl+Enter 保存**为独立 tiddler；笔记 `type` 自动设为 `text/markdown`，所以上传的图片/链接在 TW 里按 Markdown 正常渲染；
 - 点「**✏️ 在 TW 中编辑**」→ 保存后弹出**独立小窗**（可拖动/缩放）加载 TW 原生编辑器编辑该条。
 
@@ -134,6 +134,20 @@ TW 的界面语言由**语言插件**决定，不是某个配置字符串。tidd
 - **配置自动应用**：在常规配置写入 `uiLanguage: "zh-Hans"`，每次启动 dsh web 时自动启用该语言并固定 `$:/language`（若尚未启用）。留空则不干预。
 - **想换繁中**：语言管理里改勾 `zh-Hant` / `zh-TW` 再应用。
 
+### 🌐 远程访问（Tailscale / 内网 / 域名 / HTTPS）
+
+TW 子进程只监听 **127.0.0.1 回环**（更安全），**agent 工具、快速笔记、git 同步本来就全程走 DSH 宿主进程→回环 TW**，所以无论你从哪个入口访问 DSH，这些能力都不受影响。唯一受影响的是**浏览器里的 TW 编辑器 iframe**：早期版本让 iframe 直接指向 `http://127.0.0.1:<port>`——只有浏览器和 DSH 在同一台机器时才行；一旦通过 Tailscale / 内网 IP / 域名访问 DSH，`127.0.0.1` 会指向浏览器自己那台机器，编辑器就加载不出来了。
+
+从 **v0.6.0** 起，内嵌编辑器改为**同源代理**：
+
+- 浏览器里的 TW 编辑器 iframe 指向 `<DSH origin>/dsh-tiddlywiki/tw/`（与 DSH 同源），DSH 把整个 TW 前端（页面 + `/files/*` + TiddlyWeb API）透传到回环上的 TW 服务；
+- TW 前端的 API 基址由 wiki 内的 `$:/config/tiddlyweb/host` 控制，插件启动时把它固定为 `/dsh-tiddlywiki/tw/`（仅当缺失或仍是旧默认值时写入，用户自定义会被保留）；
+- 因为代理 URL 与端口无关，TW 重启也不会让编辑器 iframe 重新加载，编辑中的内容不丢。
+
+效果：**DSH 跑在服务器上、你用 Tailscale / 域名 / 内网 IP 从任意设备打开 DSH Web 时，中央列编辑器和「在 TW 中编辑」弹窗都正常工作**；以后 DSH 挂到域名 + HTTPS 反向代理后面也同样成立（同源、无 mixed-content、无 CORS）。
+
+> ⚠️ 迁移说明：v0.6.0 之前上传的文件在笔记里写的是根路径 `/files/名`，本插件**不再**占用 DSH 根命名空间（避免与其他插件冲突），所以这些旧链接在嵌入编辑器里会失效；新上传的文件使用 `/dsh-tiddlywiki/tw/files/名` 前缀 URL，可直接打开。若需要旧链接，可在 TW 里把对应笔记的 `/files/` 前缀改回 `/dsh-tiddlywiki/tw/files/`。
+
 ---
 
 ## 🔄 同步与数据
@@ -174,6 +188,8 @@ TW 的界面语言由**语言插件**决定，不是某个配置字符串。tidd
 
 > **运行时配置**：设置页写入的 `$:/plugins/dsh-tiddlywiki/config` tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki 的 git 同步）。无需改动 cordis 也能改 note tag / git 开关 / ui 开关等。
 > `config:` 块随 profile 被 dsh-market 带走；wiki 数据走 git，不走 dsh-market。
+>
+> **远程访问（v0.6.0）**：TW 前端的 API 基址来自 `$:/config/tiddlyweb/host`，插件启动时固定为 `/dsh-tiddlywiki/tw/`（同源代理）。TW 子进程始终只监听 `127.0.0.1`；`auth.username/password` 仅在你想把 TW 直接暴露到非回环地址（绕过 DSH）时才需要，正常情况下无需配置。
 
 ---
 
@@ -208,6 +224,7 @@ npm run selftest      # headless：spawn TW → REST 读写 → git → 退出�
 | `/dsh-tiddlywiki/upload` | POST | 文件上传到 `files/`（原始 body + `X-Filename`） |
 | `/dsh-tiddlywiki/restart` | POST | 重启 TW 子进程 |
 | `/dsh-tiddlywiki/api/*` | any | 透传到 TW 服务（JSON） |
+| `/dsh-tiddlywiki/tw/*` | any | **同源 TW 代理**：整个 TW 前端（index + `/files/*` + TiddlyWeb API）→ 回环 TW（v0.6.0，远程访问核心） |
 
 ---
 
@@ -229,10 +246,10 @@ src/
 ├── index.ts            # host 入口：装配 WikiServer/路由/工具/prompt/自动 commit
 ├── sdk.ts              # 自包含 defineTool + dshHomePath（零 @deepseek-ai 运行时依赖）
 ├── host/
-│   ├── wiki.ts         # WikiServer：spawn/kill/自愈/端口探测/就绪轮询
+│   ├── wiki.ts         # WikiServer：spawn/kill/自愈/端口探测/就绪轮询；TW_PROXY_PATH 同源代理路径
 │   ├── tw-api.ts       # TiddlyWeb REST 客户端
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
-│   ├── routes.ts       # /status /note /edit /tags /sync /upload /restart /api/* 路由
+│   ├── routes.ts       # /status /note /edit /tags /sync /upload /restart /api/* /tw/* 路由
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + 目录枚举 + /admin/* 路由
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层
 │   ├── seed-notes.ts   # 首次启动一次性写入「插件说明」笔记

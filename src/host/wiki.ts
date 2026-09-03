@@ -30,6 +30,18 @@ import type { Readable } from 'node:stream'
 /** The DSH webserver route prefix (NOT a TW path-prefix; see module header). */
 export const PATH_PREFIX = '/dsh-tiddlywiki'
 
+/**
+ * Same-origin TW proxy route on the DSH webserver (remote-access mode, R1).
+ * The browser only ever talks to the DSH origin — which it already reaches
+ * over loopback, LAN, Tailscale, a domain or HTTPS — and DSH proxies to the
+ * loopback TW child. TW's frontend is pointed at this prefix via the
+ * `$:/config/tiddlyweb/host` tiddler so every API call stays same-origin.
+ */
+export const TW_PROXY_PREFIX = `${PATH_PREFIX}/tw`
+
+/** The proxy base path (trailing slash) handed to browsers / TW's frontend. */
+export const TW_PROXY_PATH = `${TW_PROXY_PREFIX}/`
+
 /** How long to wait for the wiki to answer /status. */
 const READY_TIMEOUT_MS = 20_000
 
