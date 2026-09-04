@@ -26,6 +26,18 @@
 
 ---
 
+## 🕘 版本记录
+
+> 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
+
+- **v0.8.0**（2026-09-04）：嵌入式 TW **跟随 DSH 深浅主题**——暗色自动切深色 palette（默认 CupertinoDark）、浅色恢复原 palette，纯内存切换**不写回 wiki、不进 git**，设置页可开关/换深色 palette。
+- **v0.7.2**（2026-09-03）：「一键发送到 dsh」改为**工作区优先**——新增 POST `/agent/create` 按 cwd 落入真实 Workspace，新会话不再丢到「未分组」；自动给新笔记补打 `agent-written` 标签并在首页分区展示。
+- **v0.7.0**（2026-09-03）：TW 里**一键把当前笔记发送到 dsh 会话**（`/agent/sessions` + `/agent/send` + TW 按钮，可配置开关）。
+- **v0.6.0**（2026-09-03）：**同源代理**——嵌入式 TW 编辑器改为经 DSH origin（`/dsh-tiddlywiki/tw/`）访问，Tailscale / 内网 / 域名 / HTTPS 下都能正常加载与编辑。
+- **v0.5.0**（2026-09-03）：Agent 工具扩充（搜索 tag/type/since 过滤，`recent` / `list_tags` / `batch_put` / `rename` / `git_resolve`）；快速笔记**草稿自动保存**与「🕘 最近」一键载入；右下角统一「知识库」悬浮按钮（快速笔记 + 同步 + TW 面板）。
+
+---
+
 ## 📦 安装
 
 插件随 dsh 插件系统安装，三种方式任选（装完**重启 dsh web** 生效；把 `--profile web` 换成你自己的 profile 名）：
