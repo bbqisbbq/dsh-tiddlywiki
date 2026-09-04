@@ -7,6 +7,8 @@
 [![GitHub](https://img.shields.io/github/stars/bbqisbbq/dsh-tiddlywiki)](https://github.com/bbqisbbq/dsh-tiddlywiki)
 [![Awesome DSH Plugin](https://awesome-dsh-plugin.com/badge.svg)](https://awesome-dsh-plugin.com)
 
+> 📚 **文档索引**：[🧩 初始化（一次性预置）](#🧩-初始化一次性预置) · [docs/seed-initialization.md](docs/seed-initialization.md)（统一 seed 注册表 / ONE-SHOT 与 force 语义 / 后台 API / 重新生成内置常量）
+
 等 Agent 干活的时候，人常是干坐着的——想随手写点什么，又不想切来切去。TiddlyWiki 单文件、纯文本、wiki 语法、自带 git 同步，天生适合**随手写点小东西**。于是把它做成 DSH 原生插件：不用离开当前界面，聊天区右下角就有快速笔记；要正经编辑，弹出 TW 原生编辑器；写下的内容自动进 git，既是知识库也是备份。
 
 ---
@@ -31,7 +33,7 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
-- **v0.10.0**（2026-09-04）：**统一 seed 注册表**——把「与 dsh 联动、需要 wiki 预置」的全部一次性项收进 `SEED_DEFS`（说明笔记、发送给 Agent 按钮、**首页「所有标签/标签笔记」**、**TW 前端同源代理基址**），首次启动只写缺失、不覆盖用户内容；设置页新增「**初始化**」区块：列出每项实时状态 + 手动「**重新初始化**」（force 重写内置内容，含缺失项补齐与 TW 前端基址修复）。新装用户开箱即有**首页**（四象限待办 + 标签统计 + Agent 区块），不再手工放 tiddler。
+- **v0.10.0**（2026-09-04）：**统一 seed 注册表**——把「与 dsh 联动、需要 wiki 预置」的全部一次性项收进 `SEED_DEFS`（说明笔记、发送给 Agent 按钮、**首页「所有标签/标签笔记」**、**TW 前端同源代理基址**），首次启动只写缺失、不覆盖用户内容；设置页新增「**初始化**」区块：列出每项实时状态 + 手动「**重新初始化**」（force 重写内置内容，含缺失项补齐与 TW 前端基址修复）。新装用户开箱即有**首页**（四象限待办 + 标签统计 + Agent 区块），不再手工放 tiddler。配套文档：[🧩 初始化小节](#🧩-初始化一次性预置) + [docs/seed-initialization.md](docs/seed-initialization.md)。
 - **v0.9.0**（2026-09-04）：TW「**发送给 Agent**」按钮随插件**首次启动自动写入 wiki**（ONE-SHOT：只写一次、用户可删可改不复活）——新装用户开箱即用，无需手工往 wiki 塞插件 bundle；消息格式更新：**去掉 `【TiddlyWiki 笔记一键发送】` 前缀**，并**附加待办说明**告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问。
 - **v0.8.0**（2026-09-04）：嵌入式 TW **跟随 DSH 深浅主题**——暗色自动切深色 palette（默认 CupertinoDark）、浅色恢复原 palette，纯内存切换**不写回 wiki、不进 git**，设置页可开关/换深色 palette。
 - **v0.7.2**（2026-09-03）：「一键发送到 dsh」改为**工作区优先**——新增 POST `/agent/create` 按 cwd 落入真实 Workspace，新会话不再丢到「未分组」；自动给新笔记补打 `agent-written` 标签并在首页分区展示。
@@ -144,6 +146,7 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 | 插件管理 | 自带官方插件勾选（可搜索）→ 应用并自动重启 TW |
 | 主题管理 | 自带主题**多选加载 + 单选活动** → 应用并自动重启 TW |
 | 语言管理 | 自带官方语言包勾选（含 zh-Hans 简体）→ 应用并自动重启 TW |
+| **初始化** | 一次性预置项实时状态（说明笔记/发送按钮/首页/同源代理基址）→ 每项「重新初始化」+ 「全部重新初始化」 |
 
 - 配置写入 wiki 内的 `$:/plugins/dsh-tiddlywiki/config` tiddler（JSON），随 git 同步，作为 **cordis `config:` 块之上的覆盖层**（tiddler 优先）。
 - git 类配置修改后**重启 dsh web 生效**（bootstrap 时读取）。
@@ -155,6 +158,25 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 2. 把 **`$:/theme`** 设为所选活动主题，然后重启 TW。
 
 样式为空壳的主题（如 tight-heavier）会自动从清单里隐藏，避免选了没效果。
+
+### 🧩 初始化（一次性预置）
+
+插件与 dsh 联动、需要在 wiki 里预置 tiddler/配置的项，全部收在**统一 seed 注册表**中（`SEED_DEFS`）。首次启动自动执行（**非 force**：只写缺失、绝不覆盖你的改动）；设置页「**初始化**」区块可随时查看每项实时状态并手动「**重新初始化**」（force：重写内置内容）。
+
+| seed id | 预置内容 | 与 dsh 的联动 | ONE-SHOT 语义 |
+|---|---|---|---|
+| `doc-note` | 「dsh-tiddlywiki 插件说明」笔记（tag `docs`） | 新手引导 | marker 门控：只写一次，删掉重启不复活 |
+| `send-to-agent` | 「发送给 Agent」TW 按钮插件 `$:/plugins/dsh/send-to-agent` | 一键把笔记注入 dsh 会话的入口 | 同上 |
+| `home-index` | 首页「所有标签 / 标签笔记」 | **系统提示承诺的首页**：四象限待办 + 标签统计 + **Agent 区块**（纯 Agent / Agent+人工 分区，主标签列表排除 `agent-written`） | 同上 |
+| `tw-web-host` | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 嵌入式 TW 编辑器的同源代理 API 基址（远程访问模式前提） | 非 force = 缺失/旧默认才写、用户自定义保留；force = 强制写回代理基址 |
+
+**用法**：
+- **查看状态**：设置页 →「初始化」→ 每项一个状态点（✓ 已就绪 / ✗ 缺失）+ 说明。
+- **重新初始化单项**：点该项「重新初始化」——force 重写内置内容（覆盖你对该 tiddler 的改动）并重记 marker，用于「我把首页改坏了想恢复模板」「按钮被我删了想补回」等场景。
+- **全部重新初始化**：底部「全部重新初始化」一键重跑全部四项。
+- **为什么删掉重启不会自动恢复**：ONE-SHOT marker（`$:/plugins/dsh-tiddlywiki/seed-*`）记录「已提供过」，之后归用户所有——想恢复请手动「重新初始化」，而非依赖重启。
+
+详细设计（后台 API、force 语义、如何重新生成内置常量）见 [docs/seed-initialization.md](docs/seed-initialization.md)。
 
 ### 🌐 界面语言（中文）
 
@@ -286,6 +308,8 @@ npm publish
 ## 🗂 项目结构
 
 ```
+docs/
+└── seed-initialization.md  # 统一 seed 注册表详解：ONE-SHOT/force 语义、后台 API、设置页操作、重新生成内置常量
 src/
 ├── index.ts            # host 入口：装配 WikiServer/路由/工具/prompt/自动 commit
 ├── sdk.ts              # 自包含 defineTool + dshHomePath（零 @deepseek-ai 运行时依赖）
@@ -320,7 +344,7 @@ src/
 
 - **GitHub（公开）**：https://github.com/bbqisbbq/dsh-tiddlywiki
 - **npm**：`dsh-tiddlywiki`（https://www.npmjs.com/package/dsh-tiddlywiki）
-- **说明笔记**：插件在**首次启动**时向 wiki **写入一次**「`dsh-tiddlywiki 插件说明`」笔记（tag `docs`）与「发送给 Agent」按钮插件（`$:/plugins/dsh/send-to-agent`）——都只写一次、手动编辑不被覆盖、**删除后重启不会自动恢复**（一次性标记；清空 wiki 重装会再写入）。
+- **说明笔记**：插件在**首次启动**时把「与 dsh 联动、需要 wiki 预置」的一次性项写入 wiki（**统一 seed 注册表**，见 [🧩 初始化](#🧩-初始化一次性预置)）：`dsh-tiddlywiki 插件说明` 笔记（tag `docs`）、「发送给 Agent」按钮插件（`$:/plugins/dsh/send-to-agent`）、首页「所有标签/标签笔记」、`$:/config/tiddlyweb/host` 同源代理基址——都只写一次、手动编辑不被覆盖、**删除后重启不会自动恢复**（一次性标记；清空 wiki 重装会再写入；设置页「初始化」可手动重新初始化）。
 
 **可被检索的标准字段**（为 GitHub / npm / 搜索引擎发现）：
 
