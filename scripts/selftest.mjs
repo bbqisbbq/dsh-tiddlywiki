@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -472,7 +472,83 @@ try {
   await seedApi.delete(SEND_TO_AGENT_PLUGIN_TITLE)
   await seedApi.delete(S2A_MARKER_TITLE)
 
-  // 5b. Active-palette flip round-trip (before the server stops; kept AFTER
+  // 5d. Unified seed registry: home-index seed + checkAllSeeds + runSeedById
+  // force (the settings-page 重新初始化 path) + tw-web-host ensure.
+  // 5b/5c left doc-note and send-to-agent markers removed, so runAllSeeds here
+  // must (re)write all four missing seeds.
+  const seedCtx = { client: seedApi }
+
+  // home-index first-run (marker-gated) + content sanity.
+  assert(await seedHomeIndex(seedApi) === true, 'home-index seeded on first run')
+  const homeTiddler = await seedApi.get('所有标签')
+  assert(homeTiddler !== undefined && homeTiddler.text.includes('agent-written'), 'home 所有标签 carries the Agent 区块 (agent-written)')
+  assert(homeTiddler.text.includes('agent-tags-pure') && homeTiddler.text.includes('agent-notes-mixed'), 'home 所有标签 carries pure/mixed agent blocks')
+  const tagPage = await seedApi.get('标签笔记')
+  assert(tagPage !== undefined && tagPage.text.includes('$:/state/tag'), 'home 标签笔记 page seeded')
+  assert(await seedHomeIndex(seedApi) === false, 'home-index NOT re-seeded while marker present')
+  await seedApi.put({ title: '所有标签', text: 'user home edit', tags: ['索引'] })
+  assert(await seedHomeIndex(seedApi) === false, 'edited home tiddler is never overwritten by the seed')
+  await seedApi.delete('所有标签')
+  assert(await seedHomeIndex(seedApi) === false, 'deleted home tiddler NOT re-created (one-shot marker stays)')
+
+  // force = manual 重新初始化: overwrites user edits AND restores the tiddler.
+  await seedApi.put({ title: '所有标签', text: 'user home edit', tags: ['索引'] })
+  assert(await seedHomeIndex(seedApi, { force: true }) === true, 'home-index force re-initializes an edited tiddler')
+  const restored = await seedApi.get('所有标签')
+  assert(restored !== undefined && restored.text.includes('agent-tags-pure'), 'force restored built-in home content')
+  await seedApi.delete('所有标签')
+  await seedApi.delete(HOME_INDEX_MARKER_TITLE)
+
+  // checkAllSeeds: the registry has exactly the four联动 items.
+  const statuses = await checkAllSeeds(seedCtx)
+  const ids = statuses.map((s) => s.id).sort()
+  assert(JSON.stringify(ids) === JSON.stringify(['doc-note', 'home-index', 'send-to-agent', 'tw-web-host']), `seed registry lists all four联动 items (${ids.join(',')})`)
+  assert(statuses.every((s) => typeof s.title === 'string' && s.title.length > 0), 'every seed has a display title')
+
+  // runAllSeeds (startup path): re-writes the four missing tiddlers.
+  // Earlier sections left mixed state: doc-note's marker stays while its
+  // tiddler was deleted, and the earlier ensureTwWebHost test left a CUSTOM
+  // host override. Remove marker + host tiddler so all four seeds are
+  // genuinely missing here.
+  await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-doc-note')
+  await seedApi.delete(TW_WEB_HOST_TIDDLER)
+  const all = await runSeedById(seedCtx, undefined, false)
+  assert(all.length === 4, 'runAllSeeds runs every registry item')
+  assert(all.every((r) => r.ok), 'all seeds run ok')
+  assert(all.every((r) => r.wrote), 'all four seeds were missing and got written')
+
+  // runSeedById with an id runs only that one; force rewrites regardless.
+  const onlyHome = await runSeedById(seedCtx, 'home-index', false)
+  assert(onlyHome.length === 1 && onlyHome[0].id === 'home-index' && onlyHome[0].wrote === false, 'single-seed run is idempotent while present')
+  await seedApi.put({ title: '所有标签', text: 'again edited', tags: ['索引'] })
+  const forceHome = await runSeedById(seedCtx, 'home-index', true)
+  assert(forceHome.length === 1 && forceHome[0].ok && forceHome[0].wrote, 'single-seed force rewrites an edited tiddler')
+  assert((await seedApi.get('所有标签')).text.includes('agent-tags-pure'), 'force single-seed restored built-in content')
+  await seedApi.delete('所有标签')
+  await seedApi.delete(HOME_INDEX_MARKER_TITLE)
+
+  // unknown seed id → explicit error result.
+  const unknown = await runSeedById(seedCtx, 'nope', false)
+  assert(unknown.length === 1 && !unknown[0].ok && unknown[0].error?.includes('unknown seed'), 'unknown seed id is reported, not thrown')
+
+  // tw-web-host seed: ensure semantics (non-force) and force rewrite.
+  // runAllSeeds above already wrote the proxy host; verify the three branches.
+  // 1) custom host override is honored by non-force (never overwritten).
+  await seedApi.put({ title: TW_WEB_HOST_TIDDLER, text: 'https://example.com/', type: 'text/plain', tags: [] })
+  const hostKeep = await runSeedById(seedCtx, 'tw-web-host', false)
+  assert(hostKeep.length === 1 && hostKeep[0].ok && hostKeep[0].wrote === false, 'tw-web-host non-force honors a custom host override')
+  assert((await seedApi.get(TW_WEB_HOST_TIDDLER))?.text?.trim() === 'https://example.com/', 'custom host override survives non-force run')
+  // 2) force rewrites even a custom host (settings-page 重新初始化).
+  const hostForce = await runSeedById(seedCtx, 'tw-web-host', true)
+  assert(hostForce.length === 1 && hostForce[0].ok && hostForce[0].wrote, 'tw-web-host force rewrites the proxy host')
+  assert((await seedApi.get(TW_WEB_HOST_TIDDLER))?.text?.trim() === TW_PROXY_PATH, 'tw-web-host force restored the proxy path')
+  // 3) legacy default host is repaired by non-force.
+  await seedApi.put({ title: TW_WEB_HOST_TIDDLER, text: '$protocol$//$host$/', type: 'text/plain', tags: [] })
+  const hostRepair = await runSeedById(seedCtx, 'tw-web-host', false)
+  assert(hostRepair.length === 1 && hostRepair[0].ok && hostRepair[0].wrote, 'tw-web-host non-force repairs the legacy default host')
+  assert((await seedApi.get(TW_WEB_HOST_TIDDLER))?.text?.trim() === TW_PROXY_PATH, 'legacy host repaired to the proxy path')
+
+  // 5e. Active-palette flip round-trip (before the server stops; kept AFTER
   // the git-clean assertions on purpose — TW flushes filesystem saves
   // asynchronously after a REST PUT, so a palette write must never precede
   // them). The browser theme-sync flips `$:/palette` IN MEMORY with the

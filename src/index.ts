@@ -23,10 +23,9 @@ import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type SessionControllerFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
-import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
+import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
-import { seedDocNote, DOC_NOTE_TITLE } from './host/seed-notes.ts'
-import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
+import { runAllSeeds, checkAllSeeds, runSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 import { TiddlyWebClient } from './host/tw-api.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
@@ -45,6 +44,8 @@ export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
 export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
 export { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
+export { seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE } from './host/seed-home.ts'
+export { runAllSeeds, checkAllSeeds, runSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools } from './host/tools.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
@@ -94,9 +95,7 @@ const DEFAULTS: ResolvedConfig = {
 }
 
 /** Config tiddler steering TW's frontend API base (tiddlywebadaptor). */
-export const TW_WEB_HOST_TIDDLER = '$:/config/tiddlyweb/host'
-/** The legacy default value this plugin replaces with the same-origin proxy. */
-const TW_WEB_HOST_DEFAULT = '$protocol$//$host$/'
+export { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './host/config.ts'
 
 /**
  * Point TW's frontend at the same-origin DSH proxy (remote-access mode, R1).
@@ -319,23 +318,22 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       await server.start()
       await configStore.load(client())
       // Point TW's frontend at the same-origin DSH proxy (remote-access mode):
-      // runs before git bootstrap so the config tiddler joins the first commit.
-      try {
-        await ensureTwWebHost(client())
-      } catch (err) {
-        console.warn('[dsh-tiddlywiki] ensuring $:/config/tiddlyweb/host:', err)
-      }
-      // Seeds (run after the effective config is loaded):
-      //  - doc note: ONE-SHOT — a fresh wiki gets the plugin guide; deleting
-      //    it afterwards survives restarts (see seedDocNote).
-      //  - send-to-agent button: ONE-SHOT — a fresh wiki gets the TW
-      //    "发送给 Agent" button plugin; deleting it afterwards survives
-      //    restarts, and an existing (pre-seed) bundle is never overwritten.
+      // part of the seed registry below (tw-web-host), so it is also covered by
+      // the settings page's 重新初始化. Runs before git bootstrap so the config
+      // tiddler joins the first commit.
+      // Seeds (run after the effective config is loaded): every one-time
+      // "与 dsh 联动需要 wiki 预置" item lives in the SEED_DEFS registry —
+      // doc-note, send-to-agent, home-index, tw-web-host. Startup runs them
+      // NON-force: write only what is missing, never overwrite user content.
+      // The settings page lists the same registry and offers a manual
+      // 重新初始化 (force) per item / for all.
       try {
         const seedClient = client()
         if (seedClient !== undefined) {
-          await seedDocNote(seedClient)
-          await seedSendToAgent(seedClient)
+          const results = await runAllSeeds({ client: seedClient })
+          for (const r of results) {
+            if (!r.ok) console.warn(`[dsh-tiddlywiki] seed ${r.id} failed:`, r.error ?? r.detail)
+          }
         }
       } catch (err) {
         console.warn('[dsh-tiddlywiki] seeding wiki:', err)
@@ -397,6 +395,10 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       getWikiPath: () => wikiPath,
       twRoot: resolveTwRoot,
       config: configStore,
+      seeds: {
+        checkAll: async (c) => checkAllSeeds({ client: c }),
+        run: async (c, id, force) => runSeedById({ client: c }, id, force),
+      },
     }
     const disposeAdmin = registerAdminRoutes({ webServer: ws }, adminDeps)
     return () => {

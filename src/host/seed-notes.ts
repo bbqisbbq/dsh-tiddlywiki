@@ -53,17 +53,23 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
 * 更多细节见插件仓库 README。`
 
 /**
- * Seed the doc note exactly once per wiki. A marker tiddler records that the
- * note has been offered; from then on the note is user-owned and is never
- * re-created (deleting it survives restarts). Returns whether a note was
- * written this call. Never throws.
+ * Seed the doc note once per wiki (mirrors the one-shot policy). A marker
+ * tiddler records that the note has been offered; from then on the note is
+ * user-owned and is never re-created (deleting it survives restarts).
+ *
+ * With `opts.force` the note is (re)written even when it already exists and
+ * the marker is (re)written — the settings page uses this for
+ * "重新初始化". Returns whether a note was written this call. Never throws.
  */
-export async function seedDocNote(client: TiddlyWebClient): Promise<boolean> {
-  const marker = await client.get(SEED_MARKER_TITLE).catch(() => undefined)
-  if (marker !== undefined) return false
+export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
+  const force = opts?.force === true
+  if (!force) {
+    const marker = await client.get(SEED_MARKER_TITLE).catch(() => undefined)
+    if (marker !== undefined) return false
+  }
   const existing = await client.get(DOC_NOTE_TITLE).catch(() => undefined)
   let wrote = false
-  if (existing === undefined) {
+  if (force || existing === undefined) {
     await client.put({
       title: DOC_NOTE_TITLE,
       text: DOC_NOTE_TEXT,

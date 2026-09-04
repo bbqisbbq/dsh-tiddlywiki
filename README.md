@@ -21,7 +21,7 @@
 | 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
 | 🔄 **一键同步** | 「知识库」按钮 →「🔁 同步」：pull → commit → push；FAB 上的状态点实时反映 git 状态（已同步/待提交/可更新/离线） |
-| ⚙️ **设置页** | DSH 设置 →「TiddlyWiki 知识库」：插件/主题/语言管理与运行配置，应用后自动重启 TW |
+| ⚙️ **设置页** | DSH 设置 →「TiddlyWiki 知识库」：插件/主题/语言管理与运行配置，应用后自动重启 TW；**「初始化」区块**列出所有一次性预置项（说明笔记/发送按钮/首页/同源代理基址）的实时状态，可随时手动**重新初始化** |
 | 🛡 **零摩擦生命周期** | 随 dsh 自动启停；TW 子进程崩溃自动重启（退避）；端口/目录/首次 git init 全自动 |
 | 💾 **数据即备份** | wiki 文件夹本身就是一个 git 仓库；自动 commit（60s 防抖，可关），配置随 dsh-market 迁移 |
 
@@ -31,6 +31,7 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
+- **v0.10.0**（2026-09-04）：**统一 seed 注册表**——把「与 dsh 联动、需要 wiki 预置」的全部一次性项收进 `SEED_DEFS`（说明笔记、发送给 Agent 按钮、**首页「所有标签/标签笔记」**、**TW 前端同源代理基址**），首次启动只写缺失、不覆盖用户内容；设置页新增「**初始化**」区块：列出每项实时状态 + 手动「**重新初始化**」（force 重写内置内容，含缺失项补齐与 TW 前端基址修复）。新装用户开箱即有**首页**（四象限待办 + 标签统计 + Agent 区块），不再手工放 tiddler。
 - **v0.9.0**（2026-09-04）：TW「**发送给 Agent**」按钮随插件**首次启动自动写入 wiki**（ONE-SHOT：只写一次、用户可删可改不复活）——新装用户开箱即用，无需手工往 wiki 塞插件 bundle；消息格式更新：**去掉 `【TiddlyWiki 笔记一键发送】` 前缀**，并**附加待办说明**告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问。
 - **v0.8.0**（2026-09-04）：嵌入式 TW **跟随 DSH 深浅主题**——暗色自动切深色 palette（默认 CupertinoDark）、浅色恢复原 palette，纯内存切换**不写回 wiki、不进 git**，设置页可开关/换深色 palette。
 - **v0.7.2**（2026-09-03）：「一键发送到 dsh」改为**工作区优先**——新增 POST `/agent/create` 按 cwd 落入真实 Workspace，新会话不再丢到「未分组」；自动给新笔记补打 `agent-written` 标签并在首页分区展示。
@@ -55,7 +56,7 @@ dsh plugin --profile web add github:bbqisbbq/dsh-tiddlywiki
 dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 ```
 
-首次启动会自动完成：**初始化 wiki 目录**、**`git init` 并提交基线**、向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`），并**写入一次**「发送给 Agent」TW 按钮插件（`$:/plugins/dsh/send-to-agent`，见下）。两者都是 ONE-SHOT：只写一次、之后归用户所有——删掉重启也不会自动恢复。
+首次启动会自动完成：**初始化 wiki 目录**、**`git init` 并提交基线**、把「与 dsh 联动、需要 wiki 预置」的一次性项写入 wiki（**统一 seed 注册表**，见「初始化」）：向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`）、**写入一次**「发送给 Agent」TW 按钮插件（`$:/plugins/dsh/send-to-agent`）、**写入首页**「所有标签 / 标签笔记」（四象限待办 + 标签统计 + Agent 区块）、把 `$:/config/tiddlyweb/host` 指向同源代理。它们都是 ONE-SHOT：只写缺失、不覆盖你的改动、删掉重启也不会自动恢复——需要时可在设置页「**初始化**」区块手动「重新初始化」（force 重写内置内容）。
 
 ---
 
@@ -235,9 +236,13 @@ npm run build         # clean + host tsdown + client tsdown + wrap
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收
 node scripts/verify-theme-browser.mjs   # 可选：真实浏览器验证「跟随 DSH 主题」的 palette 切换与不持久化（需 puppeteer-core + Chrome，缺则 SKIP）
 node scripts/verify-seed-send-to-agent.mjs  # 可选：全新 wiki 上 E2E 验证「发送给 Agent」按钮 seed（bundle 写入/幂等/marker）
+node scripts/verify-seeds-admin.mjs         # 可选：全新 wiki + 真实 HTTP 验证 /admin/seeds 状态与 /admin/seeds/run（单跑/全跑/force/unknown id）
 
 # 改了 wiki 里的 $:/plugins/dsh/send-to-agent bundle 后，重新生成内置常量：
 node scripts/gen-seed-send-to-agent.mjs '<wiki>/tiddlers/$__plugins_dsh_send-to-agent.json' src/host/seed-send-to-agent.ts && npm run build
+
+# 改了 wiki 首页「所有标签 / 标签笔记」后，重新生成内置 seed 常量：
+node scripts/gen-seed-home.mjs '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts && npm run build
 ```
 
 **产物约定**（发布必守）：`lib/` 内**零** `@deepseek-ai` 运行时 import（`src/sdk.ts` 自实现 `defineTool` / `dshHomePath`，类型用结构接口）。发布前用 `grep -r "@deepseek-ai" lib/` 验证。
@@ -291,8 +296,10 @@ src/
 │   ├── routes.ts       # /status /note /edit /tags /sync /upload /restart /api/* /tw/* 路由
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + 目录枚举 + /admin/* 路由
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层
-│   ├── seed-notes.ts   # 首次启动一次性写入「插件说明」笔记
-│   ├── seed-send-to-agent.ts  # 首次启动一次性写入「发送给 Agent」TW 按钮插件（bundle 内嵌常量）
+│   ├── seed-notes.ts   # seed: 首次一次性写入「插件说明」笔记（支持 force）
+│   ├── seed-send-to-agent.ts  # seed: 首次一次性写入「发送给 Agent」TW 按钮插件（bundle 内嵌常量，支持 force）
+│   ├── seed-home.ts    # seed: 首页「所有标签/标签笔记」（生成自 wiki .tid，支持 force）
+│   ├── seeds.ts        # 统一 seed 注册表：doc-note / send-to-agent / home-index / tw-web-host，check + run(force)
 │   └── tools.ts        # 5 个工具（列表式注册，可扩展）
 └── client/
     ├── index.ts        # client 入口（纯 DOM + settings.section 注册，永不 throw）

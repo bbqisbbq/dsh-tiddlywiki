@@ -16,6 +16,12 @@ import type { TiddlyWebClient } from './tw-api.ts'
 /** Config tiddler (JSON string) where the settings page stores overrides. */
 export const CONFIG_TIDDLER = '$:/plugins/dsh-tiddlywiki/config'
 
+/** TW frontend API base tiddler, pointed at the same-origin DSH proxy. */
+export const TW_WEB_HOST_TIDDLER = '$:/config/tiddlyweb/host'
+
+/** The legacy default TW host value this plugin replaces with the proxy. */
+export const TW_WEB_HOST_DEFAULT = '$protocol$//$host$/'
+
 /**
  * Default dark palette the embedded TW switches to when DSH is dark
  * (mirrored in src/client/theme-sync.ts — the two bundles cannot share code).

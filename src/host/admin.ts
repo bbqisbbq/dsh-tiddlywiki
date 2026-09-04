@@ -248,6 +248,11 @@ export interface AdminDeps {
   getWikiPath: () => string
   twRoot: () => string
   config: ConfigStore
+  /** Seed registry for the settings-page "初始化" section. */
+  seeds: {
+    checkAll: (client: TiddlyWebClient) => Promise<Array<{ id: string; title: string; description: string; present: boolean; detail?: string }>>
+    run: (client: TiddlyWebClient, id: string | undefined, force: boolean) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
+  }
 }
 
 export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: AdminDeps): () => void {
@@ -396,11 +401,55 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     }
   }
 
+  /**
+   * GET /dsh-tiddlywiki/admin/seeds — status of every one-time seed
+   * (doc-note / send-to-agent / home-index / tw-web-host) for the settings
+   * page's 初始化 section.
+   */
+  const handleSeeds = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      const client = deps.getClient()
+      if (client === undefined) {
+        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        return
+      }
+      const items = await deps.seeds.checkAll(client)
+      json(res, { ok: true, items })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/admin/seeds/run — run one seed (or all when `id` is
+   * absent); `force: true` is the manual "重新初始化" (overwrite + re-marker),
+   * `force: false` keeps the one-shot write-if-missing semantics.
+   */
+  const handleSeedsRun = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      const body = JSON.parse(await readBody(req)) as { id?: unknown; force?: unknown }
+      const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
+      const force = body.force === true
+      const client = deps.getClient()
+      if (client === undefined) {
+        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        return
+      }
+      const results = await deps.seeds.run(client, id, force)
+      const ok = results.every((r) => r.ok)
+      json(res, { ok, results }, ok ? 200 : 400)
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
   const disposers = [
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/state`, handler: (req, res) => { void handleState(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/info`, handler: (req, res) => { void handleInfo(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/config`, handler: (req, res) => { void handleConfig(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds`, handler: (req, res) => { void handleSeeds(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds/run`, handler: (req, res) => { void handleSeedsRun(req, res) } }),
   ]
   return () => {
     for (const dispose of disposers) dispose()
