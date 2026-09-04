@@ -18,7 +18,7 @@
 | 能力 | 说明 |
 |---|---|
 | 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `batch_put` / `rename` / `delete` / `recent` / `list_tags` / `git_sync` / `git_resolve` 十个工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
-| 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
+| 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话，**可选「工作模式」= Agent 预设**，如 默认/cordis/blade，已有会话显示其当前模式）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
 | 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
 | 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
@@ -33,6 +33,7 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
+- **v0.11.0**（2026-09-04）：TW「**发送给 Agent**」选择器新增**「工作模式」（Agent 预设）**——弹层顶部可选择会话挂载的 Agent 预设（如 默认/cordis/blade，来自 DSH `agentPresets`），**新建工作区/会话并发送**时以所选模式创建（`/agent/create` 新增 `mode` 参数 → `sessionController.create(agentPreset)`）；已有会话显示其当前模式（`🧭` 徽标）。新增 `GET /agent/modes` 返回可用模式清单 + 部署默认。对旧宿主**向后兼容**：模式接口缺失时选择器降级为默认模式，功能不受影响。
 - **v0.10.0**（2026-09-04）：**统一 seed 注册表**——把「与 dsh 联动、需要 wiki 预置」的全部一次性项收进 `SEED_DEFS`（说明笔记、发送给 Agent 按钮、**首页「所有标签/标签笔记」**、**TW 前端同源代理基址**），首次启动只写缺失、不覆盖用户内容；设置页新增「**初始化**」区块：列出每项实时状态 + 手动「**重新初始化**」（force 重写内置内容，含缺失项补齐与 TW 前端基址修复）。新装用户开箱即有**首页**（四象限待办 + 标签统计 + Agent 区块），不再手工放 tiddler。配套文档：[🧩 初始化小节](#🧩-初始化一次性预置) + [docs/seed-initialization.md](docs/seed-initialization.md)。
 - **v0.9.0**（2026-09-04）：TW「**发送给 Agent**」按钮随插件**首次启动自动写入 wiki**（ONE-SHOT：只写一次、用户可删可改不复活）——新装用户开箱即用，无需手工往 wiki 塞插件 bundle；消息格式更新：**去掉 `【TiddlyWiki 笔记一键发送】` 前缀**，并**附加待办说明**告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问。
 - **v0.8.0**（2026-09-04）：嵌入式 TW **跟随 DSH 深浅主题**——暗色自动切深色 palette（默认 CupertinoDark）、浅色恢复原 palette，纯内存切换**不写回 wiki、不进 git**，设置页可开关/换深色 palette。
@@ -107,6 +108,7 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 ### 🧑‍💻 给人：界面操作
 
 **📤 一键发送给 Agent** — 插件首次启动会把「发送给 Agent」按钮插件写入 wiki（`$:/plugins/dsh/send-to-agent`，ONE-SHOT）。在 TW 里打开任意笔记，工具栏点「**发送给 Agent**」：
+- 弹层顶部有**「工作模式」（Agent 预设）**选择器（v0.11.0）：列出 DSH 全部可用预设（`/agent/modes`，标记部署默认），**新建工作区/会话并发送**时按所选模式创建（`/agent/create` 传 `mode` → `sessionController.create(agentPreset)`）；已有会话旁显示其当前模式徽标（🧭）；
 - 弹层**按工作区（cwd）分组**列出可见会话，点选即把当前笔记作为消息注入（`sessionController.prompt`，与聊天输入同 API）；
 - 也可以**新建工作区/会话**再发送（`/agent/create` 按 cwd 落入真实 Workspace，会话不落「未分组」）；
 - 消息格式为 `《标题》` + 标签/类型 + **待办说明**（告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问）+ 正文；
@@ -286,9 +288,10 @@ node scripts/gen-seed-home.mjs '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddle
 | `/dsh-tiddlywiki/sync` | POST | 一键 pull → commit → push |
 | `/dsh-tiddlywiki/upload` | POST | 文件上传到 `files/`（原始 body + `X-Filename`） |
 | `/dsh-tiddlywiki/restart` | POST | 重启 TW 子进程 |
-| `/dsh-tiddlywiki/agent/sessions` | GET | 可见会话列表（TW「发送给 Agent」选择器） |
+| `/dsh-tiddlywiki/agent/sessions` | GET | 可见会话列表（TW「发送给 Agent」选择器；含每会话 `agentPreset` 模式徽标） |
+| `/dsh-tiddlywiki/agent/modes` | GET | 可用「工作模式」（Agent 预设）清单 + 部署默认（v0.11.0） |
 | `/dsh-tiddlywiki/agent/send` | POST | 把笔记作为消息注入一个会话（`sessionController.prompt`） |
-| `/dsh-tiddlywiki/agent/create` | POST | 按 cwd 新建/复用 Workspace + 会话（工作区优先） |
+| `/dsh-tiddlywiki/agent/create` | POST | 按 cwd 新建/复用 Workspace + 会话（工作区优先）；可选 `mode`（Agent 预设） |
 | `/dsh-tiddlywiki/api/*` | any | 透传到 TW 服务（JSON） |
 | `/dsh-tiddlywiki/tw/*` | any | **同源 TW 代理**：整个 TW 前端（index + `/files/*` + TiddlyWeb API）→ 回环 TW（v0.6.0，远程访问核心） |
 

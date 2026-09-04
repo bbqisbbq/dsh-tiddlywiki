@@ -43,15 +43,20 @@ export const SEND_TO_AGENT_BUNDLE_TEXT = ${literal}
  * Seed the "发送给 Agent" TW button exactly once per wiki (mirrors the doc-note
  * one-shot policy). The marker records the offer; afterwards the bundle is
  * user-owned — deleting it and restarting dsh web does NOT recreate it, and
- * edits are never overwritten. Returns whether a bundle was written this call.
+ * edits are never overwritten. With \`opts.force\` the bundle is (re)written even
+ * when it already exists and the marker is (re)written — the settings page uses
+ * this for "重新初始化". Returns whether a bundle was written this call.
  * Never throws.
  */
-export async function seedSendToAgent(client: TiddlyWebClient): Promise<boolean> {
-  const marker = await client.get(SEND_TO_AGENT_MARKER_TITLE).catch(() => undefined)
-  if (marker !== undefined) return false
+export async function seedSendToAgent(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
+  const force = opts?.force === true
+  if (!force) {
+    const marker = await client.get(SEND_TO_AGENT_MARKER_TITLE).catch(() => undefined)
+    if (marker !== undefined) return false
+  }
   const existing = await client.get(SEND_TO_AGENT_PLUGIN_TITLE).catch(() => undefined)
   let wrote = false
-  if (existing === undefined) {
+  if (force || existing === undefined) {
     await client.put({
       title: SEND_TO_AGENT_PLUGIN_TITLE,
       text: SEND_TO_AGENT_BUNDLE_TEXT,

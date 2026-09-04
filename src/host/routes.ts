@@ -70,7 +70,7 @@ export interface SessionControllerFace {
       cwd?: string
     }>
   }>
-  create(request: { cwd?: string; workspaceId?: string }): Promise<{ sessionId: string }>
+  create(request: { cwd?: string; workspaceId?: string; agentPreset?: string }): Promise<{ sessionId: string }>
 }
 
 /**
@@ -81,6 +81,29 @@ export interface SessionControllerFace {
 export interface WorkspaceRegistryFace {
   /** Resolve or create the workspace owning `path` — idempotent by canonical path. */
   create(path: string, title?: string): Promise<{ id: string; path: string }>
+}
+
+/**
+ * Structural face over the DSH `agentPresets` service (a subset of
+ * dsh-agent-presets). It is the deployment's "工作模式" registry — the agent
+ * presets a session can be composed from (default / cordis / blade / …). Only
+ * `list` + `resolve` (default id) are needed by the agent-modes route.
+ */
+export interface AgentPresetsFace {
+  /** Every preset the configured roots currently supply. */
+  list(): Promise<Array<{ id: string; name?: string; description?: string; trust?: string; broken?: string }>>
+  /** Resolve one preset by id (`undefined` = the deployment default). */
+  resolve(id?: string): Promise<{ id: string; name?: string; description?: string }>
+}
+
+/**
+ * Structural face over the DSH `sessionPersistence` service. Only the
+ * lightweight `list` (metadata headers, no log parse) is needed so the
+ * agent-sessions route can attach each session's recorded `agentPreset`.
+ */
+export interface SessionPersistenceFace {
+  /** One header per materialized session (carries `agentPreset` when set). */
+  list(signal?: AbortSignal): Promise<Array<{ id: string; agentPreset?: string }>>
 }
 
 /** Effective UI flags returned by /status (mirror index.ts). */
@@ -109,6 +132,12 @@ export interface RouteDeps {
    *  cwd to a real Workspace so new sessions land inside it instead of the
    *  ungrouped bucket. */
   getWorkspaceRegistry: () => WorkspaceRegistryFace | undefined
+  /** Optional DSH agentPresets service (agent-modes route): the deployment's
+   *  "工作模式" roster. Resolved lazily per request like sessionController. */
+  getAgentPresets: () => AgentPresetsFace | undefined
+  /** Optional DSH sessionPersistence service (agent-sessions route): attaches
+   *  each session's recorded agentPreset so the picker can badge it. */
+  getSessionPersistence: () => SessionPersistenceFace | undefined
   /** Whether the one-click send-to-agent feature is enabled (config switch). */
   sendToAgentEnabled: () => boolean
   /** Optional shared token that must match `x-send-to-agent-token` when set. */
@@ -282,7 +311,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   /**
    * GET /dsh-tiddlywiki/agent/sessions — visible ordinary sessions for the TW
-   * one-click picker (excludes subagent sessions, activity-descending).
+   * one-click picker (excludes subagent sessions, activity-descending). Each
+   * item also carries its recorded `agentPreset` (工作模式), when known, so the
+   * picker can badge existing sessions — read from the lightweight persistence
+   * header list, never a full log parse.
    */
   const handleAgentSessions = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -292,6 +324,19 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         return
       }
       const list = await sc.list({}, AbortSignal.timeout(10_000))
+      // sessionId → agentPreset, from the durable header list (degrade silently).
+      const presetById: Record<string, string> = {}
+      const pers = deps.getSessionPersistence()
+      if (pers !== undefined) {
+        try {
+          const headers = await pers.list(AbortSignal.timeout(5_000))
+          for (const h of headers) {
+            if (typeof h.agentPreset === 'string' && h.agentPreset.length > 0) presetById[h.id] = h.agentPreset
+          }
+        } catch {
+          /* header list unavailable → no mode badges, picker still works */
+        }
+      }
       const items = (list.items ?? [])
         .filter((s) => s.parentSessionId === undefined)
         .map((s) => ({
@@ -300,9 +345,59 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           running: !!s.running,
           blank: !!s.blank,
           updatedAt: s.updatedAt ?? 0,
+          agentPreset: presetById[s.sessionId] ?? null,
         }))
         .sort((a, b) => b.updatedAt - a.updatedAt)
       json(res, { ok: true, items })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /**
+   * GET /dsh-tiddlywiki/agent/modes — available "工作模式" (Agent presets) for
+   * the TW picker: id/name/description per preset plus the deployment default.
+   * Guards mirror the other agent routes (feature switch + optional token).
+   */
+  const handleAgentModes = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (!deps.sendToAgentEnabled()) {
+        json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
+        return
+      }
+      const token = deps.sendToAgentToken().trim()
+      if (token.length > 0) {
+        const got = req.headers['x-send-to-agent-token']
+        const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
+        if (value !== token) {
+          json(res, { ok: false, error: 'unauthorized' }, 401)
+          return
+        }
+      }
+      const ap = deps.getAgentPresets()
+      if (ap === undefined) {
+        json(res, { ok: false, error: 'agent presets service unavailable' }, 503)
+        return
+      }
+      const presets = await ap.list()
+      let defaultId: string | undefined
+      try {
+        defaultId = (await ap.resolve())?.id
+      } catch {
+        defaultId = undefined
+      }
+      json(res, {
+        ok: true,
+        defaultId: defaultId ?? null,
+        items: presets.map((p) => ({
+          id: p.id,
+          name: p.name ?? p.id,
+          description: p.description ?? '',
+          trust: p.trust ?? 'user',
+          broken: p.broken ?? null,
+          isDefault: p.id === defaultId,
+        })),
+      })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -360,6 +455,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * lands under that workspace in the sidebar. Creating with bare `cwd` instead
    * would leave the session in the ungrouped bucket even when its working
    * directory matches an existing workspace path.
+   *
+   * Optional `mode` names the "工作模式" (an Agent preset id, e.g. from
+   * /agent/modes); it is forwarded to `sessionController.create(agentPreset)`
+   * so the new session launches under that preset. Omitted → deployment default.
    */
   const handleAgentCreate = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -376,8 +475,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           return
         }
       }
-      const body = JSON.parse(await readBody(req)) as { cwd?: unknown }
+      const body = JSON.parse(await readBody(req)) as { cwd?: unknown; mode?: unknown }
       const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : ''
+      const mode = typeof body.mode === 'string' && body.mode.trim().length > 0 ? body.mode.trim() : undefined
       const sc = deps.getSessionController()
       if (sc === undefined) {
         json(res, { ok: false, error: 'session service unavailable' }, 503)
@@ -390,12 +490,12 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       let created: { sessionId: string }
       if (cwd.length > 0 && ws !== undefined) {
         const workspace = await ws.create(cwd)
-        created = await sc.create({ workspaceId: workspace.id })
-        json(res, { ok: true, sessionId: created.sessionId, cwd, workspaceId: workspace.id })
+        created = await sc.create({ workspaceId: workspace.id, agentPreset: mode })
+        json(res, { ok: true, sessionId: created.sessionId, cwd, workspaceId: workspace.id, mode: mode ?? null })
         return
       }
-      created = await sc.create({ cwd: cwd.length > 0 ? cwd : undefined })
-      json(res, { ok: true, sessionId: created.sessionId, cwd: cwd || null })
+      created = await sc.create({ cwd: cwd.length > 0 ? cwd : undefined, agentPreset: mode })
+      json(res, { ok: true, sessionId: created.sessionId, cwd: cwd || null, mode: mode ?? null })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -719,6 +819,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/sessions`, handler: (req, res) => { void handleAgentSessions(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/modes`, handler: (req, res) => { void handleAgentModes(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: (req, res) => { void handleAgentSend(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/create`, handler: (req, res) => { void handleAgentCreate(req, res) } }),
     ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: (req, res) => { void handleApiProxy(req, res) } }),

@@ -22,7 +22,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
-import { registerRoutes, type SessionControllerFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
+import { registerRoutes, type AgentPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { runAllSeeds, checkAllSeeds, runSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
@@ -373,6 +373,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       ctx.get('sessionController') as SessionControllerFace | undefined
     const getWorkspaceRegistry = (): WorkspaceRegistryFace | undefined =>
       ctx.get('workspaceRegistry') as WorkspaceRegistryFace | undefined
+    // agentPresets (工作模式 roster) + sessionPersistence (per-session preset
+    // badges) are also core host services — resolve them lazily like the above.
+    const getAgentPresets = (): AgentPresetsFace | undefined =>
+      ctx.get('agentPresets') as AgentPresetsFace | undefined
+    const getSessionPersistence = (): SessionPersistenceFace | undefined =>
+      ctx.get('sessionPersistence') as SessionPersistenceFace | undefined
     const disposeRoutes = registerRoutes({ webServer: ws }, {
       server,
       getClient: client,
@@ -383,6 +389,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       getWikiPath: () => wikiPath,
       getSessionController,
       getWorkspaceRegistry,
+      getAgentPresets,
+      getSessionPersistence,
       sendToAgentEnabled: () => eff().ui?.sendToAgent?.enabled !== false,
       sendToAgentToken: () => {
         const token = eff().ui?.sendToAgent?.token
