@@ -57,6 +57,23 @@ try {
   const gone = await api.get('Hello')
   assert(gone === undefined, 'delete removes tiddler')
 
+  // 2b. Theme adaption PREREQUISITES (read-only — the git sections below must
+  // not see palette writes, because TW flushes filesystem saves ASYNCHRONOUSLY
+  // after a REST PUT and a late flush would dirty the working tree): the dark
+  // palette the client forces must exist, be registered, declare
+  // `color-scheme: dark`, and the wiki's active palette must be light.
+  {
+    const active = await api.get('$:/palette')
+    const origPalette = active?.text ?? ''
+    assert(typeof origPalette === 'string' && origPalette.startsWith('$:/palettes/'), `wiki has an active palette (${origPalette || 'EMPTY'})`)
+    const cupertino = await api.get('$:/palettes/CupertinoDark')
+    assert(cupertino !== undefined, 'dark palette $:/palettes/CupertinoDark exists (core shadow)')
+    assert(Array.isArray(cupertino?.tags) && cupertino.tags.includes('$:/tags/Palette'), 'CupertinoDark is a registered palette')
+    assert(String(cupertino?.fields?.['color-scheme']) === 'dark', 'CupertinoDark declares color-scheme: dark')
+    const vanilla = await api.get('$:/palettes/Vanilla')
+    assert(String(vanilla?.fields?.['color-scheme']) === 'light', 'Vanilla declares color-scheme: light')
+  }
+
   // 2a. tiddlywiki_rename through the REAL tool registry (regression: the
   // tool once re-put the tiddler under its OLD title and then deleted it, so
   // the note vanished and the new title was never created).
@@ -432,6 +449,22 @@ try {
   await seedApi.delete(SEED_MARKER_TITLE)
   assert(await seedDocNote(seedApi) === true, 'doc note re-seeds after marker removed (fresh wiki)')
   await seedApi.delete(DOC_NOTE_TITLE)
+
+  // 5b. Active-palette flip round-trip (before the server stops; kept AFTER
+  // the git-clean assertions on purpose — TW flushes filesystem saves
+  // asynchronously after a REST PUT, so a palette write must never precede
+  // them). The browser theme-sync flips `$:/palette` IN MEMORY with the
+  // syncer's changeCount re-aligned, so it never reaches the disk; here we
+  // only prove the REST surface can switch the active palette and read it back.
+  {
+    const origPalette = (await api.get('$:/palette'))?.text ?? ''
+    await api.put({ title: '$:/palette', text: '$:/palettes/CupertinoDark' })
+    assert((await api.get('$:/palette'))?.text === '$:/palettes/CupertinoDark', 'palette flip round-trips via TiddlyWeb')
+    await api.put({ title: '$:/palette', text: origPalette })
+    assert((await api.get('$:/palette'))?.text === origPalette, 'palette restore round-trips via TiddlyWeb')
+    // Let TW's async save queue flush the restored file before stop/cleanup.
+    await new Promise((r) => setTimeout(r, 800))
+  }
 
   // 6. Teardown: no orphan process
   const pidBefore = view.pid

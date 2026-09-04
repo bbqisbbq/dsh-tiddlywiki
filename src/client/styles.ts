@@ -77,7 +77,9 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-status-dot[data-state="starting"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
 .dsh-tw-status-dot[data-state="failed"], .dsh-tw-status-dot[data-state="stopped"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
 
-.dsh-tw-panel-frame { flex: 1; min-height: 0; border: 0; width: 100%; display: block; background: #fff; }
+/* The iframe background follows the DSH theme so a blank/preload frame never
+   flashes pure white in dark mode (TW paints its own palette once loaded). */
+.dsh-tw-panel-frame { flex: 1; min-height: 0; border: 0; width: 100%; display: block; background: var(--dsw-alias-bg-layer-1, #fff); }
 /* [hidden] must beat the author display rules above (UA hidden is overridden). */
 .dsh-tw-panel-frame[hidden],
 .dsh-tw-panel-error[hidden] { display: none !important; }
@@ -257,7 +259,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   color: var(--dsw-alias-label-dimmed, #888); padding: 5px 8px; border-radius: 6px;
 }
 .dsh-tw-editor-close:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, #222); }
-.dsh-tw-editor-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+.dsh-tw-editor-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--dsw-alias-bg-layer-1, #fff); }
 .dsh-tw-editor-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; }
 .dsh-tw-note-toggle {
   border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));

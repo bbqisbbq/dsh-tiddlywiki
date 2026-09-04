@@ -10,10 +10,12 @@
  *
  * @module dsh-tiddlywiki/client/editor-popup
  */
+import { attachThemeSync } from './theme-sync.ts'
 
 let root: HTMLDivElement | undefined
 let frame: HTMLIFrameElement | undefined
 let titleEl: HTMLSpanElement | undefined
+let themeSyncDispose: (() => void) | undefined
 
 /** Open (create on first use) the popup and load `url` (twUrl#draftTitle). */
 export function openEditorPopup(url: string, label: string): void {
@@ -28,6 +30,8 @@ export function openEditorPopup(url: string, label: string): void {
 
 /** Remove the popup DOM entirely (plugin dispose). */
 export function disposeEditorPopup(): void {
+  themeSyncDispose?.()
+  themeSyncDispose = undefined
   root?.remove()
   root = undefined
   frame = undefined
@@ -57,6 +61,8 @@ function ensurePopup(): void {
   frame.className = 'dsh-tw-editor-frame'
   frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups')
   frame.title = 'TiddlyWiki 编辑器'
+  // Same-origin sandbox keeps $tw reachable; let the popup follow DSH theme.
+  themeSyncDispose = attachThemeSync(frame)
 
   const resize = document.createElement('div')
   resize.className = 'dsh-tw-editor-resize'

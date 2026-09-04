@@ -83,11 +83,15 @@ export interface WorkspaceRegistryFace {
   create(path: string, title?: string): Promise<{ id: string; path: string }>
 }
 
-/** Effective UI visibility flags returned by /status (mirror index.ts). */
+/** Effective UI flags returned by /status (mirror index.ts). */
 export interface UiDefaultsPublic {
   showQuickNote: boolean
   showPanelStatus: boolean
   showSyncButton: boolean
+  /** 嵌入式 TW 是否跟随 DSH 深浅主题（false 时客户端停止 palette 同步）。 */
+  followDshTheme: boolean
+  /** DSH 暗色时 TW 使用的 palette tiddler 标题。 */
+  darkPalette: string
 }
 
 export interface RouteDeps {

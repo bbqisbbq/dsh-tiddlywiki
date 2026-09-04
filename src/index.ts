@@ -23,7 +23,7 @@ import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type SessionControllerFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
-import { ConfigStore, deepMerge, type PluginConfigShape } from './host/config.ts'
+import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { seedDocNote, DOC_NOTE_TITLE } from './host/seed-notes.ts'
 import { TiddlyWebClient } from './host/tw-api.ts'
@@ -56,7 +56,7 @@ export interface TiddlywikiConfig {
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
-  ui?: { showQuickNote?: boolean; showPanelStatus?: boolean; showSyncButton?: boolean }
+  ui?: { showQuickNote?: boolean; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string }
   auth?: { username?: string; password?: string }
 }
 
@@ -77,7 +77,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
-  ui: { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean; sendToAgent: { enabled: boolean } }
+  ui: { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; sendToAgent: { enabled: boolean } }
   auth: { username?: string; password?: string }
 }
 
@@ -87,7 +87,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
-  ui: { showQuickNote: true, showPanelStatus: true, showSyncButton: true, sendToAgent: { enabled: true } },
+  ui: { showQuickNote: true, showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, sendToAgent: { enabled: true } },
   auth: { username: '', password: '' },
 }
 
@@ -214,11 +214,17 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
   }
-  const effectiveUi = (): { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean } => ({
-    showQuickNote: eff().ui?.showQuickNote !== false,
-    showPanelStatus: eff().ui?.showPanelStatus !== false,
-    showSyncButton: eff().ui?.showSyncButton !== false,
-  })
+  const effectiveUi = (): { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string } => {
+    const ui = eff().ui ?? {}
+    const palette = typeof ui.darkPalette === 'string' && ui.darkPalette.trim().length > 0 ? ui.darkPalette.trim() : DARK_PALETTE_DEFAULT
+    return {
+      showQuickNote: ui.showQuickNote !== false,
+      showPanelStatus: ui.showPanelStatus !== false,
+      showSyncButton: ui.showSyncButton !== false,
+      followDshTheme: ui.followDshTheme !== false,
+      darkPalette: palette,
+    }
+  }
 
   const disposers: Array<() => void> = []
   const disposeAll = (): void => {

@@ -16,6 +16,12 @@ import type { TiddlyWebClient } from './tw-api.ts'
 /** Config tiddler (JSON string) where the settings page stores overrides. */
 export const CONFIG_TIDDLER = '$:/plugins/dsh-tiddlywiki/config'
 
+/**
+ * Default dark palette the embedded TW switches to when DSH is dark
+ * (mirrored in src/client/theme-sync.ts — the two bundles cannot share code).
+ */
+export const DARK_PALETTE_DEFAULT = '$:/palettes/CupertinoDark'
+
 /** Extensible, loose plugin config shape (future fields just appear here). */
 export interface PluginConfigShape {
   note?: { tag?: string }
@@ -27,6 +33,14 @@ export interface PluginConfigShape {
     showPanelStatus?: boolean
     /** 是否在界面右下角显示「同步」悬浮按钮（默认 true）。 */
     showSyncButton?: boolean
+    /**
+     * 嵌入式 TW 是否跟随 DSH 深浅主题（默认 true）：DSH 暗色时把 TW 活动
+     * palette 临时切到 `darkPalette`，浅色时恢复用户原 palette；仅内存生效，
+     * 不会写回 wiki。
+     */
+    followDshTheme?: boolean
+    /** DSH 暗色时 TW 使用的 palette tiddler 标题（默认 CupertinoDark）。 */
+    darkPalette?: string
     /**
      * 一键发送给 Agent（TW 笔记 → DSH 会话注入）。
      * `enabled: false` 时路由 403、TW 端按钮点击提示未启用；`token` 非空时

@@ -22,6 +22,7 @@
  */
 import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
+import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
 export const PANEL_VIEW_SELECTOR = '[data-dsh-tw-view]'
 
@@ -84,7 +85,7 @@ interface StatusPayload {
   wikiPath?: string
   error?: string
   note?: { tag?: string }
-  ui?: { showPanelStatus?: boolean }
+  ui?: { showPanelStatus?: boolean; followDshTheme?: boolean; darkPalette?: string }
 }
 
 function conversationColumn(): HTMLElement | undefined {
@@ -122,6 +123,7 @@ export function mountPanel(state: PanelState): () => void {
   let errorArea: HTMLDivElement | undefined
   let refreshTimer: number | undefined
   let refreshAttempts = 0
+  let themeSyncDispose: (() => void) | undefined
 
   const build = (): HTMLDivElement => {
     const view = document.createElement('div')
@@ -136,6 +138,9 @@ export function mountPanel(state: PanelState): () => void {
     iframe.title = 'TiddlyWiki'
     iframe.hidden = true
     frameArea.append(iframe)
+    // Embedded TW follows the DSH light/dark theme (non-persisting palette
+    // swap inside the same-origin iframe; re-applied on load + theme change).
+    themeSyncDispose = attachThemeSync(iframe)
 
     errorArea = document.createElement('div')
     errorArea.className = 'dsh-tw-panel-error'
@@ -239,6 +244,11 @@ export function mountPanel(state: PanelState): () => void {
     }
     if (payload.status === 'running') {
       refreshAttempts = 0
+      // Keep the embedded TW's theme adaption in step with the settings page.
+      setThemeSyncConfig({
+        enabled: payload.ui?.followDshTheme !== false,
+        darkPalette: payload.ui?.darkPalette,
+      })
       // Same-origin proxy URL: build from the page's own origin so it works no
       // matter which host/domain the user reached DSH on. Fall back to the
       // legacy loopback `url` for older servers that do not send twProxy.
@@ -330,6 +340,7 @@ export function mountPanel(state: PanelState): () => void {
     document.removeEventListener('dsh-tw-panel-reload', onReloadRequest)
     waitObserver.disconnect()
     unsubscribe()
+    themeSyncDispose?.()
     document.documentElement.removeAttribute(ACTIVE_ATTR)
     container?.remove()
   }

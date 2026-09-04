@@ -17,6 +17,7 @@
 |---|---|
 | 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `batch_put` / `rename` / `delete` / `recent` / `list_tags` / `git_sync` / `git_resolve` 十个工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
 | 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
+| 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
 | 🔄 **一键同步** | 「知识库」按钮 →「🔁 同步」：pull → commit → push；FAB 上的状态点实时反映 git 状态（已同步/待提交/可更新/离线） |
 | ⚙️ **设置页** | DSH 设置 →「TiddlyWiki 知识库」：插件/主题/语言管理与运行配置，应用后自动重启 TW |
@@ -89,6 +90,12 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 
 **🧭 中央列编辑器** — 侧边栏「TiddlyWiki」按钮开关中央编辑器面板（**同源代理**：iframe 指向 `<DSH origin>/dsh-tiddlywiki/tw/`，由 DSH 转发到回环上的 TW 服务），完整 TW 5 编辑器。
 
+**🌗 跟随 DSH 主题** — 中央面板与「✏️ 在 TW 中编辑」弹窗里的 TW **自动跟随 DSH 的深浅主题**（v0.8.0 起，`ui.followDshTheme`，默认开）：
+- DSH 处于**暗色**时，TW 的活动 palette 临时切到深色 palette（默认 `$:/palettes/CupertinoDark`）；切回**浅色**时自动恢复你原来的 palette；
+- 如果你本来就用着深色 palette（如 SolarizedDark），暗色下不打扰；浅色下也不会把你的选择改掉；
+- 切换是**纯内存**的（写入 `$:/palette` 后同步校准 syncer 的 changeCount，阻止它 PUT 回服务端）——**不写回 wiki、不进 git 历史**，你的 palette 选择与知识库 git 状态始终干净；
+- 开关与深色 palette 可在设置页「常规配置」调整。
+
 **📝 快速笔记** — 右下角「**知识库**」悬浮按钮 →「📝 快速笔记」（可折叠）：
 - **CodeMirror 6 编辑器**：真正的 Markdown 语法树高亮（标题/列表/代码/链接/表格/任务清单/删除线等，GFM），支持撤销/重做与行内编辑体验；
 - **草稿自动保存**：正文/标题/标签 500ms 防抖写入本地，关掉卡片或刷新页面都不丢；重开自动恢复，可一键「丢弃」；
@@ -111,7 +118,7 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 | 区块 | 内容 |
 |---|---|
 | 状态/重启 | TW 运行状态 + git 概览 + 「同步」按钮 + 「重启 TW」按钮 |
-| 常规配置 | 快速笔记默认 tag、git 自动 commit/防抖/远端/分支、ui 开关（快速笔记/面板状态/同步按钮——分别控制「知识库」按钮里的对应入口）——改了什么保存什么 |
+| 常规配置 | 快速笔记默认 tag、git 自动 commit/防抖/远端/分支、ui 开关（快速笔记/面板状态/同步按钮——分别控制「知识库」按钮里的对应入口）、**跟随 DSH 主题开关 + 深色 palette**——改了什么保存什么 |
 | 插件管理 | 自带官方插件勾选（可搜索）→ 应用并自动重启 TW |
 | 主题管理 | 自带主题**多选加载 + 单选活动** → 应用并自动重启 TW |
 | 语言管理 | 自带官方语言包勾选（含 zh-Hans 简体）→ 应用并自动重启 TW |
@@ -182,6 +189,8 @@ TW 子进程只监听 **127.0.0.1 回环**（更安全），**agent 工具、快
       showQuickNote: true           # 是否显示「知识库」按钮里的「快速笔记」入口
       showPanelStatus: true         # 是否显示「知识库」按钮里的 TW 面板/重载入口与状态行
       showSyncButton: true          # 是否显示「知识库」按钮里的「同步」入口与 git 状态点
+      followDshTheme: true          # 嵌入式 TW 是否跟随 DSH 深浅主题（纯内存切换）
+      darkPalette: "$:/palettes/CupertinoDark"   # DSH 暗色时 TW 使用的深色 palette
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非 loopback 时才需要
       password: ""
@@ -203,6 +212,7 @@ npm install
 npm run typecheck     # tsc --noEmit
 npm run build         # clean + host tsdown + client tsdown + wrap
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收
+node scripts/verify-theme-browser.mjs   # 可选：真实浏览器验证「跟随 DSH 主题」的 palette 切换与不持久化（需 puppeteer-core + Chrome，缺则 SKIP）
 ```
 
 **产物约定**（发布必守）：`lib/` 内**零** `@deepseek-ai` 运行时 import（`src/sdk.ts` 自实现 `defineTool` / `dshHomePath`，类型用结构接口）。发布前用 `grep -r "@deepseek-ai" lib/` 验证。
@@ -260,6 +270,7 @@ src/
     ├── styles.ts / state.ts / toast.ts
     ├── sidebar-entry.ts  # 侧边栏入口
     ├── panel.ts          # 中央列 iframe 面板（fixed 覆盖层，钉住整列）
+    ├── theme-sync.ts     # 跟随 DSH 主题：检测深浅 + 纯内存切 TW palette（不写回 wiki）
     ├── note-widget.ts      # 悬浮快速笔记
     ├── markdown-editor.ts  # 快速笔记编辑器（CodeMirror 6 + Lezer Markdown 高亮）
     ├── sync-button.ts      # 一键同步悬浮按钮
