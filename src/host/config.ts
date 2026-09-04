@@ -54,6 +54,11 @@ export interface PluginConfigShape {
      * TW 端默认的 `location.origin + /dsh-tiddlywiki`。
      */
     sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }
+    /**
+     * 「所有文章」两列分页页面的每页条数（默认 10）。页面在渲染时实时读取
+     * 该值（见 seed-all-articles），改后无需重新初始化。
+     */
+    allArticles?: { pageSize?: number }
   }
   uiLanguage?: string
   [key: string]: unknown

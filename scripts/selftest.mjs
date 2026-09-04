@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, checkAllSeeds, runSeedById, runAllSeeds, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -485,6 +485,10 @@ try {
   assert(homeTiddler.text.includes('agent-tags-pure') && homeTiddler.text.includes('agent-notes-mixed'), 'home 所有标签 carries pure/mixed agent blocks')
   const tagPage = await seedApi.get('标签笔记')
   assert(tagPage !== undefined && tagPage.text.includes('$:/state/tag'), 'home 标签笔记 page seeded')
+  const mainHome = await seedApi.get('主页')
+  assert(mainHome !== undefined && mainHome.text.includes('quadrant-board') && mainHome.text.includes('所有文章'), '主页 seeded with quadrant board + entries')
+  const defTiddlers = await seedApi.get('$:/DefaultTiddlers')
+  assert(defTiddlers !== undefined && (defTiddlers.text ?? '').includes('[[主页]]'), '$:/DefaultTiddlers points at 主页')
   assert(await seedHomeIndex(seedApi) === false, 'home-index NOT re-seeded while marker present')
   await seedApi.put({ title: '所有标签', text: 'user home edit', tags: ['索引'] })
   assert(await seedHomeIndex(seedApi) === false, 'edited home tiddler is never overwritten by the seed')
@@ -499,23 +503,36 @@ try {
   await seedApi.delete('所有标签')
   await seedApi.delete(HOME_INDEX_MARKER_TITLE)
 
-  // checkAllSeeds: the registry has exactly the four联动 items.
+  // checkAllSeeds: the registry has exactly the five联动 items.
   const statuses = await checkAllSeeds(seedCtx)
   const ids = statuses.map((s) => s.id).sort()
-  assert(JSON.stringify(ids) === JSON.stringify(['doc-note', 'home-index', 'send-to-agent', 'tw-web-host']), `seed registry lists all four联动 items (${ids.join(',')})`)
+  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'send-to-agent', 'tw-web-host']), `seed registry lists all five联动 items (${ids.join(',')})`)
   assert(statuses.every((s) => typeof s.title === 'string' && s.title.length > 0), 'every seed has a display title')
 
-  // runAllSeeds (startup path): re-writes the four missing tiddlers.
+  // all-articles first-run (marker-gated) + content sanity + force.
+  assert(await seedAllArticles(seedApi) === true, 'all-articles seeded on first run')
+  const articlesPage = await seedApi.get(ALL_ARTICLES_TITLE)
+  assert(articlesPage !== undefined && articlesPage.text.includes('agent-list') && articlesPage.text.includes('human-list'), 'all-articles page carries both column filters')
+  assert(await seedAllArticles(seedApi) === false, 'all-articles NOT re-seeded while marker present')
+  await seedApi.put({ title: ALL_ARTICLES_TITLE, text: 'user edit', tags: ['索引'] })
+  assert(await seedAllArticles(seedApi) === false, 'edited all-articles page never overwritten by the seed')
+  assert(await seedAllArticles(seedApi, { force: true }) === true, 'all-articles force re-initializes an edited page')
+  const restoredArticles = await seedApi.get(ALL_ARTICLES_TITLE)
+  assert(restoredArticles !== undefined && restoredArticles.text.includes('human-list'), 'force restored built-in all-articles content')
+  await seedApi.delete(ALL_ARTICLES_TITLE)
+  await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-all-articles')
+
+  // runAllSeeds (startup path): re-writes the five missing tiddlers.
   // Earlier sections left mixed state: doc-note's marker stays while its
   // tiddler was deleted, and the earlier ensureTwWebHost test left a CUSTOM
-  // host override. Remove marker + host tiddler so all four seeds are
+  // host override. Remove marker + host tiddler so all five seeds are
   // genuinely missing here.
   await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-doc-note')
   await seedApi.delete(TW_WEB_HOST_TIDDLER)
   const all = await runSeedById(seedCtx, undefined, false)
-  assert(all.length === 4, 'runAllSeeds runs every registry item')
+  assert(all.length === 5, 'runAllSeeds runs every registry item')
   assert(all.every((r) => r.ok), 'all seeds run ok')
-  assert(all.every((r) => r.wrote), 'all four seeds were missing and got written')
+  assert(all.every((r) => r.wrote), 'all five seeds were missing and got written')
 
   // runSeedById with an id runs only that one; force rewrites regardless.
   const onlyHome = await runSeedById(seedCtx, 'home-index', false)

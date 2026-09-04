@@ -84,16 +84,16 @@ try {
 
   const base = `http://127.0.0.1:${await new Promise((resolveP) => mini.listen(0, '127.0.0.1', () => resolveP(mini.address().port)))}`
 
-  // 1. GET statuses on a FRESH wiki: all four seeds missing.
+  // 1. GET statuses on a FRESH wiki: all five seeds missing.
   let res = await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)
   let data = await res.json()
   console.log('fresh statuses:', data.items?.map((i) => `${i.id}:${i.present}`).join(' '))
-  if (res.status !== 200 || data.ok !== true || data.items?.length !== 4) throw new Error('expected 4 seed statuses')
+  if (res.status !== 200 || data.ok !== true || data.items?.length !== 5) throw new Error('expected 5 seed statuses')
   if (data.items.some((i) => i.present)) throw new Error('fresh wiki must report everything missing')
 
-  // 2. Startup path (runAllSeeds) writes all four; statuses flip to present.
+  // 2. Startup path (runAllSeeds) writes all five; statuses flip to present.
   const startup = await runAllSeeds({ client: clientRef })
-  if (startup.length !== 4 || !startup.every((r) => r.ok && r.wrote)) throw new Error('runAllSeeds failed on fresh wiki')
+  if (startup.length !== 5 || !startup.every((r) => r.ok && r.wrote)) throw new Error('runAllSeeds failed on fresh wiki')
   res = await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)
   data = await res.json()
   console.log('after startup:', data.items?.map((i) => `${i.id}:${i.present}`).join(' '))

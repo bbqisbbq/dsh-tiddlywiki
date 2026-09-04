@@ -229,6 +229,8 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   checkField('ui.showSyncButton', '显示「知识库」按钮里的「同步」入口与 git 状态点', ui.showSyncButton !== false)
   checkField('ui.followDshTheme', '嵌入式 TW 跟随 DSH 深浅主题（暗色时自动切深色 palette，不写回 wiki）', ui.followDshTheme !== false)
   textField('ui.darkPalette', '暗色时 TW palette（tiddler 标题）', typeof ui.darkPalette === 'string' && ui.darkPalette.length > 0 ? ui.darkPalette : '$:/palettes/CupertinoDark')
+  const allArticles = (ui.allArticles ?? {}) as Record<string, unknown>
+  numField('ui.allArticles.pageSize', '「所有文章」每页条数', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10)
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
 
   const save = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '保存配置')
@@ -239,15 +241,20 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
       const patch: Record<string, unknown> = {}
       for (const field of fields) {
         if (!field.changed()) continue
+        // Build nested paths like note.tag → {note:{tag}} and
+        // ui.allArticles.pageSize → {ui:{allArticles:{pageSize}}}.
         const parts = field.key.split('.')
-        if (parts.length === 1) {
-          const key = parts[0]
-          if (key !== undefined) patch[key] = field.read()
-        } else {
-          const [top, rest] = parts as [string, string]
-          const obj = (patch[top] ?? {}) as Record<string, unknown>
-          obj[rest] = field.read()
-          patch[top] = obj
+        let node = patch
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i]
+          if (part === undefined) break
+          if (i === parts.length - 1) {
+            node[part] = field.read()
+          } else {
+            const child = (node[part] ?? {}) as Record<string, unknown>
+            node[part] = child
+            node = child
+          }
         }
       }
       try {

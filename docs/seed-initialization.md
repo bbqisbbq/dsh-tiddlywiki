@@ -1,6 +1,6 @@
 # 统一 seed 注册表 & 后台「重新初始化」
 
-> 本文档说明 dsh-tiddlywiki **v0.10.0** 引入的「一次性预置」机制：哪些东西需要随插件初始化写入 wiki、它们与 dsh 的联动关系、ONE-SHOT / force 语义、后台 API 与设置页操作，以及开发时如何重新生成内置常量。
+> 本文档说明 dsh-tiddlywiki **v0.12.0** 引入/完善的「一次性预置」机制：哪些东西需要随插件初始化写入 wiki、它们与 dsh 的联动关系、ONE-SHOT / force 语义、后台 API 与设置页操作，以及开发时如何重新生成内置常量。
 
 ---
 
@@ -11,7 +11,8 @@
 | 联动功能 | 依赖的 wiki 预置 | 缺失时的表现 |
 |---|---|---|
 | 一键发送给 Agent | `$:/plugins/dsh/send-to-agent` 按钮插件 | TW 工具栏没有「发送给 Agent」按钮，后端路由在但无入口 |
-| 首页（Agent 区块 / 标签统计） | 「所有标签」「标签笔记」两个 tiddler | 系统提示承诺的「首页把 Agent 笔记单独列在 Agent 区块、主标签列表只统计人类笔记」完全不存在 |
+| 首页（待办四象限 / 标签统计 / Agent 区块） | 「主页」「所有标签」「标签笔记」三个 tiddler + `$:/DefaultTiddlers` → 主页 | 系统提示承诺的「首页把 Agent 笔记单独列在 Agent 区块、主标签列表只统计人类笔记」完全不存在；TW 打开的是 GettingStarted |
+| 所有文章（两列分页总览） | 「所有文章」tiddler | 没有一键总览全部条目的入口 |
 | 嵌入式 TW 编辑器 | `$:/config/tiddlyweb/host` 指向同源代理 | iframe 里的 TW 前端 API 基址指向错误的 origin，编辑/保存失效 |
 | 新手引导 | 「dsh-tiddlywiki 插件说明」笔记 | 新用户没有入门说明 |
 
@@ -37,12 +38,13 @@ interface SeedDef {
 |---|---|---|---|
 | `doc-note` | `seed-notes.ts` → `seedDocNote` | 「dsh-tiddlywiki 插件说明」（tag `docs`） | `$:/plugins/dsh-tiddlywiki/seed-doc-note` |
 | `send-to-agent` | `seed-send-to-agent.ts` → `seedSendToAgent` | `$:/plugins/dsh/send-to-agent` 按钮 bundle（`application/json`） | `$:/plugins/dsh-tiddlywiki/seed-send-to-agent` |
-| `home-index` | `seed-home.ts` → `seedHomeIndex` | 「所有标签」+「标签笔记」（tag `索引`） | `$:/plugins/dsh-tiddlywiki/seed-home-index` |
+| `home-index` | `seed-home.ts` → `seedHomeIndex` | 「主页」+「所有标签」+「标签笔记」（tag `索引`），并把 `$:/DefaultTiddlers` 指向 `[[主页]]` | `$:/plugins/dsh-tiddlywiki/seed-home-index` |
+| `all-articles` | `seed-all-articles.ts` → `seedAllArticles` | 「所有文章」（tag `索引`）——两列分页总览，每页条数实时读 `ui.allArticles.pageSize`（默认 10） | `$:/plugins/dsh-tiddlywiki/seed-all-articles` |
 | `tw-web-host` | `seeds.ts` 内联 | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 无 marker（ensure 型，见 §4） |
 
 ### 统一入口（`src/index.ts` 导出）
 
-- `runAllSeeds(ctx)` —— **启动路径**：四项全部非 force 执行（只写缺失）。启动时序在 `configStore.load()` 之后、`bootstrapGit()` 之前，保证 seed 写入的内容进入首次 git 提交。
+- `runAllSeeds(ctx)` —— **启动路径**：五项全部非 force 执行（只写缺失）。启动时序在 `configStore.load()` 之后、`bootstrapGit()` 之前，保证 seed 写入的内容进入首次 git 提交。
 - `checkAllSeeds(ctx)` —— 返回每项当前状态数组（设置页「初始化」区块数据源）。
 - `runSeedById(ctx, id?, force)` —— 单跑（`id` 指定）或全跑（`id` 为 `undefined`）；`force` 为手动「重新初始化」；未知 `id` 返回显式错误结果而非抛异常。
 
@@ -52,7 +54,7 @@ interface SeedDef {
 
 **核心原则：seed 只提供一次，之后内容归用户所有。**
 
-- **marker 门控**（doc-note / send-to-agent / home-index）：首次执行写入内容 + 写 marker；此后只要 marker 在，seed 就**不再写**（无论目标 tiddler 是否存在）。
+- **marker 门控**（doc-note / send-to-agent / home-index / all-articles）：首次执行写入内容 + 写 marker；此后只要 marker 在，seed 就**不再写**（无论目标 tiddler 是否存在）。
 - **用户删除 tiddler 后，重启不会复活**（marker 仍在）——这是刻意的：用户删掉 = 不想要。
 - **用户编辑过 tiddler，永远不会被启动 seed 覆盖**（marker 在，seed 根本不触碰）。
 - **升级兼容**：老 wiki 已有这些 tiddler（旧版本手工放的）时，首次执行只补写 marker、不覆盖现有内容，从这一刻起同样归用户所有。
@@ -71,7 +73,8 @@ interface SeedDef {
 
 典型使用场景：
 
-- 「我把首页改坏了，想恢复成模板」→ `home-index` 重新初始化；
+- 「我把首页改坏了，想恢复成模板」→ `home-index` 重新初始化（恢复主页/所有标签/标签笔记 + `$:/DefaultTiddlers` → 主页）；
+- 「所有文章页被删了 / 改坏了」→ `all-articles` 重新初始化；
 - 「发送给 Agent 按钮被我删了 / 改坏了」→ `send-to-agent` 重新初始化；
 - 「TW 编辑器打不开，疑似 `$:/config/tiddlyweb/host` 被改错」→ `tw-web-host` 重新初始化（force 强制写回代理基址）；
 - 「刚装完发现 wiki 里缺了说明/首页」→ 对应项重新初始化或「全部重新初始化」。
@@ -92,10 +95,11 @@ interface SeedDef {
 {
   "ok": true,
   "items": [
-    { "id": "doc-note",      "title": "插件说明笔记",            "description": "…", "present": true,  "detail": "已存在" },
-    { "id": "send-to-agent", "title": "「发送给 Agent」按钮",     "description": "…", "present": true,  "detail": "已存在" },
-    { "id": "home-index",    "title": "首页（所有标签 / 标签笔记）", "description": "…", "present": false, "detail": "缺失：所有标签" },
-    { "id": "tw-web-host",   "title": "TW 前端 API 基址（同源代理）", "description": "…", "present": true,  "detail": "已指向 /dsh-tiddlywiki/tw/" }
+    { "id": "doc-note",      "title": "插件说明笔记",                "description": "…", "present": true,  "detail": "已存在" },
+    { "id": "send-to-agent", "title": "「发送给 Agent」按钮",         "description": "…", "present": true,  "detail": "已存在" },
+    { "id": "home-index",    "title": "首页（主页 / 所有标签 / 标签笔记）", "description": "…", "present": false, "detail": "缺失：主页" },
+    { "id": "all-articles",  "title": "所有文章（两列分页总览）",       "description": "…", "present": true,  "detail": "已存在" },
+    { "id": "tw-web-host",   "title": "TW 前端 API 基址（同源代理）",   "description": "…", "present": true,  "detail": "已指向 /dsh-tiddlywiki/tw/" }
   ]
 }
 ```
@@ -136,7 +140,7 @@ DSH 设置 →「TiddlyWiki 知识库」→ 最底部「**初始化（一次性�
 
 - 顶部状态行：`共 N 项，M 项已就绪`；
 - 每项一行：状态点（✓ 已就绪 / ✗ 缺失）+ 名称 + 实时详情（如缺失了哪个 tiddler）+ 「重新初始化」按钮；
-- 底部：「**全部重新初始化**」按钮（force 全部四项）。
+- 底部：「**全部重新初始化**」按钮（force 全部五项）。
 
 前端源码：`src/client/settings-page.ts` 的 `renderSeedsSection`；样式 `src/client/styles.ts`（状态点 `ok` / `missing`）。
 
@@ -150,8 +154,11 @@ DSH 设置 →「TiddlyWiki 知识库」→ 最底部「**初始化（一次性�
 # 改了 wiki 里的「发送给 Agent」按钮 bundle（$:/plugins/dsh/send-to-agent）：
 node scripts/gen-seed-send-to-agent.mjs '<wiki>/tiddlers/$__plugins_dsh_send-to-agent.json' src/host/seed-send-to-agent.ts
 
-# 改了 wiki 首页（所有标签 / 标签笔记）：
-node scripts/gen-seed-home.mjs '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts
+# 改了 wiki 首页（主页 / 所有标签 / 标签笔记）：
+node scripts/gen-seed-home.mjs '<wiki>/tiddlers/主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts
+
+# 「所有文章」页的内容维护在 src/host/seed-all-articles.ts 的 ALL_ARTICLES_TEXT
+# （来源：<wiki>/tiddlers/所有文章.tid；改 wiki 页后同步手工更新该常量）。
 
 # 重新生成后务必：
 npm run typecheck && npm run build && npm run selftest

@@ -15,6 +15,7 @@ import type { TiddlyWebClient } from './tw-api.ts'
 import { seedDocNote, DOC_NOTE_TITLE } from './seed-notes.ts'
 import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE } from './seed-send-to-agent.ts'
 import { seedHomeIndex, HOME_INDEX_ITEMS } from './seed-home.ts'
+import { seedAllArticles, ALL_ARTICLES_TITLE } from './seed-all-articles.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
 
@@ -94,14 +95,14 @@ export const SEED_DEFS: SeedDef[] = [
   },
   {
     id: 'home-index',
-    title: '首页（所有标签 / 标签笔记）',
-    description: '首页：四象限待办 + 标签统计 + Agent 区块（纯 Agent / Agent+人工）。系统提示承诺的首页由这里 seed。',
+    title: '首页（主页 / 所有标签 / 标签笔记）',
+    description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页同时写入 $:/DefaultTiddlers。',
     check: async (ctx) => {
       const missing: string[] = []
       for (const item of HOME_INDEX_ITEMS) {
         if (!(await presentOf(ctx, item.title))) missing.push(item.title)
       }
-      return { id: 'home-index', title: '首页（所有标签 / 标签笔记）', description: '首页：四象限待办 + 标签统计 + Agent 区块（纯 Agent / Agent+人工）。系统提示承诺的首页由这里 seed。', present: missing.length === 0, detail: missing.length === 0 ? '已存在' : `缺失：${missing.join('、')}` }
+      return { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页同时写入 $:/DefaultTiddlers。', present: missing.length === 0, detail: missing.length === 0 ? '已存在' : `缺失：${missing.join('、')}` }
     },
     run: async (ctx, force) => {
       try {
@@ -109,6 +110,23 @@ export const SEED_DEFS: SeedDef[] = [
         return { id: 'home-index', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
       } catch (err) {
         return { id: 'home-index', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    },
+  },
+  {
+    id: 'all-articles',
+    title: '所有文章（两列分页总览）',
+    description: '「所有文章」——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页展示。每页条数取插件设置 ui.allArticles.pageSize（默认 10）。',
+    check: async (ctx) => {
+      const present = await presentOf(ctx, ALL_ARTICLES_TITLE)
+      return { id: 'all-articles', title: '所有文章（两列分页总览）', description: '「所有文章」——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页展示。每页条数取插件设置 ui.allArticles.pageSize（默认 10）。', present, detail: present ? '已存在' : '缺失' }
+    },
+    run: async (ctx, force) => {
+      try {
+        const wrote = await seedAllArticles(ctx.client, { force })
+        return { id: 'all-articles', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
+      } catch (err) {
+        return { id: 'all-articles', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
   },
