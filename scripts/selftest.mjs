@@ -434,6 +434,94 @@ try {
 
   disposeRoutes()
 
+  // 5d2. agent routes (mock DSH services the routes resolve lazily):
+  // /agent/modes exposes the permission-preset roster alongside the 工作模式,
+  // and /agent/create validates + applies the chosen permission preset to the
+  // just-created session's log (permissionPresets.set). Unknown presets are
+  // rejected before any session is created.
+  {
+    const agentHandlers = new Map()
+    const agentMockCtx = {
+      webServer: {
+        register: (route) => {
+          agentHandlers.set(route.path, route.handler)
+          return () => {}
+        },
+      },
+    }
+    const applied = []
+    const mockSessions = {
+      get: (id) => (id === 'session-mock-1' ? { mock: true } : undefined),
+    }
+    const mockPermissionPresets = {
+      names: ['workspace-write', 'danger-full-access'],
+      defaultPreset: 'workspace-write',
+      optionOf: (n) => ({ value: n, name: n, description: `preset ${n}` }),
+      set: (session, name) => applied.push({ session, name }),
+    }
+    const mockSessionController = {
+      list: async () => ({
+        items: [{ sessionId: 'session-mock-1', cwd: '/tmp', updatedAt: 1, running: false, blank: false }],
+      }),
+      create: async (req) => ({ sessionId: 'session-mock-1', agentPreset: req.agentPreset }),
+      prompt: async () => ({ accepted: true }),
+    }
+    const mockWorkspaceRegistry = { create: async (p) => ({ id: `ws-${p}`, path: p }) }
+    const mockAgentPresets = {
+      list: async () => [{ id: 'default', name: '默认', description: '', trust: 'user' }],
+      resolve: async () => ({ id: 'default', name: '默认' }),
+    }
+    const mockSessionPersistence = { list: async () => [{ id: 'session-mock-1', agentPreset: 'default' }] }
+    const disposeAgentRoutes = registerRoutes(agentMockCtx, {
+      server,
+      getClient: () => new TiddlyWebClient(server.url),
+      git,
+      autoCommit: () => {},
+      noteDefaults: () => ({ tag: 'inbox' }),
+      uiDefaults: () => ({ showQuickNote: true, showPanelStatus: true, showSyncButton: true }),
+      getWikiPath: () => wikiDir,
+      getSessionController: () => mockSessionController,
+      getWorkspaceRegistry: () => mockWorkspaceRegistry,
+      getAgentPresets: () => mockAgentPresets,
+      getSessionPersistence: () => mockSessionPersistence,
+      getPermissionPresets: () => mockPermissionPresets,
+      getSessions: () => mockSessions,
+      sendToAgentEnabled: () => true,
+      sendToAgentToken: () => '',
+    })
+    assert(agentHandlers.has('/dsh-tiddlywiki/agent/modes') && agentHandlers.has('/dsh-tiddlywiki/agent/create'), 'agent modes + create routes registered')
+    const modesRes = await callRoute(agentHandlers.get('/dsh-tiddlywiki/agent/modes'), makeReq('/dsh-tiddlywiki/agent/modes'), makeRes())
+    assert(
+      modesRes.ok === true && Array.isArray(modesRes.permissions?.items) && modesRes.permissions.items.length === 2,
+      `agent/modes carries the permission roster (${JSON.stringify(modesRes.permissions?.items?.map((x) => x.value))})`,
+    )
+    assert(modesRes.permissions?.defaultId === 'workspace-write', 'agent/modes reports the default permission preset')
+    const createCwd = join(tempRoot, 'agent-ws')
+    const createRes = await callRoute(
+      agentHandlers.get('/dsh-tiddlywiki/agent/create'),
+      makeReq('/dsh-tiddlywiki/agent/create', Buffer.from(JSON.stringify({ cwd: createCwd, mode: 'default', permission: 'danger-full-access' })), 'POST'),
+      makeRes(),
+    )
+    assert(
+      createRes.ok === true && createRes.permissionApplied === true && createRes.permission === 'danger-full-access',
+      `agent/create applies the permission preset (${JSON.stringify(createRes)})`,
+    )
+    assert(applied.length === 1 && applied[0].name === 'danger-full-access', 'permissionPresets.set called once with the chosen preset')
+    const badPerm = await callRoute(
+      agentHandlers.get('/dsh-tiddlywiki/agent/create'),
+      makeReq('/dsh-tiddlywiki/agent/create', Buffer.from(JSON.stringify({ cwd: createCwd, permission: 'nope' })), 'POST'),
+      makeRes(),
+    )
+    assert(badPerm.ok === false && (badPerm.error ?? '').includes('unknown permission preset'), `agent/create rejects an unknown permission preset (${JSON.stringify(badPerm.error)})`)
+    const noPerm = await callRoute(
+      agentHandlers.get('/dsh-tiddlywiki/agent/create'),
+      makeReq('/dsh-tiddlywiki/agent/create', Buffer.from(JSON.stringify({ cwd: createCwd })), 'POST'),
+      makeRes(),
+    )
+    assert(noPerm.ok === true && noPerm.permission === null && noPerm.permissionApplied === false, 'agent/create without permission keeps the default (permission null)')
+    disposeAgentRoutes()
+  }
+
   // 5b. Doc-note seed: ONE-SHOT (marker-gated), never overwrites edits.
   const SEED_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-doc-note'
   const seedApi = new TiddlyWebClient(view.url)
@@ -462,6 +550,9 @@ try {
   assert(s2aBundle.text.includes('$:/plugins/dsh/send-to-agent/startup.js'), 'bundle contains the startup.js tiddler')
   assert(s2aBundle.text.includes('【待办说明】'), 'bundle startup.js carries the todo explanation')
   assert(!s2aBundle.text.includes('【TiddlyWiki 笔记一键发送】'), 'bundle startup.js no longer carries the old prefix')
+  assert(s2aBundle.text.includes('$:/plugins/dsh/send-to-agent/ui/icon'), 'bundle ships its own (non-export) toolbar icon')
+  assert(s2aBundle.text.includes('附加说明（可选，随笔记一起发给 Agent）'), 'bundle startup.js carries the optional-note input')
+  assert(s2aBundle.text.includes('body.permission = state.permission'), 'bundle startup.js forwards the chosen permission preset')
   assert(await seedSendToAgent(seedApi) === false, 'send-to-agent NOT re-seeded while marker present')
   await seedApi.put({ title: SEND_TO_AGENT_PLUGIN_TITLE, text: 'user edit', type: 'application/json', tags: [] })
   assert(await seedSendToAgent(seedApi) === false, 'edited send-to-agent bundle is never overwritten by the seed')

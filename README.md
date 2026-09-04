@@ -18,7 +18,7 @@
 | 能力 | 说明 |
 |---|---|
 | 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `batch_put` / `rename` / `delete` / `recent` / `list_tags` / `git_sync` / `git_resolve` 十个工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
-| 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话，**可选「工作模式」= Agent 预设**，如 默认/cordis/blade，已有会话显示其当前模式）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
+| 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki；**独立图标**，工具栏设置里显示图标/说明）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话，**可选「工作模式」= Agent 预设**、**可选「权限」= 权限预设**（沙箱+审批），**可选附加说明**随消息一起发给 Agent，已有会话显示其当前模式）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
 | 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
 | 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
@@ -33,6 +33,7 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
+- **v0.14.0**（2026-09-05）：TW「**发送给 Agent**」一键发送三处优化。① **工具栏按钮修复**——之前按钮在 控制台→外观→工具栏 里**不显示图标与说明**（还和「导出此条目」用同一个导出图标）：现为按钮补上 `icon`/`caption`/`description` 字段，并在 bundle 里**自带独立的「发送」图标**（不再借用 core 的 export-button），工具栏设置与条目标题栏都显示独立图标；② **可选「附加说明」**——发送弹层新增文本输入框，填写的说明会以 `【附加说明】` 段随消息一起发给 Agent（不填则无此段）；③ **可选「权限」**——弹层新增「权限（权限预设）」选择器（来自 DSH `permissionPresets`，如 工作区写入+询问 / 完全访问+免确认），**新建会话并发送**时 `/agent/create` 传 `permission` → 创建后对会话日志应用该预设（`permission/preset` + `sandbox/mode` + `approval/policy` 事件），覆盖部署默认；对旧宿主**向后兼容**：权限服务缺失时选择器降级为提示、不发送该字段。bundle 源码收进仓库 `scripts/bundle/send-to-agent/`（startup.js/button.tid/icon.svg）+ 组装脚本 `scripts/build-send-to-agent-bundle.mjs`，改按钮后重跑组装 → gen-seed → build 即可。
 - **v0.13.1**（2026-09-04）：**客户端 bundle 压缩（minify）**。CodeMirror 6 + Lezer markdown 让 `lib/client.js`（`./client` 导出）达到 1.06MB，超过插件目录注册表（如 dsh.pub 收录校验）经 GitHub Contents API 检查的 **1MB 上限**，导致 dsh.pub 收录 PR 首轮校验失败（`invalid_file`）；开启 tsdown `minify` 后产物降到 **0.58MB**（gzip ~193KB），浏览器加载更快，dsh.pub 收录 PR #83 校验全绿并已合并。构建配置见 `tsdown.client.config.ts`。
 - **v0.13.0**（2026-09-04）：**menubar 顶栏主题自适应**。tiddlywiki/menubar 顶栏背景原来一直停在默认色映射的蓝色（`$:/config/DefaultColourMappings/` → `#5778d8`），不随 DSH 深浅主题变化——根因是大部分浅色 palette（Vanilla/Blanca…）不定义 `menubar-background`，`<<colour menubar-background>>` 落回插件硬编码的蓝色。新增 seed `menubar-theme`：写入样式表覆盖 `$:/plugins/dsh-tiddlywiki/menubar-theme`（tag `$:/tags/Stylesheet`），把顶栏改为跟随**活动 palette** 的 `background`/`foreground`（`!important` 压过插件自身规则）；嵌入式 TW 的 `$:/palette` 由主题同步随 DSH 翻转时，TW 会实时重渲染全部样式表，menubar 即自动换色。作为新 seed 进统一注册表（`menubar-theme`），首次启动自动写入（ONE-SHOT，不覆盖你的改动），设置页「初始化」可单独/全部**重新初始化**。
 - **v0.12.0**（2026-09-04）：**新默认主页「主页」+ 「所有文章」两列分页页**。把首页拆成三页：**主页**（默认打开，`$:/DefaultTiddlers` 指向它）= 四象限待办 + 「所有标签」「所有文章」入口；**所有标签**瘦身为独立标签统计页（标签 + Agent 区块 + 回主页链接）；新增 **所有文章**——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类，含 `human-edited` 的 Agent 笔记）**各自分页**展示（排除系统页、草稿与 `索引` 导航页），每页条数取配置 `ui.allArticles.pageSize`（默认 10，设置页可调、实时生效）。**所有文章**作为新 seed 进统一注册表（`all-articles`），设置页可单独/全部**重新初始化**。
@@ -111,10 +112,13 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 ### 🧑‍💻 给人：界面操作
 
 **📤 一键发送给 Agent** — 插件首次启动会把「发送给 Agent」按钮插件写入 wiki（`$:/plugins/dsh/send-to-agent`，ONE-SHOT）。在 TW 里打开任意笔记，工具栏点「**发送给 Agent**」：
+- 弹层顶部有**「附加说明」（可选）**输入框（v0.14.0）：填写的说明会以 `【附加说明】` 段随消息一起发给 Agent（不填则没有该段）；
 - 弹层顶部有**「工作模式」（Agent 预设）**选择器（v0.11.0）：列出 DSH 全部可用预设（`/agent/modes`，标记部署默认），**新建工作区/会话并发送**时按所选模式创建（`/agent/create` 传 `mode` → `sessionController.create(agentPreset)`）；已有会话旁显示其当前模式徽标（🧭）；
+- 弹层顶部还有**「权限」（权限预设）**选择器（v0.14.0）：列出 DSH 权限预设（沙箱 + 审批的捆绑，如 工作区写入+询问 / 完全访问+免确认，来自 `permissionPresets`），**新建会话并发送**时应用所选权限（`/agent/create` 传 `permission` → 创建后 `permissionPresets.set` 写入会话日志）；权限服务不可用时选择器自动隐藏、按部署默认；
 - 弹层**按工作区（cwd）分组**列出可见会话，点选即把当前笔记作为消息注入（`sessionController.prompt`，与聊天输入同 API）；
 - 也可以**新建工作区/会话**再发送（`/agent/create` 按 cwd 落入真实 Workspace，会话不落「未分组」）；
-- 消息格式为 `《标题》` + 标签/类型 + **待办说明**（告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问）+ 正文；
+- 消息格式为 `《标题》` + 标签/类型 + **待办说明**（告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问）+ **附加说明**（可选）+ 正文；
+- 按钮在 控制台→外观→工具栏 里带**独立图标与说明**（v0.14.0 起不再借用「导出此条目」的图标）；
 - 开关与 token 见设置页「常规配置」/配置项 `ui.sendToAgent`（默认开）。
 
 **🧭 中央列编辑器** — 侧边栏「TiddlyWiki」按钮开关中央编辑器面板（**同源代理**：iframe 指向 `<DSH origin>/dsh-tiddlywiki/tw/`，由 DSH 转发到回环上的 TW 服务），完整 TW 5 编辑器。
@@ -268,8 +272,11 @@ node scripts/verify-menubar-theme.mjs   # 可选：真实浏览器验证 menubar
 node scripts/verify-seed-send-to-agent.mjs  # 可选：全新 wiki 上 E2E 验证「发送给 Agent」按钮 seed（bundle 写入/幂等/marker）
 node scripts/verify-seeds-admin.mjs         # 可选：全新 wiki + 真实 HTTP 验证 /admin/seeds 状态与 /admin/seeds/run（单跑/全跑/force/unknown id）
 
-# 改了 wiki 里的 $:/plugins/dsh/send-to-agent bundle 后，重新生成内置常量：
-node scripts/gen-seed-send-to-agent.mjs '<wiki>/tiddlers/$__plugins_dsh_send-to-agent.json' src/host/seed-send-to-agent.ts && npm run build
+# 改了 scripts/bundle/send-to-agent/ 下的按钮源码（startup.js / button.tid / icon.svg）后，
+# 重新组装 bundle → 重新生成内置常量：
+node scripts/build-send-to-agent-bundle.mjs
+node scripts/gen-seed-send-to-agent.mjs scripts/bundle/send-to-agent.bundle.json src/host/seed-send-to-agent.ts && npm run build
+node scripts/verify-send-to-agent-bundle.mjs  # 可选：校验组装出的 bundle 字段/内容
 
 # 改了 wiki 首页「主页 / 所有标签 / 标签笔记」后，重新生成内置 seed 常量：
 node scripts/gen-seed-home.mjs '<wiki>/tiddlers/主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts && npm run build
@@ -295,9 +302,9 @@ node scripts/gen-seed-home.mjs '<wiki>/tiddlers/主页.tid' '<wiki>/tiddlers/所
 | `/dsh-tiddlywiki/upload` | POST | 文件上传到 `files/`（原始 body + `X-Filename`） |
 | `/dsh-tiddlywiki/restart` | POST | 重启 TW 子进程 |
 | `/dsh-tiddlywiki/agent/sessions` | GET | 可见会话列表（TW「发送给 Agent」选择器；含每会话 `agentPreset` 模式徽标） |
-| `/dsh-tiddlywiki/agent/modes` | GET | 可用「工作模式」（Agent 预设）清单 + 部署默认（v0.11.0） |
+| `/dsh-tiddlywiki/agent/modes` | GET | 可用「工作模式」（Agent 预设）清单 + 部署默认；同时返回 `permissions`（权限预设 roster：`{defaultId, items:[{value,name,description}]}`，v0.14.0，来自 `permissionPresets`，缺失时 `null`） |
 | `/dsh-tiddlywiki/agent/send` | POST | 把笔记作为消息注入一个会话（`sessionController.prompt`） |
-| `/dsh-tiddlywiki/agent/create` | POST | 按 cwd 新建/复用 Workspace + 会话（工作区优先）；可选 `mode`（Agent 预设） |
+| `/dsh-tiddlywiki/agent/create` | POST | 按 cwd 新建/复用 Workspace + 会话（工作区优先）；可选 `mode`（Agent 预设）、可选 `permission`（权限预设，创建后经 `permissionPresets.set` 应用到会话日志，v0.14.0；未知预设 400 拒绝） |
 | `/dsh-tiddlywiki/api/*` | any | 透传到 TW 服务（JSON） |
 | `/dsh-tiddlywiki/tw/*` | any | **同源 TW 代理**：整个 TW 前端（index + `/files/*` + TiddlyWeb API）→ 回环 TW（v0.6.0，远程访问核心） |
 

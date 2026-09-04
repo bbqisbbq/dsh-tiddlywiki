@@ -22,7 +22,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
-import { registerRoutes, type AgentPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
+import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { runAllSeeds, checkAllSeeds, runSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
@@ -381,6 +381,14 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       ctx.get('agentPresets') as AgentPresetsFace | undefined
     const getSessionPersistence = (): SessionPersistenceFace | undefined =>
       ctx.get('sessionPersistence') as SessionPersistenceFace | undefined
+    // permissionPresets (权限 preset roster for the picker + applying the
+    // chosen permission to new sessions) and the `sessions` in-memory store
+    // (the created live session handed to permissionPresets.set) are core host
+    // services — resolve them lazily like the ones above.
+    const getPermissionPresets = (): PermissionPresetsFace | undefined =>
+      ctx.get('permissionPresets') as PermissionPresetsFace | undefined
+    const getSessions = (): SessionsFace | undefined =>
+      ctx.get('sessions') as SessionsFace | undefined
     const disposeRoutes = registerRoutes({ webServer: ws }, {
       server,
       getClient: client,
@@ -393,6 +401,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       getWorkspaceRegistry,
       getAgentPresets,
       getSessionPersistence,
+      getPermissionPresets,
+      getSessions,
       sendToAgentEnabled: () => eff().ui?.sendToAgent?.enabled !== false,
       sendToAgentToken: () => {
         const token = eff().ui?.sendToAgent?.token

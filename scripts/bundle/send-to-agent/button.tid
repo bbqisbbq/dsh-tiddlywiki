@@ -1,0 +1,16 @@
+\whitespace trim
+<$button message="dsh-send-to-agent"
+	param=<<currentTiddler>>
+	tooltip="把当前笔记一键发送给 DSH Agent"
+	aria-label="把当前笔记一键发送给 DSH Agent"
+	class=<<tv-config-toolbar-class>>
+>
+	<%if [<tv-config-toolbar-icons>match[yes]] %>
+		{{$:/plugins/dsh/send-to-agent/ui/icon}}
+	<%endif%>
+	<%if [<tv-config-toolbar-text>match[yes]] %>
+		<span class="tc-btn-text">
+		<$text text="发送给 Agent"/>
+	</span>
+	<%endif%>
+</$button>

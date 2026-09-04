@@ -106,6 +106,35 @@ export interface SessionPersistenceFace {
   list(signal?: AbortSignal): Promise<Array<{ id: string; agentPreset?: string }>>
 }
 
+/**
+ * Structural face over the DSH `permissionPresets` service (a subset of
+ * dsh-permission-presets). It owns the deployment's permission presets — each
+ * bundles a sandbox mode + approval policy (e.g. `workspace-write` = write
+ * inside the workspace with approval, `danger-full-access` = no prompts). The
+ * agent-modes route exposes the option list to the TW picker, and agent-create
+ * applies the chosen preset to the new session's log via `set`.
+ */
+export interface PermissionPresetsFace {
+  /** Every switchable preset name, in declaration order. */
+  readonly names: readonly string[]
+  /** The preset currently selected as the default for new sessions. */
+  readonly defaultPreset: string
+  /** Build the client option ({ value, name, description? }) for one preset. */
+  optionOf(name: string): { value: string; name: string; description?: string }
+  /** Record a preset switch on a live session (durable, log-only user intent). */
+  set(session: unknown, name: string): void
+}
+
+/**
+ * Structural face over the DSH `sessions` in-memory store (a subset of
+ * dsh-session). Only `get` is needed: after `sessionController.create`
+ * resolves, the new session is already materialized here, so agent-create can
+ * hand it to `permissionPresets.set`.
+ */
+export interface SessionsFace {
+  get(id: string): unknown
+}
+
 /** Effective UI flags returned by /status (mirror index.ts). */
 export interface UiDefaultsPublic {
   showQuickNote: boolean
@@ -138,6 +167,12 @@ export interface RouteDeps {
   /** Optional DSH sessionPersistence service (agent-sessions route): attaches
    *  each session's recorded agentPreset so the picker can badge it. */
   getSessionPersistence: () => SessionPersistenceFace | undefined
+  /** Optional DSH permissionPresets service (agent-modes permissions list +
+   *  agent-create applies the chosen permission preset to the new session). */
+  getPermissionPresets: () => PermissionPresetsFace | undefined
+  /** Optional DSH `sessions` in-memory store (agent-create hands the created
+   *  live session to permissionPresets.set). */
+  getSessions: () => SessionsFace | undefined
   /** Whether the one-click send-to-agent feature is enabled (config switch). */
   sendToAgentEnabled: () => boolean
   /** Optional shared token that must match `x-send-to-agent-token` when set. */
@@ -386,6 +421,22 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       } catch {
         defaultId = undefined
       }
+      // The picker also needs the permission-preset roster (a "权限" selector
+      // for newly created sessions). Best-effort: when the permissionPresets
+      // service is not mounted (older host), `permissions` is null and the
+      // picker simply hides the selector — modes still work.
+      let permissions: { defaultId: string | null; items: Array<{ value: string; name: string; description?: string }> } | null = null
+      const pp = deps.getPermissionPresets()
+      if (pp !== undefined) {
+        try {
+          permissions = {
+            defaultId: pp.defaultPreset ?? null,
+            items: pp.names.map((n) => pp.optionOf(n)),
+          }
+        } catch {
+          permissions = null
+        }
+      }
       json(res, {
         ok: true,
         defaultId: defaultId ?? null,
@@ -397,6 +448,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           broken: p.broken ?? null,
           isDefault: p.id === defaultId,
         })),
+        permissions,
       })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
@@ -459,6 +511,12 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * Optional `mode` names the "工作模式" (an Agent preset id, e.g. from
    * /agent/modes); it is forwarded to `sessionController.create(agentPreset)`
    * so the new session launches under that preset. Omitted → deployment default.
+   *
+   * Optional `permission` names a "权限" preset (e.g. from /agent/modes'
+   * `permissions` roster). After the session is created it is applied to the
+   * live session's log via `permissionPresets.set` (durable knob events:
+   * `permission/preset`, `sandbox/mode`, `approval/policy`), overriding the
+   * deployment default pinned at creation. Omitted → keep the default.
    */
   const handleAgentCreate = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -475,9 +533,23 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           return
         }
       }
-      const body = JSON.parse(await readBody(req)) as { cwd?: unknown; mode?: unknown }
+      const body = JSON.parse(await readBody(req)) as { cwd?: unknown; mode?: unknown; permission?: unknown }
       const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : ''
       const mode = typeof body.mode === 'string' && body.mode.trim().length > 0 ? body.mode.trim() : undefined
+      const permission = typeof body.permission === 'string' && body.permission.trim().length > 0 ? body.permission.trim() : undefined
+      // Validate the permission preset BEFORE creating the session (fail fast,
+      // so a bad name never leaves an orphaned session behind).
+      const pp = deps.getPermissionPresets()
+      if (permission !== undefined) {
+        if (pp === undefined) {
+          json(res, { ok: false, error: 'permission selected but the permission-presets service is unavailable' }, 503)
+          return
+        }
+        if (!pp.names.includes(permission)) {
+          json(res, { ok: false, error: `unknown permission preset "${permission}" (available: ${pp.names.join(', ')})` }, 400)
+          return
+        }
+      }
       const sc = deps.getSessionController()
       if (sc === undefined) {
         json(res, { ok: false, error: 'session service unavailable' }, 503)
@@ -488,14 +560,40 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         await mkdir(cwd, { recursive: true })
       }
       let created: { sessionId: string }
+      let workspaceId: string | undefined
       if (cwd.length > 0 && ws !== undefined) {
         const workspace = await ws.create(cwd)
-        created = await sc.create({ workspaceId: workspace.id, agentPreset: mode })
-        json(res, { ok: true, sessionId: created.sessionId, cwd, workspaceId: workspace.id, mode: mode ?? null })
-        return
+        workspaceId = workspace.id
+        created = await sc.create({ workspaceId, agentPreset: mode })
+      } else {
+        created = await sc.create({ cwd: cwd.length > 0 ? cwd : undefined, agentPreset: mode })
       }
-      created = await sc.create({ cwd: cwd.length > 0 ? cwd : undefined, agentPreset: mode })
-      json(res, { ok: true, sessionId: created.sessionId, cwd: cwd || null, mode: mode ?? null })
+      // Apply the chosen permission preset to the just-created live session
+      // (best-effort — the session is already created either way).
+      let permissionApplied = false
+      if (permission !== undefined) {
+        const sessionsSvc = deps.getSessions()
+        if (sessionsSvc !== undefined) {
+          try {
+            const session = sessionsSvc.get(created.sessionId)
+            if (session !== undefined) {
+              pp?.set(session, permission)
+              permissionApplied = true
+            }
+          } catch {
+            /* permission is an optional convenience; never fail the create */
+          }
+        }
+      }
+      json(res, {
+        ok: true,
+        sessionId: created.sessionId,
+        cwd: cwd || null,
+        workspaceId: workspaceId ?? null,
+        mode: mode ?? null,
+        permission: permission ?? null,
+        permissionApplied,
+      })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
