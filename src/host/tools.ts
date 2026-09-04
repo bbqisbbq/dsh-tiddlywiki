@@ -18,6 +18,19 @@ import { defineTool } from '../sdk.ts'
 import type { TiddlyWebClient, Tiddler } from './tw-api.ts'
 import type { GitFace } from './git.ts'
 
+/**
+ * 约定标签：标记「由 Agent 撰写」的笔记。
+ * 新建（title 不存在）时由 tiddlywiki_put / tiddlywiki_batch_put 自动补打；
+ * 首页据此把这类笔记单独列在「Agent 区块」并从主标签列表排除。
+ */
+export const AGENT_WRITTEN_TAG = 'agent-written'
+
+/**
+ * 约定标签：标记「Agent 撰写后又经人类编辑」的笔记（双标签分级第二档）。
+ * 人类在编辑某篇 Agent 笔记时手动补打，首页把这类笔记归入「Agent + 人工」档。
+ */
+export const HUMAN_EDITED_TAG = 'human-edited'
+
 /** Structural tool-registry face (subset of the dsh tools service). */
 export interface ToolsCtx {
   tools: { register(tool: unknown): () => void }
@@ -81,6 +94,21 @@ function rewriteRefs(text: string, oldTitle: string, newTitle: string): { text: 
     return `${prefix}${newTitle}${suffix}`
   })
   return { text: out, count }
+}
+
+/**
+ * Compute the final tags for a write:
+ * - NEW tiddler (created by this tool) → auto-append the agent-written tag,
+ *   unless it is a `$:/` system tiddler (config/language/theme internals).
+ * - Existing tiddler → keep the caller's tags as-is (an agent maintaining a
+ *   human note must NOT silently claim authorship; an already agent-written
+ *   note keeps its tag because the caller provides the full tag list).
+ */
+function finalTagsForWrite(title: string, existing: Tiddler | undefined, tags: string[]): string[] {
+  if (existing !== undefined) return tags
+  if (title.startsWith('$:/')) return tags
+  if (tags.includes(AGENT_WRITTEN_TAG)) return tags
+  return [...tags, AGENT_WRITTEN_TAG]
 }
 
 export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<() => void> {
@@ -227,7 +255,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_put ───────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_put',
-    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；tags 为标签数组，fields 为附加自定义字段（json 对象，会写入 tiddler 字段）。写入后触发自动 commit。',
+    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；tags 为标签数组，fields 为附加自定义字段（json 对象，会写入 tiddler 字段）。写入后触发自动 commit。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配，覆盖同名）', required: true },
       text: { type: 'string', description: 'tiddler 全文（wiki 文本）', required: true },
@@ -249,19 +277,21 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     execute: async (args: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }): Promise<PutResult> => {
       const wiki = deps.wiki()
       if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const existing = await wiki.get(args.title).catch(() => undefined)
+      const tags = finalTagsForWrite(args.title, existing, Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
       const tiddler: Tiddler = { title: args.title, text: args.text }
-      if (Array.isArray(args.tags) && args.tags.length > 0) tiddler.tags = args.tags
+      if (tags.length > 0) tiddler.tags = tags
       if (args.fields !== undefined && typeof args.fields === 'object' && args.fields !== null) Object.assign(tiddler, args.fields)
       await wiki.put(tiddler)
       deps.autoCommit()
-      return { ok: true, title: args.title, tags: args.tags ?? [], fields: args.fields ?? null }
+      return { ok: true, title: args.title, tags, fields: args.fields ?? null }
     },
   }))
 
   // ── tiddlywiki_batch_put ─────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_batch_put',
-    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果。写入后触发自动 commit。',
+    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果。写入后触发自动 commit。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。',
     parameters: {
       items: {
         type: 'array',
@@ -301,16 +331,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       for (const item of list) {
         if (typeof item.title !== 'string' || item.title.length === 0) throw new Error('batch_put: 每条 items 都需要非空 title')
         if (typeof item.text !== 'string') throw new Error(`batch_put: items「${item.title}」缺少 text`)
-        if (!overwrite) {
-          const existing = await wiki.get(item.title).catch(() => undefined)
-          if (existing !== undefined) {
-            skipped++
-            results.push({ title: item.title, written: false, skipped: true })
-            continue
-          }
+        const existing = await wiki.get(item.title).catch(() => undefined)
+        if (!overwrite && existing !== undefined) {
+          skipped++
+          results.push({ title: item.title, written: false, skipped: true })
+          continue
         }
+        const tags = finalTagsForWrite(item.title, existing, Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
         const tiddler: Tiddler = { title: item.title, text: item.text }
-        if (Array.isArray(item.tags) && item.tags.length > 0) tiddler.tags = item.tags
+        if (tags.length > 0) tiddler.tags = tags
         if (item.fields !== undefined && typeof item.fields === 'object' && item.fields !== null) Object.assign(tiddler, item.fields)
         await wiki.put(tiddler)
         written++
