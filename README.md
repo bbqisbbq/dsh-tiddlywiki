@@ -234,6 +234,10 @@ npm run typecheck     # tsc --noEmit
 npm run build         # clean + host tsdown + client tsdown + wrap
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收
 node scripts/verify-theme-browser.mjs   # 可选：真实浏览器验证「跟随 DSH 主题」的 palette 切换与不持久化（需 puppeteer-core + Chrome，缺则 SKIP）
+node scripts/verify-seed-send-to-agent.mjs  # 可选：全新 wiki 上 E2E 验证「发送给 Agent」按钮 seed（bundle 写入/幂等/marker）
+
+# 改了 wiki 里的 $:/plugins/dsh/send-to-agent bundle 后，重新生成内置常量：
+node scripts/gen-seed-send-to-agent.mjs '<wiki>/tiddlers/$__plugins_dsh_send-to-agent.json' src/host/seed-send-to-agent.ts && npm run build
 ```
 
 **产物约定**（发布必守）：`lib/` 内**零** `@deepseek-ai` 运行时 import（`src/sdk.ts` 自实现 `defineTool` / `dshHomePath`，类型用结构接口）。发布前用 `grep -r "@deepseek-ai" lib/` 验证。
