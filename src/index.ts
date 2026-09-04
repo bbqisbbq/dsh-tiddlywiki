@@ -26,6 +26,7 @@ import { registerRoutes, type SessionControllerFace, type WebServerFace, type Wo
 import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { seedDocNote, DOC_NOTE_TITLE } from './host/seed-notes.ts'
+import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
 import { TiddlyWebClient } from './host/tw-api.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
@@ -43,6 +44,7 @@ export { ConfigStore, deepMerge } from './host/config.ts'
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
 export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
+export { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
 export { registerTiddlywikiTools } from './host/tools.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
@@ -326,13 +328,17 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // Seeds (run after the effective config is loaded):
       //  - doc note: ONE-SHOT — a fresh wiki gets the plugin guide; deleting
       //    it afterwards survives restarts (see seedDocNote).
+      //  - send-to-agent button: ONE-SHOT — a fresh wiki gets the TW
+      //    "发送给 Agent" button plugin; deleting it afterwards survives
+      //    restarts, and an existing (pre-seed) bundle is never overwritten.
       try {
         const seedClient = client()
         if (seedClient !== undefined) {
           await seedDocNote(seedClient)
+          await seedSendToAgent(seedClient)
         }
       } catch (err) {
-        console.warn('[dsh-tiddlywiki] seeding doc note:', err)
+        console.warn('[dsh-tiddlywiki] seeding wiki:', err)
       }
       // Apply the configured UI language (e.g. "zh-Hans"): enable the bundled
       // language plugin in tiddlywiki.info.languages + restart once so TW loads

@@ -16,6 +16,7 @@
 | 能力 | 说明 |
 |---|---|
 | 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `batch_put` / `rename` / `delete` / `recent` / `list_tags` / `git_sync` / `git_resolve` 十个工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
+| 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
 | 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
 | 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
@@ -30,6 +31,7 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
+- **v0.9.0**（2026-09-04）：TW「**发送给 Agent**」按钮随插件**首次启动自动写入 wiki**（ONE-SHOT：只写一次、用户可删可改不复活）——新装用户开箱即用，无需手工往 wiki 塞插件 bundle；消息格式更新：**去掉 `【TiddlyWiki 笔记一键发送】` 前缀**，并**附加待办说明**告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问。
 - **v0.8.0**（2026-09-04）：嵌入式 TW **跟随 DSH 深浅主题**——暗色自动切深色 palette（默认 CupertinoDark）、浅色恢复原 palette，纯内存切换**不写回 wiki、不进 git**，设置页可开关/换深色 palette。
 - **v0.7.2**（2026-09-03）：「一键发送到 dsh」改为**工作区优先**——新增 POST `/agent/create` 按 cwd 落入真实 Workspace，新会话不再丢到「未分组」；自动给新笔记补打 `agent-written` 标签并在首页分区展示。
 - **v0.7.0**（2026-09-03）：TW 里**一键把当前笔记发送到 dsh 会话**（`/agent/sessions` + `/agent/send` + TW 按钮，可配置开关）。
@@ -53,7 +55,7 @@ dsh plugin --profile web add github:bbqisbbq/dsh-tiddlywiki
 dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 ```
 
-首次启动会自动完成三件事：**初始化 wiki 目录**、**`git init` 并提交基线**、向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`）。
+首次启动会自动完成：**初始化 wiki 目录**、**`git init` 并提交基线**、向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`），并**写入一次**「发送给 Agent」TW 按钮插件（`$:/plugins/dsh/send-to-agent`，见下）。两者都是 ONE-SHOT：只写一次、之后归用户所有——删掉重启也不会自动恢复。
 
 ---
 
@@ -65,6 +67,7 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 4. **正经排版**：在笔记里点「✏️ 在 TW 中编辑」，弹出 TW 原生编辑器小窗继续写；想接着改旧笔记，点「🕘 最近」一键载入。
 5. **收工同步**：点「知识库」→「🔁 同步」，一键 pull → commit → push，把今天的记录推到远端备份。
 6. **让 Agent 参与**：直接在聊天里说「把刚才的会议纪要存进知识库」——Agent 会用 `tiddlywiki_*` 工具读写。
+7. **一键把笔记发给 Agent**：在 TW 里打开任意笔记，点工具栏「**发送给 Agent**」→ 选择目标会话（按工作区分组）→ 笔记作为消息注入该会话；消息自带待办说明，Agent 不清楚会主动提问。
 
 > 想直接看 Agent 侧完整能力？跳到 [📖 使用指南](#-使用指南)。
 
@@ -99,6 +102,12 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 **建议**：把 wiki 当作长期记忆库——会议纪要、决策记录、调研笔记、随手的想法都可存成独立 tiddler（tag 建议 `inbox` / `meeting` / `decision` 等便于检索）；自动建笔记时，除业务 tag 外也带上**当前 workspace 名**，方便按项目归集。
 
 ### 🧑‍💻 给人：界面操作
+
+**📤 一键发送给 Agent** — 插件首次启动会把「发送给 Agent」按钮插件写入 wiki（`$:/plugins/dsh/send-to-agent`，ONE-SHOT）。在 TW 里打开任意笔记，工具栏点「**发送给 Agent**」：
+- 弹层**按工作区（cwd）分组**列出可见会话，点选即把当前笔记作为消息注入（`sessionController.prompt`，与聊天输入同 API）；
+- 也可以**新建工作区/会话**再发送（`/agent/create` 按 cwd 落入真实 Workspace，会话不落「未分组」）；
+- 消息格式为 `《标题》` + 标签/类型 + **待办说明**（告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问）+ 正文；
+- 开关与 token 见设置页「常规配置」/配置项 `ui.sendToAgent`（默认开）。
 
 **🧭 中央列编辑器** — 侧边栏「TiddlyWiki」按钮开关中央编辑器面板（**同源代理**：iframe 指向 `<DSH origin>/dsh-tiddlywiki/tw/`，由 DSH 转发到回环上的 TW 服务），完整 TW 5 编辑器。
 
@@ -246,6 +255,9 @@ node scripts/verify-theme-browser.mjs   # 可选：真实浏览器验证「跟�
 | `/dsh-tiddlywiki/sync` | POST | 一键 pull → commit → push |
 | `/dsh-tiddlywiki/upload` | POST | 文件上传到 `files/`（原始 body + `X-Filename`） |
 | `/dsh-tiddlywiki/restart` | POST | 重启 TW 子进程 |
+| `/dsh-tiddlywiki/agent/sessions` | GET | 可见会话列表（TW「发送给 Agent」选择器） |
+| `/dsh-tiddlywiki/agent/send` | POST | 把笔记作为消息注入一个会话（`sessionController.prompt`） |
+| `/dsh-tiddlywiki/agent/create` | POST | 按 cwd 新建/复用 Workspace + 会话（工作区优先） |
 | `/dsh-tiddlywiki/api/*` | any | 透传到 TW 服务（JSON） |
 | `/dsh-tiddlywiki/tw/*` | any | **同源 TW 代理**：整个 TW 前端（index + `/files/*` + TiddlyWeb API）→ 回环 TW（v0.6.0，远程访问核心） |
 
@@ -276,6 +288,7 @@ src/
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + 目录枚举 + /admin/* 路由
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层
 │   ├── seed-notes.ts   # 首次启动一次性写入「插件说明」笔记
+│   ├── seed-send-to-agent.ts  # 首次启动一次性写入「发送给 Agent」TW 按钮插件（bundle 内嵌常量）
 │   └── tools.ts        # 5 个工具（列表式注册，可扩展）
 └── client/
     ├── index.ts        # client 入口（纯 DOM + settings.section 注册，永不 throw）
@@ -296,7 +309,7 @@ src/
 
 - **GitHub（公开）**：https://github.com/bbqisbbq/dsh-tiddlywiki
 - **npm**：`dsh-tiddlywiki`（https://www.npmjs.com/package/dsh-tiddlywiki）
-- **说明笔记**：插件在**首次启动**时向 wiki **写入一次**「`dsh-tiddlywiki 插件说明`」笔记（tag `docs`）——只写一次、手动编辑不被覆盖、**删除后重启不会自动恢复**（一次性标记；清空 wiki 重装会再写入）。
+- **说明笔记**：插件在**首次启动**时向 wiki **写入一次**「`dsh-tiddlywiki 插件说明`」笔记（tag `docs`）与「发送给 Agent」按钮插件（`$:/plugins/dsh/send-to-agent`）——都只写一次、手动编辑不被覆盖、**删除后重启不会自动恢复**（一次性标记；清空 wiki 重装会再写入）。
 
 **可被检索的标准字段**（为 GitHub / npm / 搜索引擎发现）：
 

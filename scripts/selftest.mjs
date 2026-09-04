@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -449,6 +449,28 @@ try {
   await seedApi.delete(SEED_MARKER_TITLE)
   assert(await seedDocNote(seedApi) === true, 'doc note re-seeds after marker removed (fresh wiki)')
   await seedApi.delete(DOC_NOTE_TITLE)
+
+  // 5c. send-to-agent button seed: ONE-SHOT (marker-gated), never overwrites,
+  // and the embedded bundle must carry the CURRENT (prefix-free + explanation)
+  // message builder so a fresh wiki ships the updated button.
+  const S2A_MARKER_TITLE = SEND_TO_AGENT_MARKER_TITLE
+  assert(await seedSendToAgent(seedApi) === true, 'send-to-agent button seeded on first run')
+  const s2aBundle = await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)
+  assert(s2aBundle !== undefined, 'send-to-agent plugin tiddler exists')
+  assert(s2aBundle.type === 'application/json', 'send-to-agent plugin tiddler is application/json')
+  assert(typeof s2aBundle.text === 'string' && s2aBundle.text.includes('"tiddlers"'), 'bundle text is a {"tiddlers": {...}} package')
+  assert(s2aBundle.text.includes('$:/plugins/dsh/send-to-agent/startup.js'), 'bundle contains the startup.js tiddler')
+  assert(s2aBundle.text.includes('【待办说明】'), 'bundle startup.js carries the todo explanation')
+  assert(!s2aBundle.text.includes('【TiddlyWiki 笔记一键发送】'), 'bundle startup.js no longer carries the old prefix')
+  assert(await seedSendToAgent(seedApi) === false, 'send-to-agent NOT re-seeded while marker present')
+  await seedApi.put({ title: SEND_TO_AGENT_PLUGIN_TITLE, text: 'user edit', type: 'application/json', tags: [] })
+  assert(await seedSendToAgent(seedApi) === false, 'edited send-to-agent bundle is never overwritten by the seed')
+  await seedApi.delete(SEND_TO_AGENT_PLUGIN_TITLE)
+  assert(await seedSendToAgent(seedApi) === false, 'deleted send-to-agent bundle NOT re-created (one-shot marker stays)')
+  await seedApi.delete(S2A_MARKER_TITLE)
+  assert(await seedSendToAgent(seedApi) === true, 'send-to-agent re-seeds after marker removed (fresh wiki)')
+  await seedApi.delete(SEND_TO_AGENT_PLUGIN_TITLE)
+  await seedApi.delete(S2A_MARKER_TITLE)
 
   // 5b. Active-palette flip round-trip (before the server stops; kept AFTER
   // the git-clean assertions on purpose — TW flushes filesystem saves
