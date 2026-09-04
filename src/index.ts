@@ -22,7 +22,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
-import { registerRoutes, type SessionControllerFace, type WebServerFace } from './host/routes.ts'
+import { registerRoutes, type SessionControllerFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { seedDocNote, DOC_NOTE_TITLE } from './host/seed-notes.ts'
@@ -361,6 +361,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // agent routes must work whenever a request actually arrives.
     const getSessionController = (): SessionControllerFace | undefined =>
       ctx.get('sessionController') as SessionControllerFace | undefined
+    const getWorkspaceRegistry = (): WorkspaceRegistryFace | undefined =>
+      ctx.get('workspaceRegistry') as WorkspaceRegistryFace | undefined
     const disposeRoutes = registerRoutes({ webServer: ws }, {
       server,
       getClient: client,
@@ -370,6 +372,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       uiDefaults: () => effectiveUi(),
       getWikiPath: () => wikiPath,
       getSessionController,
+      getWorkspaceRegistry,
       sendToAgentEnabled: () => eff().ui?.sendToAgent?.enabled !== false,
       sendToAgentToken: () => {
         const token = eff().ui?.sendToAgent?.token

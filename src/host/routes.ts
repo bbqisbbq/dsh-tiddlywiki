@@ -73,6 +73,16 @@ export interface SessionControllerFace {
   create(request: { cwd?: string; workspaceId?: string }): Promise<{ sessionId: string }>
 }
 
+/**
+ * Structural face over the DSH `workspaceRegistry` service (a subset of
+ * dsh-workspace). Only what the agent-create route needs is declared; the
+ * runtime instance is a real Service, never inspected data.
+ */
+export interface WorkspaceRegistryFace {
+  /** Resolve or create the workspace owning `path` — idempotent by canonical path. */
+  create(path: string, title?: string): Promise<{ id: string; path: string }>
+}
+
 /** Effective UI visibility flags returned by /status (mirror index.ts). */
 export interface UiDefaultsPublic {
   showQuickNote: boolean
@@ -91,6 +101,10 @@ export interface RouteDeps {
   /** Optional DSH sessionController service (agent-send routes only); resolved
    *  lazily per request because it may register after webServer appears. */
   getSessionController: () => SessionControllerFace | undefined
+  /** Optional DSH workspaceRegistry service (agent-create route); resolves a
+   *  cwd to a real Workspace so new sessions land inside it instead of the
+   *  ungrouped bucket. */
+  getWorkspaceRegistry: () => WorkspaceRegistryFace | undefined
   /** Whether the one-click send-to-agent feature is enabled (config switch). */
   sendToAgentEnabled: () => boolean
   /** Optional shared token that must match `x-send-to-agent-token` when set. */
@@ -334,10 +348,14 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   }
 
   /**
-   * POST /dsh-tiddlywiki/agent/create — create (or adopt) one ordinary session,
-   * optionally inside a workspace path. The picker uses it for "new workspace /
-   * new session"; the created session's cwd becomes its workspace. The directory
-   * is materialised so a brand-new workspace actually exists on disk.
+   * POST /dsh-tiddlywiki/agent/create — create (or adopt) one ordinary session
+   * inside a real DSH workspace resolved from the requested path. The picker
+   * uses it for "new workspace / new session": the directory is materialised so
+   * a brand-new workspace actually exists on disk, the path is resolved to its
+   * (idempotent) Workspace, and the session is created with `workspaceId` so it
+   * lands under that workspace in the sidebar. Creating with bare `cwd` instead
+   * would leave the session in the ungrouped bucket even when its working
+   * directory matches an existing workspace path.
    */
   const handleAgentCreate = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -361,10 +379,18 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'session service unavailable' }, 503)
         return
       }
+      const ws = deps.getWorkspaceRegistry()
       if (cwd.length > 0) {
         await mkdir(cwd, { recursive: true })
       }
-      const created = await sc.create({ cwd: cwd.length > 0 ? cwd : undefined })
+      let created: { sessionId: string }
+      if (cwd.length > 0 && ws !== undefined) {
+        const workspace = await ws.create(cwd)
+        created = await sc.create({ workspaceId: workspace.id })
+        json(res, { ok: true, sessionId: created.sessionId, cwd, workspaceId: workspace.id })
+        return
+      }
+      created = await sc.create({ cwd: cwd.length > 0 ? cwd : undefined })
       json(res, { ok: true, sessionId: created.sessionId, cwd: cwd || null })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
