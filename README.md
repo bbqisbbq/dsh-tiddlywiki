@@ -23,7 +23,7 @@
 | 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
 | 🔄 **一键同步** | 「知识库」按钮 →「🔁 同步」：pull → commit → push；FAB 上的状态点实时反映 git 状态（已同步/待提交/可更新/离线） |
-| ⚙️ **设置页** | DSH 设置 →「TiddlyWiki 知识库」：插件/主题/语言管理与运行配置，应用后自动重启 TW；**「初始化」区块**列出所有一次性预置项（说明笔记/发送按钮/首页/所有文章/同源代理基址）的实时状态，可随时手动**重新初始化**；**「所有文章」每页条数**可在配置里调整（实时生效，无需重新初始化） |
+| ⚙️ **设置页** | DSH 设置 →「TiddlyWiki 知识库」：插件/主题/语言管理与运行配置，应用后自动重启 TW；**「初始化」区块**列出所有一次性预置项（说明笔记/发送按钮/首页/所有文章/**menubar 顶栏主题自适应**/同源代理基址）的实时状态，可随时手动**重新初始化**；**「所有文章」每页条数**可在配置里调整（实时生效，无需重新初始化） |
 | 🛡 **零摩擦生命周期** | 随 dsh 自动启停；TW 子进程崩溃自动重启（退避）；端口/目录/首次 git init 全自动 |
 | 💾 **数据即备份** | wiki 文件夹本身就是一个 git 仓库；自动 commit（60s 防抖，可关），配置随 dsh-market 迁移 |
 
@@ -33,6 +33,7 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
+- **v0.13.0**（2026-09-04）：**menubar 顶栏主题自适应**。tiddlywiki/menubar 顶栏背景原来一直停在默认色映射的蓝色（`$:/config/DefaultColourMappings/` → `#5778d8`），不随 DSH 深浅主题变化——根因是大部分浅色 palette（Vanilla/Blanca…）不定义 `menubar-background`，`<<colour menubar-background>>` 落回插件硬编码的蓝色。新增 seed `menubar-theme`：写入样式表覆盖 `$:/plugins/dsh-tiddlywiki/menubar-theme`（tag `$:/tags/Stylesheet`），把顶栏改为跟随**活动 palette** 的 `background`/`foreground`（`!important` 压过插件自身规则）；嵌入式 TW 的 `$:/palette` 由主题同步随 DSH 翻转时，TW 会实时重渲染全部样式表，menubar 即自动换色。作为新 seed 进统一注册表（`menubar-theme`），首次启动自动写入（ONE-SHOT，不覆盖你的改动），设置页「初始化」可单独/全部**重新初始化**。
 - **v0.12.0**（2026-09-04）：**新默认主页「主页」+ 「所有文章」两列分页页**。把首页拆成三页：**主页**（默认打开，`$:/DefaultTiddlers` 指向它）= 四象限待办 + 「所有标签」「所有文章」入口；**所有标签**瘦身为独立标签统计页（标签 + Agent 区块 + 回主页链接）；新增 **所有文章**——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类，含 `human-edited` 的 Agent 笔记）**各自分页**展示（排除系统页、草稿与 `索引` 导航页），每页条数取配置 `ui.allArticles.pageSize`（默认 10，设置页可调、实时生效）。**所有文章**作为新 seed 进统一注册表（`all-articles`），设置页可单独/全部**重新初始化**。
 - **v0.11.0**（2026-09-04）：TW「**发送给 Agent**」选择器新增**「工作模式」（Agent 预设）**——弹层顶部可选择会话挂载的 Agent 预设（如 默认/cordis/blade，来自 DSH `agentPresets`），**新建工作区/会话并发送**时以所选模式创建（`/agent/create` 新增 `mode` 参数 → `sessionController.create(agentPreset)`）；已有会话显示其当前模式（`🧭` 徽标）。新增 `GET /agent/modes` 返回可用模式清单 + 部署默认。对旧宿主**向后兼容**：模式接口缺失时选择器降级为默认模式，功能不受影响。
 - **v0.10.0**（2026-09-04）：**统一 seed 注册表**——把「与 dsh 联动、需要 wiki 预置」的全部一次性项收进 `SEED_DEFS`（说明笔记、发送给 Agent 按钮、**首页「所有标签/标签笔记」**、**TW 前端同源代理基址**），首次启动只写缺失、不覆盖用户内容；设置页新增「**初始化**」区块：列出每项实时状态 + 手动「**重新初始化**」（force 重写内置内容，含缺失项补齐与 TW 前端基址修复）。新装用户开箱即有**首页**（四象限待办 + 标签统计 + Agent 区块），不再手工放 tiddler。配套文档：[🧩 初始化小节](#🧩-初始化一次性预置) + [docs/seed-initialization.md](docs/seed-initialization.md)。
@@ -60,7 +61,7 @@ dsh plugin --profile web add github:bbqisbbq/dsh-tiddlywiki
 dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 ```
 
-首次启动会自动完成：**初始化 wiki 目录**、**`git init` 并提交基线**、把「与 dsh 联动、需要 wiki 预置」的一次性项写入 wiki（**统一 seed 注册表**，见「初始化」）：向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`）、**写入一次**「发送给 Agent」TW 按钮插件（`$:/plugins/dsh/send-to-agent`）、**写入默认主页**「主页 / 所有标签 / 标签笔记」（四象限待办 + 入口 + 标签统计 + Agent 区块，并把 `$:/DefaultTiddlers` 指向主页）、**写入「所有文章」两列分页页**、把 `$:/config/tiddlyweb/host` 指向同源代理。它们都是 ONE-SHOT：只写缺失、不覆盖你的改动、删掉重启也不会自动恢复——需要时可在设置页「**初始化**」区块手动「重新初始化」（force 重写内置内容）。
+首次启动会自动完成：**初始化 wiki 目录**、**`git init` 并提交基线**、把「与 dsh 联动、需要 wiki 预置」的一次性项写入 wiki（**统一 seed 注册表**，见「初始化」）：向 wiki **写入一次**「dsh-tiddlywiki 插件说明」笔记（tag `docs`）、**写入一次**「发送给 Agent」TW 按钮插件（`$:/plugins/dsh/send-to-agent`）、**写入默认主页**「主页 / 所有标签 / 标签笔记」（四象限待办 + 入口 + 标签统计 + Agent 区块，并把 `$:/DefaultTiddlers` 指向主页）、**写入「所有文章」两列分页页**、**写入「menubar 顶栏主题自适应」样式表**（`$:/plugins/dsh-tiddlywiki/menubar-theme`，随 DSH 主题换色）、把 `$:/config/tiddlyweb/host` 指向同源代理。它们都是 ONE-SHOT：只写缺失、不覆盖你的改动、删掉重启也不会自动恢复——需要时可在设置页「**初始化**」区块手动「重新初始化」（force 重写内置内容）。
 
 ---
 
@@ -149,7 +150,7 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 | 插件管理 | 自带官方插件勾选（可搜索）→ 应用并自动重启 TW |
 | 主题管理 | 自带主题**多选加载 + 单选活动** → 应用并自动重启 TW |
 | 语言管理 | 自带官方语言包勾选（含 zh-Hans 简体）→ 应用并自动重启 TW |
-| **初始化** | 一次性预置项实时状态（说明笔记/发送按钮/首页/所有文章/同源代理基址）→ 每项「重新初始化」+ 「全部重新初始化」 |
+| **初始化** | 一次性预置项实时状态（说明笔记/发送按钮/首页/所有文章/menubar 顶栏主题自适应/同源代理基址）→ 每项「重新初始化」+ 「全部重新初始化」 |
 
 - 配置写入 wiki 内的 `$:/plugins/dsh-tiddlywiki/config` tiddler（JSON），随 git 同步，作为 **cordis `config:` 块之上的覆盖层**（tiddler 优先）。
 - git 类配置修改后**重启 dsh web 生效**（bootstrap 时读取）。
@@ -172,12 +173,13 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 | `send-to-agent` | 「发送给 Agent」TW 按钮插件 `$:/plugins/dsh/send-to-agent` | 一键把笔记注入 dsh 会话的入口 | 同上 |
 | `home-index` | 默认主页「主页 / 所有标签 / 标签笔记」+ `$:/DefaultTiddlers` → 主页 | **系统提示承诺的首页**：四象限待办 + 「所有标签」「所有文章」入口 + 标签统计 + **Agent 区块**（纯 Agent / Agent+人工 分区，主标签列表排除 `agent-written`） | 同上 |
 | `all-articles` | 「所有文章」——两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页 | 全部条目的分栏总览；每页条数实时读 `ui.allArticles.pageSize`（设置页可调） | 同上 |
+| `menubar-theme` | `$:/plugins/dsh-tiddlywiki/menubar-theme` 样式表（tag `$:/tags/Stylesheet`） | 把 tiddlywiki/menubar 顶栏从默认蓝色改为跟随活动 palette 的 `background`/`foreground`，随 DSH 深浅主题自动换色（嵌入式 TW 主题跟随机制） | 同上 |
 | `tw-web-host` | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 嵌入式 TW 编辑器的同源代理 API 基址（远程访问模式前提） | 非 force = 缺失/旧默认才写、用户自定义保留；force = 强制写回代理基址 |
 
 **用法**：
 - **查看状态**：设置页 →「初始化」→ 每项一个状态点（✓ 已就绪 / ✗ 缺失）+ 说明。
-- **重新初始化单项**：点该项「重新初始化」——force 重写内置内容（覆盖你对该 tiddler 的改动）并重记 marker，用于「我把首页改坏了想恢复模板」「按钮被我删了想补回」等场景。
-- **全部重新初始化**：底部「全部重新初始化」一键重跑全部五项。
+- **重新初始化单项**：点该项「重新初始化」——force 重写内置内容（覆盖你对该 tiddler 的改动）并重记 marker，用于「我把首页改坏了想恢复模板」「按钮被我删了想补回」「menubar 又变回蓝色了」等场景。
+- **全部重新初始化**：底部「全部重新初始化」一键重跑全部。
 - **为什么删掉重启不会自动恢复**：ONE-SHOT marker（`$:/plugins/dsh-tiddlywiki/seed-*`）记录「已提供过」，之后归用户所有——想恢复请手动「重新初始化」，而非依赖重启。
 
 详细设计（后台 API、force 语义、如何重新生成内置常量）见 [docs/seed-initialization.md](docs/seed-initialization.md)。
@@ -261,6 +263,7 @@ npm run typecheck     # tsc --noEmit
 npm run build         # clean + host tsdown + client tsdown + wrap
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收
 node scripts/verify-theme-browser.mjs   # 可选：真实浏览器验证「跟随 DSH 主题」的 palette 切换与不持久化（需 puppeteer-core + Chrome，缺则 SKIP）
+node scripts/verify-menubar-theme.mjs   # 可选：真实浏览器验证 menubar 顶栏随 palette 换色（浅色→白、深色→深，不再蓝色；可 TW_URL=… 指定活动 wiki）
 node scripts/verify-seed-send-to-agent.mjs  # 可选：全新 wiki 上 E2E 验证「发送给 Agent」按钮 seed（bundle 写入/幂等/marker）
 node scripts/verify-seeds-admin.mjs         # 可选：全新 wiki + 真实 HTTP 验证 /admin/seeds 状态与 /admin/seeds/run（单跑/全跑/force/unknown id）
 
@@ -329,7 +332,8 @@ src/
 │   ├── seed-send-to-agent.ts  # seed: 首次一次性写入「发送给 Agent」TW 按钮插件（bundle 内嵌常量，支持 force）
 │   ├── seed-home.ts    # seed: 默认主页「主页/所有标签/标签笔记」+ $:/DefaultTiddlers（生成自 wiki .tid，支持 force）
 │   ├── seed-all-articles.ts  # seed: 「所有文章」两列分页页（支持 force）
-│   ├── seeds.ts        # 统一 seed 注册表：doc-note / send-to-agent / home-index / all-articles / tw-web-host，check + run(force)
+│   ├── seed-menubar-theme.ts # seed: menubar 顶栏主题自适应样式表（支持 force）
+│   ├── seeds.ts        # 统一 seed 注册表：doc-note / send-to-agent / home-index / all-articles / menubar-theme / tw-web-host，check + run(force)
 │   └── tools.ts        # 5 个工具（列表式注册，可扩展）
 └── client/
     ├── index.ts        # client 入口（纯 DOM + settings.section 注册，永不 throw）
@@ -350,7 +354,7 @@ src/
 
 - **GitHub（公开）**：https://github.com/bbqisbbq/dsh-tiddlywiki
 - **npm**：`dsh-tiddlywiki`（https://www.npmjs.com/package/dsh-tiddlywiki）
-- **说明笔记**：插件在**首次启动**时把「与 dsh 联动、需要 wiki 预置」的一次性项写入 wiki（**统一 seed 注册表**，见 [🧩 初始化](#🧩-初始化一次性预置)）：`dsh-tiddlywiki 插件说明` 笔记（tag `docs`）、「发送给 Agent」按钮插件（`$:/plugins/dsh/send-to-agent`）、默认主页「主页/所有标签/标签笔记」+ `$:/DefaultTiddlers`、「所有文章」两列分页页、`$:/config/tiddlyweb/host` 同源代理基址——都只写一次、手动编辑不被覆盖、**删除后重启不会自动恢复**（一次性标记；清空 wiki 重装会再写入；设置页「初始化」可手动重新初始化）。
+- **说明笔记**：插件在**首次启动**时把「与 dsh 联动、需要 wiki 预置」的一次性项写入 wiki（**统一 seed 注册表**，见 [🧩 初始化](#🧩-初始化一次性预置)）：`dsh-tiddlywiki 插件说明` 笔记（tag `docs`）、「发送给 Agent」按钮插件（`$:/plugins/dsh/send-to-agent`）、默认主页「主页/所有标签/标签笔记」+ `$:/DefaultTiddlers`、「所有文章」两列分页页、`menubar` 顶栏主题自适应样式表（`$:/plugins/dsh-tiddlywiki/menubar-theme`）、`$:/config/tiddlyweb/host` 同源代理基址——都只写一次、手动编辑不被覆盖、**删除后重启不会自动恢复**（一次性标记；清空 wiki 重装会再写入；设置页「初始化」可手动重新初始化）。
 
 **可被检索的标准字段**（为 GitHub / npm / 搜索引擎发现）：
 

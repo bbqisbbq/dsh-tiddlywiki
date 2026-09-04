@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, checkAllSeeds, runSeedById, runAllSeeds, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -503,10 +503,10 @@ try {
   await seedApi.delete('所有标签')
   await seedApi.delete(HOME_INDEX_MARKER_TITLE)
 
-  // checkAllSeeds: the registry has exactly the five联动 items.
+  // checkAllSeeds: the registry has exactly the six联动 items.
   const statuses = await checkAllSeeds(seedCtx)
   const ids = statuses.map((s) => s.id).sort()
-  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'send-to-agent', 'tw-web-host']), `seed registry lists all five联动 items (${ids.join(',')})`)
+  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'menubar-theme', 'send-to-agent', 'tw-web-host']), `seed registry lists all six联动 items (${ids.join(',')})`)
   assert(statuses.every((s) => typeof s.title === 'string' && s.title.length > 0), 'every seed has a display title')
 
   // all-articles first-run (marker-gated) + content sanity + force.
@@ -522,17 +522,31 @@ try {
   await seedApi.delete(ALL_ARTICLES_TITLE)
   await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-all-articles')
 
-  // runAllSeeds (startup path): re-writes the five missing tiddlers.
+  // menubar-theme first-run (marker-gated) + ONE-SHOT semantics + force.
+  assert(await seedMenubarTheme(seedApi) === true, 'menubar-theme seeded on first run')
+  const menubarT = await seedApi.get(MENUBAR_THEME_TIDDLER)
+  assert(menubarT !== undefined && menubarT.text.includes('<<colour background>>'), 'menubar-theme carries the palette-driven override')
+  assert(Array.isArray(menubarT.tags) && menubarT.tags.includes('$:/tags/Stylesheet'), 'menubar-theme is tagged as a Stylesheet')
+  assert(await seedMenubarTheme(seedApi) === false, 'menubar-theme NOT re-seeded while marker present')
+  await seedApi.put({ title: MENUBAR_THEME_TIDDLER, text: 'user edit', tags: ['$:/tags/Stylesheet'] })
+  assert(await seedMenubarTheme(seedApi) === false, 'edited menubar-theme never overwritten by the seed')
+  assert(await seedMenubarTheme(seedApi, { force: true }) === true, 'menubar-theme force re-initializes an edited tiddler')
+  const menubarRestored = await seedApi.get(MENUBAR_THEME_TIDDLER)
+  assert(menubarRestored !== undefined && menubarRestored.text.includes('nav.tc-menubar ul.tc-menubar-list'), 'force restored built-in menubar-theme content')
+  await seedApi.delete(MENUBAR_THEME_TIDDLER)
+  await seedApi.delete(MENUBAR_THEME_MARKER_TITLE)
+
+  // runAllSeeds (startup path): re-writes the six missing tiddlers.
   // Earlier sections left mixed state: doc-note's marker stays while its
   // tiddler was deleted, and the earlier ensureTwWebHost test left a CUSTOM
-  // host override. Remove marker + host tiddler so all five seeds are
+  // host override. Remove marker + host tiddler so all six seeds are
   // genuinely missing here.
   await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-doc-note')
   await seedApi.delete(TW_WEB_HOST_TIDDLER)
   const all = await runSeedById(seedCtx, undefined, false)
-  assert(all.length === 5, 'runAllSeeds runs every registry item')
+  assert(all.length === 6, 'runAllSeeds runs every registry item')
   assert(all.every((r) => r.ok), 'all seeds run ok')
-  assert(all.every((r) => r.wrote), 'all five seeds were missing and got written')
+  assert(all.every((r) => r.wrote), 'all six seeds were missing and got written')
 
   // runSeedById with an id runs only that one; force rewrites regardless.
   const onlyHome = await runSeedById(seedCtx, 'home-index', false)

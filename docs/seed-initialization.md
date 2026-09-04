@@ -1,6 +1,6 @@
 # 统一 seed 注册表 & 后台「重新初始化」
 
-> 本文档说明 dsh-tiddlywiki **v0.12.0** 引入/完善的「一次性预置」机制：哪些东西需要随插件初始化写入 wiki、它们与 dsh 的联动关系、ONE-SHOT / force 语义、后台 API 与设置页操作，以及开发时如何重新生成内置常量。
+> 本文档说明 dsh-tiddlywiki **v0.12.0** 引入/完善的「一次性预置」机制（v0.13.0 新增 `menubar-theme` seed）：哪些东西需要随插件初始化写入 wiki、它们与 dsh 的联动关系、ONE-SHOT / force 语义、后台 API 与设置页操作，以及开发时如何重新生成内置常量。
 
 ---
 
@@ -14,6 +14,7 @@
 | 首页（待办四象限 / 标签统计 / Agent 区块） | 「主页」「所有标签」「标签笔记」三个 tiddler + `$:/DefaultTiddlers` → 主页 | 系统提示承诺的「首页把 Agent 笔记单独列在 Agent 区块、主标签列表只统计人类笔记」完全不存在；TW 打开的是 GettingStarted |
 | 所有文章（两列分页总览） | 「所有文章」tiddler | 没有一键总览全部条目的入口 |
 | 嵌入式 TW 编辑器 | `$:/config/tiddlyweb/host` 指向同源代理 | iframe 里的 TW 前端 API 基址指向错误的 origin，编辑/保存失效 |
+| menubar 顶栏主题自适应 | `$:/plugins/dsh-tiddlywiki/menubar-theme` 样式表（tag `$:/tags/Stylesheet`） | tiddlywiki/menubar 顶栏停留在默认色映射的蓝色（`$:/config/DefaultColourMappings/` → `#5778d8`），不随 DSH 深浅主题变化 |
 | 新手引导 | 「dsh-tiddlywiki 插件说明」笔记 | 新用户没有入门说明 |
 
 v0.10.0 把**全部**这类项收进一个**统一 seed 注册表**，随插件首次启动自动预置；并给后台加「重新初始化」能力，让缺失/被改坏的项可以随时由用户手动恢复。
@@ -40,11 +41,12 @@ interface SeedDef {
 | `send-to-agent` | `seed-send-to-agent.ts` → `seedSendToAgent` | `$:/plugins/dsh/send-to-agent` 按钮 bundle（`application/json`） | `$:/plugins/dsh-tiddlywiki/seed-send-to-agent` |
 | `home-index` | `seed-home.ts` → `seedHomeIndex` | 「主页」+「所有标签」+「标签笔记」（tag `索引`），并把 `$:/DefaultTiddlers` 指向 `[[主页]]` | `$:/plugins/dsh-tiddlywiki/seed-home-index` |
 | `all-articles` | `seed-all-articles.ts` → `seedAllArticles` | 「所有文章」（tag `索引`）——两列分页总览，每页条数实时读 `ui.allArticles.pageSize`（默认 10） | `$:/plugins/dsh-tiddlywiki/seed-all-articles` |
+| `menubar-theme` | `seed-menubar-theme.ts` → `seedMenubarTheme` | `$:/plugins/dsh-tiddlywiki/menubar-theme`（tag `$:/tags/Stylesheet`）——覆盖 tiddlywiki/menubar 顶栏：把 `<<colour menubar-background>>` 的「默认色映射蓝色」改为跟随活动 palette 的 `background`/`foreground`，随 DSH 主题切换（`$:/palette` 翻转）自动换色 | `$:/plugins/dsh-tiddlywiki/seed-menubar-theme` |
 | `tw-web-host` | `seeds.ts` 内联 | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 无 marker（ensure 型，见 §4） |
 
 ### 统一入口（`src/index.ts` 导出）
 
-- `runAllSeeds(ctx)` —— **启动路径**：五项全部非 force 执行（只写缺失）。启动时序在 `configStore.load()` 之后、`bootstrapGit()` 之前，保证 seed 写入的内容进入首次 git 提交。
+- `runAllSeeds(ctx)` —— **启动路径**：全部非 force 执行（只写缺失）。启动时序在 `configStore.load()` 之后、`bootstrapGit()` 之前，保证 seed 写入的内容进入首次 git 提交。
 - `checkAllSeeds(ctx)` —— 返回每项当前状态数组（设置页「初始化」区块数据源）。
 - `runSeedById(ctx, id?, force)` —— 单跑（`id` 指定）或全跑（`id` 为 `undefined`）；`force` 为手动「重新初始化」；未知 `id` 返回显式错误结果而非抛异常。
 
@@ -75,6 +77,7 @@ interface SeedDef {
 
 - 「我把首页改坏了，想恢复成模板」→ `home-index` 重新初始化（恢复主页/所有标签/标签笔记 + `$:/DefaultTiddlers` → 主页）；
 - 「所有文章页被删了 / 改坏了」→ `all-articles` 重新初始化；
+- 「menubar 顶栏又变回蓝色了 / 样式表被我改了」→ `menubar-theme` 重新初始化（恢复跟随 palette 的样式覆盖）；
 - 「发送给 Agent 按钮被我删了 / 改坏了」→ `send-to-agent` 重新初始化；
 - 「TW 编辑器打不开，疑似 `$:/config/tiddlyweb/host` 被改错」→ `tw-web-host` 重新初始化（force 强制写回代理基址）；
 - 「刚装完发现 wiki 里缺了说明/首页」→ 对应项重新初始化或「全部重新初始化」。
@@ -99,6 +102,7 @@ interface SeedDef {
     { "id": "send-to-agent", "title": "「发送给 Agent」按钮",         "description": "…", "present": true,  "detail": "已存在" },
     { "id": "home-index",    "title": "首页（主页 / 所有标签 / 标签笔记）", "description": "…", "present": false, "detail": "缺失：主页" },
     { "id": "all-articles",  "title": "所有文章（两列分页总览）",       "description": "…", "present": true,  "detail": "已存在" },
+    { "id": "menubar-theme", "title": "menubar 顶栏主题自适应",        "description": "…", "present": true,  "detail": "已存在" },
     { "id": "tw-web-host",   "title": "TW 前端 API 基址（同源代理）",   "description": "…", "present": true,  "detail": "已指向 /dsh-tiddlywiki/tw/" }
   ]
 }
@@ -140,7 +144,7 @@ DSH 设置 →「TiddlyWiki 知识库」→ 最底部「**初始化（一次性�
 
 - 顶部状态行：`共 N 项，M 项已就绪`；
 - 每项一行：状态点（✓ 已就绪 / ✗ 缺失）+ 名称 + 实时详情（如缺失了哪个 tiddler）+ 「重新初始化」按钮；
-- 底部：「**全部重新初始化**」按钮（force 全部五项）。
+- 底部：「**全部重新初始化**」按钮（force 全部）。
 
 前端源码：`src/client/settings-page.ts` 的 `renderSeedsSection`；样式 `src/client/styles.ts`（状态点 `ok` / `missing`）。
 
@@ -159,6 +163,9 @@ node scripts/gen-seed-home.mjs '<wiki>/tiddlers/主页.tid' '<wiki>/tiddlers/所
 
 # 「所有文章」页的内容维护在 src/host/seed-all-articles.ts 的 ALL_ARTICLES_TEXT
 # （来源：<wiki>/tiddlers/所有文章.tid；改 wiki 页后同步手工更新该常量）。
+
+# 「menubar 顶栏主题自适应」样式表维护在 src/host/seed-menubar-theme.ts 的
+# MENUBAR_THEME_TEXT（改样式后手工更新该常量；重新初始化即恢复内置样式）。
 
 # 重新生成后务必：
 npm run typecheck && npm run build && npm run selftest

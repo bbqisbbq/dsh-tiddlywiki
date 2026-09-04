@@ -9,6 +9,9 @@
  *     (write only when missing, never overwrite), force (re)writes the
  *     built-in content and (re)records the marker.
  *
+ * Registry: doc-note / send-to-agent / home-index / all-articles /
+ * menubar-theme / tw-web-host.
+ *
  * @module dsh-tiddlywiki/host/seeds
  */
 import type { TiddlyWebClient } from './tw-api.ts'
@@ -16,6 +19,7 @@ import { seedDocNote, DOC_NOTE_TITLE } from './seed-notes.ts'
 import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE } from './seed-send-to-agent.ts'
 import { seedHomeIndex, HOME_INDEX_ITEMS } from './seed-home.ts'
 import { seedAllArticles, ALL_ARTICLES_TITLE } from './seed-all-articles.ts'
+import { seedMenubarTheme, MENUBAR_THEME_TIDDLER } from './seed-menubar-theme.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
 
@@ -127,6 +131,23 @@ export const SEED_DEFS: SeedDef[] = [
         return { id: 'all-articles', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
       } catch (err) {
         return { id: 'all-articles', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    },
+  },
+  {
+    id: 'menubar-theme',
+    title: 'menubar 顶栏主题自适应',
+    description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。',
+    check: async (ctx) => {
+      const present = await presentOf(ctx, MENUBAR_THEME_TIDDLER)
+      return { id: 'menubar-theme', title: 'menubar 顶栏主题自适应', description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。', present, detail: present ? '已存在' : '缺失' }
+    },
+    run: async (ctx, force) => {
+      try {
+        const wrote = await seedMenubarTheme(ctx.client, { force })
+        return { id: 'menubar-theme', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
+      } catch (err) {
+        return { id: 'menubar-theme', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
   },
