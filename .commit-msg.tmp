@@ -1,9 +1,0 @@
-feat: 首次启动 seed「发送给 Agent」TW 按钮 + 消息去前缀/待办说明（v0.9.0）
-
-- 新增 src/host/seed-send-to-agent.ts：ONE-SHOT 把 TW 按钮插件 bundle 写入新 wiki
-  （marker 只写一次，用户可删不复活，已有 bundle 不覆盖）
-- bundle 内嵌最新 startup.js：去掉【TiddlyWiki 笔记一键发送】前缀，
-  附加待办说明（告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问）
-- scripts/gen-seed-send-to-agent.mjs：从 wiki bundle 生成 TS 常量的工具
-- selftest 新增 seed 行为断言（首写/幂等/不覆盖/删除不复活/重 seed）
-- README：特性表、版本记录 v0.9.0、快速开始、使用指南、项目结构、路由参考
