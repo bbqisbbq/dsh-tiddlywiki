@@ -3,7 +3,7 @@
     "$:/plugins/dsh/send-to-agent/plugin.info": {
       "title": "$:/plugins/dsh/send-to-agent/plugin.info",
       "type": "application/json",
-      "text": "{\"title\":\"$:/plugins/dsh/send-to-agent\",\"name\":\"Send to Agent\",\"description\":\"把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）\",\"author\":\"dsh-tiddlywiki\",\"version\":\"0.3.1\",\"plugin-type\":\"plugin\"}"
+      "text": "{\"title\":\"$:/plugins/dsh/send-to-agent\",\"name\":\"Send to Agent\",\"description\":\"把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）\",\"author\":\"dsh-tiddlywiki\",\"version\":\"0.3.2\",\"plugin-type\":\"plugin\"}"
     },
     "$:/plugins/dsh/send-to-agent/startup.js": {
       "title": "$:/plugins/dsh/send-to-agent/startup.js",
@@ -13,7 +13,6 @@
     },
     "$:/plugins/dsh/send-to-agent/ui/icon": {
       "title": "$:/plugins/dsh/send-to-agent/ui/icon",
-      "type": "image/svg+xml",
       "tags": [
         "$:/tags/Image"
       ],

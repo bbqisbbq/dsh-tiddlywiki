@@ -29,7 +29,7 @@ const pluginInfo = {
   name: 'Send to Agent',
   description: '把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）',
   author: 'dsh-tiddlywiki',
-  version: '0.3.1',
+  version: '0.3.2',
   'plugin-type': 'plugin',
 }
 
@@ -48,7 +48,14 @@ const bundle = {
     },
     '$:/plugins/dsh/send-to-agent/ui/icon': {
       title: '$:/plugins/dsh/send-to-agent/ui/icon',
-      type: 'image/svg+xml',
+      // IMPORTANT: no `type` field (so it defaults to text/vnd.tiddlywiki),
+      // exactly like every core icon ($:/core/images/*). Core icons are plain
+      // wikitext that happens to contain an <svg>; `{{icon}}` then wikifies it
+      // into an INLINE <svg> with `\parameters` expanded (`width="22pt"`).
+      // If we set type: image/svg+xml instead, `{{icon}}` routes through the
+      // imageparser → <img src="data:image/svg+xml,...">, and because the data
+      // URI keeps the raw text (leading `\parameters` + literal `<<size>>` are
+      // not valid standalone SVG XML), Chrome/Edge fail to load it → broken icon.
       tags: ['$:/tags/Image'],
       text: icon,
     },

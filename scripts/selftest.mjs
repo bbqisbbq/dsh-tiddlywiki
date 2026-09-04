@@ -555,6 +555,7 @@ try {
   assert(s2aBundle.text.includes('body.permission = state.permission'), 'bundle startup.js forwards the chosen permission preset')
   assert(s2aBundle.text.includes('$:/core/ui/ControlPanel/Toolbars/ItemTemplate'), 'bundle overrides the toolbar-chooser row template so icons show in 设置')
   assert(s2aBundle.text.includes('tc-image-button') && s2aBundle.text.includes('width=<<size>>'), 'bundle icon follows core toolbar-icon conventions')
+  assert(!s2aBundle.text.includes('"type": "image/svg+xml"'), 'bundle icon carries NO image/svg+xml type (core icons are wikitext; the image parser would render a data-URI <img> that breaks on \\parameters/<<size>> in Chrome)')
   assert(await seedSendToAgent(seedApi) === false, 'send-to-agent NOT re-seeded while marker present')
   await seedApi.put({ title: SEND_TO_AGENT_PLUGIN_TITLE, text: 'user edit', type: 'application/json', tags: [] })
   assert(await seedSendToAgent(seedApi) === false, 'edited send-to-agent bundle is never overwritten by the seed')

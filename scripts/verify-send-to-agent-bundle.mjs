@@ -25,9 +25,13 @@ ok('startup note textarea', s.includes('附加说明（可选，随笔记一起�
 ok('startup permission select', s.includes('权限（权限预设）— 用于新建会话'))
 ok('startup handles permissions from modes', s.includes('parsed2.permissions'))
 const pi = JSON.parse(T['$:/plugins/dsh/send-to-agent/plugin.info'].text)
-ok('plugin version 0.3.1', pi.version === '0.3.1')
+ok('plugin version 0.3.2', pi.version === '0.3.2')
 const icon = T['$:/plugins/dsh/send-to-agent/ui/icon']
-ok('icon tiddler type image/svg+xml', icon.type === 'image/svg+xml')
+// Core icons ($:/core/images/*) carry NO type field (defaults to wikitext), so
+// `{{icon}}` wikifies into an inline <svg> with `\parameters` expanded. Setting
+// image/svg+xml would send `{{icon}}` through the imageparser → <img> data URI,
+// whose raw `\parameters`/`<<size>>` Chrome cannot parse → broken icon.
+ok('icon tiddler has NO image/svg+xml type (core convention)', icon.type !== 'image/svg+xml' && (icon.type === undefined || icon.type === 'text/vnd.tiddlywiki'))
 ok('icon tagged $:/tags/Image', Array.isArray(icon.tags) && icon.tags.includes('$:/tags/Image'))
 ok('icon is svg', icon.text.includes('<svg') && icon.text.includes('</svg>'))
 ok('icon svg has tc-image-button class', icon.text.includes('tc-image-button'))
