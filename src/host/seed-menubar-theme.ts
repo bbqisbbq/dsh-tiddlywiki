@@ -47,21 +47,39 @@ nav.tc-menubar li.tc-menubar-item > a,
 nav.tc-menubar li.tc-menubar-item > button {
 	color: <<colour foreground>> !important;
 	fill: <<colour foreground>> !important;
+	border-radius: 6px !important;
+	transition: background-color 120ms ease, color 120ms ease;
 }
 
 nav.tc-menubar li.tc-menubar-item svg {
 	fill: <<colour foreground>> !important;
 }
 
-nav.tc-menubar li.tc-menubar-item > a.tc-selected,
-nav.tc-menubar li.tc-menubar-item > button.tc-selected,
 nav.tc-menubar li.tc-menubar-item > a:hover,
-nav.tc-menubar li.tc-menubar-item > button:hover,
+nav.tc-menubar li.tc-menubar-item > button:hover {
+	background: color-mix(in srgb, <<colour foreground>> 12%, transparent) !important;
+	color: <<colour foreground>> !important;
+	fill: <<colour foreground>> !important;
+}
+
 nav.tc-menubar li.tc-menubar-item > a:active,
 nav.tc-menubar li.tc-menubar-item > button:active {
-	background: <<colour foreground>> !important;
-	color: <<colour background>> !important;
-	fill: <<colour background>> !important;
+	background: color-mix(in srgb, <<colour foreground>> 20%, transparent) !important;
+	color: <<colour foreground>> !important;
+	fill: <<colour foreground>> !important;
+}
+
+nav.tc-menubar li.tc-menubar-item > a.tc-selected,
+nav.tc-menubar li.tc-menubar-item > button.tc-selected {
+	background: color-mix(in srgb, <<colour foreground>> 16%, transparent) !important;
+	color: <<colour foreground>> !important;
+	fill: <<colour foreground>> !important;
+}
+
+nav.tc-menubar li.tc-menubar-item > a:focus-visible,
+nav.tc-menubar li.tc-menubar-item > button:focus-visible {
+	outline: none !important;
+	box-shadow: none !important;
 }
 `
 
