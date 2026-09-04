@@ -19,6 +19,11 @@ export default defineConfig({
   target: 'es2022',
   clean: false,
   sourcemap: false,
+  // Minify the client bundle: CodeMirror 6 + Lezer markdown push the raw
+  // output past 1 MB, which bloats the browser payload and trips the 1 MB
+  // file-inspection cap used by plugin directory registries (dsh.pub's
+  // submission gate reads the `./client` entry via the GitHub Contents API).
+  minify: true,
   outExtensions: () => ({ js: '.js' }),
   deps: { neverBundle: ['react'] },
 })
