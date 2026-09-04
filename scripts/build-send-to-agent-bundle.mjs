@@ -22,13 +22,14 @@ const outFile = path.join(scriptsDir, 'bundle', 'send-to-agent.bundle.json')
 const startup = fs.readFileSync(path.join(parts, 'startup.js'), 'utf8').replace(/\r\n/g, '\n')
 const button = fs.readFileSync(path.join(parts, 'button.tid'), 'utf8').replace(/\r\n/g, '\n')
 const icon = fs.readFileSync(path.join(parts, 'icon.svg'), 'utf8').replace(/\r\n/g, '\n')
+const itemTemplate = fs.readFileSync(path.join(parts, 'item-template.tid'), 'utf8').replace(/\r\n/g, '\n')
 
 const pluginInfo = {
   title: '$:/plugins/dsh/send-to-agent',
   name: 'Send to Agent',
   description: '把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）',
   author: 'dsh-tiddlywiki',
-  version: '0.3.0',
+  version: '0.3.1',
   'plugin-type': 'plugin',
 }
 
@@ -48,6 +49,7 @@ const bundle = {
     '$:/plugins/dsh/send-to-agent/ui/icon': {
       title: '$:/plugins/dsh/send-to-agent/ui/icon',
       type: 'image/svg+xml',
+      tags: ['$:/tags/Image'],
       text: icon,
     },
     '$:/plugins/dsh/send-to-agent/ui/ViewToolbar/SendToAgent': {
@@ -60,6 +62,18 @@ const bundle = {
       caption: '发送给 Agent',
       description: '把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）',
       text: button,
+    },
+    // Shadow override of the core toolbar-chooser row template: the stock
+    // ViewToolbar/PageControls/EditToolbar lists never show each button's icon
+    // (only the EditorToolbar does). Mirroring the core EditorItemTemplate here
+    // makes every chooser row render {{!!icon}}, so "发送给 Agent" shows its
+    // paper-plane icon next to the caption/description in 设置 → 外观 → 工具栏.
+    // Plugin shadows override core's (plugins unpack after core), and this
+    // tiddler carries no $:/tags/Image tag on purpose — it is a UI template.
+    '$:/core/ui/ControlPanel/Toolbars/ItemTemplate': {
+      title: '$:/core/ui/ControlPanel/Toolbars/ItemTemplate',
+      type: 'text/vnd.tiddlywiki',
+      text: itemTemplate,
     },
   },
 }

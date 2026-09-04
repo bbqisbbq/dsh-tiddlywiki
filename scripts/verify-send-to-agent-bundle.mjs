@@ -9,7 +9,7 @@ const T = bundle.tiddlers
 const checks = []
 const ok = (name, cond) => checks.push([name, !!cond])
 
-ok('bundle has 4 tiddlers', Object.keys(T).length === 4)
+ok('bundle has 5 tiddlers', Object.keys(T).length === 5)
 const btn = T['$:/plugins/dsh/send-to-agent/ui/ViewToolbar/SendToAgent']
 ok('button fields icon', btn.icon === '$:/plugins/dsh/send-to-agent/ui/icon')
 ok('button fields caption', btn.caption === '发送给 Agent')
@@ -25,10 +25,20 @@ ok('startup note textarea', s.includes('附加说明（可选，随笔记一起�
 ok('startup permission select', s.includes('权限（权限预设）— 用于新建会话'))
 ok('startup handles permissions from modes', s.includes('parsed2.permissions'))
 const pi = JSON.parse(T['$:/plugins/dsh/send-to-agent/plugin.info'].text)
-ok('plugin version 0.3.0', pi.version === '0.3.0')
+ok('plugin version 0.3.1', pi.version === '0.3.1')
 const icon = T['$:/plugins/dsh/send-to-agent/ui/icon']
 ok('icon tiddler type image/svg+xml', icon.type === 'image/svg+xml')
-ok('icon is svg', icon.text.trim().startsWith('<svg'))
+ok('icon tagged $:/tags/Image', Array.isArray(icon.tags) && icon.tags.includes('$:/tags/Image'))
+ok('icon is svg', icon.text.includes('<svg') && icon.text.includes('</svg>'))
+ok('icon svg has tc-image-button class', icon.text.includes('tc-image-button'))
+ok('icon svg has width/height via <<size>>', icon.text.includes('width=<<size>>') && icon.text.includes('height=<<size>>'))
+ok('icon svg square viewBox', /viewBox="0 0 24 24"/.test(icon.text))
+ok('icon is a bold (filled) plane', icon.text.includes('M3.478 2.404'))
+const it = T['$:/core/ui/ControlPanel/Toolbars/ItemTemplate']
+ok('ItemTemplate override present', it !== undefined && it.type === 'text/vnd.tiddlywiki')
+ok('ItemTemplate override shows icon', it && it.text.includes('<$transclude tiddler={{!!icon}}/>'))
+ok('ItemTemplate override keeps caption+description', it && it.text.includes('field="caption"') && it.text.includes('field="description"'))
+ok('ItemTemplate override keeps checkbox', it && it.text.includes('<$checkbox'))
 
 let failed = false
 for (const [name, pass] of checks) {

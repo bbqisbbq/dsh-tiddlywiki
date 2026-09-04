@@ -3,7 +3,7 @@
     "$:/plugins/dsh/send-to-agent/plugin.info": {
       "title": "$:/plugins/dsh/send-to-agent/plugin.info",
       "type": "application/json",
-      "text": "{\"title\":\"$:/plugins/dsh/send-to-agent\",\"name\":\"Send to Agent\",\"description\":\"把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）\",\"author\":\"dsh-tiddlywiki\",\"version\":\"0.3.0\",\"plugin-type\":\"plugin\"}"
+      "text": "{\"title\":\"$:/plugins/dsh/send-to-agent\",\"name\":\"Send to Agent\",\"description\":\"把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）\",\"author\":\"dsh-tiddlywiki\",\"version\":\"0.3.1\",\"plugin-type\":\"plugin\"}"
     },
     "$:/plugins/dsh/send-to-agent/startup.js": {
       "title": "$:/plugins/dsh/send-to-agent/startup.js",
@@ -14,7 +14,10 @@
     "$:/plugins/dsh/send-to-agent/ui/icon": {
       "title": "$:/plugins/dsh/send-to-agent/ui/icon",
       "type": "image/svg+xml",
-      "text": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M22 2 11 13\"/><path d=\"M22 2 15 22 11 13 2 9z\"/></svg>\n"
+      "tags": [
+        "$:/tags/Image"
+      ],
+      "text": "\\parameters (size:\"22pt\")\n<svg width=<<size>> height=<<size>> class=\"tc-image-send-to-agent tc-image-button\" viewBox=\"0 0 24 24\"><path d=\"M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z\"/></svg>\n"
     },
     "$:/plugins/dsh/send-to-agent/ui/ViewToolbar/SendToAgent": {
       "title": "$:/plugins/dsh/send-to-agent/ui/ViewToolbar/SendToAgent",
@@ -26,6 +29,11 @@
       "caption": "发送给 Agent",
       "description": "把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）",
       "text": "\\whitespace trim\n<$button message=\"dsh-send-to-agent\"\n\tparam=<<currentTiddler>>\n\ttooltip=\"把当前笔记一键发送给 DSH Agent\"\n\taria-label=\"把当前笔记一键发送给 DSH Agent\"\n\tclass=<<tv-config-toolbar-class>>\n>\n\t<%if [<tv-config-toolbar-icons>match[yes]] %>\n\t\t{{$:/plugins/dsh/send-to-agent/ui/icon}}\n\t<%endif%>\n\t<%if [<tv-config-toolbar-text>match[yes]] %>\n\t\t<span class=\"tc-btn-text\">\n\t\t<$text text=\"发送给 Agent\"/>\n\t</span>\n\t<%endif%>\n</$button>\n"
+    },
+    "$:/core/ui/ControlPanel/Toolbars/ItemTemplate": {
+      "title": "$:/core/ui/ControlPanel/Toolbars/ItemTemplate",
+      "type": "text/vnd.tiddlywiki",
+      "text": "title: $:/core/ui/ControlPanel/Toolbars/ItemTemplate\n\n\\define config-title()\n$(config-base)$$(currentTiddler)$\n\\end\n\\whitespace trim\n\n<$draggable tiddler=<<currentTiddler>>>\n<$checkbox tiddler=<<config-title>> field=\"text\" checked=\"show\" unchecked=\"hide\" default=\"show\"/>\n&#32;\n<span class=\"tc-icon-wrapper\"><$transclude tiddler={{!!icon}}/></span>\n&#32;\n<$transclude field=\"caption\"/>\n&#32;--&#32;\n<i class=\"tc-muted\"><$transclude field=\"description\"/></i>\n</$draggable>\n"
     }
   }
 }

@@ -553,6 +553,8 @@ try {
   assert(s2aBundle.text.includes('$:/plugins/dsh/send-to-agent/ui/icon'), 'bundle ships its own (non-export) toolbar icon')
   assert(s2aBundle.text.includes('附加说明（可选，随笔记一起发给 Agent）'), 'bundle startup.js carries the optional-note input')
   assert(s2aBundle.text.includes('body.permission = state.permission'), 'bundle startup.js forwards the chosen permission preset')
+  assert(s2aBundle.text.includes('$:/core/ui/ControlPanel/Toolbars/ItemTemplate'), 'bundle overrides the toolbar-chooser row template so icons show in 设置')
+  assert(s2aBundle.text.includes('tc-image-button') && s2aBundle.text.includes('width=<<size>>'), 'bundle icon follows core toolbar-icon conventions')
   assert(await seedSendToAgent(seedApi) === false, 'send-to-agent NOT re-seeded while marker present')
   await seedApi.put({ title: SEND_TO_AGENT_PLUGIN_TITLE, text: 'user edit', type: 'application/json', tags: [] })
   assert(await seedSendToAgent(seedApi) === false, 'edited send-to-agent bundle is never overwritten by the seed')
