@@ -40,6 +40,7 @@
     "lib/**/*.js",
     "lib/**/*.js.map",
     "src",
+    "docs",
     "cordis.patch.yml",
     "LICENSE",
     "README.md"
