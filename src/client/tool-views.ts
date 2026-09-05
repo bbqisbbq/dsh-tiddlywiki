@@ -543,19 +543,29 @@ export const TOOL_VIEW_KEYS: readonly string[] = [
 
 /**
  * Register the tool card under every key. Returns an array of disposers.
- * The slot face: `slots.register({ name, id, key, order, label }, component)`.
+ *
+ * `tool.call.toolview` is a CHILD slot (declared by an entry inside
+ * `conversation.chat.node`), so a bare `slots.register` throws
+ * `slot "tool.call.toolview" is not declared (a parent entry's children table
+ * must declare it)` when it runs before the parent declaration. Each key must
+ * therefore be wrapped in `slots.inject('tool.call.toolview', cb)`, which runs
+ * `cb` synchronously when the declaration already exists and otherwise waits
+ * for it — the same pattern `settings.section` uses.
  */
 export function registerToolViews(slots: {
+  inject(key: string, callback: () => () => void): (() => void) | undefined
   register(opts: { name: string; id: string; key: string; order?: number; label?: string }, component: unknown): () => void
 }): Array<() => void> {
   const disposers: Array<() => void> = []
   for (const key of TOOL_VIEW_KEYS) {
     try {
-      const remove = slots.register(
-        { name: 'tool.call.toolview', id: `dsh-tiddlywiki-toolview-${key}`, key, order: 20, label: `TiddlyWiki: ${key}` },
-        TiddlywikiToolView,
+      const remove = slots.inject('tool.call.toolview', () =>
+        slots.register(
+          { name: 'tool.call.toolview', id: `dsh-tiddlywiki-toolview-${key}`, key, order: 20, label: `TiddlyWiki: ${key}` },
+          TiddlywikiToolView,
+        ),
       )
-      disposers.push(remove)
+      if (remove !== undefined) disposers.push(remove)
     } catch (error) {
       console.error(`[dsh-tiddlywiki] register toolview ${key} failed:`, error)
     }
