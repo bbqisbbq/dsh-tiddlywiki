@@ -1,6 +1,8 @@
-# 统一 seed 注册表 & 后台「重新初始化」
+# 统一 seed 注册表 & 后台「重新初始化 / 反初始化」
 
-> 本文档说明 dsh-tiddlywiki **v0.12.0** 引入/完善的「一次性预置」机制（v0.13.0 新增 `menubar-theme` seed）：哪些东西需要随插件初始化写入 wiki、它们与 dsh 的联动关系、ONE-SHOT / force 语义、后台 API 与设置页操作，以及开发时如何重新生成内置常量。
+> 本文档说明 dsh-tiddlywiki 的「一次性预置」机制：哪些东西需要随插件初始化写入 wiki、它们与 dsh 的联动关系、**核心项 / 可选项**两层划分、ONE-SHOT / force / remove 语义、后台 API 与设置页操作，以及开发时如何重新生成内置常量。
+>
+> 版本沿革：v0.10.0 引入统一注册表 + 后台「重新初始化」；v0.13.0 新增 `menubar-theme` seed；**v0.15.0 拆成核心/可选两层**——启动只自动写**功能必需**项（发送给 Agent 按钮 + TW 前端 API 基址），可选项默认不写入、不强制，设置页可随时「重新初始化」写入或「反初始化」移除。
 
 ---
 
@@ -8,16 +10,16 @@
 
 插件与 dsh 有多个联动功能，**前提是 wiki 里存在特定 tiddler / 配置**。这些项历史上靠手工往 wiki 里塞（只存在于个别 wiki 的 git 历史中），**初次安装插件的新用户拿不到**，导致联动功能残缺：
 
-| 联动功能 | 依赖的 wiki 预置 | 缺失时的表现 |
-|---|---|---|
-| 一键发送给 Agent | `$:/plugins/dsh/send-to-agent` 按钮插件 | TW 工具栏没有「发送给 Agent」按钮，后端路由在但无入口 |
-| 首页（待办四象限 / 标签统计 / Agent 区块） | 「主页」「所有标签」「标签笔记」三个 tiddler + `$:/DefaultTiddlers` → 主页 | 系统提示承诺的「首页把 Agent 笔记单独列在 Agent 区块、主标签列表只统计人类笔记」完全不存在；TW 打开的是 GettingStarted |
-| 所有文章（两列分页总览） | 「所有文章」tiddler | 没有一键总览全部条目的入口 |
-| 嵌入式 TW 编辑器 | `$:/config/tiddlyweb/host` 指向同源代理 | iframe 里的 TW 前端 API 基址指向错误的 origin，编辑/保存失效 |
-| menubar 顶栏主题自适应 | `$:/plugins/dsh-tiddlywiki/menubar-theme` 样式表（tag `$:/tags/Stylesheet`） | tiddlywiki/menubar 顶栏停留在默认色映射的蓝色（`$:/config/DefaultColourMappings/` → `#5778d8`），不随 DSH 深浅主题变化 |
-| 新手引导 | 「dsh-tiddlywiki 插件说明」笔记 | 新用户没有入门说明 |
+| 联动功能 | 依赖的 wiki 预置 | 缺失时的表现 | 层级 |
+|---|---|---|---|
+| 一键发送给 Agent | `$:/plugins/dsh/send-to-agent` 按钮插件 | TW 工具栏没有「发送给 Agent」按钮，后端路由在但无入口 | **核心**（功能必需） |
+| 嵌入式 TW 编辑器 | `$:/config/tiddlyweb/host` 指向同源代理 | iframe 里的 TW 前端 API 基址指向错误的 origin，编辑/保存失效 | **核心**（功能必需） |
+| 首页（待办四象限 / 标签统计 / Agent 区块） | 「主页」「所有标签」「标签笔记」三个 tiddler + `$:/DefaultTiddlers` → 主页 | 没有承诺的首页；TW 打开的是 GettingStarted | 可选（不强制） |
+| 所有文章（两列分页总览） | 「所有文章」tiddler | 没有一键总览全部条目的入口 | 可选（不强制） |
+| menubar 顶栏主题自适应 | `$:/plugins/dsh-tiddlywiki/menubar-theme` 样式表（tag `$:/tags/Stylesheet`） | tiddlywiki/menubar 顶栏停留在默认色映射的蓝色（`$:/config/DefaultColourMappings/` → `#5778d8`） | 可选（不强制） |
+| 新手引导 | 「dsh-tiddlywiki 插件说明」笔记 | 新用户没有入门说明 | 可选（不强制） |
 
-v0.10.0 把**全部**这类项收进一个**统一 seed 注册表**，随插件首次启动自动预置；并给后台加「重新初始化」能力，让缺失/被改坏的项可以随时由用户手动恢复。
+**v0.15.0 原则：不给用户强绑定。** 启动路径只自动预置**核心**项（发送给 Agent 按钮、TW 前端 API 基址——它们与插件自身功能强关联）；其余**可选项**（说明笔记 / 首页 / 所有文章 / menubar 顶栏主题自适应）默认**不自动写入**，需要时在设置页「初始化」区块手动「重新初始化」，不想要了可随时「反初始化」移除。
 
 ---
 
@@ -30,25 +32,28 @@ interface SeedDef {
   id: string                              // doc-note / send-to-agent / home-index / tw-web-host
   title: string                           // 设置页显示名
   description: string                     // 说明
-  check(ctx): Promise<SeedStatus>         // 当前状态（present / detail），供 UI 展示
+  core: boolean                           // true=功能必需（启动自动 seed）；false=可选（不强制，可反初始化）
+  check(ctx): Promise<SeedStatus>         // 当前状态（present / removable / detail），供 UI 展示
   run(ctx, force): Promise<SeedRunResult> // 执行；force=false 保持 ONE-SHOT，force=true 重写内置内容
+  remove?(ctx): Promise<SeedRunResult>    // 反初始化：删除写入的 tiddler + marker（仅可选 seed 实现）
 }
 ```
 
-| id | 实现 | 写什么 | marker |
-|---|---|---|---|
-| `doc-note` | `seed-notes.ts` → `seedDocNote` | 「dsh-tiddlywiki 插件说明」（tag `docs`） | `$:/plugins/dsh-tiddlywiki/seed-doc-note` |
-| `send-to-agent` | `seed-send-to-agent.ts` → `seedSendToAgent` | `$:/plugins/dsh/send-to-agent` 按钮 bundle（`application/json`） | `$:/plugins/dsh-tiddlywiki/seed-send-to-agent` |
-| `home-index` | `seed-home.ts` → `seedHomeIndex` | 「主页」+「所有标签」+「标签笔记」（tag `索引`），并把 `$:/DefaultTiddlers` 指向 `[[主页]]` | `$:/plugins/dsh-tiddlywiki/seed-home-index` |
-| `all-articles` | `seed-all-articles.ts` → `seedAllArticles` | 「所有文章」（tag `索引`）——两列分页总览，每页条数实时读 `ui.allArticles.pageSize`（默认 10） | `$:/plugins/dsh-tiddlywiki/seed-all-articles` |
-| `menubar-theme` | `seed-menubar-theme.ts` → `seedMenubarTheme` | `$:/plugins/dsh-tiddlywiki/menubar-theme`（tag `$:/tags/Stylesheet`）——覆盖 tiddlywiki/menubar 顶栏：把 `<<colour menubar-background>>` 的「默认色映射蓝色」改为跟随活动 palette 的 `background`/`foreground`，随 DSH 主题切换（`$:/palette` 翻转）自动换色 | `$:/plugins/dsh-tiddlywiki/seed-menubar-theme` |
-| `tw-web-host` | `seeds.ts` 内联 | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 无 marker（ensure 型，见 §4） |
+| id | 实现 | 写什么 | marker | 层级 |
+|---|---|---|---|---|
+| `doc-note` | `seed-notes.ts` → `seedDocNote` / `unseedDocNote` | 「dsh-tiddlywiki 插件说明」（tag `docs`） | `$:/plugins/dsh-tiddlywiki/seed-doc-note` | 可选 |
+| `send-to-agent` | `seed-send-to-agent.ts` → `seedSendToAgent` | `$:/plugins/dsh/send-to-agent` 按钮 bundle（`application/json`） | `$:/plugins/dsh-tiddlywiki/seed-send-to-agent` | **核心** |
+| `home-index` | `seed-home.ts` → `seedHomeIndex` / `unseedHomeIndex` | 「主页」+「所有标签」+「标签笔记」（tag `索引`），并把 `$:/DefaultTiddlers` 指向 `[[主页]]` | `$:/plugins/dsh-tiddlywiki/seed-home-index` | 可选 |
+| `all-articles` | `seed-all-articles.ts` → `seedAllArticles` / `unseedAllArticles` | 「所有文章」（tag `索引`）——两列分页总览，每页条数实时读 `ui.allArticles.pageSize`（默认 10） | `$:/plugins/dsh-tiddlywiki/seed-all-articles` | 可选 |
+| `menubar-theme` | `seed-menubar-theme.ts` → `seedMenubarTheme` / `unseedMenubarTheme` | `$:/plugins/dsh-tiddlywiki/menubar-theme`（tag `$:/tags/Stylesheet`）——覆盖 tiddlywiki/menubar 顶栏：把 `<<colour menubar-background>>` 的「默认色映射蓝色」改为跟随活动 palette 的 `background`/`foreground`，随 DSH 主题切换（`$:/palette` 翻转）自动换色 | `$:/plugins/dsh-tiddlywiki/seed-menubar-theme` | 可选 |
+| `tw-web-host` | `seeds.ts` 内联 | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 无 marker（ensure 型，见 §4） | **核心** |
 
 ### 统一入口（`src/index.ts` 导出）
 
-- `runAllSeeds(ctx)` —— **启动路径**：全部非 force 执行（只写缺失）。启动时序在 `configStore.load()` 之后、`bootstrapGit()` 之前，保证 seed 写入的内容进入首次 git 提交。
-- `checkAllSeeds(ctx)` —— 返回每项当前状态数组（设置页「初始化」区块数据源）。
+- `runAllSeeds(ctx)` —— **启动路径**：**只 seed 核心项**（`core: true`：发送给 Agent 按钮 + TW 前端 API 基址），非 force（只写缺失）。可选项**不自动写入**。启动时序在 `configStore.load()` 之后、`bootstrapGit()` 之前，保证 seed 写入的内容进入首次 git 提交。
+- `checkAllSeeds(ctx)` —— 返回每项当前状态数组（设置页「初始化」区块数据源，含 `removable` 标记）。
 - `runSeedById(ctx, id?, force)` —— 单跑（`id` 指定）或全跑（`id` 为 `undefined`）；`force` 为手动「重新初始化」；未知 `id` 返回显式错误结果而非抛异常。
+- `removeSeedById(ctx, id?)` —— **反初始化**：删除单个（或全部）可选 seed 写入的 tiddler + marker，恢复「从未初始化」状态；核心项拒绝移除。
 
 ---
 
@@ -84,6 +89,15 @@ interface SeedDef {
 
 > ⚠️ force 会**覆盖你对目标 tiddler 的编辑**，仅用于明确想要恢复内置内容时。日常「补缺失」不需要 force——启动流程与「全部重新初始化」之外的场景由 ONE-SHOT 语义兜底。
 
+### 反初始化（remove，v0.15.0）
+
+设置页「初始化」区块的「反初始化」按钮（以及后台 `POST /admin/seeds/remove`）触发，**只对可选 seed 提供**：
+
+- 删除该 seed 写入的全部 tiddler **与** 一次性 marker，把 wiki 恢复到「从未初始化」状态；
+- 之后该 seed 在设置页状态为「缺失」，需要时可再用「重新初始化」写回；
+- `home-index` 反初始化时，若 `$:/DefaultTiddlers` 仍指向 seed 写出的 `[[主页]]`，一并恢复为 `[[GettingStarted]]`（用户自定义的默认页不受影响）；
+- **核心 seed（发送给 Agent 按钮 / TW 前端 API 基址）不可反初始化**——它们与插件自身功能强关联，移除会破坏对应能力；「全部反初始化」也只处理可选 seed。
+
 ---
 
 ## 5. 后台 API
@@ -98,17 +112,18 @@ interface SeedDef {
 {
   "ok": true,
   "items": [
-    { "id": "doc-note",      "title": "插件说明笔记",                "description": "…", "present": true,  "detail": "已存在" },
-    { "id": "send-to-agent", "title": "「发送给 Agent」按钮",         "description": "…", "present": true,  "detail": "已存在" },
-    { "id": "home-index",    "title": "首页（主页 / 所有标签 / 标签笔记）", "description": "…", "present": false, "detail": "缺失：主页" },
-    { "id": "all-articles",  "title": "所有文章（两列分页总览）",       "description": "…", "present": true,  "detail": "已存在" },
-    { "id": "menubar-theme", "title": "menubar 顶栏主题自适应",        "description": "…", "present": true,  "detail": "已存在" },
-    { "id": "tw-web-host",   "title": "TW 前端 API 基址（同源代理）",   "description": "…", "present": true,  "detail": "已指向 /dsh-tiddlywiki/tw/" }
+    { "id": "doc-note",      "title": "插件说明笔记",                "description": "…", "present": true,  "removable": true,  "detail": "已存在" },
+    { "id": "send-to-agent", "title": "「发送给 Agent」按钮",         "description": "…", "present": true,  "removable": false, "detail": "已存在" },
+    { "id": "home-index",    "title": "首页（主页 / 所有标签 / 标签笔记）", "description": "…", "present": false, "removable": true,  "detail": "缺失：主页" },
+    { "id": "all-articles",  "title": "所有文章（两列分页总览）",       "description": "…", "present": true,  "removable": true,  "detail": "已存在" },
+    { "id": "menubar-theme", "title": "menubar 顶栏主题自适应",        "description": "…", "present": true,  "removable": true,  "detail": "已存在" },
+    { "id": "tw-web-host",   "title": "TW 前端 API 基址（同源代理）",   "description": "…", "present": true,  "removable": false, "detail": "已指向 /dsh-tiddlywiki/tw/" }
   ]
 }
 ```
 
-wiki 服务未运行时返回 `503 { ok: false, error: "wiki service is not running" }`。
+- `removable: true` = 可选 seed（可「反初始化」移除）；`false` = 核心 seed（功能必需，不可移除）。
+- wiki 服务未运行时返回 `503 { ok: false, error: "wiki service is not running" }`。
 
 ### `POST /dsh-tiddlywiki/admin/seeds/run`
 
@@ -136,17 +151,40 @@ wiki 服务未运行时返回 `503 { ok: false, error: "wiki service is not runn
 - 未知 `id` → `400 { ok: false, results: [{ id, ok: false, error: "unknown seed: <id>" }] }`；
 - 请求体过大（> 1MB）或非法 JSON → `400`。
 
+### `POST /dsh-tiddlywiki/admin/seeds/remove`
+
+反初始化（v0.15.0）。请求体：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | string, 可选 | 指定移除单项；缺省 = 全部可选 seed |
+
+响应与 `/admin/seeds/run` 同构（`results[]`）：
+
+```jsonc
+{
+  "ok": true,
+  "results": [
+    { "id": "menubar-theme", "ok": true, "wrote": false, "detail": "已移除：$:/plugins/dsh-tiddlywiki/menubar-theme、$:/plugins/dsh-tiddlywiki/seed-menubar-theme" }
+  ]
+}
+```
+
+- 核心 seed（发送给 Agent 按钮 / TW 前端 API 基址）**不可移除**——指定它们 → `400 { ok: false, results: [{ id, ok: false, error: "该 seed 为核心项（功能必需），不可反初始化" }] }`；「全部反初始化」会自动跳过核心项；
+- 未知 `id` → `400`，`error: "unknown seed: <id>"`；
+- wiki 服务未运行时 → `503`。
+
 ---
 
 ## 6. 设置页操作
 
 DSH 设置 →「TiddlyWiki 知识库」→ 最底部「**初始化（一次性预置）**」区块：
 
-- 顶部状态行：`共 N 项，M 项已就绪`；
-- 每项一行：状态点（✓ 已就绪 / ✗ 缺失）+ 名称 + 实时详情（如缺失了哪个 tiddler）+ 「重新初始化」按钮；
-- 底部：「**全部重新初始化**」按钮（force 全部）。
+- 顶部状态行：`共 N 项，M 项已就绪；可移除 K 项`；
+- 每项一行：状态点（✓ 已就绪 / ✗ 缺失）+ 名称 + 实时详情（如缺失了哪个 tiddler）+ 「重新初始化」按钮；**可选 seed 另有「反初始化」按钮**（核心 seed 不显示）；
+- 底部：「**全部重新初始化**」按钮（force 全部）+「**全部反初始化**」按钮（移除全部可选 seed，核心项保留；点击前有确认弹窗）。
 
-前端源码：`src/client/settings-page.ts` 的 `renderSeedsSection`；样式 `src/client/styles.ts`（状态点 `ok` / `missing`）。
+前端源码：`src/client/settings-page.ts` 的 `renderSeedsSection`；样式 `src/client/styles.ts`（状态点 `ok` / `missing`、危险按钮 `dsh-tw-settings-danger`）。
 
 ---
 
@@ -175,9 +213,9 @@ npm run typecheck && npm run build && npm run selftest
 
 新增一个 seed 的步骤：
 
-1. 写实现（或复用现有 `seedXxx(client, { force? })` 模式）；
-2. 在 `src/host/seeds.ts` 的 `SEED_DEFS` 里登记（`check` + `run`）；
-3. （若需要展示/强制恢复）确认启动路径 `runAllSeeds` 自动覆盖它；
+1. 写实现（或复用现有 `seedXxx(client, { force? })` 模式；可选 seed 再补 `unseedXxx(client)` 返回 `{ removed: string[] }`）；
+2. 在 `src/host/seeds.ts` 的 `SEED_DEFS` 里登记（`core` + `check` + `run`，可选 seed 加 `remove`）；
+3. 核心 seed 会被启动路径 `runAllSeeds` 自动覆盖；可选 seed 仅设置页手动触发；
 4. selftest 增加对应断言段，跑 `verify-seeds-admin.mjs` 验证后台 API；
 5. bump 版本、更新本文档与 README。
 
@@ -186,13 +224,13 @@ npm run typecheck && npm run build && npm run selftest
 ## 8. 验证
 
 - `npm run typecheck` / `npm run build`：编译与打包；
-- `npm run selftest`：5d 段覆盖注册表清单、runAllSeeds、单跑幂等、force 重写、unknown id、tw-web-host 三分支（custom 保留 / force 写回 / legacy 修复）；
-- `node scripts/verify-seeds-admin.mjs`：全新 wiki + 真实 HTTP，端到端验证 `GET /admin/seeds` 状态流转（全缺失 → 启动后全就绪）与 `POST /admin/seeds/run`（force 单跑恢复被改坏的首页、非 force 不覆盖用户内容、force-all 恢复代理基址、unknown id 400）。
+- `npm run selftest`：5d 段覆盖注册表清单（含 `core` / `removable`）、**启动只 seed 核心项**、手动全跑只写缺失、单跑幂等、force 重写、unknown id、tw-web-host 三分支（custom 保留 / force 写回 / legacy 修复）、**反初始化**（单移除 / 核心拒绝 / unknown / 全部移除保留核心）；
+- `node scripts/verify-seeds-admin.mjs`：全新 wiki + 真实 HTTP，端到端验证 `GET /admin/seeds` 状态流转（全缺失 → 启动后仅核心就绪）与 `POST /admin/seeds/run`（force 单跑恢复被改坏的首页、非 force 不覆盖用户内容、force-all 恢复代理基址、unknown id 400）+ `POST /admin/seeds/remove`（移除可选、核心 400、remove-all 仅剩核心）。
 
 ---
 
 ## 9. 生效方式
 
 - seed 注册表属插件源码逻辑：**重启 dsh web** 后生效（会中断当前会话，注意时机）。
-- 本 wiki（已存在上述 tiddler）：重启只补写 marker，**不覆盖现有内容**；要强制恢复内置内容，用设置页「初始化」。
-- 新装 wiki：首次启动自动获得全部预置（说明笔记 / 发送按钮 / 首页 / 代理基址），无需手工放 tiddler。
+- 本 wiki（已存在上述 tiddler）：重启后启动路径**只补核心项**（发送给 Agent 按钮 / TW 前端 API 基址，缺才写），**不覆盖任何现有内容**；可选项维持现状，可在设置页「初始化」手动「重新初始化」或「反初始化」。
+- 新装 wiki：首次启动只自动获得**核心预置**（发送按钮 + 代理基址）；说明笔记 / 首页 / 所有文章 / menubar 顶栏主题自适应为可选项，需要时在设置页写入，不想要也不会被强制。

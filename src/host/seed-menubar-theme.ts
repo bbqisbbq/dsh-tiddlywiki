@@ -111,3 +111,21 @@ export async function seedMenubarTheme(client: TiddlyWebClient, opts?: { force?:
     .catch(() => undefined)
   return wrote
 }
+
+/**
+ * Un-seed (反初始化): remove the menubar override stylesheet and its marker,
+ * returning the wiki to the pre-seed state (the tiddlywiki/menubar top bar
+ * falls back to its original colour-mapping behaviour). Deletion is
+ * idempotent — a tiddler already gone is not listed. Never throws.
+ */
+export async function unseedMenubarTheme(client: TiddlyWebClient): Promise<{ removed: string[] }> {
+  const removed: string[] = []
+  for (const title of [MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE]) {
+    const t = await client.get(title).catch(() => undefined)
+    if (t !== undefined) {
+      await client.delete(title)
+      removed.push(title)
+    }
+  }
+  return { removed }
+}

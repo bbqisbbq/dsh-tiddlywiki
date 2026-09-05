@@ -166,7 +166,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   caret-color: var(--dsw-alias-label-primary, #222);
   padding: 8px 9px;
 }
-.dsh-tw-note-editor .cm-placeholder { color: var(--dsw-alias-label-dimmed, #999); }
+.dsh-tw-note-editor .cm-placeholder { color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
 .dsh-tw-note-editor .cm-line { padding: 0; }
 /* Selection + active line follow the theme. */
 .dsh-tw-note-editor .cm-editor .cm-selectionBackground,
@@ -183,7 +183,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-note-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .dsh-tw-note-foot-left, .dsh-tw-note-foot-right { display: flex; align-items: center; gap: 8px; }
-.dsh-tw-note-hint { font-size: 11px; color: var(--dsw-alias-label-dimmed, #999); }
+.dsh-tw-note-hint { font-size: 11px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 58%, transparent); }
 .dsh-tw-note-upload {
   border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
   background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
@@ -256,7 +256,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-editor-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-tw-editor-close {
   border: none; background: transparent; cursor: pointer; font-size: 14px; line-height: 1;
-  color: var(--dsw-alias-label-dimmed, #888); padding: 5px 8px; border-radius: 6px;
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 58%, transparent); padding: 5px 8px; border-radius: 6px;
 }
 .dsh-tw-editor-close:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, #222); }
 .dsh-tw-editor-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--dsw-alias-bg-layer-1, #fff); }
@@ -318,11 +318,18 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-settings-chip[data-state="missing"] { color: var(--dsw-alias-state-error-primary, #d13b3b); }
 .dsh-tw-settings-section { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.18)); }
 .dsh-tw-settings-h { margin: 0; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
-.dsh-tw-settings-field { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dsw-alias-label-secondary, inherit); }
-.dsh-tw-settings-field-check { cursor: pointer; }
-.dsh-tw-settings-label { flex: 0 0 170px; }
+/* 字段行：标签自然换行（不再固定 170px 列导致断行错乱），输入框右对齐限宽。
+   align-items: flex-start 让多行标签与输入框顶对齐；复选框行保持垂直居中。 */
+.dsh-tw-settings-field {
+  display: flex; align-items: flex-start; gap: 10px; font-size: 12px;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, #222));
+}
+.dsh-tw-settings-field-check { align-items: center; cursor: pointer; }
+.dsh-tw-settings-label { flex: 1 1 45%; min-width: 0; line-height: 1.55; padding-top: 3px; }
+.dsh-tw-settings-field-check .dsh-tw-settings-label { padding-top: 0; }
 .dsh-tw-settings-input {
-  flex: 1; min-width: 0; font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px;
+  flex: 0 1 240px; min-width: 140px; max-width: 55%; box-sizing: border-box;
+  font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
   background: var(--dsw-alias-bg-input, transparent); color: var(--dsw-alias-label-primary, #222);
 }
@@ -333,20 +340,43 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-settings-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow: auto; }
 .dsh-tw-settings-plugin { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 12px; }
 .dsh-tw-settings-plugin:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.08)); }
-.dsh-tw-settings-name { font-weight: 500; flex: 0 0 130px; color: var(--dsw-alias-label-primary, #222); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 行内名称：可增长到 200px 再省略，长中文标题不再被 130px 列截断得七零八落。 */
+.dsh-tw-settings-name {
+  font-weight: 500; flex: 0 1 200px; min-width: 0;
+  color: var(--dsw-alias-label-primary, #222);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 行内说明：占剩余空间、单行省略（悬停 title 看全），避免 flex-wrap 换行错乱。 */
+.dsh-tw-settings-row.dsh-tw-settings-plugin .dsh-tw-settings-muted {
+  flex: 1 1 100px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .dsh-tw-settings-head { padding: 2px 4px 4px; font-size: 11px; }
-.dsh-tw-settings-col { flex: 0 0 14px; text-align: center; color: var(--dsw-alias-label-dimmed, #999); }
+.dsh-tw-settings-col { flex: 0 0 14px; text-align: center; color: var(--dsw-alias-label-secondary, #666); }
 .dsh-tw-settings-row.dsh-tw-settings-plugin input { flex: 0 0 auto; margin: 0; }
-.dsh-tw-settings-muted { color: var(--dsw-alias-label-dimmed, #999); font-size: 12px; }
+/* 说明/次要文字：不依赖可能缺失或与背景不一致的 label-dimmed token，改由主题
+   主文字色 label-primary 派生（58% 透明），在任何深浅主题下都保证可读。 */
+.dsh-tw-settings-muted {
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 58%, transparent);
+  font-size: 12px;
+}
 .dsh-tw-settings-btn {
   align-self: flex-start; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
   background: transparent; color: var(--dsw-alias-label-primary, #222);
   font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 7px; cursor: pointer;
+  flex: none;
 }
 .dsh-tw-settings-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
 .dsh-tw-settings-btn:disabled { opacity: .55; cursor: default; }
 .dsh-tw-settings-btn.dsh-tw-settings-primary {
   background: var(--dsw-alias-brand-primary, #3e63dd); border-color: transparent; color: #fff;
+}
+/* 反初始化/危险操作按钮：错误色描边+文字，悬停浅色底。 */
+.dsh-tw-settings-btn.dsh-tw-settings-danger {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d13b3b) 45%, transparent);
+  color: var(--dsw-alias-state-error-primary, #d13b3b);
+}
+.dsh-tw-settings-btn.dsh-tw-settings-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d13b3b) 10%, transparent);
 }
 .dsh-tw-settings-error { color: var(--dsw-alias-state-error-primary, #d13b3b); font-size: 12px; }
 .dsh-tw-settings-search { flex: 0 0 auto; max-width: 220px; }
@@ -448,8 +478,8 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-note-recent-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 .dsh-tw-note-recent-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-tw-note-recent-meta { flex: none; font-size: 11px; color: var(--dsw-alias-label-dimmed, #999); }
-.dsh-tw-note-recent-muted { padding: 8px 10px; font-size: 12px; color: var(--dsw-alias-label-dimmed, #999); }
+.dsh-tw-note-recent-meta { flex: none; font-size: 11px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
+.dsh-tw-note-recent-muted { padding: 8px 10px; font-size: 12px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
 .dsh-tw-note-recent-btn {
   border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
   background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);

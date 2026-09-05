@@ -25,7 +25,7 @@ import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
-import { runAllSeeds, checkAllSeeds, runSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
+import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 import { TiddlyWebClient } from './host/tw-api.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
@@ -47,7 +47,7 @@ export { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE
 export { seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, HOME_DEFAULT_TIDDLERS } from './host/seed-home.ts'
 export { seedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE, ALL_ARTICLES_TEXT } from './host/seed-all-articles.ts'
 export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './host/seed-menubar-theme.ts'
-export { runAllSeeds, checkAllSeeds, runSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
+export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools } from './host/tools.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
@@ -324,11 +324,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // the settings page's 重新初始化. Runs before git bootstrap so the config
       // tiddler joins the first commit.
       // Seeds (run after the effective config is loaded): every one-time
-      // "与 dsh 联动需要 wiki 预置" item lives in the SEED_DEFS registry —
-      // doc-note, send-to-agent, home-index, tw-web-host. Startup runs them
-      // NON-force: write only what is missing, never overwrite user content.
-      // The settings page lists the same registry and offers a manual
-      // 重新初始化 (force) per item / for all.
+      // "与 dsh 联动需要 wiki 预置" item lives in the SEED_DEFS registry.
+      // The startup path seeds ONLY the CORE items (功能必需：发送给 Agent
+      // 按钮 + TW 前端 API 基址) NON-force — write only what is missing, never
+      // overwrite user content. Optional seeds (说明笔记 / 首页 / 所有文章 /
+      // menubar 顶栏主题自适应) are never forced on users: they opt in from
+      // the settings page「初始化」section (重新初始化) and can opt out again
+      // with 反初始化 (remove).
       try {
         const seedClient = client()
         if (seedClient !== undefined) {
@@ -418,6 +420,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       seeds: {
         checkAll: async (c) => checkAllSeeds({ client: c }),
         run: async (c, id, force) => runSeedById({ client: c }, id, force),
+        remove: async (c, id) => removeSeedById({ client: c }, id),
       },
     }
     const disposeAdmin = registerAdminRoutes({ webServer: ws }, adminDeps)

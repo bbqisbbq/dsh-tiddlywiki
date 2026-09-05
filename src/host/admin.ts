@@ -250,8 +250,10 @@ export interface AdminDeps {
   config: ConfigStore
   /** Seed registry for the settings-page "初始化" section. */
   seeds: {
-    checkAll: (client: TiddlyWebClient) => Promise<Array<{ id: string; title: string; description: string; present: boolean; detail?: string }>>
+    checkAll: (client: TiddlyWebClient) => Promise<Array<{ id: string; title: string; description: string; present: boolean; removable: boolean; detail?: string }>>
     run: (client: TiddlyWebClient, id: string | undefined, force: boolean) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
+    /** 反初始化: remove one (or all) optional seed's seeded tiddlers + markers. */
+    remove: (client: TiddlyWebClient, id: string | undefined) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
   }
 }
 
@@ -443,6 +445,29 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     }
   }
 
+  /**
+   * POST /dsh-tiddlywiki/admin/seeds/remove — 反初始化: remove one optional
+   * seed (or all optional seeds when `id` is absent) — delete the seeded
+   * tiddlers + markers so the wiki returns to the "never seeded" state.
+   * Core seeds (功能必需) cannot be removed.
+   */
+  const handleSeedsRemove = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      const body = JSON.parse(await readBody(req)) as { id?: unknown }
+      const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
+      const client = deps.getClient()
+      if (client === undefined) {
+        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        return
+      }
+      const results = await deps.seeds.remove(client, id)
+      const ok = results.every((r) => r.ok)
+      json(res, { ok, results }, ok ? 200 : 400)
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
   const disposers = [
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/state`, handler: (req, res) => { void handleState(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/info`, handler: (req, res) => { void handleInfo(req, res) } }),
@@ -450,6 +475,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds`, handler: (req, res) => { void handleSeeds(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds/run`, handler: (req, res) => { void handleSeedsRun(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds/remove`, handler: (req, res) => { void handleSeedsRemove(req, res) } }),
   ]
   return () => {
     for (const dispose of disposers) dispose()

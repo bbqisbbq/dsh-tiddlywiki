@@ -53,6 +53,8 @@ interface SeedItem {
   title: string
   description: string
   present: boolean
+  /** true = 可选 seed（非功能必需），可「反初始化」移除。 */
+  removable?: boolean
   detail?: string
 }
 
@@ -437,16 +439,21 @@ function renderCatalogSection(
 }
 
 /**
- * 初始化 section: lists every one-time seed with its live status and offers a
- * manual "重新初始化" per item (and for all). Non-forced re-runs keep the
- * write-if-missing semantics; the button forces a rewrite to built-in content.
+ * 初始化 section: lists every one-time seed with its live status and offers
+ * per item (and for all):
+ *   - 「重新初始化」(force) — write/restore the built-in content;
+ *   - 「反初始化」(remove, optional seeds only) — delete the seeded
+ *     tiddlers + markers, returning the wiki to the "never seeded" state.
+ * Core seeds (发送给 Agent 按钮 / TW 前端 API 基址) are 功能必需: auto-seeded
+ * on startup and never removable. Optional seeds are opt-in — never forced.
  */
 function renderSeedsSection(body: HTMLElement): void {
   const section = make('section', 'dsh-tw-settings-section')
   section.append(make('h3', 'dsh-tw-settings-h', '初始化（一次性预置）'))
-  const hint = make('div', 'dsh-tw-settings-muted', '这些是插件与 dsh 联动、需要在 wiki 里预置的 tiddler/配置，首次启动会自动写入（只写缺失，不覆盖你的改动）。下面可随时手动「重新初始化」强制恢复内置内容。')
+  const hint = make('div', 'dsh-tw-settings-muted', '这些是插件与 dsh 联动、需要在 wiki 里预置的 tiddler/配置。「发送给 Agent 按钮」和「TW 前端 API 基址」是功能必需项，启动时自动写入（只写缺失，不覆盖你的改动）；其余为可选项，默认不自动写入、也不会强绑定——需要时点「重新初始化」写入，不想要了可随时「反初始化」移除。')
   const wrap = make('div', 'dsh-tw-settings-list')
   const statusLine = make('div', 'dsh-tw-settings-muted')
+  const SEEDS_REMOVE_ENDPOINT = '/dsh-tiddlywiki/admin/seeds/remove'
 
   const load = async (): Promise<void> => {
     try {
@@ -454,8 +461,10 @@ function renderSeedsSection(body: HTMLElement): void {
       if (data.ok !== true || !Array.isArray(data.items)) throw new Error(data.error ?? '获取失败')
       wrap.replaceChildren()
       let presentCount = 0
+      let removableCount = 0
       for (const item of data.items) {
         if (item.present) presentCount += 1
+        if (item.removable) removableCount += 1
         const dot = make('span', 'dsh-tw-settings-chip', item.present ? '✓' : '✗')
         dot.dataset.state = item.present ? 'ok' : 'missing'
         dot.title = item.present ? '已存在' : '缺失'
@@ -493,9 +502,42 @@ function renderSeedsSection(body: HTMLElement): void {
         })
         const row = make('div', 'dsh-tw-settings-row dsh-tw-settings-plugin')
         row.append(dot, title, desc, btn)
+        if (item.removable) {
+          const rm = make('button', 'dsh-tw-settings-btn dsh-tw-settings-danger', '反初始化')
+          rm.type = 'button'
+          rm.title = `移除「${item.title}」写入的 tiddler 与 marker（恢复未初始化状态）`
+          rm.addEventListener('click', () => {
+            if (!window.confirm(`确定反初始化「${item.title}」？将删除它写入的 tiddler（含其一次性 marker），需要时可用「重新初始化」恢复。`)) return
+            rm.disabled = true
+            rm.textContent = '移除中…'
+            void (async () => {
+              try {
+                const res = await fetch(SEEDS_REMOVE_ENDPOINT, {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ id: item.id }),
+                  signal: AbortSignal.timeout(30_000),
+                })
+                const payload = (await res.json().catch(() => null)) as { ok?: boolean; results?: Array<{ id?: string; detail?: string; error?: string }>; error?: string } | null
+                if (!res.ok || payload?.ok !== true) {
+                  toast(`反初始化失败：${payload?.error ?? payload?.results?.[0]?.error ?? `HTTP ${res.status}`}`)
+                } else {
+                  toast(`已反初始化「${item.title}」`)
+                }
+                void load()
+              } catch (err) {
+                toast(`反初始化失败：${err instanceof Error ? err.message : String(err)}`)
+              } finally {
+                rm.disabled = false
+                rm.textContent = '反初始化'
+              }
+            })()
+          })
+          row.append(rm)
+        }
         wrap.append(row)
       }
-      statusLine.textContent = `共 ${data.items.length} 项，${presentCount} 项已就绪`
+      statusLine.textContent = `共 ${data.items.length} 项，${presentCount} 项已就绪；可移除 ${removableCount} 项`
     } catch (err) {
       statusLine.textContent = `加载初始化状态失败：${err instanceof Error ? err.message : String(err)}`
     }
@@ -503,7 +545,7 @@ function renderSeedsSection(body: HTMLElement): void {
 
   const runAll = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '全部重新初始化')
   runAll.type = 'button'
-  runAll.title = '强制重写所有一次性预置内容（会覆盖当前 tiddler/配置）'
+  runAll.title = '强制重写所有一次性预置内容（含可选 seed，会覆盖当前 tiddler/配置）'
   runAll.addEventListener('click', () => {
     runAll.disabled = true
     runAll.textContent = '执行中…'
@@ -528,7 +570,35 @@ function renderSeedsSection(body: HTMLElement): void {
     })()
   })
 
-  section.append(hint, statusLine, wrap, runAll)
+  const removeAll = make('button', 'dsh-tw-settings-btn dsh-tw-settings-danger', '全部反初始化')
+  removeAll.type = 'button'
+  removeAll.title = '移除所有可选 seed 写入的 tiddler 与 marker（功能必需项保留）'
+  removeAll.addEventListener('click', () => {
+    if (!window.confirm('确定全部反初始化？将删除所有可选 seed 写入的 tiddler（含一次性 marker）。功能必需项（发送给 Agent 按钮 / TW 前端 API 基址）会保留。')) return
+    removeAll.disabled = true
+    removeAll.textContent = '移除中…'
+    void (async () => {
+      try {
+        const res = await fetch(SEEDS_REMOVE_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+          signal: AbortSignal.timeout(60_000),
+        })
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null
+        if (!res.ok || payload?.ok !== true) toast(`反初始化失败：${payload?.error ?? `HTTP ${res.status}`}`)
+        else toast('全部可选 seed 已反初始化')
+        void load()
+      } catch (err) {
+        toast(`反初始化失败：${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        removeAll.disabled = false
+        removeAll.textContent = '全部反初始化'
+      }
+    })()
+  })
+
+  section.append(hint, statusLine, wrap, runAll, removeAll)
   body.append(section)
   void load()
 }

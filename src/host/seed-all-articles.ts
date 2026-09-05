@@ -144,3 +144,20 @@ export async function seedAllArticles(client: TiddlyWebClient, opts?: { force?: 
     .catch(() => undefined)
   return wrote
 }
+
+/**
+ * Un-seed (反初始化): remove the 所有文章 page and its one-shot marker.
+ * Deletion is idempotent — a tiddler that was already gone is not listed.
+ * Never throws.
+ */
+export async function unseedAllArticles(client: TiddlyWebClient): Promise<{ removed: string[] }> {
+  const removed: string[] = []
+  for (const title of [ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE]) {
+    const t = await client.get(title).catch(() => undefined)
+    if (t !== undefined) {
+      await client.delete(title)
+      removed.push(title)
+    }
+  }
+  return { removed }
+}

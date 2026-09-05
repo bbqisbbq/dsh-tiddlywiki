@@ -62,3 +62,31 @@ export async function seedHomeIndex(client: TiddlyWebClient, opts?: { force?: bo
     .catch(() => undefined)
   return wrote
 }
+
+/**
+ * Un-seed (反初始化): remove the home tiddlers (主页 / 所有标签 / 标签笔记) and
+ * their marker, restoring the wiki's default home only when it still points
+ * at the seeded 主页 (a user-customised $:/DefaultTiddlers is left alone).
+ * Deletion is idempotent — a tiddler already gone is not listed. Never throws.
+ */
+export async function unseedHomeIndex(client: TiddlyWebClient): Promise<{ removed: string[] }> {
+  const removed: string[] = []
+  for (const item of HOME_INDEX_ITEMS) {
+    const t = await client.get(item.title).catch(() => undefined)
+    if (t !== undefined) {
+      await client.delete(item.title)
+      removed.push(item.title)
+    }
+  }
+  const marker = await client.get(HOME_INDEX_MARKER_TITLE).catch(() => undefined)
+  if (marker !== undefined) {
+    await client.delete(HOME_INDEX_MARKER_TITLE)
+    removed.push(HOME_INDEX_MARKER_TITLE)
+  }
+  const dt = await client.get('$:/DefaultTiddlers').catch(() => undefined)
+  if (dt !== undefined && typeof dt.text === 'string' && dt.text.trim() === '[[主页]]') {
+    await client.put({ title: '$:/DefaultTiddlers', text: '[[GettingStarted]]', type: 'text/vnd.tiddlywiki', tags: [] })
+    removed.push('$:/DefaultTiddlers')
+  }
+  return { removed }
+}
