@@ -18,7 +18,8 @@
 | 能力 | 说明 |
 |---|---|
 | 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `batch_put` / `rename` / `delete` / `recent` / `list_tags` / `git_sync` / `git_resolve` 十个工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
-| 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki；**独立加粗纸飞机图标**，遵循核心工具栏图标约定，工具栏设置列表也显示各按钮图标/说明）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话，**可选「工作模式」= Agent 预设**、**可选「权限」= 权限预设**（沙箱+审批），**可选附加说明**随消息一起发给 Agent，已有会话显示其当前模式）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
+| 📊 **回复流工具卡片** | `tiddlywiki_*` 工具结果在回复流里显示**原生 TW 卡片**（v0.16.0）：`get`/`put`/`rename` 把 tiddler 原生渲染进卡片、`search`/`recent`/`batch` 列可点击行、`list_tags` 计数 chips、`git`/`delete` 显示文本；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达中央 TW 面板 |
+| 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki；**独立加粗纸飞机图标**，遵循核心工具栏图标约定，工具栏设置列表也显示各按钮图标/说明）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话，**可选「工作模式」= Agent 预设**、**可选「权限」= 权限预设**（沙箱+审批），**可选附加说明**随消息一起发给 Agent（**位于消息末尾**，作为你的最终补充要求，v0.16.3），已有会话显示其当前模式）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
 | 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
 | 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
@@ -33,6 +34,10 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
+- **v0.16.3**（2026-09-06）：**「发送给 Agent」附加说明移到消息末尾 + 注入提示词补充「想法沉淀」约定**。① bundle v0.3.3：`【附加说明】` 段从「待办说明与正文之间」移到**正文之后、消息最末尾**——作为用户的最终补充要求（指令越靠后越优先遵循）；弹层交互不变，在线 wiki 在「知识库」FAB →「🔄 重载 TW 面板」后生效；② 注入提示词（`PROMPT_TEXT`）新增「**想法沉淀**」段落：鼓励 Agent 把「未来可能有用 / 值得做」但不在当前执行范围内的想法，用 `tiddlywiki_put` 写成独立 tiddler，打上 `todo` + `agent-written` 标签（并附当前工作区名），正文说明来源（会话 / 工作区 / 项目背景），由用户决定是否继续；新会话在下次重启 dsh web 后生效。
+- **v0.16.0**（2026-09-05）：**回复流原生 TW 工具卡片 + 可点击 wiki 链接**。新增 seed `render-route`（核心项）：TW 内注册 `POST /render` 服务路由把 wiki 文本渲染成原生 HTML 片段，并把内部 wiki 链接改写为同源代理 hash（`tv-wikilink-template`，首次 seed 后自动重启 TW）；全部 10 个 `tiddlywiki_*` 工具在回复流里显示**原生 TW 工具卡片**（`tool.call.toolview`）：`get`/`put`/`rename` 原生渲染 tiddler、`search`/`recent`/`batch` 列可点击行、`list_tags` 计数 chips、`git`/`delete` 显示文本；**文档级点击拦截**——`[标题](/dsh-tiddlywiki/tw/#标题)` 与渲染片段里的 wiki 链接点击后打开中央 TW 面板并跳转该 tiddler；host 新增 `/search` 路由（关键词 + tags/tag/since/type/limit）、`/tags` 返回带计数的 items、`/get` 返回 modified。
+- **v0.16.1**（2026-09-05）：修：工具卡片改为 `slots.inject` 注册（子 slot 需父声明），卡片在回复流正常挂载。
+- **v0.16.2**（2026-09-05）：修：iframe 内 TW ready 后再设 hash，消除 startup 监听竞态导致的跳转丢失。
 - **v0.15.0**（2026-09-05）：**初始化不强制 + 可反初始化 + 设置页样式修复**。① **不给用户强绑定**——seed 注册表拆两层：启动只自动写入**功能必需项**（「发送给 Agent」按钮 + TW 前端 API 基址）；**可选项**（说明笔记 / 首页 / 所有文章 / menubar 顶栏主题自适应）默认不写入，设置页「初始化」区块可随时「重新初始化」写入；② **「反初始化」**——可选 seed 每项（及「全部反初始化」）可一键删除其写入的 tiddler + marker，恢复未初始化状态（核心项不可移除；home-index 反初始化会顺带把 `$:/DefaultTiddlers` 从 `[[主页]]` 恢复为 GettingStarted）；后台新增 `POST /admin/seeds/remove`；③ **menubar 顶栏主题自适应不再自动写入**（改的不对可去——本 wiki 已移除该样式表，顶栏恢复默认外观；想要可随时在设置页重新初始化）；④ **设置页样式修复**——说明/次要文字不再依赖可能缺失的 `label-dimmed` token，改由主题主文字色派生（任意深浅主题下可读，不再出现白色文字）；配置字段标签改为自然换行、输入框右对齐限宽，行内名称/说明单行省略，长选项不再断行错乱。
 - **v0.14.0**（2026-09-05）：TW「**发送给 Agent**」一键发送三处优化。① **工具栏按钮修复**——之前按钮在 控制台→外观→工具栏 里**不显示图标与说明**（还和「导出此条目」用同一个导出图标）：现为按钮补上 `icon`/`caption`/`description` 字段，并在 bundle 里**自带独立的「发送」图标**（不再借用 core 的 export-button），工具栏设置与条目标题栏都显示独立图标；后续小修：图标改用**更饱满的实心纸飞机**并遵循核心图标约定（`\parameters (size:"22pt")` + `width/height` + `tc-image-button` class + `$:/tags/Image` 标签），修复宽度比相邻图标窄的问题；同时 bundle **shadow 覆盖核心 `$:/core/ui/ControlPanel/Toolbars/ItemTemplate`**（镜像 EditorItemTemplate），让 查看/页面/编辑工具栏 的设置列表**也显示每个按钮的图标**（原来只有编辑器工具栏列表显示）；**再修「图标裂了」**——根因是 bundle 里 icon tiddler 被设了 `type: image/svg+xml`：`{{icon}}` 会走 imageparser 渲染成 `<img src="data:image/svg+xml,...">`，数据 URI 保留原始文本（开头的 `\parameters` 与未展开的 `width=<<size>>` 不是合法独立 SVG），Chrome/Edge 直接加载失败显示裂图；核心图标**不带 type 字段**（默认 wikitext），`{{icon}}` 被 wiki 化成语法展开后的**内联 `<svg width="22pt">`**。修复：icon tiddler 去掉 type 字段（保持 wikitext，与核心一致），已在真实浏览器验证图标渲染尺寸与核心图标完全一致（32.9×24.7）且无裂图；② **可选「附加说明」**——发送弹层新增文本输入框，填写的说明会以 `【附加说明】` 段随消息一起发给 Agent（不填则无此段）；③ **可选「权限」**——弹层新增「权限（权限预设）」选择器（来自 DSH `permissionPresets`，如 工作区写入+询问 / 完全访问+免确认），**新建会话并发送**时 `/agent/create` 传 `permission` → 创建后对会话日志应用该预设（`permission/preset` + `sandbox/mode` + `approval/policy` 事件），覆盖部署默认；对旧宿主**向后兼容**：权限服务缺失时选择器降级为提示、不发送该字段。bundle 源码收进仓库 `scripts/bundle/send-to-agent/`（startup.js/button.tid/icon.svg/item-template.tid）+ 组装脚本 `scripts/build-send-to-agent-bundle.mjs`，改按钮后重跑组装 → gen-seed → build 即可。
 - **v0.13.1**（2026-09-04）：**客户端 bundle 压缩（minify）**。CodeMirror 6 + Lezer markdown 让 `lib/client.js`（`./client` 导出）达到 1.06MB，超过插件目录注册表（如 dsh.pub 收录校验）经 GitHub Contents API 检查的 **1MB 上限**，导致 dsh.pub 收录 PR 首轮校验失败（`invalid_file`）；开启 tsdown `minify` 后产物降到 **0.58MB**（gzip ~193KB），浏览器加载更快，dsh.pub 收录 PR #83 校验全绿并已合并。构建配置见 `tsdown.client.config.ts`。
@@ -108,17 +113,17 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 
 > ⚠️ pull 若拉到新内容，`pull` / `sync` 会自动**重启 TW（同端口）**，后续读写/搜索都是最新快照，不会读到旧缓存。
 
-**建议**：把 wiki 当作长期记忆库——会议纪要、决策记录、调研笔记、随手的想法都可存成独立 tiddler（tag 建议 `inbox` / `meeting` / `decision` 等便于检索）；自动建笔记时，除业务 tag 外也带上**当前 workspace 名**，方便按项目归集。
+**建议**：把 wiki 当作长期记忆库——会议纪要、决策记录、调研笔记、随手的想法都可存成独立 tiddler（tag 建议 `inbox` / `meeting` / `decision` 等便于检索）；自动建笔记时，除业务 tag 外也带上**当前 workspace 名**，方便按项目归集。**想法沉淀**（v0.16.3 起写入注入提示词）：遇到「未来可能有用 / 值得做」但不在当前执行范围内的想法，用 `tiddlywiki_put` 写成独立 tiddler，打上 `todo` + `agent-written` 标签（并附当前 workspace 名），正文说明来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
 
 ### 🧑‍💻 给人：界面操作
 
 **📤 一键发送给 Agent** — 插件首次启动会把「发送给 Agent」按钮插件写入 wiki（`$:/plugins/dsh/send-to-agent`，ONE-SHOT）。在 TW 里打开任意笔记，工具栏点「**发送给 Agent**」：
-- 弹层顶部有**「附加说明」（可选）**输入框（v0.14.0）：填写的说明会以 `【附加说明】` 段随消息一起发给 Agent（不填则没有该段）；
+- 弹层顶部有**「附加说明」（可选）**输入框（v0.14.0）：填写的说明会以 `【附加说明】` 段随消息一起发给 Agent（不填则没有该段）；v0.16.3 起该段放在消息**最末尾**（正文之后，作为你的最终补充要求）；
 - 弹层顶部有**「工作模式」（Agent 预设）**选择器（v0.11.0）：列出 DSH 全部可用预设（`/agent/modes`，标记部署默认），**新建工作区/会话并发送**时按所选模式创建（`/agent/create` 传 `mode` → `sessionController.create(agentPreset)`）；已有会话旁显示其当前模式徽标（🧭）；
 - 弹层顶部还有**「权限」（权限预设）**选择器（v0.14.0）：列出 DSH 权限预设（沙箱 + 审批的捆绑，如 工作区写入+询问 / 完全访问+免确认，来自 `permissionPresets`），**新建会话并发送**时应用所选权限（`/agent/create` 传 `permission` → 创建后 `permissionPresets.set` 写入会话日志）；权限服务不可用时选择器自动隐藏、按部署默认；
 - 弹层**按工作区（cwd）分组**列出可见会话，点选即把当前笔记作为消息注入（`sessionController.prompt`，与聊天输入同 API）；
 - 也可以**新建工作区/会话**再发送（`/agent/create` 按 cwd 落入真实 Workspace，会话不落「未分组」）；
-- 消息格式为 `《标题》` + 标签/类型 + **待办说明**（告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问）+ **附加说明**（可选）+ 正文；
+- 消息格式为 `《标题》` + 标签/类型 + **待办说明**（告知 Agent 这是用户提前编辑在 wiki 中的待办事项、不清楚应主动提问）+ 正文 + **附加说明**（可选，位于消息末尾，v0.16.3）；
 - 按钮在 控制台→外观→工具栏 里带**独立加粗图标与说明**（v0.14.0 起不再借用「导出此条目」的图标；bundle 还 shadow 覆盖核心工具栏行模板，让查看/页面/编辑工具栏的设置列表都显示每个按钮的图标）；
 - 开关与 token 见设置页「常规配置」/配置项 `ui.sendToAgent`（默认开）。
 
