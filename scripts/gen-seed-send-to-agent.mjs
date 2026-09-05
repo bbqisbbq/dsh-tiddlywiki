@@ -62,6 +62,16 @@ export async function seedSendToAgent(client: TiddlyWebClient, opts?: { force?: 
       text: SEND_TO_AGENT_BUNDLE_TEXT,
       type: 'application/json',
       tags: [],
+      // TW only REGISTERS a wiki tiddler as a plugin (boot.js
+      // registerPluginTiddlers) when the OUTER tiddler carries a
+      // \`plugin-type\` field — without it the bundle is never unpacked and its
+      // startup module never runs in the embedded TW. Mirrors what the live
+      // wiki's send-to-agent bundle tiddler carries.
+      'plugin-type': 'plugin',
+      name: 'Send to Agent',
+      author: 'dsh-tiddlywiki',
+      version: '0.3.2',
+      description: '把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）',
     })
     wrote = true
   }

@@ -18,7 +18,7 @@
  *
  * @module dsh-tiddlywiki
  */
-import { watch, type FSWatcher } from 'node:fs'
+import { existsSync, watch, type FSWatcher } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
@@ -44,6 +44,7 @@ export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
 export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
 export { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
+export { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT } from './host/seed-render.ts'
 export { seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, HOME_DEFAULT_TIDDLERS } from './host/seed-home.ts'
 export { seedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE, ALL_ARTICLES_TEXT } from './host/seed-all-articles.ts'
 export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './host/seed-menubar-theme.ts'
@@ -166,6 +167,25 @@ function watchWiki(wikiPath: string, onChange: () => void): () => void {
   }
 }
 
+/**
+ * Wait until a file exists on disk (polling), up to `timeoutMs`. TW's syncer
+ * flushes REST writes to the filesystem on a ~250ms task timer, so a freshly
+ * seeded tiddler is not on disk the moment PUT resolves — a caller that must
+ * restart TW right after (so a seeded server route loads) has to wait for the
+ * flush first, or the restarted TW would boot from a stale snapshot and the
+ * seeded module would be missing.
+ */
+async function waitForFileWrite(filePath: string, timeoutMs = 8_000, pollMs = 150): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      if (existsSync(filePath)) return true
+    } catch { /* transient */ }
+    if (Date.now() >= deadline) return false
+    await new Promise<void>((r) => setTimeout(r, pollMs))
+  }
+}
+
 /** System-prompt section text (design doc §11 D8). */
 const PROMPT_SECTION_NAME = 'dsh-tiddlywiki'
 const PROMPT_SECTION_ORDER = 100
@@ -188,7 +208,9 @@ pull 冲突后：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep
 
 用本插件自动创建笔记时，除了业务性 tag 外，请把「当前工作区（项目）的名字」也作为标签之一加上去（例如 \`tiddlywiki_put\` 的 tags 里带上当前 workspace 名），这样笔记能按项目归集、检索。
 
-**Agent 笔记标签约定**：\`tiddlywiki_put\` / \`tiddlywiki_batch_put\` 新建笔记时，插件会自动补打 \`agent-written\` 标签（标记「由 Agent 撰写」），无需手动添加，也不要手动移除它（除非用户明确要求）。首页会把 Agent 笔记单独列在「Agent 区块」，主标签列表只统计人类笔记。若某篇 Agent 笔记后续被人类编辑过，请在该笔记上补打 \`human-edited\` 标签，首页会把它归入「Agent + 人工」档。覆盖写入已有的（人类）笔记时不会自动加 agent-written，请保持笔记原本的归属。`
+**Agent 笔记标签约定**：\`tiddlywiki_put\` / \`tiddlywiki_batch_put\` 新建笔记时，插件会自动补打 \`agent-written\` 标签（标记「由 Agent 撰写」），无需手动添加，也不要手动移除它（除非用户明确要求）。首页会把 Agent 笔记单独列在「Agent 区块」，主标签列表只统计人类笔记。若某篇 Agent 笔记后续被人类编辑过，请在该笔记上补打 \`human-edited\` 标签，首页会把它归入「Agent + 人工」档。覆盖写入已有的（人类）笔记时不会自动加 agent-written，请保持笔记原本的归属。
+
+**引用 wiki 笔记用可点击链接**：在回复流中引用某篇笔记时，用格式 \`[标题](/dsh-tiddlywiki/tw/#标题)\` 输出（标题含空格/特殊字符时做 URL 编码，如 \`A%20B\`；中文标题可直接写）。这类链接会被界面自动接管：点击后打开中央 TW 面板并跳转到该笔记的原生页面。回复里也优先用这个链接格式代替纯文本标题，让用户能一键跳到 wiki。`
 
 /**
  * Mount the host half.
@@ -337,6 +359,18 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
           const results = await runAllSeeds({ client: seedClient })
           for (const r of results) {
             if (!r.ok) console.warn(`[dsh-tiddlywiki] seed ${r.id} failed:`, r.error ?? r.detail)
+          }
+          // Seeding wrote something (e.g. the render-route plugin on this
+          // upgrade). A seeded SERVER route only loads at TW boot, so restart
+          // once to pick it up. Wait for the bundle file to actually reach the
+          // disk first — TW's syncer flushes REST writes on a ~250ms task
+          // timer, and restarting from a stale snapshot would boot WITHOUT the
+          // just-seeded module.
+          if (results.some((r) => r.ok && r.wrote)) {
+            const renderFile = join(wikiPath, 'tiddlers', '$__plugins_dsh_render.json')
+            const flushed = await waitForFileWrite(renderFile)
+            if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
+            await server.restart()
           }
         }
       } catch (err) {

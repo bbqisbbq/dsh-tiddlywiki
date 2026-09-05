@@ -61,6 +61,21 @@ const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
 const RESTART_ENDPOINT = '/dsh-tiddlywiki/restart'
 
 /**
+ * Cross-module open request: the reply-stream tool cards and the document
+ * click interceptor dispatch this; the mounted panel listens, opens itself and
+ * navigates the iframe to the tiddler's hash (TW native page). Decoupled so
+ * the panel can mount later than the first request.
+ */
+const OPEN_TIDDLER_EVENT = 'dsh-tw-open-tiddler'
+
+/** Ask the mounted panel to open `title` in the TW native page. */
+export function openTiddler(title: string): void {
+  if (typeof document === 'undefined') return
+  if (typeof title !== 'string' || title.length === 0) return
+  document.dispatchEvent(new CustomEvent(OPEN_TIDDLER_EVENT, { detail: { title } }))
+}
+
+/**
  * The panel's z-index: below any dsh-better-sidebar host layer so its
  * persistent toggle cluster (top-right corner) stays visible and clickable
  * above the full-screen TW panel, otherwise the default 40. The host's live
@@ -124,6 +139,10 @@ export function mountPanel(state: PanelState): () => void {
   let refreshTimer: number | undefined
   let refreshAttempts = 0
   let themeSyncDispose: (() => void) | undefined
+  /** true once the iframe's document finished loading (hash navigation target ready). */
+  let frameLoaded = false
+  /** A tiddler-hash open request waiting for the frame to become ready. */
+  let pendingHash: string | null = null
 
   const build = (): HTMLDivElement => {
     const view = document.createElement('div')
@@ -138,6 +157,12 @@ export function mountPanel(state: PanelState): () => void {
     iframe.title = 'TiddlyWiki'
     iframe.hidden = true
     frameArea.append(iframe)
+    // Track load so a pending tiddler-hash navigation can target a ready
+    // document (setting contentWindow.location.hash before load is a no-op).
+    iframe.addEventListener('load', () => {
+      frameLoaded = true
+      applyPendingHash()
+    })
     // Embedded TW follows the DSH light/dark theme (non-persisting palette
     // swap inside the same-origin iframe; re-applied on load + theme change).
     themeSyncDispose = attachThemeSync(iframe)
@@ -228,8 +253,40 @@ export function mountPanel(state: PanelState): () => void {
     // iframe never loses unsaved state on a status refresh.
     if (iframe.dataset.loaded !== url) {
       iframe.dataset.loaded = url
+      frameLoaded = false
       iframe.src = url
     }
+  }
+
+  /**
+   * Apply a pending tiddler-hash navigation once the iframe document is ready.
+   * Preferred: same-origin `contentWindow.location.hash` — a hashchange INSIDE
+   * the frame (no reload), TW's story handler opens the tiddler. Fallback: a
+   * full `iframe.src` reload with the hash (TW auto-saves drafts, acceptable).
+   */
+  const applyPendingHash = (): void => {
+    if (pendingHash === null || iframe === undefined || !frameLoaded) return
+    const hash = pendingHash
+    pendingHash = null
+    try {
+      const win = iframe.contentWindow
+      if (win === null) throw new Error('iframe window unavailable')
+      if (win.location.hash === hash) return
+      win.location.hash = hash
+    } catch {
+      const base = iframe.src.split('#')[0]
+      if (iframe.src === `${base}${hash}`) return
+      iframe.src = `${base}${hash}`
+    }
+  }
+
+  const onOpenTiddler = (event: Event): void => {
+    const detail = (event as CustomEvent).detail as { title?: unknown } | undefined
+    const title = typeof detail?.title === 'string' && detail.title.length > 0 ? detail.title : ''
+    if (title.length === 0) return
+    pendingHash = `#${encodeURIComponent(title)}`
+    state.openPanel()
+    applyPendingHash()
   }
 
   const doRefresh = async (): Promise<void> => {
@@ -328,6 +385,7 @@ export function mountPanel(state: PanelState): () => void {
     if (iframe !== undefined && !iframe.hidden) iframe.src = iframe.src
   }
   document.addEventListener('dsh-tw-panel-reload', onReloadRequest)
+  document.addEventListener(OPEN_TIDDLER_EVENT, onOpenTiddler)
 
   return () => {
     if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
@@ -338,6 +396,7 @@ export function mountPanel(state: PanelState): () => void {
     document.removeEventListener('click', onClickSidebarRow, true)
     document.removeEventListener(ACTIVATE_EVENT, onOtherActivate)
     document.removeEventListener('dsh-tw-panel-reload', onReloadRequest)
+    document.removeEventListener(OPEN_TIDDLER_EVENT, onOpenTiddler)
     waitObserver.disconnect()
     unsubscribe()
     themeSyncDispose?.()

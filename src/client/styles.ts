@@ -488,6 +488,96 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-note-recent-btn:hover { filter: brightness(.96); }
 .dsh-tw-note-recent-btn:active { transform: scale(.96); }
+
+/* ── reply-stream native tool cards ────────────────────────────────── */
+.dsh-tw-toolcard {
+  margin: 4px 0; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16));
+  border-radius: 10px; background: var(--dsw-alias-bg-layer-2, #fff);
+  overflow: hidden; max-width: 640px;
+}
+.dsh-tw-toolcard-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px;
+}
+.dsh-tw-toolcard-badge {
+  flex: none; font-size: 11px; line-height: 1; padding: 4px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 12%, transparent);
+  color: var(--dsw-alias-brand-primary, #3e63dd); font-weight: 600;
+}
+.dsh-tw-toolcard-title {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-toolcard-open {
+  flex: none; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 999px; cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease;
+}
+.dsh-tw-toolcard-open:hover { filter: brightness(.96); }
+.dsh-tw-toolcard-open:active { transform: scale(.96); }
+.dsh-tw-toolcard-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 0 10px 6px; font-size: 11px;
+}
+.dsh-tw-toolcard-sub { color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
+.dsh-tw-toolcard-tags { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.dsh-tw-toolcard-tag {
+  font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 8%, transparent);
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 70%, transparent);
+}
+.dsh-tw-toolcard-body {
+  padding: 4px 12px 10px; font-size: 13px; line-height: 1.6;
+  color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-toolcard-body > :first-child { margin-top: 4px; }
+.dsh-tw-toolcard-body > :last-child { margin-bottom: 0; }
+.dsh-tw-toolcard-loading, .dsh-tw-toolcard-pending {
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); font-size: 12px;
+}
+.dsh-tw-toolcard-empty, .dsh-tw-toolcard-error { font-size: 12px; }
+.dsh-tw-toolcard-error { color: var(--dsw-alias-danger-1, #c0392b); }
+.dsh-tw-toolcard-fallback {
+  margin: 0; padding: 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word;
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 5%, transparent);
+  max-height: 320px; overflow: auto;
+}
+.dsh-tw-toolcard-foot {
+  padding: 0 10px 8px; font-size: 11px;
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 45%, transparent);
+}
+/* Native TW fragment — minimal re-theme of the tc-* classes TW emits, so
+   links/tables/code render legibly in the DSH page (TW's own CSS is not
+   loaded here). Trust: the HTML comes from the LOCAL wiki. */
+.dsh-tw-toolcard-native {
+  max-height: 420px; overflow: auto; padding-right: 4px;
+}
+.dsh-tw-toolcard-native a { color: var(--dsw-alias-brand-primary, #3e63dd); text-decoration: underline; cursor: pointer; }
+.dsh-tw-toolcard-native a.tc-tiddlylink-missing { text-decoration-style: dashed; opacity: .85; }
+.dsh-tw-toolcard-native table { border-collapse: collapse; margin: 6px 0; display: block; max-width: 100%; overflow-x: auto; }
+.dsh-tw-toolcard-native th, .dsh-tw-toolcard-native td { border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.2)); padding: 4px 8px; text-align: left; }
+.dsh-tw-toolcard-native pre, .dsh-tw-toolcard-native code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+.dsh-tw-toolcard-native pre { background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 6%, transparent); padding: 8px; border-radius: 6px; overflow-x: auto; }
+.dsh-tw-toolcard-native code { background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 8%, transparent); padding: 1px 4px; border-radius: 4px; }
+.dsh-tw-toolcard-native pre code { background: transparent; padding: 0; }
+.dsh-tw-toolcard-native blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--dsw-alias-border-l2, rgba(0,0,0,.25)); color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 70%, transparent); }
+.dsh-tw-toolcard-native img { max-width: 100%; height: auto; border-radius: 6px; }
+.dsh-tw-toolcard-native .tc-error { color: var(--dsw-alias-danger-1, #c0392b); }
+/* List rows (search / recent / batch). */
+.dsh-tw-toolcard-list { display: flex; flex-direction: column; gap: 2px; }
+.dsh-tw-toolcard-row {
+  display: flex; align-items: baseline; gap: 8px; padding: 4px 6px; border-radius: 6px;
+  color: inherit; text-decoration: none; font-size: 12px;
+}
+.dsh-tw-toolcard-row:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 7%, transparent); }
+.dsh-tw-toolcard-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-toolcard-row:hover .dsh-tw-toolcard-row-title { color: var(--dsw-alias-brand-primary, #3e63dd); }
+.dsh-tw-toolcard-row-tags { flex: none; font-size: 10px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
+.dsh-tw-toolcard-row-meta { flex: none; font-size: 10px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 40%, transparent); }
+.dsh-tw-toolcard-tags-wrap { display: flex; flex-wrap: wrap; gap: 4px; }
 `
 
 export function injectStyles(): void {

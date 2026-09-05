@@ -6,6 +6,7 @@
  * | /dsh-tiddlywiki/status    | GET    | panel health (service / url / git / tag) |
  * | /dsh-tiddlywiki/note      | POST   | quick-note → independent tiddler         |
  * | /dsh-tiddlywiki/restart   | POST   | one-click retry/restart of the TW child  |
+ * | /dsh-tiddlywiki/search    | GET    | keyword search (reply-stream tool card)  |
  * | /dsh-tiddlywiki/api/*     | any    | passthrough to the TW service (JSON)     |
  * | /dsh-tiddlywiki/tw/*      | any    | SAME-ORIGIN TW proxy (index + files + TiddlyWeb API) |
  *
@@ -641,7 +642,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
   }
 
-  /** Distinct non-system tags for the quick-note tag autocomplete. */
+  /** Distinct non-system tags for the quick-note tag autocomplete. The flat
+   *  `tags` array feeds note-widget's chip autocomplete; the parallel `items`
+   *  (tag → tiddler count) feeds the reply-stream `tiddlywiki_list_tags` tool
+   *  card, so both consumers share one endpoint. */
   const handleTags = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const client = deps.getClient()
     if (client === undefined) {
@@ -650,13 +654,18 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
     try {
       const items = await client.list(undefined, false)
-      const tags = new Set<string>()
+      const counts = new Map<string, number>()
       for (const item of items) {
         for (const tag of item.tags ?? []) {
-          if (tag.length > 0 && !tag.startsWith('$:/')) tags.add(tag)
+          if (tag.length > 0 && !tag.startsWith('$:/')) counts.set(tag, (counts.get(tag) ?? 0) + 1)
         }
       }
-      json(res, { ok: true, tags: [...tags].sort((a, b) => a.localeCompare(b, 'zh')) })
+      const tags = [...counts.keys()].sort((a, b) => a.localeCompare(b, 'zh'))
+      json(res, {
+        ok: true,
+        tags,
+        items: tags.map((tag) => ({ tag, count: counts.get(tag) ?? 0 })),
+      })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -713,7 +722,58 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         if (k === 'title' || k === 'text' || k === 'tags') continue
         fields[k] = v
       }
-      json(res, { ok: true, title: t.title, text: t.text ?? '', tags: t.tags ?? [], type: t.type ?? 'text/vnd.tiddlywiki', fields })
+      json(res, {
+        ok: true,
+        title: t.title,
+        text: t.text ?? '',
+        tags: t.tags ?? [],
+        type: t.type ?? 'text/vnd.tiddlywiki',
+        modified: typeof t.modified === 'string' ? (t.modified as string) : null,
+        fields,
+      })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /**
+   * GET /dsh-tiddlywiki/search — keyword search for the reply-stream tool card
+   * (mirrors tools.ts tiddlywiki_search: same local substring/tag/since/type
+   * matching via the TiddlyWebClient). Returns hit titles/tags/modified/
+   * snippets so the card can list clickable wiki links.
+   */
+  const handleSearch = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const client = deps.getClient()
+    if (client === undefined) {
+      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      return
+    }
+    try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const query = url.searchParams.get('query') ?? ''
+      const tags = url.searchParams.getAll('tags').filter((t) => t.length > 0)
+      const tag = url.searchParams.get('tag') ?? undefined
+      const since = url.searchParams.get('since') ?? undefined
+      const type = url.searchParams.get('type') ?? undefined
+      const limitRaw = Number(url.searchParams.get('limit') ?? 30)
+      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(Math.floor(limitRaw), 200)) : 30
+      const { items, total } = await client.search(query, { tags, tag, since, type, limit })
+      json(res, {
+        ok: true,
+        query,
+        tags,
+        tag: tag ?? null,
+        since: since ?? null,
+        type: type ?? null,
+        limit,
+        total,
+        items: items.map((t) => ({
+          title: t.title,
+          tags: t.tags ?? [],
+          modified: typeof t.modified === 'string' ? t.modified : null,
+          snippet: snippetOf(t.text ?? ''),
+        })),
+      })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -913,6 +973,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/tags`, handler: (req, res) => { void handleTags(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/recent`, handler: (req, res) => { void handleRecent(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/get`, handler: (req, res) => { void handleGet(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/search`, handler: (req, res) => { void handleSearch(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/sync`, handler: (req, res) => { void handleSync(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),

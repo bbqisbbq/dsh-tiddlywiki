@@ -20,6 +20,7 @@ import { createSyncController } from './sync-button.ts'
 import { mountKnowledgeFab } from './knowledge-fab.ts'
 import { disposeEditorPopup } from './editor-popup.ts'
 import { SettingsSection } from './settings-page.ts'
+import { registerToolViews, installWikiLinkInterceptor } from './tool-views.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-tiddlywiki/client'
@@ -62,6 +63,19 @@ export function apply(ctx: ClientContextFace): void {
     } catch (error) {
       // DOM failures degrade the plugin, never the GUI.
       console.error('[dsh-tiddlywiki] mount failed:', error)
+    }
+    try {
+      // Reply-stream native tool cards: keyed `tool.call.toolview` slots for
+      // every tiddlywiki_* tool (additive — our keys are unclaimed).
+      if (ctx.slots !== undefined) disposers.push(...registerToolViews(ctx.slots))
+    } catch (error) {
+      console.error('[dsh-tiddlywiki] tool views failed:', error)
+    }
+    try {
+      // Clickable wiki links in the reply stream → open the TW panel.
+      disposers.push(installWikiLinkInterceptor())
+    } catch (error) {
+      console.error('[dsh-tiddlywiki] wiki link interceptor failed:', error)
     }
     try {
       // Settings page → Settings → 「TiddlyWiki 知识库」(config panel §13).

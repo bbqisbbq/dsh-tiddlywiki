@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -361,6 +361,25 @@ try {
   const getMissing = await callRoute(routeHandlers.get('/dsh-tiddlywiki/get'), makeReq('/dsh-tiddlywiki/get?title=' + encodeURIComponent('NoSuchTiddler')), makeRes())
   assert(getMissing.ok === false && getMissing.notFound === true, 'get route reports notFound for a missing tiddler')
 
+  // /search: keyword search backend for the reply-stream tool card (mirrors
+  // tools.ts tiddlywiki_search — local match, AND tags, limit clamp).
+  await routeApi.put({ title: 'SearchProbe', text: 'probe text 唯一关键词', tags: ['probe-tag'] })
+  const searchRes = await callRoute(routeHandlers.get('/dsh-tiddlywiki/search'), makeReq('/dsh-tiddlywiki/search?query=' + encodeURIComponent('唯一关键词') + '&tag=probe-tag'), makeRes())
+  assert(searchRes.ok === true && Array.isArray(searchRes.items) && searchRes.items.some((i) => i.title === 'SearchProbe'), `search route returns hits (${JSON.stringify(searchRes.items?.[0]?.title)})`)
+  assert(typeof searchRes.items[0].snippet === 'string' && searchRes.items[0].snippet.length > 0, 'search route returns a snippet per hit')
+  const searchNoHit = await callRoute(routeHandlers.get('/dsh-tiddlywiki/search'), makeReq('/dsh-tiddlywiki/search?query=' + encodeURIComponent('zzz-no-such')), makeRes())
+  assert(searchNoHit.ok === true && searchNoHit.items.length === 0 && searchNoHit.total === 0, 'search route returns empty for no hits')
+  const searchClamp = await callRoute(routeHandlers.get('/dsh-tiddlywiki/search'), makeReq('/dsh-tiddlywiki/search?query=' + encodeURIComponent('唯一关键词') + '&limit=99999'), makeRes())
+  assert(searchClamp.ok === true && searchClamp.limit === 200, 'search route clamps limit to 200')
+
+  // /tags: flat list for the autocomplete AND counted items for the tool card.
+  // (SearchProbe still carries probe-tag here — delete it afterwards.)
+  const tagsRes = await callRoute(routeHandlers.get('/dsh-tiddlywiki/tags'), makeReq('/dsh-tiddlywiki/tags'), makeRes())
+  assert(tagsRes.ok === true && Array.isArray(tagsRes.tags) && tagsRes.tags.includes('probe-tag'), 'tags route lists distinct non-system tags')
+  const probeCount = (tagsRes.items ?? []).find((i) => i.tag === 'probe-tag')
+  assert(typeof probeCount?.count === 'number' && probeCount.count >= 1, 'tags route counts tiddlers per tag')
+  await routeApi.delete('SearchProbe')
+
   // /tw same-origin proxy: the embedded editor's whole frontend is served to
   // the browser through the DSH origin (remote-access mode). Verify it strips
   // the prefix, serves JSON + binary losslessly, and forwards writes (CSRF).
@@ -566,6 +585,58 @@ try {
   await seedApi.delete(SEND_TO_AGENT_PLUGIN_TITLE)
   await seedApi.delete(S2A_MARKER_TITLE)
 
+  // 5c2. render-route seed (回复流原生渲染插件): ONE-SHOT (marker-gated), never
+  // overwrites edits, and the bundled route module must carry the CURRENT
+  // proxy-hash wikilink rewrite. The route only loads at TW boot, so leave the
+  // bundle seeded, wait for the filesystem flush, restart, and POST /render.
+  assert(await seedRenderRoute(seedApi) === true, 'render-route plugin seeded on first run')
+  const renderBundle = await seedApi.get(RENDER_PLUGIN_TITLE)
+  assert(renderBundle !== undefined && renderBundle.type === 'application/json', 'render plugin tiddler exists (application/json)')
+  assert(typeof renderBundle.text === 'string' && renderBundle.text.includes('server-routes/render.js'), 'render bundle contains the route module tiddler')
+  assert(renderBundle.text.includes('module-type'), 'render bundle declares the route module')
+  assert(renderBundle.text.includes('tv-wikilink-template') && renderBundle.text.includes('/dsh-tiddlywiki/tw/#$uri_encoded$'), 'render route rewrites wiki links to the same-origin proxy hash')
+  assert(await seedRenderRoute(seedApi) === false, 'render-route NOT re-seeded while marker present')
+  await seedApi.put({ title: RENDER_PLUGIN_TITLE, text: 'user edit', type: 'application/json', tags: [] })
+  assert(await seedRenderRoute(seedApi) === false, 'edited render bundle is never overwritten by the seed')
+  await seedApi.delete(RENDER_PLUGIN_TITLE)
+  assert(await seedRenderRoute(seedApi) === false, 'deleted render bundle NOT re-created (one-shot marker stays)')
+  await seedApi.delete(RENDER_MARKER_TITLE)
+  assert(await seedRenderRoute(seedApi) === true, 'render-route re-seeds after marker removed (fresh wiki)')
+  // Leave it seeded; the route needs a TW restart to load (server-routes modules
+  // are registered at boot). Wait out TW's async filesystem flush first.
+  await new Promise((r) => setTimeout(r, 1500))
+  await server.restart()
+  const renderUrl = `${server.url}/render`
+  const postJson = async (url, body) => {
+    const res = await fetch(url, {
+      method: 'POST',
+      // TW's server gates every POST behind the writer CSRF header (POST maps
+      // to "writers"; without X-Requested-With: TiddlyWiki the request 403s).
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'TiddlyWiki' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    })
+    return { status: res.status, text: await res.text() }
+  }
+  const renderTid = new TiddlyWebClient(server.url)
+  await renderTid.put({ title: 'RenderMe', text: '原生正文 with [[Render Target]] and a 表格', tags: ['inbox'] })
+  const r1 = await postJson(renderUrl, { title: 'RenderMe' })
+  assert(r1.status === 200, `POST /render {title} returns 200 (got ${r1.status})`)
+  assert(r1.text.includes('原生正文'), 'render {title} emits the tiddler body')
+  assert(r1.text.includes('href="/dsh-tiddlywiki/tw/#Render%20Target"'), `render {title} rewrites internal wiki links to the proxy hash (${r1.text.slice(0, 160)})`)
+  assert(r1.text.includes('tc-tiddlylink'), 'render fragment carries TW link classes')
+  const r2 = await postJson(renderUrl, { text: 'Hello [[Inline Link]] world' })
+  assert(r2.status === 200 && r2.text.includes('href="/dsh-tiddlywiki/tw/#Inline%20Link"'), 'POST /render {text} renders arbitrary wiki text')
+  const r3 = await postJson(renderUrl, { title: 'DoesNotExist123' })
+  assert(r3.status === 404, 'POST /render {title} 404s for a missing tiddler')
+  const r4 = await postJson(renderUrl, {})
+  assert(r4.status === 400, 'POST /render {} rejects with 400')
+  const r5 = await postJson(renderUrl, { text: 'x' })
+  assert(r5.status === 200, 'POST /render {text} works with a bare text body')
+  await renderTid.delete('RenderMe')
+  await seedApi.delete(RENDER_PLUGIN_TITLE)
+  await seedApi.delete(RENDER_MARKER_TITLE)
+
   // 5d. Unified seed registry: home-index seed + checkAllSeeds + runSeedById
   // force (the settings-page 重新初始化 path) + tw-web-host ensure.
   // 5b/5c left doc-note and send-to-agent markers removed, so runAllSeeds here
@@ -597,10 +668,10 @@ try {
   await seedApi.delete('所有标签')
   await seedApi.delete(HOME_INDEX_MARKER_TITLE)
 
-  // checkAllSeeds: the registry has exactly the six联动 items.
+  // checkAllSeeds: the registry has exactly the seven联动 items.
   const statuses = await checkAllSeeds(seedCtx)
   const ids = statuses.map((s) => s.id).sort()
-  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'menubar-theme', 'send-to-agent', 'tw-web-host']), `seed registry lists all six联动 items (${ids.join(',')})`)
+  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'menubar-theme', 'render-route', 'send-to-agent', 'tw-web-host']), `seed registry lists all seven联动 items (${ids.join(',')})`)
   assert(statuses.every((s) => typeof s.title === 'string' && s.title.length > 0), 'every seed has a display title')
 
   // all-articles first-run (marker-gated) + content sanity + force.
@@ -631,21 +702,23 @@ try {
   await seedApi.delete(MENUBAR_THEME_MARKER_TITLE)
 
   // runAllSeeds (startup path, v0.15.0): seeds ONLY the CORE items
-  // (功能必需：发送给 Agent 按钮 + TW 前端 API 基址). Optional seeds
-  // (说明笔记 / 首页 / 所有文章 / menubar 顶栏主题自适应) are never forced.
+  // (功能必需：发送给 Agent 按钮 + TW 前端 API 基址 + 原生渲染路由). Optional
+  // seeds (说明笔记 / 首页 / 所有文章 / menubar 顶栏主题自适应) are never forced.
   // Earlier sections left mixed state: doc-note's marker stays while its
   // tiddler was deleted, and the earlier ensureTwWebHost test left a CUSTOM
-  // host override. Clear the core markers + bundle so send-to-agent and
-  // tw-web-host are genuinely missing here.
+  // host override. Clear the core markers + bundles so send-to-agent,
+  // tw-web-host and render-route are genuinely missing here.
   await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-doc-note')
   await seedApi.delete(TW_WEB_HOST_TIDDLER)
   await seedApi.delete(SEND_TO_AGENT_MARKER_TITLE)
   await seedApi.delete(SEND_TO_AGENT_PLUGIN_TITLE)
+  await seedApi.delete(RENDER_MARKER_TITLE)
+  await seedApi.delete(RENDER_PLUGIN_TITLE)
   const startup = await runAllSeeds(seedCtx)
-  assert(startup.length === 2, 'startup runAllSeeds seeds only the two core items')
+  assert(startup.length === 3, 'startup runAllSeeds seeds only the three core items')
   assert(startup.every((r) => r.ok), 'core seeds run ok at startup')
-  assert(startup.every((r) => r.wrote), 'both core seeds were missing and got written')
-  assert(startup.every((r) => r.id === 'send-to-agent' || r.id === 'tw-web-host'), 'startup only touches send-to-agent + tw-web-host')
+  assert(startup.every((r) => r.wrote), 'all three core seeds were missing and got written')
+  assert(startup.every((r) => r.id === 'send-to-agent' || r.id === 'tw-web-host' || r.id === 'render-route'), 'startup only touches send-to-agent + tw-web-host + render-route')
   assert((await seedApi.get(DOC_NOTE_TITLE)) === undefined, 'startup path does NOT re-create the optional doc note')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined, 'startup path does NOT re-create the optional menubar-theme')
   assert((await seedApi.get(ALL_ARTICLES_TITLE)) === undefined, 'startup path does NOT re-create the optional all-articles')
@@ -653,7 +726,7 @@ try {
   // Manual run-all (settings "全部重新初始化", non-force) still covers every
   // registry item; the four optional seeds are the ones that get written now.
   const all = await runSeedById(seedCtx, undefined, false)
-  assert(all.length === 6, 'manual run-all covers every registry item')
+  assert(all.length === 7, 'manual run-all covers every registry item')
   assert(all.every((r) => r.ok), 'all seeds run ok')
   const allWrote = all.filter((r) => r.wrote).map((r) => r.id).sort()
   assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'menubar-theme']), `manual run-all writes exactly the missing optional seeds (${allWrote.join(',')})`)
@@ -712,6 +785,9 @@ try {
   assert((await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)) !== undefined, 'send-to-agent bundle survives the rejected remove')
   const rmCoreHost = await removeSeedById(seedCtx, 'tw-web-host')
   assert(rmCoreHost.length === 1 && !rmCoreHost[0].ok, 'core seed tw-web-host cannot be removed')
+  const rmCoreRender = await removeSeedById(seedCtx, 'render-route')
+  assert(rmCoreRender.length === 1 && !rmCoreRender[0].ok && (rmCoreRender[0].error ?? '').includes('核心'), 'core seed render-route cannot be removed')
+  assert((await seedApi.get(RENDER_PLUGIN_TITLE)) !== undefined, 'render-route bundle survives the rejected remove')
   // Unknown id → explicit error result, not thrown.
   const rmUnknown = await removeSeedById(seedCtx, 'nope')
   assert(rmUnknown.length === 1 && !rmUnknown[0].ok && (rmUnknown[0].error ?? '').includes('unknown seed'), 'remove unknown seed id is reported, not thrown')
@@ -722,7 +798,7 @@ try {
   assert(rmAll.length === 4, 'remove-all targets exactly the four optional seeds')
   assert(rmAll.every((r) => r.ok), 'remove-all all ok')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined && (await seedApi.get(DOC_NOTE_TITLE)) === undefined, 'remove-all cleaned optional tiddlers')
-  assert((await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)) !== undefined && (await seedApi.get(TW_WEB_HOST_TIDDLER)) !== undefined, 'remove-all keeps the core seeds')
+  assert((await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)) !== undefined && (await seedApi.get(TW_WEB_HOST_TIDDLER)) !== undefined && (await seedApi.get(RENDER_PLUGIN_TITLE)) !== undefined, 'remove-all keeps the core seeds')
 
   // 5e. Active-palette flip round-trip (before the server stops; kept AFTER
   // the git-clean assertions on purpose — TW flushes filesystem saves

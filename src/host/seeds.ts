@@ -29,6 +29,7 @@ import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE } from './seed-send-to-agen
 import { seedHomeIndex, unseedHomeIndex, HOME_INDEX_ITEMS } from './seed-home.ts'
 import { seedAllArticles, unseedAllArticles, ALL_ARTICLES_TITLE } from './seed-all-articles.ts'
 import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER } from './seed-menubar-theme.ts'
+import { seedRenderRoute, RENDER_PLUGIN_TITLE } from './seed-render.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
 
@@ -134,6 +135,24 @@ export const SEED_DEFS: SeedDef[] = [
         return { id: 'send-to-agent', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
       } catch (err) {
         return { id: 'send-to-agent', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
+      }
+    },
+  },
+  {
+    id: 'render-route',
+    title: '原生渲染路由（/render）',
+    description: 'TW 服务端路由插件（$:/plugins/dsh/render，server-routes/render.js）——把 wiki 文本在运行中的 TW 里原生渲染成 HTML 片段，回复流工具卡与 wiki 链接跳转依赖它。seed 写入后需重启 TW 使路由生效。',
+    core: true,
+    check: async (ctx) => {
+      const present = await presentOf(ctx, RENDER_PLUGIN_TITLE)
+      return { id: 'render-route', title: '原生渲染路由（/render）', description: 'TW 服务端路由插件（$:/plugins/dsh/render，server-routes/render.js）——把 wiki 文本在运行中的 TW 里原生渲染成 HTML 片段，回复流工具卡与 wiki 链接跳转依赖它。seed 写入后需重启 TW 使路由生效。', present, removable: false, detail: present ? '已存在' : '缺失' }
+    },
+    run: async (ctx, force) => {
+      try {
+        const wrote = await seedRenderRoute(ctx.client, { force })
+        return { id: 'render-route', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
+      } catch (err) {
+        return { id: 'render-route', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
       }
     },
   },
