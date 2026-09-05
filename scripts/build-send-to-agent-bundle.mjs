@@ -29,7 +29,7 @@ const pluginInfo = {
   name: 'Send to Agent',
   description: '把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）',
   author: 'dsh-tiddlywiki',
-  version: '0.3.2',
+  version: '0.3.3',
   'plugin-type': 'plugin',
 }
 

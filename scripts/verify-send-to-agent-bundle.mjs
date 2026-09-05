@@ -25,7 +25,7 @@ ok('startup note textarea', s.includes('附加说明（可选，随笔记一起�
 ok('startup permission select', s.includes('权限（权限预设）— 用于新建会话'))
 ok('startup handles permissions from modes', s.includes('parsed2.permissions'))
 const pi = JSON.parse(T['$:/plugins/dsh/send-to-agent/plugin.info'].text)
-ok('plugin version 0.3.2', pi.version === '0.3.2')
+ok('plugin version 0.3.3', pi.version === '0.3.3')
 const icon = T['$:/plugins/dsh/send-to-agent/ui/icon']
 // Core icons ($:/core/images/*) carry NO type field (defaults to wikitext), so
 // `{{icon}}` wikifies into an inline <svg> with `\parameters` expanded. Setting

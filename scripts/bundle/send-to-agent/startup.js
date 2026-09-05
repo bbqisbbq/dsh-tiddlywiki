@@ -54,12 +54,13 @@ function doSend(payload, sessionId, note) {
 	lines.push("类型: " + (payload.type || "无"));
 	lines.push("");
 	lines.push("【待办说明】以下内容是我（用户）提前编辑在 TiddlyWiki 知识库中的待办事项，通过「发送给 Agent」一键发送给你处理。请按内容执行；如有任何不清楚的地方，请主动向我提问，不要臆测或擅自发挥。");
+	lines.push("");
+	lines.push(payload.text || "");
+	// 附加说明放在消息最后：正文之后、作为我（用户）的最终补充要求，优先遵循。
 	if (note && String(note).trim().length > 0) {
 		lines.push("");
 		lines.push("【附加说明】" + String(note).trim());
 	}
-	lines.push("");
-	lines.push(payload.text || "");
 	var text = lines.join("\n");
 	var headers = { "Content-Type": "application/json" };
 	if (config.token.length > 0) { headers["x-send-to-agent-token"] = config.token; }
