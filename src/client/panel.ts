@@ -263,21 +263,50 @@ export function mountPanel(state: PanelState): () => void {
    * Preferred: same-origin `contentWindow.location.hash` — a hashchange INSIDE
    * the frame (no reload), TW's story handler opens the tiddler. Fallback: a
    * full `iframe.src` reload with the hash (TW auto-saves drafts, acceptable).
+   *
+   * TW registers its hashchange listener in a STARTUP module that runs after
+   * the iframe's `load` event, so setting `location.hash` right on load is a
+   * no-op (hash lost → TW stays on its home page). We therefore wait for TW to
+   * become ready inside the frame (the `$tw` global appears once boot settles)
+   * before setting the hash; if it never does (service down / slow boot) we
+   * fall back to a full reload with the hash, which TW processes at startup.
+   * A newer open request supersedes an in-flight wait.
    */
   const applyPendingHash = (): void => {
     if (pendingHash === null || iframe === undefined || !frameLoaded) return
     const hash = pendingHash
-    pendingHash = null
-    try {
-      const win = iframe.contentWindow
-      if (win === null) throw new Error('iframe window unavailable')
-      if (win.location.hash === hash) return
-      win.location.hash = hash
-    } catch {
-      const base = iframe.src.split('#')[0]
-      if (iframe.src === `${base}${hash}`) return
-      iframe.src = `${base}${hash}`
+    const win = iframe.contentWindow
+    if (win === null) {
+      fallbackLoad(hash)
+      return
     }
+    const tryOnce = (attempt: number): void => {
+      if (pendingHash !== hash) return // superseded by a newer request
+      const frameTw = win as { $tw?: unknown }
+      if (typeof frameTw.$tw !== 'object' || frameTw.$tw === null) {
+        if (attempt < 40) {
+          window.setTimeout(() => tryOnce(attempt + 1), 150)
+          return
+        }
+        fallbackLoad(hash)
+        return
+      }
+      pendingHash = null
+      try {
+        if (win.location.hash === hash) return
+        win.location.hash = hash
+      } catch {
+        fallbackLoad(hash)
+      }
+    }
+    tryOnce(0)
+  }
+
+  const fallbackLoad = (hash: string): void => {
+    if (iframe === undefined) return
+    if (pendingHash === hash) pendingHash = null
+    const base = iframe.src.split('#')[0]
+    if (iframe.src !== `${base}${hash}`) iframe.src = `${base}${hash}`
   }
 
   const onOpenTiddler = (event: Event): void => {
