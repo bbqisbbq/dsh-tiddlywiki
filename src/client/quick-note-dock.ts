@@ -78,8 +78,12 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
           ref: btnRef,
           type: 'button',
           className: open ? 'dsh-tw-dock-note-btn dsh-tw-dock-note-btn-active' : 'dsh-tw-dock-note-btn',
-          title: open ? '快速笔记已打开（点卡片右上角 ✕ 收起）' : '打开快速笔记（在按钮上方弹出，可拖动标题栏移动）',
-          onClick: () => { void note.open(btnRef.current ?? undefined) },
+          title: open ? '快速笔记已打开（点此按钮或卡片右上角 ✕ 收起）' : '打开快速笔记（在按钮上方弹出，可拖动标题栏移动）',
+          onClick: () => {
+            // 开关：打开时再次点击即收起；打开时在按钮上方弹出（✕ 亦可关闭）。
+            if (note.isOpen()) note.close()
+            else void note.open(btnRef.current ?? undefined)
+          },
         },
         React.createElement('span', { className: 'dsh-tw-dock-note-icon', 'aria-hidden': 'true' }, '📝'),
         React.createElement('span', { className: 'dsh-tw-dock-note-label' }, open ? '快速笔记（已打开）' : '快速笔记'),
