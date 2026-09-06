@@ -627,6 +627,42 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-toolcard-row-tags { flex: none; font-size: 10px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
 .dsh-tw-toolcard-row-meta { flex: none; font-size: 10px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 40%, transparent); }
 .dsh-tw-toolcard-tags-wrap { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* ── 会话「知识库」Tab（conversation.view 槽位）────────────────────
+   根节点是 shell 的 viewArea（flex column）的直接 flex 子项，用
+   flex:1 + min-height:0 撑满会话体；iframe 再 flex:1 填满剩余高度，
+   TW 在 iframe 内部自行滚动。主题沿用 --dsw-alias-* 设计令牌。 */
+.dsh-tw-summary {
+  flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
+  box-sizing: border-box; background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.dsh-tw-summary-bar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 6px 14px; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.1));
+  font-size: 12px; color: var(--dsw-alias-label-secondary, #666);
+}
+.dsh-tw-summary-bar-title { flex: none; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-summary-bar-hint { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tw-summary-bar-spacer { flex: 1; }
+.dsh-tw-summary-btn {
+  flex: none; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; cursor: pointer;
+}
+.dsh-tw-summary-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-summary-btn:disabled { opacity: .55; cursor: default; }
+.dsh-tw-summary-frame {
+  flex: 1 1 0; min-height: 0; width: 100%; border: 0; display: block;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.dsh-tw-summary-state {
+  flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; padding: 24px;
+  text-align: center; color: var(--dsw-alias-label-secondary, #666); font-size: 13px;
+}
+.dsh-tw-summary-state-spin { font-size: 22px; }
+.dsh-tw-summary-state-title { font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-summary-state-detail { max-width: 420px; word-break: break-all; font-size: 12px; }
 `
 
 export function injectStyles(): void {

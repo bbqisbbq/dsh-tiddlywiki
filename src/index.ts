@@ -22,7 +22,7 @@ import { existsSync, watch, type FSWatcher } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
-import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
+import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
@@ -41,6 +41,8 @@ export const inject = ['tools', 'systemPrompt']
 export { AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, WikiServer, dshHomePath, defineTool }
 export { ConfigStore, deepMerge } from './host/config.ts'
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
+export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './host/routes.ts'
+export type { SessionQueryFace, SessionSummaryResult } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
 export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
 export { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
@@ -62,7 +64,7 @@ export interface TiddlywikiConfig {
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
-  ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string }
+  ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean }
   auth?: { username?: string; password?: string }
 }
 
@@ -83,7 +85,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
-  ui: { showQuickNote: boolean; showQuickNoteDock: boolean; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; sendToAgent: { enabled: boolean } }
+  ui: { showQuickNote: boolean; showQuickNoteDock: boolean; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; sendToAgent: { enabled: boolean } }
   auth: { username?: string; password?: string }
 }
 
@@ -93,7 +95,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
-  ui: { showQuickNote: true, showQuickNoteDock: true, sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, sendToAgent: { enabled: true } },
+  ui: { showQuickNote: true, showQuickNoteDock: true, sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, sendToAgent: { enabled: true } },
   auth: { username: '', password: '' },
 }
 
@@ -241,10 +243,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
   }
-  const effectiveUi = (): { showQuickNote: boolean; showQuickNoteDock: boolean; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string } => {
+  const effectiveUi = (): { showQuickNote: boolean; showQuickNoteDock: boolean; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean } => {
     const ui = eff().ui ?? {}
     const palette = typeof ui.darkPalette === 'string' && ui.darkPalette.trim().length > 0 ? ui.darkPalette.trim() : DARK_PALETTE_DEFAULT
     const label = typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : config.ui.sidebarLabel
+    const tabLabel = typeof ui.tabLabel === 'string' && ui.tabLabel.trim().length > 0 ? ui.tabLabel.trim() : config.ui.tabLabel
     return {
       showQuickNote: ui.showQuickNote !== false,
       showQuickNoteDock: ui.showQuickNoteDock !== false,
@@ -253,6 +256,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       showSyncButton: ui.showSyncButton !== false,
       followDshTheme: ui.followDshTheme !== false,
       darkPalette: palette,
+      tabLabel,
+      showSessionTab: ui.showSessionTab !== false,
     }
   }
 
@@ -430,6 +435,10 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       ctx.get('permissionPresets') as PermissionPresetsFace | undefined
     const getSessions = (): SessionsFace | undefined =>
       ctx.get('sessions') as SessionsFace | undefined
+    // sessionQuery (会话日志查询，供「知识库」Tab 判定「本会话相关笔记」) 也是核心
+    // host 服务 —— 可选注入（本部署存在），懒解析。
+    const getSessionQuery = (): SessionQueryFace | undefined =>
+      ctx.get('sessionQuery') as SessionQueryFace | undefined
     const disposeRoutes = registerRoutes({ webServer: ws }, {
       server,
       getClient: client,
@@ -444,6 +453,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       getSessionPersistence,
       getPermissionPresets,
       getSessions,
+      getSessionQuery,
       sendToAgentEnabled: () => eff().ui?.sendToAgent?.enabled !== false,
       sendToAgentToken: () => {
         const token = eff().ui?.sendToAgent?.token

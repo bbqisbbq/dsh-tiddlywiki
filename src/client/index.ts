@@ -20,6 +20,7 @@ import { createSyncController } from './sync-button.ts'
 import { mountKnowledgeFab } from './knowledge-fab.ts'
 import { createQuickNoteDock } from './quick-note-dock.ts'
 import { fetchUiConfig } from './ui-config.ts'
+import { mountSessionSummaryView } from './session-summary.ts'
 import { disposeEditorPopup } from './editor-popup.ts'
 import { SettingsSection } from './settings-page.ts'
 import { registerToolViews, installWikiLinkInterceptor } from './tool-views.ts'
@@ -69,14 +70,25 @@ export function apply(ctx: ClientContextFace): void {
       // 由 ui.showQuickNoteDock 配置控制（默认开）。
       if (ctx.slots !== undefined) {
         void fetchUiConfig().then((cfg) => {
-          if (clientDisposed || !cfg.showQuickNoteDock) return
-          const removeDock = ctx.slots?.inject('conversation.input.dock', () =>
-            ctx.slots?.register(
-              { name: 'conversation.input.dock', id: 'quick-note', order: 8, label: '快速笔记' },
-              createQuickNoteDock(note),
-            ),
-          )
-          if (removeDock !== undefined) disposers.push(removeDock)
+          if (clientDisposed) return
+          // 输入框上方「快速笔记」快捷按钮（conversation.input.dock 槽位）。该槽位
+          // 是官方为「输入框上方的全宽条目」预留的挂载点，todo/cost-meter/goal/
+          // queue/git-graph 等插件内容都渲染在这里、按纵向 flex 排列，天然不重叠。
+          // 由 ui.showQuickNoteDock 配置控制（默认开）。
+          if (cfg.showQuickNoteDock) {
+            const removeDock = ctx.slots?.inject('conversation.input.dock', () =>
+              ctx.slots?.register(
+                { name: 'conversation.input.dock', id: 'quick-note', order: 8, label: '快速笔记' },
+                createQuickNoteDock(note),
+              ),
+            )
+            if (removeDock !== undefined) disposers.push(removeDock)
+          }
+          // 会话顶部「知识库」Tab（conversation.view 槽位）：显示本会话产生/读取/
+          // 检索过的 wiki 笔记汇总（TW 原生渲染）。由 ui.showSessionTab 控制（默认
+          // 开），tab 名跟随 ui.tabLabel（默认「知识库」）。
+          const removeSummary = mountSessionSummaryView(ctx.slots, cfg)
+          if (removeSummary !== undefined) disposers.push(removeSummary)
         })
       }
     } catch (error) {

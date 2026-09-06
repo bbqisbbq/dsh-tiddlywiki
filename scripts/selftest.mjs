@@ -7,7 +7,7 @@
  */
 import { EventEmitter } from 'node:events'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
@@ -452,6 +452,94 @@ try {
   await new Promise((resolveP) => mini.close(resolveP))
 
   disposeRoutes()
+
+  // 5d1. /session/summary route (会话「知识库」Tab 后端): mock sessionQuery with
+  // synthetic events in the REAL DSH shapes (tool/call name+arguments JSON string,
+  // assistant/message text blocks), a real TW client, then assert the generated
+  // $:/temp tiddler groups produced/read/searches and never lands on disk.
+  {
+    const summaryHandlers = new Map()
+    const summaryMockCtx = {
+      webServer: {
+        register: (route) => {
+          summaryHandlers.set(route.path, route.handler)
+          return () => {}
+        },
+      },
+    }
+    const mainEvents = [
+      { type: 'tool/call', seq: 1, time: 1788700000000, data: { name: 'tiddlywiki_put', arguments: JSON.stringify({ title: 'SummaryProduced', text: 'x', tags: ['inbox'] }) } },
+      { type: 'tool/call', seq: 2, time: 1788700001000, data: { name: 'tiddlywiki_batch_put', arguments: JSON.stringify({ items: [{ title: 'SummaryBatch1' }, { title: 'SummaryBatch2' }] }) } },
+      { type: 'tool/call', seq: 3, time: 1788700002000, data: { name: 'tiddlywiki_get', arguments: JSON.stringify({ title: 'SummaryRead' }) } },
+      { type: 'tool/call', seq: 4, time: 1788700003000, data: { name: 'tiddlywiki_search', arguments: JSON.stringify({ query: 'hello', tags: ['inbox'] }) } },
+      { type: 'tool/call', seq: 5, time: 1788700004000, data: { name: 'tiddlywiki_recent', arguments: JSON.stringify({}) } },
+      { type: 'tool/call', seq: 6, time: 1788700005000, data: { name: 'tiddlywiki_rename', arguments: JSON.stringify({ oldTitle: 'SummaryOld', newTitle: 'SummaryRenamed' }) } },
+      { type: 'assistant/message', seq: 7, time: 1788700006000, data: { message: { content: [{ type: 'text', text: '引用 [A%20B](/dsh-tiddlywiki/tw/#A%20B) 链接' }] } } },
+    ]
+    const mockSessionQuery = {
+      readSession: async (id) => {
+        if (id === 'session-summary-1-sub1') {
+          return { session: { id }, events: [{ type: 'tool/call', seq: 1, time: 1788700010000, data: { name: 'tiddlywiki_put', arguments: JSON.stringify({ title: 'SummarySubProduced' }) } }] }
+        }
+        if (id === 'session-summary-1-sub2') {
+          return { session: { id }, events: [{ type: 'tool/call', seq: 1, time: 1788700020000, data: { name: 'tiddlywiki_get', arguments: JSON.stringify({ title: 'SummarySubRead' }) } }] }
+        }
+        return { session: { id }, events: mainEvents }
+      },
+      traceSession: async (id) => ({
+        descendants: [
+          { session: { header: { id: `${id}-sub1` } }, descendants: [{ session: { header: { id: `${id}-sub2` } }, descendants: [] }] },
+        ],
+      }),
+    }
+    const summaryApi = new TiddlyWebClient(server.url)
+    // Produce the notes the summary should list; leave SummaryRenamed missing so
+    // the 已删除/不存在 marker is exercised.
+    for (const t of ['SummaryProduced', 'SummaryBatch1', 'SummaryBatch2', 'SummarySubProduced', 'SummaryRead', 'SummarySubRead']) {
+      await summaryApi.put({ title: t, text: `body of ${t}`, tags: ['inbox'] })
+    }
+    const disposeSummaryRoutes = registerRoutes(summaryMockCtx, {
+      server,
+      getClient: () => summaryApi,
+      git,
+      autoCommit: () => {},
+      noteDefaults: () => ({ tag: 'inbox' }),
+      uiDefaults: () => ({ showQuickNote: true, showQuickNoteDock: true, sidebarLabel: 'TW', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: '$:/palettes/CupertinoDark', tabLabel: '知识库', showSessionTab: true }),
+      getWikiPath: () => wikiDir,
+      getSessionQuery: () => mockSessionQuery,
+    })
+    assert(summaryHandlers.has('/dsh-tiddlywiki/session/summary'), 'session/summary route registered')
+    const summary = await callRoute(
+      summaryHandlers.get('/dsh-tiddlywiki/session/summary'),
+      makeReq('/dsh-tiddlywiki/session/summary', Buffer.from(JSON.stringify({ session: 'session-summary-1' })), 'POST'),
+      makeRes(),
+    )
+    assert(summary.ok === true, `session/summary returns ok (${JSON.stringify(summary)})`)
+    assert(summary.title === '$:/temp/dsh/session-summary/session-summary-1', `volatile summary title (${JSON.stringify(summary.title)})`)
+    assert(summary.counts.produced === 5 && summary.counts.read === 3 && summary.counts.searches === 2 && summary.counts.sessions === 3, `summary counts (${JSON.stringify(summary.counts)})`)
+    const summaryTid = await summaryApi.get(summary.title)
+    assert(summaryTid !== undefined && typeof summaryTid.text === 'string', 'summary tiddler readable through the real TW client')
+    const stext = summaryTid.text
+    assert(stext.includes('!!! 📝 产生') && stext.includes('[[SummaryProduced]]') && stext.includes('[[SummaryBatch1]]') && stext.includes('[[SummaryBatch2]]'), 'produced section lists put + batch titles')
+    assert(stext.includes('[[SummaryRenamed]]') && stext.includes('已删除/不存在'), 'renamed-but-missing title flagged as deleted')
+    assert(stext.includes('!!! 👀 读取') && stext.includes('[[SummaryRead]]') && stext.includes('[[A B]]'), 'read section lists get + decoded assistant-link titles')
+    assert(stext.includes('!!! 🔍 检索记录') && stext.includes('tiddlywiki_search') && stext.includes('tiddlywiki_recent'), 'search section lists search + recent')
+    assert(stext.includes('（子代理）') && stext.includes('[[SummarySubProduced]]') && stext.includes('[[SummarySubRead]]'), 'descendant subagent notes included + marked')
+    const missing = await callRoute(
+      summaryHandlers.get('/dsh-tiddlywiki/session/summary'),
+      makeReq('/dsh-tiddlywiki/session/summary', Buffer.from(JSON.stringify({})), 'POST'),
+      makeRes(),
+    )
+    assert(missing.ok === false && missing.error === 'session is required', 'session/summary rejects a missing session')
+    // $:/temp must NOT reach the filesystem (volatile, git-clean).
+    const diskFiles = []
+    for (const f of await readdir(join(wikiDir, 'tiddlers'))) {
+      if (f.includes('$__temp_dsh_session-summary') || f.includes('$__temp')) diskFiles.push(f)
+    }
+    assert(diskFiles.length === 0, `$:/temp summary never lands on disk (${diskFiles.join(',')})`)
+    for (const t of ['SummaryProduced', 'SummaryBatch1', 'SummaryBatch2', 'SummarySubProduced', 'SummaryRead', 'SummarySubRead']) await summaryApi.delete(t)
+    disposeSummaryRoutes()
+  }
 
   // 5d2. agent routes (mock DSH services the routes resolve lazily):
   // /agent/modes exposes the permission-preset roster alongside the 工作模式,

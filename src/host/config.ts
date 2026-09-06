@@ -67,6 +67,14 @@ export interface PluginConfigShape {
      * 该值（见 seed-all-articles），改后无需重新初始化。
      */
     allArticles?: { pageSize?: number }
+    /**
+     * 会话顶部「知识库」Tab 的显示名称（默认「知识库」）。该 Tab 显示本会话
+     * 产生/读取/检索过的 wiki 笔记汇总（conversation.view 槽位，见
+     * src/client/session-summary.ts）。
+     */
+    tabLabel?: string
+    /** 是否在会话顶部显示「知识库」Tab（会话相关 wiki 汇总，默认 true）。 */
+    showSessionTab?: boolean
   }
   uiLanguage?: string
   [key: string]: unknown

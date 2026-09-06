@@ -26,6 +26,10 @@ import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
+import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
+
+export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
+export type { SessionQueryFace, SessionSummaryResult } from './session-summary.ts'
 
 export const ROUTE_PREFIX = PATH_PREFIX
 
@@ -149,6 +153,10 @@ export interface UiDefaultsPublic {
   followDshTheme: boolean
   /** DSH 暗色时 TW 使用的 palette tiddler 标题。 */
   darkPalette: string
+  /** 会话顶部「知识库」Tab 的显示名称（默认「知识库」）。 */
+  tabLabel: string
+  /** 是否在会话顶部显示「知识库」Tab（会话相关 wiki 汇总，默认 true）。 */
+  showSessionTab: boolean
 }
 
 export interface RouteDeps {
@@ -178,6 +186,10 @@ export interface RouteDeps {
   /** Optional DSH `sessions` in-memory store (agent-create hands the created
    *  live session to permissionPresets.set). */
   getSessions: () => SessionsFace | undefined
+  /** Optional DSH sessionQuery service (session-summary route): reads a
+   *  session's complete event log + descendant tree to decide which wiki notes
+   *  belong to this conversation. Resolved lazily like the other services. */
+  getSessionQuery: () => SessionQueryFace | undefined
   /** Whether the one-click send-to-agent feature is enabled (config switch). */
   sendToAgentEnabled: () => boolean
   /** Optional shared token that must match `x-send-to-agent-token` when set. */
@@ -347,6 +359,43 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       gitSummary = null
     }
     json(res, { ok: true, ...view, twProxy: TW_PROXY_PATH, git: gitSummary, note: { tag: deps.noteDefaults().tag }, ui: deps.uiDefaults() })
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/session/summary — 生成当前会话的 wiki 汇总页（「知识库」
+   * Tab 的后端）。body `{ session: <会话ID> }`；后端用 sessionQuery 读本会话（含
+   * 后代 subagent）的完整事件日志，按「产生/读取/检索」收集 tiddlywiki_* 笔记，
+   * 查询每篇当前状态，组装 TW wikitext 写入 `$:/temp/dsh/session-summary/<会话ID>`
+   * （volatile：不落盘、不进 git），返回生成的 tiddler title 供前端 iframe 打开。
+   */
+  const handleSessionSummary = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      let body: { session?: unknown } = {}
+      try {
+        body = JSON.parse(await readBody(req)) as { session?: unknown }
+      } catch {
+        /* malformed body → session check below rejects */
+      }
+      const session = typeof body.session === 'string' && body.session.trim().length > 0 ? body.session.trim() : ''
+      if (session.length === 0) {
+        json(res, { ok: false, error: 'session is required' }, 400)
+        return
+      }
+      const client = deps.getClient()
+      if (client === undefined) {
+        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        return
+      }
+      const sq = deps.getSessionQuery()
+      if (sq === undefined) {
+        json(res, { ok: false, error: 'session query service unavailable' }, 503)
+        return
+      }
+      const result = await writeSessionSummary(client, sq, session)
+      json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
   }
 
   /**
@@ -981,6 +1030,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/sync`, handler: (req, res) => { void handleSync(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/session/summary`, handler: (req, res) => { void handleSessionSummary(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/sessions`, handler: (req, res) => { void handleAgentSessions(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/modes`, handler: (req, res) => { void handleAgentModes(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: (req, res) => { void handleAgentSend(req, res) } }),

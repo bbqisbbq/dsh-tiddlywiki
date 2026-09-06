@@ -21,6 +21,7 @@
 | 📊 **回复流工具卡片** | `tiddlywiki_*` 工具结果在回复流里显示**原生 TW 卡片**（v0.16.0）：`get`/`put`/`rename` 把 tiddler 原生渲染进卡片、`search`/`recent`/`batch` 列可点击行、`list_tags` 计数 chips、`git`/`delete` 显示文本；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达中央 TW 面板 |
 | 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki；**独立加粗纸飞机图标**，遵循核心工具栏图标约定，工具栏设置列表也显示各按钮图标/说明）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话，**可选「工作模式」= Agent 预设**、**可选「权限」= 权限预设**（沙箱+审批），**可选附加说明**随消息一起发给 Agent（**位于消息末尾**，作为你的最终补充要求，v0.16.3），已有会话显示其当前模式）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
 | 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口（**显示名可自定义**，`ui.sidebarLabel`）→ 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
+| 📚 **会话「知识库」Tab** | 每个会话顶部新增「知识库」Tab（v0.16.11，`ui.tabLabel` 可改、`ui.showSessionTab` 可关）：**本会话产生/读取/检索过的 wiki 笔记汇总**，TW 原生渲染；后端用 DSH `sessionQuery` 读本会话 + 后代子代理的完整事件日志判定相关性，汇总写入 **volatile `$:/temp`**（不落盘、不进 git、重启即消失），绝无 UI 重复造轮子 |
 | 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
 | 📝 **快速笔记** | 右下角「知识库」悬浮按钮 **或聊天输入框上方的快捷按钮**（`ui.showQuickNoteDock`，与 todo/cost-meter/goal 等插件内容同槽位纵向排列、不重叠；按钮右缘实时贴齐输入框）→ 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；**从按钮打开时卡片在按钮上方弹出、按住标题栏可自由拖动、再次点按钮可收起**；**卡片只允许点右上角 ✕ 或输入框按钮关闭**（点页面其他位置不会误关）；可整体隐藏 |
 | 🔄 **一键同步** | 「知识库」按钮 →「🔁 同步」：pull → commit → push；FAB 上的状态点实时反映 git 状态（已同步/待提交/可更新/离线），菜单里的状态行**悬停弹出详细 tip**（TW 服务 + git 状态 + 最近日志） |
@@ -34,6 +35,7 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
+- **v0.16.11**（2026-09-06）：**新：会话顶部「知识库」Tab（本会话相关 wiki 汇总）**。每个会话顶部在「对话 | 轨迹」旁新增 Tab（默认名「知识库」，`ui.tabLabel` 可改、`ui.showSessionTab` 可关），显示本会话**产生/读取/检索过的 wiki 笔记汇总**，**TW 原生渲染**（同源代理 iframe，不另造 UI）。后端新路由 `POST /dsh-tiddlywiki/session/summary`：用 DSH `sessionQuery.readSession` + `traceSession` 读**本会话 + 后代子代理**的完整事件日志，按 `tool/call` 的 `tiddlywiki_*` 工具名归类——产生 📝（put/batch_put/rename）、读取 👀（get + 助手回复 `/dsh-tiddlywiki/tw/#…` 链接）、检索 🔍（search/recent 记关键词）；每篇列出当前标签/修改时间/是否已删除，仅子代理触达的标注「（子代理）」。汇总页写入 **volatile `$:/temp/dsh/session-summary/<会话ID>`**——已实测验证 TW 默认 SyncFilter 显式排除 `$:/temp`，**不落盘、不进 git、TW 重启即消失**。进入 Tab 自动生成、顶栏可手动刷新；侧边栏完整 TW 面板保持原样。本 Tab 判定来源（sessionQuery 服务、conversation.view 槽位契约、$:/temp 行为）均已通过 Inspect 与实测核实，并有 `selftest` 新增 `session/summary` 端到端用例覆盖。
 - **v0.16.10**（2026-09-06）：**修：关闭侧边栏后快速笔记按钮不再对齐**。v0.16.8 的 `ResizeObserver` 只观察了 dock 容器，而侧边栏开/关改变的是**对话列宽度**（composer 输入卡片居中、有 max-width，右缘随之移动），dock 容器未必触发 resize → 按钮停在上次位置、卡在侧边栏开着时的对齐上。现在改为观察「从 dock 条目一直到对话根节点（`data-phase`）的整条祖先链」，任一祖先尺寸变化都重测对齐；另加 1.5s 自愈兜底定时器 + `visibilitychange` 重测，任何未观测到的布局变化也会在下一秒内纠正。刷新页面即生效。
 - **v0.16.9**（2026-09-06）：**修：「设置 → 外观 → 工具栏」渲染出源码文本**。根因：send-to-agent bundle 里 shadow 核心 `$:/core/ui/ControlPanel/Toolbars/ItemTemplate` 的 tiddler，其**正文第一行被错误地写成了 `title: ...` 头**（`item-template.tid` 源文件是 `.tid` 格式、带 title 行，构建脚本把整个文件原样塞进 `text` 字段），导致该模板的 `\define`/`\whitespace trim` pragma 全部失效、源码被当作文本原样显示在工具栏设置页（每个工具栏标签重复输出一次）。修复：`item-template.tid` 去掉首行 title 头（与 `button.tid` 一致，构建脚本原样读取即得纯正文），重新组装 bundle（v0.3.3 → **0.3.4**）+ 生成 seed + 构建，并给 `verify-send-to-agent-bundle.mjs` 新增回归检查「ItemTemplate 正文不得以 `title:` 开头」。线上 wiki 的 `$:/plugins/dsh/send-to-agent` 已覆盖为新 bundle，**刷新 TW 面板后**设置页恢复正常。在线 wiki 重载方式：「知识库」FAB →「🔄 重载 TW 面板」。
 - **v0.16.8**（2026-09-06）：**修：快速笔记按钮真正贴齐输入框**。此前对齐测量作用域写错了——`conversation.input.dock` 槽位会把各条目包在一个容器里、与输入栏是**兄弟节点**，所以永远测不到输入框、按钮仍悬在整列最右端。现在改为**逐级向上爬祖先**、用「包含 >300px 宽输入框的最近祖先」定位输入栏，再取输入框到列之间的最宽盒子（即带圆角边框的可见输入卡片），把按钮右缘与卡片右缘对齐；窗口/列宽变化自动重对齐。刷新页面即生效。
@@ -164,6 +166,12 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
   若这次 pull 拉到了新内容，TW 服务自动重启（同端口），界面立即显示最新快照（无需手动去面板点「重启 TW」）。
 
 **🔧 面板异常** — 面板服务异常时显示错误 +「重试」按钮（POST `/dsh-tiddlywiki/restart`）。
+
+**📚 会话「知识库」Tab（本会话相关 wiki 汇总）** — 每个会话顶部在「对话 | 轨迹」旁新增一个 Tab（v0.16.11，默认名**「知识库」**，可在设置页改 `ui.tabLabel`；`ui.showSessionTab` 可整体关闭）：
+- 进入 Tab 自动生成当前会话的 wiki 汇总页，**TW 原生渲染**（复用同源代理 iframe + TW 自己的主题/链接/导航，不另造 UI）；顶栏有「🔄 刷新」按钮可重新生成；
+- 判定「哪些笔记和本会话相关」由后端 `POST /dsh-tiddlywiki/session/summary` 完成：用 DSH `sessionQuery` 读本会话（**含后代子代理**，`traceSession` 递归）的完整事件日志，按工具调用归类——**产生 📝**（`put`/`batch_put`/`rename`）、**读取 👀**（`get` + 助手回复里 `/dsh-tiddlywiki/tw/#…` 引用链接）、**检索 🔍**（`search`/`recent` 记关键词）；每篇列出当前标签/修改时间/是否已删除，仅子代理触达的标注「（子代理）」；
+- 汇总页写入 TW 的 **volatile 命名空间 `$:/temp/dsh/session-summary/<会话ID>`**——TW 默认 SyncFilter 显式排除 `$:/temp`，**不落盘、不进 git、TW 重启即消失**，绝不污染知识库；
+- 与左侧边栏「TiddlyWiki」完整面板互不影响：那里保持原样，本 Tab 只是多一个快速入口。
 
 ### ⚙️ 设置页（DSH 设置 →「TiddlyWiki 知识库」）
 
