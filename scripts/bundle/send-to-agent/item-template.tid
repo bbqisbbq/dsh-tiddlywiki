@@ -1,5 +1,3 @@
-title: $:/core/ui/ControlPanel/Toolbars/ItemTemplate
-
 \define config-title()
 $(config-base)$$(currentTiddler)$
 \end

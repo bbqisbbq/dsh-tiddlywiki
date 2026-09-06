@@ -18,8 +18,8 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.8`（npm latest = 0.16.8；git tag `v0.16.8`） | `package.json` `version` |
-| **「发送给 Agent」bundle 版本** | `0.3.3`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
+| **插件版本** | `0.16.9`（npm latest = 0.16.9；git tag `v0.16.9`） | `package.json` `version` |
+| **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
 | **Seed 注册表（7 项）** | 核心：`send-to-agent`、`render-route`、`tw-web-host`；可选：`doc-note`、`home-index`、`all-articles`、`menubar-theme` | `src/host/seeds.ts` 的 `SEED_DEFS` |
@@ -182,6 +182,7 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 
 - **不要手改 `src/host/seed-*.ts` 里的 bundle/首页常量**——由 `gen-*.mjs` 生成，改了也会被覆盖；改 `scripts/bundle/**` 源件后走 §4 流水线。
 - **send-to-agent 的 icon tiddler 不能带 `type: image/svg+xml`**：`{{icon}}` 会走 imageparser → `<img data-uri>`，Chrome 解析失败 → 裂图。保持无 type（默认 wikitext）→ 内联 `<svg>` 正常。核心图标也是这个约定。
+- **`scripts/bundle/send-to-agent/` 下的 `.tid` 源文件不要带 `title:` 头**：build 脚本把整个文件**原样**塞进 bundle tiddler 的 `text` 字段，正文第一行若是 `title: ...` 会被当普通文本渲染（pragma 全部失效，源码原样显示在页面上）。这些文件只放纯正文/纯代码（`button.tid`/`item-template.tid` 都如此）；`verify-send-to-agent-bundle.mjs` 有回归检查「ItemTemplate 正文不得以 `title:` 开头」。
 - **client 必须 minify**，否则 >1MB 会被插件目录注册表（dsh.pub）校验拒绝。
 - **`lib/` 零 `@deepseek-ai` 运行时 import**（`sdk.ts` 自实现），否则 npm 镜像的 dsh-tools 会遮蔽 CLI 内置实现、搞坏 agent 循环。
 - **`react` / `tiddlywiki` 不打包**：react 由 web app 运行时解析；tiddlywiki 由 host 运行时 resolve 安装包入口。

@@ -25,7 +25,7 @@ ok('startup note textarea', s.includes('附加说明（可选，随笔记一起�
 ok('startup permission select', s.includes('权限（权限预设）— 用于新建会话'))
 ok('startup handles permissions from modes', s.includes('parsed2.permissions'))
 const pi = JSON.parse(T['$:/plugins/dsh/send-to-agent/plugin.info'].text)
-ok('plugin version 0.3.3', pi.version === '0.3.3')
+ok('plugin version 0.3.4', pi.version === '0.3.4')
 const icon = T['$:/plugins/dsh/send-to-agent/ui/icon']
 // Core icons ($:/core/images/*) carry NO type field (defaults to wikitext), so
 // `{{icon}}` wikifies into an inline <svg> with `\parameters` expanded. Setting
@@ -43,6 +43,7 @@ ok('ItemTemplate override present', it !== undefined && it.type === 'text/vnd.ti
 ok('ItemTemplate override shows icon', it && it.text.includes('<$transclude tiddler={{!!icon}}/>'))
 ok('ItemTemplate override keeps caption+description', it && it.text.includes('field="caption"') && it.text.includes('field="description"'))
 ok('ItemTemplate override keeps checkbox', it && it.text.includes('<$checkbox'))
+ok('ItemTemplate override body starts with a pragma (no title: header leaked into text)', it && !/^\s*title:/.test(it.text))
 
 let failed = false
 for (const [name, pass] of checks) {

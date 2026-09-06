@@ -3,7 +3,7 @@
     "$:/plugins/dsh/send-to-agent/plugin.info": {
       "title": "$:/plugins/dsh/send-to-agent/plugin.info",
       "type": "application/json",
-      "text": "{\"title\":\"$:/plugins/dsh/send-to-agent\",\"name\":\"Send to Agent\",\"description\":\"把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）\",\"author\":\"dsh-tiddlywiki\",\"version\":\"0.3.3\",\"plugin-type\":\"plugin\"}"
+      "text": "{\"title\":\"$:/plugins/dsh/send-to-agent\",\"name\":\"Send to Agent\",\"description\":\"把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）\",\"author\":\"dsh-tiddlywiki\",\"version\":\"0.3.4\",\"plugin-type\":\"plugin\"}"
     },
     "$:/plugins/dsh/send-to-agent/startup.js": {
       "title": "$:/plugins/dsh/send-to-agent/startup.js",
@@ -32,7 +32,7 @@
     "$:/core/ui/ControlPanel/Toolbars/ItemTemplate": {
       "title": "$:/core/ui/ControlPanel/Toolbars/ItemTemplate",
       "type": "text/vnd.tiddlywiki",
-      "text": "title: $:/core/ui/ControlPanel/Toolbars/ItemTemplate\n\n\\define config-title()\n$(config-base)$$(currentTiddler)$\n\\end\n\\whitespace trim\n\n<$draggable tiddler=<<currentTiddler>>>\n<$checkbox tiddler=<<config-title>> field=\"text\" checked=\"show\" unchecked=\"hide\" default=\"show\"/>\n&#32;\n<span class=\"tc-icon-wrapper\"><$transclude tiddler={{!!icon}}/></span>\n&#32;\n<$transclude field=\"caption\"/>\n&#32;--&#32;\n<i class=\"tc-muted\"><$transclude field=\"description\"/></i>\n</$draggable>\n"
+      "text": "\\define config-title()\n$(config-base)$$(currentTiddler)$\n\\end\n\\whitespace trim\n\n<$draggable tiddler=<<currentTiddler>>>\n<$checkbox tiddler=<<config-title>> field=\"text\" checked=\"show\" unchecked=\"hide\" default=\"show\"/>\n&#32;\n<span class=\"tc-icon-wrapper\"><$transclude tiddler={{!!icon}}/></span>\n&#32;\n<$transclude field=\"caption\"/>\n&#32;--&#32;\n<i class=\"tc-muted\"><$transclude field=\"description\"/></i>\n</$draggable>\n"
     }
   }
 }
