@@ -24,9 +24,11 @@ export const NOTE_STATE_EVENT = 'dsh-tw-note-state'
  * Build the dock entry component bound to one note-widget handle. Called once
  * per client mount; the returned component is what the slot renders.
  *
- * 与输入框对齐：mount 后（含 resize / 窗口变化 / 卡片延迟挂载）测量 composer
- * 输入框（textarea / contenteditable）的右缘，把横条 paddingRight 设为差值，
- * 让按钮右缘与输入框右缘对齐——而不是悬在整列最右端。
+ * 与输入框对齐：mount 后（含 resize / 窗口变化）测量 composer 输入卡片
+ * （Lexical contenteditable 所在、有边框圆角的可见「输入框」盒子）的右缘，
+ * 把横条 paddingRight 设为差值，让按钮右缘与输入框右缘对齐——而不是悬在整列
+ * 最右端。注意 dock 槽位会把各条目包在一个容器里、与输入栏是兄弟节点，所以
+ * 必须逐级向上爬祖先才能找到输入框。
  */
 export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactElement {
   return function QuickNoteDock() {
@@ -44,20 +46,45 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
     React.useLayoutEffect(() => {
       const wrap = wrapRef.current
       if (wrap === null) return
-      const stack = wrap.parentElement
-      if (stack === null) return
+      /**
+       * Find the composer input CARD: climb from the dock entry until an
+       * ancestor's subtree contains a wide text field (>300px — the composer
+       * input; dock entries' own inputs are small), then take the widest box
+       * between that field and its containing column (the visible card).
+       */
+      const findCard = (): HTMLElement | null => {
+        let input: Element | null = null
+        let column: HTMLElement | null = null
+        let node: HTMLElement | null = wrap
+        while (node !== null && node !== document.documentElement) {
+          node = node.parentElement
+          if (node === null) break
+          for (const el of node.querySelectorAll('textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')) {
+            if (el.getBoundingClientRect().width > 300) { input = el; column = node; break }
+          }
+          if (column !== null) break
+        }
+        if (input === null || column === null) return null
+        const colW = column.getBoundingClientRect().width
+        let cur: HTMLElement | null = input as HTMLElement
+        let card: HTMLElement | null = null
+        let cardW = 0
+        while (cur !== null && cur !== column) {
+          const w = cur.getBoundingClientRect().width
+          if (w > 0 && w < colW - 8 && w >= cardW) { cardW = w; card = cur }
+          cur = cur.parentElement
+        }
+        return card
+      }
       const align = (): void => {
         const wrapRect = wrap.getBoundingClientRect()
-        let right = wrapRect.right
-        for (const el of stack.querySelectorAll('textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')) {
-          const r = el.getBoundingClientRect()
-          if (r.width > 40 && r.height > 10) { right = r.right; break }
-        }
+        const card = findCard()
+        const right = card !== null ? card.getBoundingClientRect().right : wrapRect.right
         wrap.style.paddingRight = `${Math.max(0, wrapRect.right - right)}px`
       }
       align()
       const ro = new ResizeObserver(align)
-      ro.observe(stack)
+      if (wrap.parentElement !== null) ro.observe(wrap.parentElement)
       window.addEventListener('resize', align)
       // The composer card may mount slightly later; re-measure a couple of times.
       const t1 = window.setTimeout(align, 120)
