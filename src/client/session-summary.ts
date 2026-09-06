@@ -18,6 +18,7 @@
  */
 import * as React from 'react'
 import { attachThemeSync } from './theme-sync.ts'
+import { GET_ENDPOINT } from './endpoints.ts'
 
 export const SESSION_SUMMARY_VIEW_ID = 'dsh-tiddlywiki-summary'
 const SUMMARY_ENDPOINT = '/dsh-tiddlywiki/session/summary'
@@ -49,6 +50,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
   const { sessionId, viewRequest, completeViewRequest } = props
   const [phase, setPhase] = React.useState<'loading' | 'ready' | 'error'>('loading')
   const [twUrl, setTwUrl] = React.useState<string | null>(null)
+  const [summaryTitle, setSummaryTitle] = React.useState<string | null>(null)
   const [error, setError] = React.useState('')
   const [frameNonce, setFrameNonce] = React.useState(0)
   const genRef = React.useRef(0)
@@ -77,6 +79,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         return
       }
       if (typeof data.title === 'string' && data.title.length > 0) {
+        setSummaryTitle(data.title)
         setTwUrl(new URL(TW_PROXY_BASE, window.location.origin).href + '#' + encodeURIComponent(data.title))
         // 新 nonce 强制 iframe 重挂载 → 用最新汇总重新加载（含刷新场景）。
         setFrameNonce((n) => n + 1)
@@ -93,6 +96,31 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
   React.useEffect(() => {
     void generate()
   }, [generate])
+
+  // 自愈：汇总条目是 volatile 的 `$:/temp`，TW 重启即消失；若 iframe 已就绪但条目
+  // 被清掉（/get 404），自动重新生成，避免停在 TW 的「佚失条目」页。连续 3 次仍
+  // 缺失（例如服务端写不进去）就停止自动重试，交还手动「🔄 刷新」。
+  React.useEffect(() => {
+    if (phase !== 'ready' || summaryTitle === null) return
+    let misses = 0
+    const timer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const res = await fetch(`${GET_ENDPOINT}?title=${encodeURIComponent(summaryTitle)}`, { signal: AbortSignal.timeout(8_000) })
+          const data = (await res.json().catch(() => null)) as { notFound?: boolean } | null
+          if (res.status === 404 || data?.notFound === true) {
+            misses++
+            if (misses < 3) void generate()
+          } else {
+            misses = 0
+          }
+        } catch {
+          /* 检查失败保持现状，下个周期再试 */
+        }
+      })()
+    }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [phase, summaryTitle, generate])
 
   // 一次性 focus 请求直接确认（本视图无可聚焦子目标，避免 shell 挂起）。
   React.useEffect(() => {

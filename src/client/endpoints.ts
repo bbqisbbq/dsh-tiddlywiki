@@ -7,3 +7,4 @@
  * @module dsh-tiddlywiki/client/endpoints
  */
 export const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
+export const GET_ENDPOINT = '/dsh-tiddlywiki/get'

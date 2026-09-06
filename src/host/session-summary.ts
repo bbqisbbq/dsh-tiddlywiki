@@ -105,9 +105,24 @@ function collectDescendantIds(nodes: SessionLineageNode[] | undefined, out: stri
   }
 }
 
+/**
+ * 汇总条目会直接写进 `[[标题]]` wikitext——标题既要能安全渲染、又不能制造死链。
+ * 会话日志里常混入模型的示例/残缺写法（`#…`、`#标题`、带反引号的截断链接、
+ * 控制字符等），这类收进来会被 TW 渲染成「佚失条目」；一律过滤。
+ */
+function isPlausibleTitle(title: string): boolean {
+  if (title.length === 0 || title.length > 300) return false
+  if (title.trim().length === 0) return false
+  if (/[\u0000-\u001f\u007f]/.test(title)) return false // 控制字符 / 换行
+  if (/[\]|`#]/.test(title)) return false // 会破坏 [[…]] 链接语法
+  if (title.startsWith('…') || title === '标题') return false // 占位 / 示例写法
+  return true
+}
+
 /** 记录一篇笔记的触达；同标题合并（时间取最新、detail 取最新、subagent 取 AND）。 */
 function record(map: Map<string, NoteEntry>, entry: NoteEntry): void {
   if (entry.title.startsWith('$:/')) return
+  if (!isPlausibleTitle(entry.title)) return
   const prev = map.get(entry.title)
   if (prev !== undefined) {
     prev.time = Math.max(prev.time, entry.time)
@@ -120,7 +135,9 @@ function record(map: Map<string, NoteEntry>, entry: NoteEntry): void {
 
 /** 扫助手回复文本里的 `/dsh-tiddlywiki/tw/#标题` 引用链接 → 读取。 */
 function scanRefs(text: string, time: number, subagent: boolean, collected: Collected): void {
-  const re = /\/dsh-tiddlywiki\/tw\/#([^)\s\]]+)/g
+  // 只认到下一个 `)` / 空白 / `]` / `#` 为止——`#` 会截断后续碎片（模型示例常写成
+  // `#…` 或 `#标题`，这些由 isPlausibleTitle 在 record 时过滤）。
+  const re = /\/dsh-tiddlywiki\/tw\/#([^#)\s\]]+)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const raw = m[1] ?? ''
