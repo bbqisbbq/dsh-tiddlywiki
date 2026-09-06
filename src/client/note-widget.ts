@@ -32,12 +32,18 @@ import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
 
 const NOTE_ENDPOINT = '/dsh-tiddlywiki/note'
 const EDIT_ENDPOINT = '/dsh-tiddlywiki/edit'
-const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
+import { STATUS_ENDPOINT } from './endpoints.ts'
 const TAGS_ENDPOINT = '/dsh-tiddlywiki/tags'
 const RECENT_ENDPOINT = '/dsh-tiddlywiki/recent'
 const GET_ENDPOINT = '/dsh-tiddlywiki/get'
 const UPLOAD_ENDPOINT = '/dsh-tiddlywiki/upload'
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+
+/**
+ * Broadcast by the card on open/close (detail: { open }). The input-dock quick-
+ * note button (quick-note-dock.ts) listens to highlight while the card is open.
+ */
+export const NOTE_STATE_EVENT = 'dsh-tw-note-state'
 
 /** localStorage key for the autosaved quick-note draft. */
 const DRAFT_KEY = 'dsh-tw-note-draft-v1'
@@ -119,6 +125,8 @@ function buildTagEditor(opts: { onChange?: () => void } = {}): {
   getTags: () => string[]
   setDefault: (tag: string) => void
   setTags: (tags: string[]) => void
+  /** Remove the document-level outside-click listener (unmount must not leak). */
+  dispose: () => void
 } {
   const wrap = document.createElement('div')
   wrap.className = 'dsh-tw-note-tags'
@@ -225,9 +233,10 @@ function buildTagEditor(opts: { onChange?: () => void } = {}): {
       hideSuggest()
     }
   })
-  document.addEventListener('click', (event) => {
+  const onDocClick = (event: Event): void => {
     if (!wrap.contains(event.target as Node)) hideSuggest()
-  }, true)
+  }
+  document.addEventListener('click', onDocClick, true)
 
   return {
     el: wrap,
@@ -255,6 +264,7 @@ function buildTagEditor(opts: { onChange?: () => void } = {}): {
       renderChips()
       hideSuggest()
     },
+    dispose: () => document.removeEventListener('click', onDocClick, true),
   }
 }
 
@@ -341,7 +351,7 @@ export function createNoteWidget(): NoteWidgetHandle {
    */
   const emitState = (open: boolean): void => {
     try {
-      window.dispatchEvent(new CustomEvent('dsh-tw-note-state', { detail: { open } }))
+      window.dispatchEvent(new CustomEvent(NOTE_STATE_EVENT, { detail: { open } }))
     } catch { /* event dispatch is best-effort */ }
   }
 
@@ -630,12 +640,18 @@ export function createNoteWidget(): NoteWidgetHandle {
       close()
     }
 
+    // In-flight guard: the save button is disabled while saving, but Ctrl+Enter
+    // from the editor keymap is not — a second POST within the same second
+    // would carry the same timestamp title and silently overwrite the first.
+    let saving = false
     doSave = async (): Promise<void> => {
+      if (saving) return
       const text = editor.getValue().trim()
       if (text.length === 0) {
         toast('内容为空，未保存')
         return
       }
+      saving = true
       saveBtn.disabled = true
       saveBtn.textContent = '保存中…'
       try {
@@ -655,6 +671,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       } catch (err) {
         toast(`保存失败：${err instanceof Error ? err.message : String(err)}`)
       } finally {
+        saving = false
         saveBtn.disabled = false
         saveBtn.textContent = '保存'
       }
@@ -785,8 +802,12 @@ export function createNoteWidget(): NoteWidgetHandle {
       } else {
         resetTitle()
         defaultTag = (await fetchUiOptions()).defaultTag
+        // dispose() may have run while awaiting (sets ui = undefined); a live
+        // `ui` reference must be re-read under the same guard as above.
+        if (disposed || ui === undefined) return
         ui.tagEditor.setDefault(defaultTag)
       }
+      if (ui === undefined) return
       ui.editor.focus()
     },
     close() {
@@ -806,6 +827,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     dispose() {
       disposed = true
       if (draftTimer !== undefined) { clearTimeout(draftTimer); draftTimer = undefined }
+      ui?.tagEditor.dispose()
       ui?.editor.view.destroy()
       ui?.root.remove()
       const toastEl = document.querySelector<HTMLElement>('.dsh-tw-toast')
@@ -815,8 +837,5 @@ export function createNoteWidget(): NoteWidgetHandle {
   }
 }
 
-/** Legacy compatibility export: the FAB owns the trigger in v0.5. */
-export function mountNoteWidget(): () => void {
-  const handle = createNoteWidget()
-  return () => handle.dispose()
-}
+// (The FAB owns the trigger since v0.5 — there is deliberately no standalone
+// mount export here; index.ts wires createNoteWidget into mountKnowledgeFab.)

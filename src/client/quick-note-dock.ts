@@ -15,10 +15,7 @@
  * @module dsh-tiddlywiki/client/quick-note-dock
  */
 import * as React from 'react'
-import type { NoteWidgetHandle } from './note-widget.ts'
-
-/** Event name the note card dispatches on open/close (detail: { open }). */
-export const NOTE_STATE_EVENT = 'dsh-tw-note-state'
+import { NOTE_STATE_EVENT, type NoteWidgetHandle } from './note-widget.ts'
 
 /**
  * Build the dock entry component bound to one note-widget handle. Called once

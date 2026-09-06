@@ -115,6 +115,14 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   const disposers: Array<() => void> = []
   const register = (tool: unknown): void => { disposers.push(ctx.tools.register(tool)) }
 
+  /** Every read/write tool needs a live TW client — shared guard for the 8
+   *  wiki-facing tools (git tools operate on the repo path instead). */
+  const requireWiki = (): TiddlyWebClient => {
+    const wiki = deps.wiki()
+    if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+    return wiki
+  }
+
   // ── tiddlywiki_search ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_search',
@@ -148,8 +156,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { query: string; tags?: string[]; tag?: string; since?: string; type?: string; limit?: number }): Promise<SearchResult> => {
-      const wiki = deps.wiki()
-      if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const wiki = requireWiki()
       const { items, total } = await wiki.search(args.query, {
         tags: args.tags,
         tag: args.tag,
@@ -190,8 +197,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { limit?: number; since?: string }): Promise<RecentResult> => {
-      const wiki = deps.wiki()
-      if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const wiki = requireWiki()
       const items = await wiki.recent(args.limit ?? 15, args.since)
       return {
         since: args.since ?? null,
@@ -215,8 +221,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (): Promise<TagListResult> => {
-      const wiki = deps.wiki()
-      if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const wiki = requireWiki()
       const tags = await wiki.listTags()
       return { count: tags.length, tags }
     },
@@ -244,8 +249,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { title: string }): Promise<GetResult> => {
-      const wiki = deps.wiki()
-      if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const wiki = requireWiki()
       const t = await wiki.get(args.title)
       if (t === undefined) return { notFound: true, title: args.title, text: '', tags: [], fields: {}, modified: null }
       return { notFound: false, title: t.title, text: t.text ?? '', tags: t.tags ?? [], fields: pickFields(t), modified: typeof t.modified === 'string' ? t.modified : null }
@@ -275,8 +279,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }): Promise<PutResult> => {
-      const wiki = deps.wiki()
-      if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const wiki = requireWiki()
       const existing = await wiki.get(args.title).catch(() => undefined)
       const tags = finalTagsForWrite(args.title, existing, Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
       const tiddler: Tiddler = { title: args.title, text: args.text }
@@ -320,8 +323,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { items: Array<{ title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }>; overwrite?: boolean }): Promise<BatchResult> => {
-      const wiki = deps.wiki()
-      if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const wiki = requireWiki()
       const list = Array.isArray(args.items) ? args.items : []
       if (list.length === 0) return { ok: true, written: 0, skipped: 0, items: [] }
       const overwrite = args.overwrite !== false
@@ -369,8 +371,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { oldTitle: string; newTitle: string; updateRefs?: boolean }): Promise<RenameResult> => {
-      const wiki = deps.wiki()
-      if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const wiki = requireWiki()
       const { oldTitle, newTitle } = args
       if (oldTitle === newTitle) return { ok: true, from: oldTitle, to: newTitle, refsUpdated: 0, refsTiddlers: 0 }
       const existing = await wiki.get(oldTitle)
@@ -417,8 +418,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       render: (_args, value: DeleteResult) => [{ type: 'text', text: `已删除 tiddler「${value.title}」。` }],
     },
     execute: async (args: { title: string }): Promise<DeleteResult> => {
-      const wiki = deps.wiki()
-      if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+      const wiki = requireWiki()
       await wiki.delete(args.title)
       deps.autoCommit()
       return { ok: true, title: args.title }
@@ -497,15 +497,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         lines.push(`  ${value.message}`)
         if (value.files !== undefined && value.files.length > 0) lines.push(`涉及文件: ${value.files.join(', ')}`)
         if (value.commit !== undefined) lines.push(`本地 commit: ${value.commit}`)
-        if (value.status !== undefined) {
-          const s = value.status
-          const bits = [`分支 ${s.branch}`]
-          if (s.ahead !== undefined) bits.push(`领先 ${s.ahead}`)
-          if (s.behind !== undefined) bits.push(`落后 ${s.behind}`)
-          if (s.dirty) bits.push(`工作区有 ${s.dirtyFiles.length} 个未提交改动`)
-          if (s.lastCommit !== undefined) bits.push(`最近提交 ${s.lastCommit}`)
-          lines.push(`状态: ${bits.join(' · ')}`)
-        }
+        if (value.status !== undefined) lines.push(`状态: ${gitStatusBits(value.status)}`)
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
@@ -576,7 +568,7 @@ interface SyncResult {
   changed?: boolean
   restarted?: boolean
   restartError?: string
-  status?: { branch: string; dirty: boolean; dirtyFiles: string[]; remote: string; lastCommit?: string; ahead?: number; behind?: number }
+  status?: GitStatusView
 }
 interface ResolveResult {
   ok: boolean
@@ -585,7 +577,28 @@ interface ResolveResult {
   files?: string[]
   commit?: string
   hint?: string
-  status?: { branch: string; dirty: boolean; dirtyFiles: string[]; remote: string; lastCommit?: string; ahead?: number; behind?: number }
+  status?: GitStatusView
+}
+
+/** Shape of deps.git.status() as surfaced to the model (shared by renders). */
+interface GitStatusView {
+  branch: string
+  dirty: boolean
+  dirtyFiles: string[]
+  remote: string
+  lastCommit?: string
+  ahead?: number
+  behind?: number
+}
+
+/** One-line 状态 summary: 分支 … 领先 … 落后 … 工作区未提交 … 最近提交. */
+function gitStatusBits(s: GitStatusView): string {
+  const bits = [`分支 ${s.branch}`]
+  if (s.ahead !== undefined) bits.push(`领先 ${s.ahead}`)
+  if (s.behind !== undefined) bits.push(`落后 ${s.behind}`)
+  if (s.dirty) bits.push(`工作区有 ${s.dirtyFiles.length} 个未提交改动`)
+  if (s.lastCommit !== undefined) bits.push(`最近提交 ${s.lastCommit}`)
+  return bits.join(' · ')
 }
 
 function renderSync(value: SyncResult): Array<{ type: 'text'; text: string }> {
@@ -605,13 +618,8 @@ function renderSync(value: SyncResult): Array<{ type: 'text'; text: string }> {
   }
   if (value.restartError !== undefined) lines.push(`TW 重启失败: ${value.restartError}`)
   if (value.status !== undefined) {
+    lines.push(`状态: ${gitStatusBits(value.status)}`)
     const s = value.status
-    const bits = [`分支 ${s.branch}`]
-    if (s.ahead !== undefined) bits.push(`领先 ${s.ahead}`)
-    if (s.behind !== undefined) bits.push(`落后 ${s.behind}`)
-    if (s.dirty) bits.push(`工作区有 ${s.dirtyFiles.length} 个未提交改动`)
-    if (s.lastCommit !== undefined) bits.push(`最近提交 ${s.lastCommit}`)
-    lines.push(`状态: ${bits.join(' · ')}`)
     if (s.dirty && s.dirtyFiles.length > 0) lines.push(`  未提交: ${s.dirtyFiles.join(', ')}`)
   }
   return [{ type: 'text', text: lines.join('\n') }]

@@ -18,7 +18,7 @@
  */
 import { toast } from './toast.ts'
 
-const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
+import { STATUS_ENDPOINT } from './endpoints.ts'
 const SYNC_ENDPOINT = '/dsh-tiddlywiki/sync'
 const POLL_MS = 30_000
 
@@ -38,7 +38,6 @@ interface StatusPayload {
   ok?: boolean
   status?: string
   git?: GitView | null
-  ui?: { showSyncButton?: boolean }
 }
 
 export interface SyncStateView {
@@ -121,6 +120,7 @@ export function createSyncController(): SyncController {
   let lastSync: Date | undefined
   let timer: number | undefined
   let syncing = false
+  let disposed = false
   const listeners = new Set<() => void>()
 
   const emit = (): void => {
@@ -136,11 +136,12 @@ export function createSyncController(): SyncController {
   }
 
   const poll = async (): Promise<void> => {
+    if (disposed) return // unmounted: no further fetches or state churn
     applyStatus(await fetchStatus())
   }
 
   const doSync = async (): Promise<SyncStateView> => {
-    if (syncing) return state
+    if (disposed || syncing) return state
     syncing = true
     state = { ...state, state: 'syncing', label: '同步中…' }
     emit()
@@ -184,6 +185,7 @@ export function createSyncController(): SyncController {
       return () => { listeners.delete(cb) }
     },
     dispose() {
+      disposed = true
       if (timer !== undefined) { clearInterval(timer); timer = undefined }
       listeners.clear()
     },

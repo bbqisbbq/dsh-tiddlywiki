@@ -57,14 +57,18 @@ export type { GitStatusView } from './host/git.ts'
 export type { Tiddler } from './host/tw-api.ts'
 export type { WikiServerOptions, WikiStatusView } from './host/wiki.ts'
 
-/** Plugin config (design doc §13). Defaults are applied in apply(). */
+/** Plugin config (design doc §13). Defaults are applied in apply().
+ *  Mirrors PluginConfigShape (src/host/config.ts) — the cordis `config:` block;
+ *  keep the two shapes in lockstep when adding a config field. */
 export interface TiddlywikiConfig {
   wikiRoot?: string
   wiki?: string
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
-  ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean }
+  ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
+  /** 启动时自动启用的 TW 语言代码（如 "zh-Hans"），也受配置 tiddler 覆盖。 */
+  uiLanguage?: string
   auth?: { username?: string; password?: string }
 }
 
@@ -85,7 +89,8 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
-  ui: { showQuickNote: boolean; showQuickNoteDock: boolean; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; sendToAgent: { enabled: boolean } }
+  ui: { showQuickNote: boolean; showQuickNoteDock: boolean; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
+  uiLanguage: string
   auth: { username?: string; password?: string }
 }
 
@@ -95,7 +100,8 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
-  ui: { showQuickNote: true, showQuickNoteDock: true, sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, sendToAgent: { enabled: true } },
+  ui: { showQuickNote: true, showQuickNoteDock: true, sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
+  uiLanguage: '',
   auth: { username: '', password: '' },
 }
 
@@ -228,7 +234,15 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     port: rawConfig.port ?? DEFAULTS.port,
     git: { ...DEFAULTS.git, ...(rawConfig.git ?? {}) },
     note: { ...DEFAULTS.note, ...(rawConfig.note ?? {}) },
-    ui: { ...DEFAULTS.ui, ...(rawConfig.ui ?? {}) },
+    ui: {
+      ...DEFAULTS.ui,
+      ...(rawConfig.ui ?? {}),
+      // Merge nested ui.* groups explicitly so defaults stay required (a plain
+      // spread of the lax cordis shape would widen them to optional).
+      sendToAgent: { ...DEFAULTS.ui.sendToAgent, ...(rawConfig.ui?.sendToAgent ?? {}) },
+      allArticles: { ...DEFAULTS.ui.allArticles, ...(rawConfig.ui?.allArticles ?? {}) },
+    },
+    uiLanguage: typeof rawConfig.uiLanguage === 'string' ? rawConfig.uiLanguage.trim() : DEFAULTS.uiLanguage,
     auth: { ...DEFAULTS.auth, ...(rawConfig.auth ?? {}) },
   }
   const wikiPath = join(config.wikiRoot, config.wiki)
@@ -237,7 +251,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // Runtime-editable config (settings page): the cordis `config:` block is the
   // BASE; a config tiddler ($:/plugins/dsh-tiddlywiki/config) written by the
   // settings page overlays it. Effective values come from configStore.get().
-  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui } satisfies PluginConfigShape)
+  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage } satisfies PluginConfigShape)
   const eff = (): PluginConfigShape => configStore.get()
   const effectiveNoteTag = (): string => {
     const tag = eff().note?.tag

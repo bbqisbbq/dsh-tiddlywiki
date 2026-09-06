@@ -27,20 +27,12 @@ import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
+import { readBody, readBodyBuffer, json, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './session-summary.ts'
 
 export const ROUTE_PREFIX = PATH_PREFIX
-
-/** Max JSON body for note/restart. */
-const MAX_BODY_BYTES = 2 * 1024 * 1024
-
-/** Max passthrough body (tiddler content can be large). */
-const MAX_PROXY_BODY_BYTES = 16 * 1024 * 1024
-
-/** Max uploaded file body. */
-const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 /** Tiddler type for quick-notes: Markdown, so the uploaded images/links and
  *  any Markdown in the note actually render in TW (a type-less tiddler is
@@ -196,43 +188,6 @@ export interface RouteDeps {
   sendToAgentToken: () => string
 }
 
-function readBody(req: IncomingMessage, limit = MAX_BODY_BYTES): Promise<string> {
-  return new Promise((resolveP, rejectP) => {
-    let size = 0
-    const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length
-      if (size > limit) {
-        rejectP(new Error('body too large'))
-        req.destroy()
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on('end', () => resolveP(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', rejectP)
-  })
-}
-
-/** Read a raw (binary-safe) request body up to `limit` bytes. */
-function readBodyBuffer(req: IncomingMessage, limit = MAX_UPLOAD_BYTES): Promise<Buffer> {
-  return new Promise((resolveP, rejectP) => {
-    let size = 0
-    const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length
-      if (size > limit) {
-        rejectP(new Error('file too large'))
-        req.destroy()
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on('end', () => resolveP(Buffer.concat(chunks)))
-    req.on('error', rejectP)
-  })
-}
-
 /** Header names forwarded to the upstream TW service by the proxy routes. */
 const FORWARD_HEADER_NAMES = [
   'accept', 'accept-encoding', 'content-type', 'cookie', 'authorization',
@@ -267,12 +222,6 @@ function sanitizeUploadName(input: unknown): string {
   if (name.length === 0 || name === '.' || name === '..') return ''
   if (name.length > 160) return name.slice(0, 160)
   return name
-}
-
-function json(res: ServerResponse, payload: unknown, status = 200): void {
-  const body = JSON.stringify(payload)
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-  res.end(body)
 }
 
 function pad(n: number): string {
@@ -444,25 +393,33 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   }
 
   /**
+   * Shared gate for the TW-side send-to-agent routes: feature switch
+   * (`ui.sendToAgent.enabled`) then, when a shared token is configured, the
+   * `x-send-to-agent-token` header must match. Returns false after writing the
+   * error response — the caller just does `if (!guard(...)) return`.
+   */
+  const guardSendToAgent = (req: IncomingMessage, res: ServerResponse): boolean => {
+    if (!deps.sendToAgentEnabled()) {
+      json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
+      return false
+    }
+    const token = deps.sendToAgentToken().trim()
+    if (token.length === 0) return true
+    const got = req.headers['x-send-to-agent-token']
+    const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
+    if (value === token) return true
+    json(res, { ok: false, error: 'unauthorized' }, 401)
+    return false
+  }
+
+  /**
    * GET /dsh-tiddlywiki/agent/modes — available "工作模式" (Agent presets) for
    * the TW picker: id/name/description per preset plus the deployment default.
    * Guards mirror the other agent routes (feature switch + optional token).
    */
   const handleAgentModes = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (!deps.sendToAgentEnabled()) {
-        json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
-        return
-      }
-      const token = deps.sendToAgentToken().trim()
-      if (token.length > 0) {
-        const got = req.headers['x-send-to-agent-token']
-        const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
-        if (value !== token) {
-          json(res, { ok: false, error: 'unauthorized' }, 401)
-          return
-        }
-      }
+      if (!guardSendToAgent(req, res)) return
       const ap = deps.getAgentPresets()
       if (ap === undefined) {
         json(res, { ok: false, error: 'agent presets service unavailable' }, 503)
@@ -516,19 +473,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleAgentSend = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (!deps.sendToAgentEnabled()) {
-        json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
-        return
-      }
-      const token = deps.sendToAgentToken().trim()
-      if (token.length > 0) {
-        const got = req.headers['x-send-to-agent-token']
-        const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
-        if (value !== token) {
-          json(res, { ok: false, error: 'unauthorized' }, 401)
-          return
-        }
-      }
+      if (!guardSendToAgent(req, res)) return
       const body = JSON.parse(await readBody(req)) as { sessionId?: unknown; text?: unknown }
       const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? body.sessionId.trim() : ''
       const text = typeof body.text === 'string' && body.text.trim().length > 0 ? body.text.trim() : ''
@@ -574,19 +519,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleAgentCreate = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (!deps.sendToAgentEnabled()) {
-        json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
-        return
-      }
-      const token = deps.sendToAgentToken().trim()
-      if (token.length > 0) {
-        const got = req.headers['x-send-to-agent-token']
-        const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
-        if (value !== token) {
-          json(res, { ok: false, error: 'unauthorized' }, 401)
-          return
-        }
-      }
+      if (!guardSendToAgent(req, res)) return
       const body = JSON.parse(await readBody(req)) as { cwd?: unknown; mode?: unknown; permission?: unknown }
       const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : ''
       const mode = typeof body.mode === 'string' && body.mode.trim().length > 0 ? body.mode.trim() : undefined
@@ -781,7 +714,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         text: t.text ?? '',
         tags: t.tags ?? [],
         type: t.type ?? 'text/vnd.tiddlywiki',
-        modified: typeof t.modified === 'string' ? (t.modified as string) : null,
+        modified: typeof t.modified === 'string' ? t.modified : null,
         fields,
       })
     } catch (err) {

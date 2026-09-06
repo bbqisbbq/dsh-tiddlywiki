@@ -6,7 +6,7 @@
  * @module dsh-tiddlywiki/client/ui-config
  */
 
-const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
+import { STATUS_ENDPOINT } from './endpoints.ts'
 
 export interface UiConfig {
   /** 聊天输入框上方的「快速笔记」快捷按钮是否显示（默认 true）。 */

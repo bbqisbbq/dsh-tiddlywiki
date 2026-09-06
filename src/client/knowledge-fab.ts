@@ -19,8 +19,9 @@
 import type { PanelState } from './state.ts'
 import type { NoteWidgetHandle } from './note-widget.ts'
 import type { SyncController } from './sync-button.ts'
+import { PANEL_RELOAD_EVENT } from './panel.ts'
 
-const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
+import { STATUS_ENDPOINT } from './endpoints.ts'
 
 /** Book icon (same visual family as the sidebar entry). */
 const BOOK_ICON = '<svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2.5h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z"/><path d="M6 6h4M6 8.5h2.5"/></svg>'
@@ -82,6 +83,15 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     menuOpen = false
     if (menu !== undefined) menu.hidden = true
     if (tip !== undefined) tip.hidden = true
+  }
+
+  /** Capture-phase outside-click handler (closes the open menu); must be
+   *  removable so unmount does not leak the document listener. */
+  const onDocumentClick = (event: Event): void => {
+    if (!menuOpen) return
+    const target = event.target as Node
+    if (root !== undefined && root.contains(target)) return
+    closeMenu()
   }
 
   /** Rebuild the TW status row's hover tip (TW 服务 + git 状态 + 最近日志). */
@@ -181,7 +191,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       reload.textContent = '🔄 重载 TW 面板'
       reload.addEventListener('click', () => {
         closeMenu()
-        document.dispatchEvent(new CustomEvent('dsh-tw-panel-reload'))
+        document.dispatchEvent(new CustomEvent(PANEL_RELOAD_EVENT))
         void refreshTwStatus()
       })
       menu.append(reload)
@@ -224,12 +234,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     renderDot()
 
     // Outside click closes the menu.
-    document.addEventListener('click', (event) => {
-      if (!menuOpen) return
-      const target = event.target as Node
-      if (root !== undefined && root.contains(target)) return
-      closeMenu()
-    }, true)
+    document.addEventListener('click', onDocumentClick, true)
   }
 
   // Reflect panel open/close in the menu label.
@@ -247,6 +252,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
 
   return () => {
     disposed = true
+    document.removeEventListener('click', onDocumentClick, true)
     unsubPanel()
     unsubSync()
     root?.remove()

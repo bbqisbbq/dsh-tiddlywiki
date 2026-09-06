@@ -23,7 +23,7 @@ export const SESSION_SUMMARY_VIEW_ID = 'dsh-tiddlywiki-summary'
 const SUMMARY_ENDPOINT = '/dsh-tiddlywiki/session/summary'
 /** Same-origin TW proxy base（与 host TW_PROXY_PATH 一致，client 不能 import 它）。 */
 const TW_PROXY_BASE = '/dsh-tiddlywiki/tw/'
-export const SESSION_SUMMARY_LABEL_DEFAULT = '知识库'
+const SESSION_SUMMARY_LABEL_DEFAULT = '知识库'
 
 /** Tab 显示名缓存：客户端从 /status 读到 `ui.tabLabel` 后更新；默认「知识库」。 */
 let tabLabel = SESSION_SUMMARY_LABEL_DEFAULT

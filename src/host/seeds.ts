@@ -18,8 +18,8 @@
  *   - `remove` — optional seeds only: delete the seeded tiddlers + markers,
  *     returning the wiki to the "never seeded" state.
  *
- * Registry: doc-note / send-to-agent / home-index / all-articles /
- * menubar-theme / tw-web-host.
+ * Registry: doc-note / send-to-agent / render-route / home-index /
+ * all-articles / menubar-theme / tw-web-host.
  *
  * @module dsh-tiddlywiki/host/seeds
  */
@@ -93,182 +93,129 @@ const removedDetail = (id: string, removed: string[]): SeedRunResult => ({
     : '本就不存在，无需移除',
 })
 
+/** Metadata shared by every seed and echoed in its status/result objects. */
+interface SeedMeta {
+  id: string
+  title: string
+  description: string
+  core: boolean
+}
+
+type SeedWriter = (client: TiddlyWebClient, opts?: { force?: boolean }) => Promise<boolean>
+type SeedUnseeder = (client: TiddlyWebClient) => Promise<{ removed: string[] }>
+
+/**
+ * Define a seed from a small spec, killing the id/title/description
+ * triplication and the try/catch boilerplate every registry entry used to
+ * repeat by hand:
+ *   - `presentTitle` → default check: is that tiddler present?
+ *   - `check`        → custom presence check (overrides presentTitle).
+ *   - `write`        → built-in content writer; true = (re)written this call.
+ *   - `run`          → custom runner (overrides the standard write wrapper;
+ *                      e.g. tw-web-host honors a user-chosen host value).
+ *   - `unseed`       → remove the seeded tiddlers + markers (removable seeds).
+ */
+function defineSeed(meta: SeedMeta, impl: {
+  presentTitle?: string
+  check?: (ctx: SeedContext) => Promise<SeedStatus>
+  write?: SeedWriter
+  run?: (ctx: SeedContext, force: boolean) => Promise<SeedRunResult>
+  unseed?: SeedUnseeder
+}): SeedDef {
+  const { id, title, description, core } = meta
+  const removable = !core
+  const check: SeedDef['check'] = impl.check ?? (async (ctx) => {
+    const present = await presentOf(ctx, impl.presentTitle ?? '')
+    return { id, title, description, present, removable, detail: present ? '已存在' : '缺失' }
+  })
+  const run: SeedDef['run'] = impl.run ?? (async (ctx, force) => {
+    try {
+      const wrote = await impl.write!(ctx.client, { force })
+      return { id, ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
+    } catch (err) {
+      return { id, ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+  const remove: SeedDef['remove'] = impl.unseed === undefined ? undefined : async (ctx) => {
+    try {
+      return removedDetail(id, (await impl.unseed!(ctx.client)).removed)
+    } catch (err) {
+      return { id, ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  return { id, title, description, core, check, run, ...(remove === undefined ? {} : { remove }) }
+}
+
 /** The full registry, in display order. */
 export const SEED_DEFS: SeedDef[] = [
-  {
-    id: 'doc-note',
-    title: '插件说明笔记',
-    description: '「dsh-tiddlywiki 插件说明」——新 wiki 首启自动写入的入门说明（ONE-SHOT，用户可改可删）。',
-    core: false,
-    check: async (ctx) => {
-      const present = await presentOf(ctx, DOC_NOTE_TITLE)
-      return { id: 'doc-note', title: '插件说明笔记', description: '「dsh-tiddlywiki 插件说明」——新 wiki 首启自动写入的入门说明（ONE-SHOT，用户可改可删）。', present, removable: true, detail: present ? '已存在' : '缺失' }
+  defineSeed(
+    { id: 'doc-note', title: '插件说明笔记', description: '「dsh-tiddlywiki 插件说明」——新 wiki 首启自动写入的入门说明（ONE-SHOT，用户可改可删）。', core: false },
+    { presentTitle: DOC_NOTE_TITLE, write: seedDocNote, unseed: unseedDocNote },
+  ),
+  defineSeed(
+    { id: 'send-to-agent', title: '「发送给 Agent」按钮', description: 'TW 笔记工具栏「发送给 Agent」按钮插件（$:/plugins/dsh/send-to-agent）——把笔记一键注入 DSH 会话。', core: true },
+    { presentTitle: SEND_TO_AGENT_PLUGIN_TITLE, write: seedSendToAgent },
+  ),
+  defineSeed(
+    { id: 'render-route', title: '原生渲染路由（/render）', description: 'TW 服务端路由插件（$:/plugins/dsh/render，server-routes/render.js）——把 wiki 文本在运行中的 TW 里原生渲染成 HTML 片段，回复流工具卡与 wiki 链接跳转依赖它。seed 写入后需重启 TW 使路由生效。', core: true },
+    { presentTitle: RENDER_PLUGIN_TITLE, write: seedRenderRoute },
+  ),
+  defineSeed(
+    { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页同时写入 $:/DefaultTiddlers。', core: false },
+    {
+      check: async (ctx) => {
+        const missing: string[] = []
+        for (const item of HOME_INDEX_ITEMS) {
+          if (!(await presentOf(ctx, item.title))) missing.push(item.title)
+        }
+        return { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页同时写入 $:/DefaultTiddlers。', present: missing.length === 0, removable: true, detail: missing.length === 0 ? '已存在' : `缺失：${missing.join('、')}` }
+      },
+      write: seedHomeIndex,
+      unseed: unseedHomeIndex,
     },
-    run: async (ctx, force) => {
-      try {
-        const wrote = await seedDocNote(ctx.client, { force })
-        return { id: 'doc-note', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
-      } catch (err) {
-        return { id: 'doc-note', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-    remove: async (ctx) => {
-      try {
-        return removedDetail('doc-note', (await unseedDocNote(ctx.client)).removed)
-      } catch (err) {
-        return { id: 'doc-note', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  },
-  {
-    id: 'send-to-agent',
-    title: '「发送给 Agent」按钮',
-    description: 'TW 笔记工具栏「发送给 Agent」按钮插件（$:/plugins/dsh/send-to-agent）——把笔记一键注入 DSH 会话。',
-    core: true,
-    check: async (ctx) => {
-      const present = await presentOf(ctx, SEND_TO_AGENT_PLUGIN_TITLE)
-      return { id: 'send-to-agent', title: '「发送给 Agent」按钮', description: 'TW 笔记工具栏「发送给 Agent」按钮插件（$:/plugins/dsh/send-to-agent）——把笔记一键注入 DSH 会话。', present, removable: false, detail: present ? '已存在' : '缺失' }
-    },
-    run: async (ctx, force) => {
-      try {
-        const wrote = await seedSendToAgent(ctx.client, { force })
-        return { id: 'send-to-agent', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
-      } catch (err) {
-        return { id: 'send-to-agent', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  },
-  {
-    id: 'render-route',
-    title: '原生渲染路由（/render）',
-    description: 'TW 服务端路由插件（$:/plugins/dsh/render，server-routes/render.js）——把 wiki 文本在运行中的 TW 里原生渲染成 HTML 片段，回复流工具卡与 wiki 链接跳转依赖它。seed 写入后需重启 TW 使路由生效。',
-    core: true,
-    check: async (ctx) => {
-      const present = await presentOf(ctx, RENDER_PLUGIN_TITLE)
-      return { id: 'render-route', title: '原生渲染路由（/render）', description: 'TW 服务端路由插件（$:/plugins/dsh/render，server-routes/render.js）——把 wiki 文本在运行中的 TW 里原生渲染成 HTML 片段，回复流工具卡与 wiki 链接跳转依赖它。seed 写入后需重启 TW 使路由生效。', present, removable: false, detail: present ? '已存在' : '缺失' }
-    },
-    run: async (ctx, force) => {
-      try {
-        const wrote = await seedRenderRoute(ctx.client, { force })
-        return { id: 'render-route', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
-      } catch (err) {
-        return { id: 'render-route', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  },
-  {
-    id: 'home-index',
-    title: '首页（主页 / 所有标签 / 标签笔记）',
-    description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页同时写入 $:/DefaultTiddlers。',
-    core: false,
-    check: async (ctx) => {
-      const missing: string[] = []
-      for (const item of HOME_INDEX_ITEMS) {
-        if (!(await presentOf(ctx, item.title))) missing.push(item.title)
-      }
-      return { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页同时写入 $:/DefaultTiddlers。', present: missing.length === 0, removable: true, detail: missing.length === 0 ? '已存在' : `缺失：${missing.join('、')}` }
-    },
-    run: async (ctx, force) => {
-      try {
-        const wrote = await seedHomeIndex(ctx.client, { force })
-        return { id: 'home-index', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
-      } catch (err) {
-        return { id: 'home-index', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-    remove: async (ctx) => {
-      try {
-        return removedDetail('home-index', (await unseedHomeIndex(ctx.client)).removed)
-      } catch (err) {
-        return { id: 'home-index', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  },
-  {
-    id: 'all-articles',
-    title: '所有文章（两列分页总览）',
-    description: '「所有文章」——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页展示。每页条数取插件设置 ui.allArticles.pageSize（默认 10）。',
-    core: false,
-    check: async (ctx) => {
-      const present = await presentOf(ctx, ALL_ARTICLES_TITLE)
-      return { id: 'all-articles', title: '所有文章（两列分页总览）', description: '「所有文章」——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页展示。每页条数取插件设置 ui.allArticles.pageSize（默认 10）。', present, removable: true, detail: present ? '已存在' : '缺失' }
-    },
-    run: async (ctx, force) => {
-      try {
-        const wrote = await seedAllArticles(ctx.client, { force })
-        return { id: 'all-articles', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
-      } catch (err) {
-        return { id: 'all-articles', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-    remove: async (ctx) => {
-      try {
-        return removedDetail('all-articles', (await unseedAllArticles(ctx.client)).removed)
-      } catch (err) {
-        return { id: 'all-articles', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  },
-  {
-    id: 'menubar-theme',
-    title: 'menubar 顶栏主题自适应',
-    description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。',
-    core: false,
-    check: async (ctx) => {
-      const present = await presentOf(ctx, MENUBAR_THEME_TIDDLER)
-      return { id: 'menubar-theme', title: 'menubar 顶栏主题自适应', description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。', present, removable: true, detail: present ? '已存在' : '缺失' }
-    },
-    run: async (ctx, force) => {
-      try {
-        const wrote = await seedMenubarTheme(ctx.client, { force })
-        return { id: 'menubar-theme', ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
-      } catch (err) {
-        return { id: 'menubar-theme', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-    remove: async (ctx) => {
-      try {
-        return removedDetail('menubar-theme', (await unseedMenubarTheme(ctx.client)).removed)
-      } catch (err) {
-        return { id: 'menubar-theme', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
-    },
-  },
-  {
-    id: 'tw-web-host',
-    title: 'TW 前端 API 基址（同源代理）',
-    description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。',
-    core: true,
-    check: async (ctx) => {
-      let current: string | undefined
-      try {
-        current = (await ctx.client.get(TW_WEB_HOST_TIDDLER))?.text?.trim()
-      } catch {
-        current = undefined
-      }
-      const ok = current === TW_PROXY_PATH
-      return { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', present: ok, removable: false, detail: ok ? `已指向 ${TW_PROXY_PATH}` : `当前：${current ?? '（缺失）'}，应为 ${TW_PROXY_PATH}` }
-    },
-    run: async (ctx, force) => {
-      try {
+  ),
+  defineSeed(
+    { id: 'all-articles', title: '所有文章（两列分页总览）', description: '「所有文章」——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页展示。每页条数取插件设置 ui.allArticles.pageSize（默认 10）。', core: false },
+    { presentTitle: ALL_ARTICLES_TITLE, write: seedAllArticles, unseed: unseedAllArticles },
+  ),
+  defineSeed(
+    { id: 'menubar-theme', title: 'menubar 顶栏主题自适应', description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。', core: false },
+    { presentTitle: MENUBAR_THEME_TIDDLER, write: seedMenubarTheme, unseed: unseedMenubarTheme },
+  ),
+  defineSeed(
+    { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', core: true },
+    {
+      check: async (ctx) => {
         let current: string | undefined
         try {
           current = (await ctx.client.get(TW_WEB_HOST_TIDDLER))?.text?.trim()
         } catch {
           current = undefined
         }
-        // Non-force keeps the ensure semantics: write only when missing or still
-        // the legacy default (a user override pointing elsewhere is honored).
-        if (!force && current !== undefined && current !== TW_WEB_HOST_DEFAULT) {
-          return { id: 'tw-web-host', ok: true, wrote: false, detail: '已指向自定义基址，未覆盖' }
+        const ok = current === TW_PROXY_PATH
+        return { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', present: ok, removable: false, detail: ok ? `已指向 ${TW_PROXY_PATH}` : `当前：${current ?? '（缺失）'}，应为 ${TW_PROXY_PATH}` }
+      },
+      run: async (ctx, force) => {
+        try {
+          let current: string | undefined
+          try {
+            current = (await ctx.client.get(TW_WEB_HOST_TIDDLER))?.text?.trim()
+          } catch {
+            current = undefined
+          }
+          // Non-force keeps the ensure semantics: write only when missing or still
+          // the legacy default (a user override pointing elsewhere is honored).
+          if (!force && current !== undefined && current !== TW_WEB_HOST_DEFAULT) {
+            return { id: 'tw-web-host', ok: true, wrote: false, detail: '已指向自定义基址，未覆盖' }
+          }
+          await ctx.client.put({ title: TW_WEB_HOST_TIDDLER, text: TW_PROXY_PATH, type: 'text/plain', tags: [] })
+          return { id: 'tw-web-host', ok: true, wrote: true, detail: force ? '已重新初始化（强制写回代理基址）' : '已写入代理基址' }
+        } catch (err) {
+          return { id: 'tw-web-host', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
         }
-        await ctx.client.put({ title: TW_WEB_HOST_TIDDLER, text: TW_PROXY_PATH, type: 'text/plain', tags: [] })
-        return { id: 'tw-web-host', ok: true, wrote: true, detail: force ? '已重新初始化（强制写回代理基址）' : '已写入代理基址' }
-      } catch (err) {
-        return { id: 'tw-web-host', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
-      }
+      },
     },
-  },
+  ),
 ]
 
 /** Check every seed, returning statuses in registry order. */

@@ -24,7 +24,7 @@ import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
-export const PANEL_VIEW_SELECTOR = '[data-dsh-tw-view]'
+export const PANEL_RELOAD_EVENT = 'dsh-tw-panel-reload'
 
 /**
  * Center-column targets, most-specific shell generation first. The official
@@ -57,7 +57,7 @@ const APP_OVERLAY_Z_INDEX = 20
 /** Safety re-measure cadence for shell layout changes CSS can't see. */
 const SYNC_INTERVAL_MS = 2_000
 
-const STATUS_ENDPOINT = '/dsh-tiddlywiki/status'
+import { STATUS_ENDPOINT } from './endpoints.ts'
 const RESTART_ENDPOINT = '/dsh-tiddlywiki/restart'
 
 /**
@@ -100,7 +100,7 @@ interface StatusPayload {
   wikiPath?: string
   error?: string
   note?: { tag?: string }
-  ui?: { showPanelStatus?: boolean; followDshTheme?: boolean; darkPalette?: string }
+  ui?: { followDshTheme?: boolean; darkPalette?: string }
 }
 
 function conversationColumn(): HTMLElement | undefined {
@@ -143,6 +143,8 @@ export function mountPanel(state: PanelState): () => void {
   let frameLoaded = false
   /** A tiddler-hash open request waiting for the frame to become ready. */
   let pendingHash: string | null = null
+  /** Set by the disposer: no timers/observers may touch DOM or the iframe after. */
+  let disposed = false
 
   const build = (): HTMLDivElement => {
     const view = document.createElement('div')
@@ -281,6 +283,7 @@ export function mountPanel(state: PanelState): () => void {
       return
     }
     const tryOnce = (attempt: number): void => {
+      if (disposed) return // unmounted: do not keep waiting or touch the iframe
       if (pendingHash !== hash) return // superseded by a newer request
       const frameTw = win as { $tw?: unknown }
       if (typeof frameTw.$tw !== 'object' || frameTw.$tw === null) {
@@ -303,7 +306,7 @@ export function mountPanel(state: PanelState): () => void {
   }
 
   const fallbackLoad = (hash: string): void => {
-    if (iframe === undefined) return
+    if (disposed || iframe === undefined) return // never drive a detached frame
     if (pendingHash === hash) pendingHash = null
     const base = iframe.src.split('#')[0]
     if (iframe.src !== `${base}${hash}`) iframe.src = `${base}${hash}`
@@ -324,6 +327,7 @@ export function mountPanel(state: PanelState): () => void {
       refreshTimer = undefined
     }
     const payload = await fetchStatus()
+    if (disposed) return // unmounted while fetching: stop, don't touch DOM
     if (payload === null) {
       showError('无法访问 /dsh-tiddlywiki/status')
       return
@@ -413,10 +417,11 @@ export function mountPanel(state: PanelState): () => void {
   const onReloadRequest = (): void => {
     if (iframe !== undefined && !iframe.hidden) iframe.src = iframe.src
   }
-  document.addEventListener('dsh-tw-panel-reload', onReloadRequest)
+  document.addEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
   document.addEventListener(OPEN_TIDDLER_EVENT, onOpenTiddler)
 
   return () => {
+    disposed = true
     if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
     window.clearInterval(syncInterval)
     window.removeEventListener('resize', onWindowResize)
@@ -424,7 +429,7 @@ export function mountPanel(state: PanelState): () => void {
     resizeObserver.disconnect()
     document.removeEventListener('click', onClickSidebarRow, true)
     document.removeEventListener(ACTIVATE_EVENT, onOtherActivate)
-    document.removeEventListener('dsh-tw-panel-reload', onReloadRequest)
+    document.removeEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
     document.removeEventListener(OPEN_TIDDLER_EVENT, onOpenTiddler)
     waitObserver.disconnect()
     unsubscribe()

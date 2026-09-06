@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.11`（npm latest = 0.16.11；git tag `v0.16.11`） | `package.json` `version` |
+| **插件版本** | `0.16.12`（npm latest = 0.16.12；git tag `v0.16.12`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
@@ -39,6 +39,7 @@ src/
 │   ├── tw-api.ts       # TiddlyWeb REST 客户端（/recipes/default/tiddlers/...，回环）
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
 │   ├── routes.ts       # 全部 DSH 路由（见 §1 路由表）+ agent-send/create/modes/sessions + session/summary
+│   ├── http.ts         # 共用 HTTP 助手：readBody/readBodyBuffer（带大小上限）+ json() 响应（routes/admin 共用）
 │   ├── session-summary.ts # 会话「知识库」Tab 后端：sessionQuery 读日志+后代 → 产生/读取/检索 → $:/temp 汇总 wikitext
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/* 路由（seeds run/remove）
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层（tiddler 优先）
@@ -47,6 +48,7 @@ src/
 │   ├── seed-*.ts       # 各 seed 实现（内含由脚本生成的 bundle/首页 常量，勿手改）
 ├── client/             # 浏览器半部：panel/theme-sync/note-widget/knowledge-fab/tool-views/settings-page…
 │   ├── index.ts        # client 入口（inject ['slots']，纯 DOM，永不 throw）
+│   ├── endpoints.ts    # 客户端同源端点常量（/dsh-tiddlywiki/status 等，与 §1 路由表对应）
 │   ├── session-summary.ts # 会话「知识库」Tab（conversation.view 槽位）：POST 生成 → 同源代理 iframe → TW 原生渲染
 scripts/                # 构建/校验/再生成脚本（见 §4）
 docs/seed-initialization.md  # seed 机制详解（权威）

@@ -24,6 +24,8 @@ import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { ROUTE_PREFIX, type WebServerFace } from './routes.ts'
 import { CONFIG_TIDDLER, type ConfigStore, type PluginConfigShape } from './config.ts'
+import { readBody, json } from './http.ts'
+import { GitFace } from './git.ts'
 
 /** One bundled plugin/theme from the catalog. */
 export interface CatalogEntry {
@@ -219,29 +221,6 @@ export async function ensureLanguage(wikiPath: string, twRoot: string, lang: str
   return true
 }
 
-function json(res: ServerResponse, payload: unknown, status = 200): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-  res.end(JSON.stringify(payload))
-}
-
-async function readBody(req: IncomingMessage, limit = 1024 * 1024): Promise<string> {
-  return new Promise((resolveP, rejectP) => {
-    let size = 0
-    const chunks: Buffer[] = []
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length
-      if (size > limit) {
-        rejectP(new Error('body too large'))
-        req.destroy()
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on('end', () => resolveP(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', rejectP)
-  })
-}
-
 export interface AdminDeps {
   server: WikiServer
   getClient: () => TiddlyWebClient | undefined
@@ -264,7 +243,6 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       const [info, catalog] = await Promise.all([readWikiInfo(wikiPath), bundledCatalog(deps.twRoot())])
       let git: unknown = null
       try {
-        const { GitFace } = await import('./git.ts')
         git = await new GitFace().status(wikiPath)
       } catch {
         git = null

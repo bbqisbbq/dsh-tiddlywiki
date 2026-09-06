@@ -76,15 +76,19 @@ function ensurePopup(): void {
   })
 
   // Drag by the title bar (un-center by setting explicit left/top + margin 0).
-  bar.addEventListener('mousedown', (event) => {
+  // Pointer Events + setPointerCapture: the pointer is captured by the bar, so
+  // pointermove/pointerup keep firing on it even over the iframe or outside the
+  // window — no window-level listeners, hence nothing to leak on a lost mouseup.
+  bar.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || root === undefined) return
     event.preventDefault()
+    bar.setPointerCapture(event.pointerId)
     const rect = root.getBoundingClientRect()
     const startX = event.clientX
     const startY = event.clientY
     const baseLeft = rect.left
     const baseTop = rect.top
-    const onMove = (ev: MouseEvent): void => {
+    const onMove = (ev: PointerEvent): void => {
       if (root === undefined) return
       root.style.left = `${baseLeft + ev.clientX - startX}px`
       root.style.top = `${baseTop + ev.clientY - startY}px`
@@ -93,24 +97,27 @@ function ensurePopup(): void {
       root.style.bottom = 'auto'
     }
     const onUp = (): void => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      bar.removeEventListener('pointermove', onMove)
+      bar.removeEventListener('pointerup', onUp)
+      bar.removeEventListener('pointercancel', onUp)
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    bar.addEventListener('pointermove', onMove)
+    bar.addEventListener('pointerup', onUp)
+    bar.addEventListener('pointercancel', onUp)
   })
 
   // Resize from the bottom-right corner.
-  resize.addEventListener('mousedown', (event) => {
+  resize.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || root === undefined) return
     event.preventDefault()
     event.stopPropagation()
+    resize.setPointerCapture(event.pointerId)
     const rect = root.getBoundingClientRect()
     const startX = event.clientX
     const startY = event.clientY
     const baseW = rect.width
     const baseH = rect.height
-    const onMove = (ev: MouseEvent): void => {
+    const onMove = (ev: PointerEvent): void => {
       if (root === undefined) return
       root.style.width = `${Math.max(360, baseW + ev.clientX - startX)}px`
       root.style.height = `${Math.max(260, baseH + ev.clientY - startY)}px`
@@ -118,10 +125,12 @@ function ensurePopup(): void {
       root.style.bottom = 'auto'
     }
     const onUp = (): void => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      resize.removeEventListener('pointermove', onMove)
+      resize.removeEventListener('pointerup', onUp)
+      resize.removeEventListener('pointercancel', onUp)
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    resize.addEventListener('pointermove', onMove)
+    resize.addEventListener('pointerup', onUp)
+    resize.addEventListener('pointercancel', onUp)
   })
 }

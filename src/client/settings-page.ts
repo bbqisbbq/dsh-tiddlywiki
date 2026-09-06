@@ -12,7 +12,8 @@
  *
  * Sections:
  *   1. 状态/重启      TW 运行状态 + git 概览 + 重启按钮
- *   2. 常规配置       note.tag / git.* / uiLanguage（改了什么保存什么）
+ *   2. 常规配置       note.tag / git.* / ui.*（含会话「知识库」Tab 名称、sendToAgent
+ *                     开关/token/endpoint；改了什么保存什么）
  *   3. 插件管理       自带官方插件勾选（可搜索）→ 应用并重启 TW
  *   4. 主题管理       自带主题单选 → 应用并重启 TW
  *   5. 初始化         一次性预置（doc-note/send-to-agent/home-index/all-articles/menubar-theme/tw-web-host）
@@ -232,9 +233,13 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   checkField('ui.showPanelStatus', '显示「知识库」按钮里的 TW 面板/重载入口与状态行', ui.showPanelStatus !== false)
   checkField('ui.showSyncButton', '显示「知识库」按钮里的「同步」入口与 git 状态点', ui.showSyncButton !== false)
   checkField('ui.followDshTheme', '嵌入式 TW 跟随 DSH 深浅主题（暗色时自动切深色 palette，不写回 wiki）', ui.followDshTheme !== false)
-  textField('ui.darkPalette', '暗色时 TW palette（tiddler 标题）', typeof ui.darkPalette === 'string' && ui.darkPalette.length > 0 ? ui.darkPalette : '$:/palettes/CupertinoDark')
+  textField('ui.darkPalette', '暗色时 TW palette（tiddler 标题）', typeof ui.darkPalette === 'string' && ui.darkPalette.trim().length > 0 ? ui.darkPalette.trim() : '$:/palettes/CupertinoDark')
   textField('ui.tabLabel', '会话顶部「知识库」Tab 名称', typeof ui.tabLabel === 'string' && ui.tabLabel.trim().length > 0 ? ui.tabLabel.trim() : '知识库')
   checkField('ui.showSessionTab', '显示会话顶部「知识库」Tab（本会话相关 wiki 笔记汇总）', ui.showSessionTab !== false)
+  const sendToAgent = (ui.sendToAgent ?? {}) as Record<string, unknown>
+  checkField('ui.sendToAgent.enabled', '启用「发送给 Agent」（TW 笔记 → DSH 会话注入）', sendToAgent.enabled !== false)
+  textField('ui.sendToAgent.endpoint', 'TW 端请求基址（空=自动取当前 DSH origin）', typeof sendToAgent.endpoint === 'string' ? sendToAgent.endpoint : '')
+  textField('ui.sendToAgent.token', '共享 token（非空时路由校验 x-send-to-agent-token 头）', typeof sendToAgent.token === 'string' ? sendToAgent.token : '')
   const allArticles = (ui.allArticles ?? {}) as Record<string, unknown>
   numField('ui.allArticles.pageSize', '「所有文章」每页条数', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10)
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。

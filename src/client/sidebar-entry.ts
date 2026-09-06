@@ -10,6 +10,7 @@
  * @module dsh-tiddlywiki/client/sidebar-entry
  */
 import type { PanelState } from './state.ts'
+import { STATUS_ENDPOINT } from './endpoints.ts'
 
 /** Stable data attribute identifying this entry row. */
 export const ENTRY_SELECTOR = '[data-dsh-tw-entry]'
@@ -96,7 +97,7 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
   // 异步到达后原地更新，无需重建 DOM（旧 host 无该字段时保持默认名）。
   void (async () => {
     try {
-      const res = await fetch('/dsh-tiddlywiki/status', { signal: AbortSignal.timeout(5_000) })
+      const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
       if (!res.ok) return
       const p = (await res.json()) as { ui?: { sidebarLabel?: string } }
       const label = p.ui?.sidebarLabel

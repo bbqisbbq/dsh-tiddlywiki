@@ -71,10 +71,6 @@ export function apply(ctx: ClientContextFace): void {
       if (ctx.slots !== undefined) {
         void fetchUiConfig().then((cfg) => {
           if (clientDisposed) return
-          // 输入框上方「快速笔记」快捷按钮（conversation.input.dock 槽位）。该槽位
-          // 是官方为「输入框上方的全宽条目」预留的挂载点，todo/cost-meter/goal/
-          // queue/git-graph 等插件内容都渲染在这里、按纵向 flex 排列，天然不重叠。
-          // 由 ui.showQuickNoteDock 配置控制（默认开）。
           if (cfg.showQuickNoteDock) {
             const removeDock = ctx.slots?.inject('conversation.input.dock', () =>
               ctx.slots?.register(

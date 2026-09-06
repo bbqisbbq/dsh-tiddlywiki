@@ -51,32 +51,6 @@ html[data-dsh-tw-active] [data-pane="conversation"] > :not([data-dsh-tw-view]),
 html[data-dsh-tw-active] [class*="centerCol"] > :not([data-dsh-tw-view]),
 html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view]) { display: none !important; }
 
-/* ── bottom-right status / reload floating buttons ───────────────────
-   The top panel bar (title + status + reload row) is gone so TW's menubar
-   reaches the panel top; status/reload now live here as floating buttons,
-   same visual language as the quick-note toggle. The ui.showPanelStatus
-   setting controls whether they mount at all. */
-.dsh-tw-panel-status {
-  /* 状态/重载悬浮按钮：右对齐到与快速笔记按钮同一条竖线（right:24），
-     垂直排在「同步」按钮（bottom:140）上方；
-     两个按钮竖直依次排列（状态在上、重载在下），与其他插件按钮列对齐、不堆叠。 */
-  position: fixed; right: 24px; bottom: 192px; z-index: 950;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
-}
-.dsh-tw-panel-status-btn {
-  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
-  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
-  font: inherit; font-size: 12px; padding: 7px 12px; border-radius: 999px;
-  box-shadow: var(--dsw-shadow-lv3, 0 4px 16px rgba(0,0,0,.16)); cursor: pointer;
-  display: inline-flex; align-items: center; gap: 6px;
-  transition: background-color 120ms ease;
-}
-.dsh-tw-panel-status-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
-.dsh-tw-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; flex: none; }
-.dsh-tw-status-dot[data-state="running"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
-.dsh-tw-status-dot[data-state="starting"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
-.dsh-tw-status-dot[data-state="failed"], .dsh-tw-status-dot[data-state="stopped"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
-
 /* The iframe background follows the DSH theme so a blank/preload frame never
    flashes pure white in dark mode (TW paints its own palette once loaded). */
 .dsh-tw-panel-frame { flex: 1; min-height: 0; border: 0; width: 100%; display: block; background: var(--dsw-alias-bg-layer-1, #fff); }
@@ -264,38 +238,6 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-editor-close:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, #222); }
 .dsh-tw-editor-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--dsw-alias-bg-layer-1, #fff); }
 .dsh-tw-editor-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; }
-.dsh-tw-note-toggle {
-  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
-  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
-  font: inherit; font-size: 13px; padding: 9px 16px; border-radius: 999px;
-  box-shadow: var(--dsw-shadow-lv3, 0 4px 16px rgba(0,0,0,.16)); cursor: pointer;
-  display: inline-flex; align-items: center; gap: 6px;
-  transition: background-color 120ms ease;
-}
-.dsh-tw-note-toggle:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
-
-/* ── floating sync button (bottom-right) ───────────────────────
-   Pill FAB between the quick-note toggle (bottom:88) and the TW panel
-   status/reload floaters (bottom:192); dot reflects git state. */
-.dsh-tw-sync {
-  position: fixed; right: 24px; bottom: 140px; z-index: 950;
-  display: inline-flex; align-items: center; gap: 7px;
-  padding: 9px 14px; border-radius: 999px;
-  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
-  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
-  font: inherit; font-size: 13px; box-shadow: var(--dsw-shadow-lv3, 0 4px 16px rgba(0,0,0,.16));
-  cursor: pointer; transition: background-color 120ms ease;
-}
-.dsh-tw-sync:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
-.dsh-tw-sync:disabled { opacity: .65; cursor: default; }
-.dsh-tw-sync-icon { display: inline-flex; flex: none; }
-.dsh-tw-sync-spin .dsh-tw-sync-icon svg { animation: dsh-tw-spin 1s linear infinite; transform-origin: center; }
-@keyframes dsh-tw-spin { to { transform: rotate(360deg); } }
-.dsh-tw-sync-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; flex: none; }
-.dsh-tw-sync-dot[data-state="clean"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
-.dsh-tw-sync-dot[data-state="dirty"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
-.dsh-tw-sync-dot[data-state="behind"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
-.dsh-tw-sync-dot[data-state="syncing"] { background: var(--dsw-alias-brand-primary, #3e63dd); }
 
 /* ── toast ──────────────────────────────────────────────────── */
 .dsh-tw-toast {

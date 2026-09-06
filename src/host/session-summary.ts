@@ -221,26 +221,29 @@ interface TitleState {
   snippet?: string
 }
 
-/** 逐个查询每篇笔记的当前状态（404 → 不存在/已删除）。 */
+/** 并发（8 路）查询每篇笔记的当前状态（404 → 不存在/已删除）。 */
 async function enrichTitles(client: TiddlyWebClient, titles: string[]): Promise<Map<string, TitleState>> {
   const out = new Map<string, TitleState>()
-  for (const title of titles) {
+  const enquire = async (title: string): Promise<[string, TitleState]> => {
     try {
       const t = await client.get(title)
-      if (t === undefined) {
-        out.set(title, { exists: false, tags: [] })
-      } else {
-        const flat = typeof t.text === 'string' ? t.text.replace(/\s+/g, ' ').trim() : ''
-        out.set(title, {
-          exists: true,
-          tags: t.tags ?? [],
-          modified: typeof t.modified === 'string' ? t.modified : undefined,
-          snippet: flat.length > 48 ? `${flat.slice(0, 48)}…` : flat,
-        })
-      }
+      if (t === undefined) return [title, { exists: false, tags: [] }]
+      const flat = typeof t.text === 'string' ? t.text.replace(/\s+/g, ' ').trim() : ''
+      return [title, {
+        exists: true,
+        tags: t.tags ?? [],
+        modified: typeof t.modified === 'string' ? t.modified : undefined,
+        snippet: flat.length > 48 ? `${flat.slice(0, 48)}…` : flat,
+      }]
     } catch {
-      out.set(title, { exists: false, tags: [] })
+      return [title, { exists: false, tags: [] }]
     }
+  }
+  // Bounded batches: parallel within a batch, insertion order preserved across
+  // batches (Map order = the caller's title order, same as the old sequential).
+  for (let i = 0; i < titles.length; i += 8) {
+    const batch = titles.slice(i, i + 8)
+    for (const [title, state] of await Promise.all(batch.map(enquire))) out.set(title, state)
   }
   return out
 }
