@@ -80,18 +80,34 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
         const wrapRect = wrap.getBoundingClientRect()
         const card = findCard()
         const right = card !== null ? card.getBoundingClientRect().right : wrapRect.right
-        wrap.style.paddingRight = `${Math.max(0, wrapRect.right - right)}px`
+        const pad = Math.max(0, wrapRect.right - right)
+        if (wrap.style.paddingRight !== `${pad}px`) wrap.style.paddingRight = `${pad}px`
       }
       align()
+      // 侧边栏开/关会改变对话列宽度 → composer 输入卡片（居中、有 max-width）的
+      // 右缘随之移动。旧实现只观察了 dock 容器，侧边栏变化时它不一定触发 resize，
+      // 导致按钮停在上次的位置、不再对齐。这里观察「从 dock 条目一直到对话根节点
+      // （带 data-phase）的整条祖先链」，任一祖先尺寸变化都会重测对齐。
       const ro = new ResizeObserver(align)
-      if (wrap.parentElement !== null) ro.observe(wrap.parentElement)
+      let node: Element | null = wrap
+      while (node !== null && node !== document.documentElement) {
+        ro.observe(node)
+        if (node instanceof HTMLElement && node.hasAttribute('data-phase')) break
+        node = node.parentElement
+      }
       window.addEventListener('resize', align)
+      document.addEventListener('visibilitychange', align)
+      // 自愈兜底：任何未观测到的布局变化（侧边栏切换、插件重渲染等）也会在
+      // 1.5s 内被纠正；每帧只是几次 getBoundingClientRect 读取，开销可忽略。
+      const guard = window.setInterval(align, 1500)
       // The composer card may mount slightly later; re-measure a couple of times.
       const t1 = window.setTimeout(align, 120)
       const t2 = window.setTimeout(align, 600)
       return () => {
         ro.disconnect()
         window.removeEventListener('resize', align)
+        document.removeEventListener('visibilitychange', align)
+        window.clearInterval(guard)
         window.clearTimeout(t1)
         window.clearTimeout(t2)
       }
