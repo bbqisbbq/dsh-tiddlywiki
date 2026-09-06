@@ -427,8 +427,29 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08));
   margin-bottom: 4px;
 }
-.dsh-tw-fab-status + .dsh-tw-fab-status { border-bottom: 0; margin-bottom: 4px; }
+/* 状态行是悬停 tip 的定位锚点（菜单里只剩这一行状态）。 */
+.dsh-tw-fab-status-tiprow { position: relative; }
 .dsh-tw-fab-status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 详细状态 tip：悬停第一行（TW 服务状态）时弹出，显示 TW 服务 + git 状态 +
+   最近日志，取代旧版菜单里的第二行 git 状态行。 */
+.dsh-tw-fab-tip {
+  position: absolute; right: 0; bottom: calc(100% + 8px);
+  z-index: 70; max-width: 300px; min-width: 200px;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  box-shadow: var(--dsw-shadow-lv3, 0 8px 30px rgba(0,0,0,.22));
+  font-size: 11px; line-height: 1.6; white-space: pre-line; word-break: break-word;
+  text-align: left;
+}
+.dsh-tw-fab-tip[hidden] { display: none; }
+.dsh-tw-fab-tip::after {
+  content: ''; position: absolute; right: 16px; bottom: -5px;
+  width: 10px; height: 10px; transform: rotate(45deg);
+  background: var(--dsw-alias-bg-layer-2, #fff);
+  border-right: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+}
 .dsh-tw-fab-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; flex: none; }
 .dsh-tw-fab-status-dot[data-state="running"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
 .dsh-tw-fab-status-dot[data-state="starting"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
@@ -444,6 +465,30 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-fab-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 .dsh-tw-fab-item:active { background: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.18)); }
+
+/* ── input-dock quick-note button（聊天输入框上方，conversation.input.dock）──
+   该槽位渲染为「输入框上方的全宽条目」纵向 flex 排列（todo/cost-meter/goal/
+   queue/git-graph 等插件同区），此按钮以紧凑小胶囊呈现，不与其他条目重叠。 */
+.dsh-tw-dock-note {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px 0; box-sizing: border-box; width: 100%;
+}
+.dsh-tw-dock-note-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px;
+  cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.dsh-tw-dock-note-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
+.dsh-tw-dock-note-btn-active {
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 45%, transparent);
+  color: var(--dsw-alias-brand-primary, #3e63dd);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 8%, var(--dsw-alias-bg-layer-2, #fff));
+}
+.dsh-tw-dock-note-icon { display: inline-flex; flex: none; }
+.dsh-tw-dock-note-label { white-space: nowrap; }
 
 /* ── quick-note restored-draft banner ─────────────────────────────────────── */
 .dsh-tw-note-draft {

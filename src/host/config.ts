@@ -35,6 +35,14 @@ export interface PluginConfigShape {
   ui?: {
     /** 是否在界面右下角显示「快速笔记」悬浮按钮（默认 true）。 */
     showQuickNote?: boolean
+    /**
+     * 是否在聊天输入框上方（conversation.input.dock 槽位）显示「快速笔记」
+     * 快捷按钮（默认 true）。与其它插件（todo/cost-meter/goal/queue/git-graph
+     * 等）注入的内容同处一个纵向排列的 dock 区，天然不重叠。
+     */
+    showQuickNoteDock?: boolean
+    /** 左侧侧边栏 TW 入口的显示名称（默认「TiddlyWiki」，可自定义）。 */
+    sidebarLabel?: string
     /** 是否显示 TW 面板右下角的「状态/重载」悬浮按钮（默认 true）。 */
     showPanelStatus?: boolean
     /** 是否在界面右下角显示「同步」悬浮按钮（默认 true）。 */

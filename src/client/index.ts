@@ -18,6 +18,8 @@ import { mountPanel } from './panel.ts'
 import { createNoteWidget } from './note-widget.ts'
 import { createSyncController } from './sync-button.ts'
 import { mountKnowledgeFab } from './knowledge-fab.ts'
+import { createQuickNoteDock } from './quick-note-dock.ts'
+import { fetchUiConfig } from './ui-config.ts'
 import { disposeEditorPopup } from './editor-popup.ts'
 import { SettingsSection } from './settings-page.ts'
 import { registerToolViews, installWikiLinkInterceptor } from './tool-views.ts'
@@ -49,6 +51,7 @@ export function apply(ctx: ClientContextFace): void {
     injectStyles()
     const state = new PanelState()
     const disposers: Array<() => void> = []
+    let clientDisposed = false
     try {
       // v0.5: the quick-note card and the sync logic are owned by controllers;
       // the single "知识库" FAB drives them (three old floating controls merged).
@@ -60,6 +63,22 @@ export function apply(ctx: ClientContextFace): void {
       disposers.push(mountPanel(state))
       disposers.push(mountKnowledgeFab(state, note, sync))
       disposers.push(disposeEditorPopup)
+      // 输入框上方「快速笔记」快捷按钮（conversation.input.dock 槽位）。该槽位
+      // 是官方为「输入框上方的全宽条目」预留的挂载点，todo/cost-meter/goal/
+      // queue/git-graph 等插件内容都渲染在这里、按纵向 flex 排列，天然不重叠。
+      // 由 ui.showQuickNoteDock 配置控制（默认开）。
+      if (ctx.slots !== undefined) {
+        void fetchUiConfig().then((cfg) => {
+          if (clientDisposed || !cfg.showQuickNoteDock) return
+          const removeDock = ctx.slots?.inject('conversation.input.dock', () =>
+            ctx.slots?.register(
+              { name: 'conversation.input.dock', id: 'quick-note', order: 8, label: '快速笔记' },
+              createQuickNoteDock(note),
+            ),
+          )
+          if (removeDock !== undefined) disposers.push(removeDock)
+        })
+      }
     } catch (error) {
       // DOM failures degrade the plugin, never the GUI.
       console.error('[dsh-tiddlywiki] mount failed:', error)
@@ -90,6 +109,7 @@ export function apply(ctx: ClientContextFace): void {
       console.error('[dsh-tiddlywiki] settings section failed:', error)
     }
     ctx.effect?.(() => () => {
+      clientDisposed = true
       for (const dispose of disposers.splice(0)) dispose()
     }, 'dsh-tiddlywiki: client mount')
   } catch (error) {

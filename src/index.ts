@@ -62,7 +62,7 @@ export interface TiddlywikiConfig {
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
-  ui?: { showQuickNote?: boolean; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string }
+  ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string }
   auth?: { username?: string; password?: string }
 }
 
@@ -83,7 +83,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
-  ui: { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; sendToAgent: { enabled: boolean } }
+  ui: { showQuickNote: boolean; showQuickNoteDock: boolean; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; sendToAgent: { enabled: boolean } }
   auth: { username?: string; password?: string }
 }
 
@@ -93,7 +93,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
-  ui: { showQuickNote: true, showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, sendToAgent: { enabled: true } },
+  ui: { showQuickNote: true, showQuickNoteDock: true, sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, sendToAgent: { enabled: true } },
   auth: { username: '', password: '' },
 }
 
@@ -241,11 +241,14 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
   }
-  const effectiveUi = (): { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string } => {
+  const effectiveUi = (): { showQuickNote: boolean; showQuickNoteDock: boolean; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string } => {
     const ui = eff().ui ?? {}
     const palette = typeof ui.darkPalette === 'string' && ui.darkPalette.trim().length > 0 ? ui.darkPalette.trim() : DARK_PALETTE_DEFAULT
+    const label = typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : config.ui.sidebarLabel
     return {
       showQuickNote: ui.showQuickNote !== false,
+      showQuickNoteDock: ui.showQuickNoteDock !== false,
+      sidebarLabel: label,
       showPanelStatus: ui.showPanelStatus !== false,
       showSyncButton: ui.showSyncButton !== false,
       followDshTheme: ui.followDshTheme !== false,
@@ -467,10 +470,14 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   })
 
   // Teardown: everything reversible (R6 — hot reload must not leak).
+  // The disposer RETURNS its promise: cordis fiber.dispose() awaits effect
+  // disposers, and dsh web's shutdown controller awaits fiber.dispose() with a
+  // 5s grace — so 结束/退出/重启 dsh web 时 TW 后端子进程会被真正停掉，而不是
+  // fire-and-forget 里与进程退出竞速（竞速会在 Windows 上遗留孤儿 TW 进程）。
   ctx.effect(() => () => {
-    // Flush a pending auto-commit BEFORE teardown, so a write made within the
-    // debounce window is not left uncommitted when dsh web stops (best-effort).
-    void (async () => {
+    return (async () => {
+      // Flush a pending auto-commit BEFORE teardown, so a write made within the
+      // debounce window is not left uncommitted when dsh web stops (best-effort).
       try { await committer?.flush() } catch { /* best-effort */ }
       disposeAll()
       await server.stop()

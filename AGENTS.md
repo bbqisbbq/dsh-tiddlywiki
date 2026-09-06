@@ -18,15 +18,15 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.3`（npm latest = 0.16.3；git tag `v0.16.3`） | `package.json` `version` |
+| **插件版本** | `0.16.4`（npm latest = 0.16.4；git tag `v0.16.4`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.3`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
 | **Seed 注册表（7 项）** | 核心：`send-to-agent`、`render-route`、`tw-web-host`；可选：`doc-note`、`home-index`、`all-articles`、`menubar-theme` | `src/host/seeds.ts` 的 `SEED_DEFS` |
 | **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ 可点击链接格式 | `src/index.ts` |
-| **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`ui{showQuickNote,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize}}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
+| **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`ui{showQuickNote,showQuickNoteDock,sidebarLabel,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize}}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
 | **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/sync` `/upload` `/restart` `/agent/sessions` `/agent/modes` `/agent/send` `/agent/create` `/api/*` `/tw/*`；admin：`/admin/state` `/admin/info` `/admin/config` `/admin/restart` `/admin/seeds` `/admin/seeds/run` `/admin/seeds/remove` | `src/host/routes.ts` + `src/host/admin.ts` |
-| **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；回复流工具卡片 `tool.call.toolview`（10 个工具各自 key） | `src/client/index.ts`、`src/client/tool-views.ts` |
+| **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；`conversation.input.dock`（id `quick-note`，order 8，输入框上方快速笔记按钮，受 `ui.showQuickNoteDock` 控制，见 `src/client/quick-note-dock.ts`）；回复流工具卡片 `tool.call.toolview`（10 个工具各自 key） | `src/client/index.ts`、`src/client/quick-note-dock.ts`、`src/client/tool-views.ts` |
 
 ## 2. 仓库布局与关键文件
 

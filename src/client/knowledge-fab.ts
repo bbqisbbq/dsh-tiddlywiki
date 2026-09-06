@@ -5,11 +5,13 @@
  *
  * - The FAB carries a live git status dot (from SyncController).
  * - The menu (opens upward) exposes, gated by the same ui.* settings:
- *     · TW service status line + git status line
+ *     · TW 服务状态行（一行；悬停弹出详细状态 tip，含 git 状态与最近日志）
  *     · 📝 快速笔记   (if ui.showQuickNote)  → opens the note card
  *     · 🖥 打开/收起 TW 面板 (if ui.showPanelStatus) → toggles the center panel
  *     · 🔄 重载 TW 面板 (if ui.showPanelStatus) → reloads the panel iframe
  *     · 🔁 同步       (if ui.showSyncButton)  → pull→commit→push
+ * - 旧版菜单里的第二行（git/知识库状态行）已去掉：git 状态由 FAB 上的状态点
+ *   展示，详细内容并入 TW 状态行的悬停 tip。
  * - When ALL three ui flags are off, no DOM is created.
  *
  * @module dsh-tiddlywiki/client/knowledge-fab
@@ -40,17 +42,21 @@ async function fetchUiFlags(): Promise<UiFlags> {
   }
 }
 
-/** Fetch the TW service health for the menu's status line. */
-async function fetchTwStatus(): Promise<{ state: string; text: string }> {
+/** TW service health snapshot for the menu's status line + hover tip. */
+interface TwHealth { state: string; text: string; logs: string[] }
+
+/** Fetch the TW service health (state line text + recent logs for the tip). */
+async function fetchTwHealth(): Promise<TwHealth> {
   try {
     const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(8_000) })
-    if (!res.ok) return { state: 'failed', text: '状态不可达' }
-    const p = (await res.json()) as { status?: string; url?: string; error?: string }
-    if (p.status === 'running') return { state: 'running', text: `TW 在线 · ${p.url ?? ''}` }
-    if (p.status === 'starting') return { state: 'starting', text: 'TW 启动中…' }
-    return { state: 'failed', text: p.error ?? `TW 状态：${p.status ?? '?'}` }
+    if (!res.ok) return { state: 'failed', text: '状态不可达', logs: [] }
+    const p = (await res.json()) as { status?: string; url?: string; error?: string; logs?: string[] }
+    const logs = Array.isArray(p.logs) ? p.logs.filter((l): l is string => typeof l === 'string') : []
+    if (p.status === 'running') return { state: 'running', text: `TW 在线 · ${p.url ?? ''}`, logs }
+    if (p.status === 'starting') return { state: 'starting', text: 'TW 启动中…', logs }
+    return { state: 'failed', text: p.error ?? `TW 状态：${p.status ?? '?'}`, logs }
   } catch {
-    return { state: 'failed', text: '状态不可达' }
+    return { state: 'failed', text: '状态不可达', logs: [] }
   }
 }
 
@@ -66,31 +72,45 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
   let menu: HTMLDivElement | undefined
   let twStatusEl: HTMLSpanElement | undefined
   let twDot: HTMLSpanElement | undefined
+  let tip: HTMLDivElement | undefined
   let panelLabel: HTMLSpanElement | undefined
   let menuOpen = false
-  let gitRowDot: HTMLSpanElement | undefined
-  let gitRowText: HTMLSpanElement | undefined
+  /** Latest TW health snapshot, merged into the hover tip. */
+  let twHealth: TwHealth = { state: 'unknown', text: 'TiddlyWiki 服务…', logs: [] }
 
   const closeMenu = (): void => {
     menuOpen = false
     if (menu !== undefined) menu.hidden = true
+    if (tip !== undefined) tip.hidden = true
   }
 
-  /** Refresh the git dot + tooltip from the controller (FAB dot + menu row). */
+  /** Rebuild the TW status row's hover tip (TW 服务 + git 状态 + 最近日志). */
+  const renderTip = (): void => {
+    if (tip === undefined) return
+    const lines: string[] = [`TiddlyWiki 服务：${twHealth.text}`]
+    lines.push(`知识库同步：${sync.getState().tooltip}`)
+    if (twHealth.logs.length > 0) {
+      lines.push('最近日志：')
+      lines.push(...twHealth.logs.slice(-3))
+    }
+    tip.textContent = lines.join('\n')
+  }
+
+  /** Refresh the FAB git dot + its title tooltip (and the menu tip's git line). */
   const renderDot = (): void => {
     const s = sync.getState()
     if (dot !== undefined) dot.dataset.state = s.state
     if (fabBtn !== undefined) fabBtn.title = `知识库 · ${s.tooltip}`
-    if (gitRowDot !== undefined) gitRowDot.dataset.state = s.state
-    if (gitRowText !== undefined) gitRowText.textContent = s.tooltip
+    renderTip()
   }
 
   /** Refresh the TW service status line in the menu. */
   const refreshTwStatus = async (): Promise<void> => {
-    const info = await fetchTwStatus()
+    twHealth = await fetchTwHealth()
     if (disposed) return
-    if (twStatusEl !== undefined) twStatusEl.textContent = info.text
-    if (twDot !== undefined) twDot.dataset.state = info.state
+    if (twStatusEl !== undefined) twStatusEl.textContent = twHealth.text
+    if (twDot !== undefined) twDot.dataset.state = twHealth.state
+    renderTip()
   }
 
   const build = (flags: UiFlags): void => {
@@ -102,10 +122,11 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     menu.className = 'dsh-tw-fab-menu'
     menu.hidden = true
 
-    // Status section (TW service + git).
+    // 状态区：仅保留一行 TW 服务状态（第二行 git 状态行已去掉，git 详情并入
+    // 这一行的悬停 tip；FAB 上的状态点仍展示 git 颜色）。
     if (flags.showPanelStatus) {
       const twRow = document.createElement('div')
-      twRow.className = 'dsh-tw-fab-status'
+      twRow.className = 'dsh-tw-fab-status dsh-tw-fab-status-tiprow'
       twDot = document.createElement('span')
       twDot.className = 'dsh-tw-fab-status-dot'
       twDot.dataset.state = 'unknown'
@@ -113,19 +134,19 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       twStatusEl.className = 'dsh-tw-fab-status-text'
       twStatusEl.textContent = 'TiddlyWiki 服务…'
       twRow.append(twDot, twStatusEl)
+      // 悬停详细状态 tip（TW 服务 + git + 最近日志）。
+      tip = document.createElement('div')
+      tip.className = 'dsh-tw-fab-tip'
+      tip.hidden = true
+      twRow.append(tip)
+      twRow.addEventListener('mouseenter', () => {
+        renderTip()
+        if (tip !== undefined) tip.hidden = false
+      })
+      twRow.addEventListener('mouseleave', () => {
+        if (tip !== undefined) tip.hidden = true
+      })
       menu.append(twRow)
-    }
-    if (flags.showSyncButton) {
-      const gitRow = document.createElement('div')
-      gitRow.className = 'dsh-tw-fab-status'
-      gitRowDot = document.createElement('span')
-      gitRowDot.className = 'dsh-tw-fab-status-dot'
-      gitRowDot.dataset.state = sync.getState().state
-      gitRowText = document.createElement('span')
-      gitRowText.className = 'dsh-tw-fab-status-text'
-      gitRowText.textContent = sync.getState().tooltip
-      gitRow.append(gitRowDot, gitRowText)
-      menu.append(gitRow)
     }
 
     if (flags.showQuickNote) {
@@ -135,7 +156,8 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       item.textContent = '📝 快速笔记'
       item.addEventListener('click', () => {
         closeMenu()
-        void note.toggle()
+        // open-only：弹窗只能由卡片上的 ✕ 关闭，触发按钮不负责收起。
+        void note.open()
       })
       menu.append(item)
     }

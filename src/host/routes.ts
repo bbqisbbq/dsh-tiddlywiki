@@ -139,6 +139,10 @@ export interface SessionsFace {
 /** Effective UI flags returned by /status (mirror index.ts). */
 export interface UiDefaultsPublic {
   showQuickNote: boolean
+  /** 聊天输入框上方的「快速笔记」快捷按钮（conversation.input.dock 槽位）。 */
+  showQuickNoteDock: boolean
+  /** 左侧侧边栏 TW 入口的显示名称。 */
+  sidebarLabel: string
   showPanelStatus: boolean
   showSyncButton: boolean
   /** 嵌入式 TW 是否跟随 DSH 深浅主题（false 时客户端停止 palette 同步）。 */

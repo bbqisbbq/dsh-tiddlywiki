@@ -324,6 +324,17 @@ export function createNoteWidget(): NoteWidgetHandle {
   let draftTimer: number | undefined
   let recentOpen = false
 
+  /**
+   * Broadcast the card's open/close state to the rest of the page (the input-
+   * dock quick-note button highlights while the card is open). Plain DOM
+   * CustomEvent — no shared service needed.
+   */
+  const emitState = (open: boolean): void => {
+    try {
+      window.dispatchEvent(new CustomEvent('dsh-tw-note-state', { detail: { open } }))
+    } catch { /* event dispatch is best-effort */ }
+  }
+
   const resetTitle = (): void => {
     if (ui !== undefined) ui.titleInput.value = timestampTitle()
   }
@@ -564,6 +575,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       opened = false
       root.hidden = true
       closeRecent()
+      emitState(false)
     }
 
     const saveDone = (): void => {
@@ -651,14 +663,9 @@ export function createNoteWidget(): NoteWidgetHandle {
     editBtn.addEventListener('click', () => { void doEdit() })
     closeBtn.addEventListener('click', close)
 
-    // Clicking outside the card collapses it (but keeps the draft).
-    document.addEventListener('click', (event) => {
-      if (!opened) return
-      const target = event.target as Node
-      if (root.contains(target)) return
-      if (recentWrap.contains(target)) return
-      close()
-    }, true)
+    // 快速笔记弹窗只允许「手动点关闭按钮（✕）」关闭：刻意移除「点击卡片外部
+    // 即收起」的监听（用户反馈会误关、丢失正在编辑的内容）。草稿仍会防抖
+    // 自动保存，重开时原样恢复。
 
     // Discard draft (banner button).
     discardBtn.addEventListener('click', () => {
@@ -679,6 +686,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       if (ui === undefined || opened) return
       opened = true
       ui.root.hidden = false
+      emitState(true)
       const draft = loadDraft()
       if (draft !== null && (draft.text.trim().length > 0 || draft.title.trim().length > 0)) {
         // Restore the autosaved draft (survives reload / accidental close).
@@ -698,6 +706,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       opened = false
       ui.root.hidden = true
       closeRecent()
+      emitState(false)
     },
     async toggle() {
       if (opened) this.close()

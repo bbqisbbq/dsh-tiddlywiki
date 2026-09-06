@@ -227,6 +227,8 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   textField('git.remote', 'git 远端（空=仅本地）', typeof git.remote === 'string' ? git.remote : '')
   textField('git.branch', 'git 分支', typeof git.branch === 'string' ? git.branch : 'main')
   checkField('ui.showQuickNote', '显示「知识库」按钮里的「快速笔记」入口', ui.showQuickNote !== false)
+  checkField('ui.showQuickNoteDock', '显示聊天输入框上方的「快速笔记」快捷按钮', ui.showQuickNoteDock !== false)
+  textField('ui.sidebarLabel', '侧边栏 TW 入口显示名称', typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : 'TiddlyWiki')
   checkField('ui.showPanelStatus', '显示「知识库」按钮里的 TW 面板/重载入口与状态行', ui.showPanelStatus !== false)
   checkField('ui.showSyncButton', '显示「知识库」按钮里的「同步」入口与 git 状态点', ui.showSyncButton !== false)
   checkField('ui.followDshTheme', '嵌入式 TW 跟随 DSH 深浅主题（暗色时自动切深色 palette，不写回 wiki）', ui.followDshTheme !== false)

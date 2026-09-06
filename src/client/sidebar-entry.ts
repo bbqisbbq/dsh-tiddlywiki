@@ -46,15 +46,21 @@ function newSessionButton(root: HTMLElement): HTMLButtonElement | undefined {
 }
 
 /** Build the entry row (a detached button; insert once the shell is up). */
-function createEntry(state: PanelState): HTMLButtonElement {
+function createEntry(state: PanelState, label: string): { entry: HTMLButtonElement; labelEl: HTMLSpanElement } {
   const entry = document.createElement('button')
   entry.type = 'button'
   entry.dataset.dshTwEntry = ''
   entry.className = 'dsh-tw-entry'
   entry.setAttribute('aria-label', 'TiddlyWiki 知识库')
-  entry.innerHTML = `<span class="dsh-tw-entry-icon">${ICON}</span><span class="dsh-tw-entry-label">TiddlyWiki</span>`
+  const icon = document.createElement('span')
+  icon.className = 'dsh-tw-entry-icon'
+  icon.innerHTML = ICON
+  const labelEl = document.createElement('span')
+  labelEl.className = 'dsh-tw-entry-label'
+  labelEl.textContent = label
+  entry.append(icon, labelEl)
   entry.addEventListener('click', () => { state.toggle() })
-  return entry
+  return { entry, labelEl }
 }
 
 /** Re-insert the entry before the whole family block (stable ordering). */
@@ -78,12 +84,28 @@ interface TwDebug { attempts: number; found: boolean; placed: boolean }
 
 /**
  * Mount the sidebar entry, waiting for the shell and self-healing on later
- * re-renders.
+ * re-renders. The row label starts at `initialLabel` and is refreshed from the
+ * live config (`ui.sidebarLabel`) as soon as /status answers.
  * @param state - the shared panel state the entry toggles.
+ * @param initialLabel - default display name before config loads.
  * @returns disposer removing the entry and its observers.
  */
-export function mountSidebarEntry(state: PanelState): () => void {
-  const entry = createEntry(state)
+export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'): () => void {
+  const { entry, labelEl } = createEntry(state, initialLabel)
+  // 自定义显示名：/status 返回 ui.sidebarLabel（设置页「侧边栏入口显示名称」），
+  // 异步到达后原地更新，无需重建 DOM（旧 host 无该字段时保持默认名）。
+  void (async () => {
+    try {
+      const res = await fetch('/dsh-tiddlywiki/status', { signal: AbortSignal.timeout(5_000) })
+      if (!res.ok) return
+      const p = (await res.json()) as { ui?: { sidebarLabel?: string } }
+      const label = p.ui?.sidebarLabel
+      if (typeof label === 'string' && label.trim().length > 0) {
+        labelEl.textContent = label.trim()
+        entry.setAttribute('aria-label', label.trim())
+      }
+    } catch { /* keep the initial label */ }
+  })()
   const debug: TwDebug = { attempts: 0, found: false, placed: false }
   const host = globalThis.location?.hostname
   if (host === 'localhost' || host === '127.0.0.1') {

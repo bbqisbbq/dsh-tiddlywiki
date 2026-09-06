@@ -20,10 +20,10 @@
 | 🤖 **Agent 工具** | `tiddlywiki_search` / `get` / `put` / `batch_put` / `rename` / `delete` / `recent` / `list_tags` / `git_sync` / `git_resolve` 十个工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
 | 📊 **回复流工具卡片** | `tiddlywiki_*` 工具结果在回复流里显示**原生 TW 卡片**（v0.16.0）：`get`/`put`/`rename` 把 tiddler 原生渲染进卡片、`search`/`recent`/`batch` 列可点击行、`list_tags` 计数 chips、`git`/`delete` 显示文本；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达中央 TW 面板 |
 | 📤 **一键发送给 Agent** | TW 笔记工具栏「**发送给 Agent**」按钮（首次启动自动写入 wiki；**独立加粗纸飞机图标**，遵循核心工具栏图标约定，工具栏设置列表也显示各按钮图标/说明）：把当前笔记作为消息注入所选 dsh 会话（按工作区分组选择，可新建工作区/会话，**可选「工作模式」= Agent 预设**、**可选「权限」= 权限预设**（沙箱+审批），**可选附加说明**随消息一起发给 Agent（**位于消息末尾**，作为你的最终补充要求，v0.16.3），已有会话显示其当前模式）；**消息自动附加待办说明**——告知 Agent 这是用户提前编辑在 wiki 中的待办事项，不清楚应主动提问 |
-| 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口 → 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
+| 🧭 **内嵌编辑器** | 侧边栏「TiddlyWiki」入口（**显示名可自定义**，`ui.sidebarLabel`）→ 中央列内嵌完整 TW 5 编辑器（**同源代理**，经 DSH origin 访问，Tailscale/内网/域名/HTTPS 均可用） |
 | 🌗 **跟随 DSH 主题** | 嵌入式 TW（中央面板 +「在 TW 中编辑」弹窗）**自适应 DSH 深浅主题**：暗色自动切深色 palette、浅色恢复原 palette；**纯内存切换，不写回 wiki、不进 git**；设置页可关可换深色 palette |
-| 📝 **快速笔记** | 右下角「知识库」悬浮按钮 → 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；可整体隐藏 |
-| 🔄 **一键同步** | 「知识库」按钮 →「🔁 同步」：pull → commit → push；FAB 上的状态点实时反映 git 状态（已同步/待提交/可更新/离线） |
+| 📝 **快速笔记** | 右下角「知识库」悬浮按钮 **或聊天输入框上方的快捷按钮**（`ui.showQuickNoteDock`，与 todo/cost-meter/goal 等插件内容同槽位纵向排列、不重叠）→ 快速笔记卡片：**CodeMirror 6** Markdown 编辑器（语法高亮 + 撤销/重做）、文件上传、多选/自动补全 tag、**草稿自动保存（刷新不丢）**、**「🕘 最近」一键载入旧笔记**，Ctrl+Enter 保存；**卡片只允许点右上角 ✕ 关闭**（点页面其他位置不会误关）；可整体隐藏 |
+| 🔄 **一键同步** | 「知识库」按钮 →「🔁 同步」：pull → commit → push；FAB 上的状态点实时反映 git 状态（已同步/待提交/可更新/离线），菜单里的状态行**悬停弹出详细 tip**（TW 服务 + git 状态 + 最近日志） |
 | ⚙️ **设置页** | DSH 设置 →「TiddlyWiki 知识库」：插件/主题/语言管理与运行配置，应用后自动重启 TW；**「初始化」区块**列出所有一次性预置项（说明笔记/发送按钮/首页/所有文章/**menubar 顶栏主题自适应**/同源代理基址）的实时状态：**功能必需项**（发送按钮 + 代理基址）启动自动写入，**可选项默认不写入、不强绑定**——每项可手动**重新初始化**，可选项可**反初始化**（移除）；**「所有文章」每页条数**可在配置里调整（实时生效，无需重新初始化） |
 | 🛡 **零摩擦生命周期** | 随 dsh 自动启停；TW 子进程崩溃自动重启（退避）；端口/目录/首次 git init 全自动 |
 | 💾 **数据即备份** | wiki 文件夹本身就是一个 git 仓库；自动 commit（60s 防抖，可关），配置随 dsh-market 迁移 |
@@ -34,6 +34,7 @@
 
 > 最近几个主要版本的一句话更新记录（完整变更见 git log / Releases）。
 
+- **v0.16.4**（2026-09-06）：**一批零散界面优化**。① **输入框上方「快速笔记」快捷按钮**（`ui.showQuickNoteDock`，默认开）：挂在 DSH 官方 `conversation.input.dock` 槽位，与 todo/cost-meter/goal/queue/git-graph 等插件内容同区纵向排列、**不重叠不遮挡**；② 快速笔记卡片**只能点 ✕ 关闭**（移除「点页面其他位置即收起」，不会误关）；③ 侧边栏 TW 入口**显示名可自定义**（`ui.sidebarLabel`，默认「TiddlyWiki」，设置页可改）；④ 「知识库」菜单去掉第二行 git 状态行，**第一行（TW 服务状态）悬停弹出详细 tip**（TW 服务 + git 状态 + 最近日志）；⑤ **退出/重启 dsh web 时确保 TW 后端子进程真正关闭**——host teardown 现在返回 Promise，随 cordis fiber.dispose 被 await（dsh web 关机控制器最多等 5s），不再 fire-and-forget 遗留孤儿 TW 进程。改动均向后兼容（旧配置无新字段时走默认值）。
 - **v0.16.3**（2026-09-06）：**「发送给 Agent」附加说明移到消息末尾 + 注入提示词补充「想法沉淀」约定**。① bundle v0.3.3：`【附加说明】` 段从「待办说明与正文之间」移到**正文之后、消息最末尾**——作为用户的最终补充要求（指令越靠后越优先遵循）；弹层交互不变，在线 wiki 在「知识库」FAB →「🔄 重载 TW 面板」后生效；② 注入提示词（`PROMPT_TEXT`）新增「**想法沉淀**」段落：鼓励 Agent 把「未来可能有用 / 值得做」但不在当前执行范围内的想法，用 `tiddlywiki_put` 写成独立 tiddler，打上 `todo` + `agent-written` 标签（并附当前工作区名），正文说明来源（会话 / 工作区 / 项目背景），由用户决定是否继续；新会话在下次重启 dsh web 后生效。
 - **v0.16.0**（2026-09-05）：**回复流原生 TW 工具卡片 + 可点击 wiki 链接**。新增 seed `render-route`（核心项）：TW 内注册 `POST /render` 服务路由把 wiki 文本渲染成原生 HTML 片段，并把内部 wiki 链接改写为同源代理 hash（`tv-wikilink-template`，首次 seed 后自动重启 TW）；全部 10 个 `tiddlywiki_*` 工具在回复流里显示**原生 TW 工具卡片**（`tool.call.toolview`）：`get`/`put`/`rename` 原生渲染 tiddler、`search`/`recent`/`batch` 列可点击行、`list_tags` 计数 chips、`git`/`delete` 显示文本；**文档级点击拦截**——`[标题](/dsh-tiddlywiki/tw/#标题)` 与渲染片段里的 wiki 链接点击后打开中央 TW 面板并跳转该 tiddler；host 新增 `/search` 路由（关键词 + tags/tag/since/type/limit）、`/tags` 返回带计数的 items、`/get` 返回 modified。
 - **v0.16.1**（2026-09-05）：修：工具卡片改为 `slots.inject` 注册（子 slot 需父声明），卡片在回复流正常挂载。
@@ -127,7 +128,7 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 - 按钮在 控制台→外观→工具栏 里带**独立加粗图标与说明**（v0.14.0 起不再借用「导出此条目」的图标；bundle 还 shadow 覆盖核心工具栏行模板，让查看/页面/编辑工具栏的设置列表都显示每个按钮的图标）；
 - 开关与 token 见设置页「常规配置」/配置项 `ui.sendToAgent`（默认开）。
 
-**🧭 中央列编辑器** — 侧边栏「TiddlyWiki」按钮开关中央编辑器面板（**同源代理**：iframe 指向 `<DSH origin>/dsh-tiddlywiki/tw/`，由 DSH 转发到回环上的 TW 服务），完整 TW 5 编辑器。
+**🧭 中央列编辑器** — 侧边栏「TiddlyWiki」按钮开关中央编辑器面板（**同源代理**：iframe 指向 `<DSH origin>/dsh-tiddlywiki/tw/`，由 DSH 转发到回环上的 TW 服务），完整 TW 5 编辑器。入口显示名可在设置页「常规配置」→「侧边栏 TW 入口显示名称」自定义（`ui.sidebarLabel`，默认「TiddlyWiki」，改后刷新页面生效）。
 
 **🌗 跟随 DSH 主题** — 中央面板与「✏️ 在 TW 中编辑」弹窗里的 TW **自动跟随 DSH 的深浅主题**（v0.8.0 起，`ui.followDshTheme`，默认开）：
 - DSH 处于**暗色**时，TW 的活动 palette 临时切到深色 palette（默认 `$:/palettes/CupertinoDark`）；切回**浅色**时自动恢复你原来的 palette；
@@ -135,7 +136,10 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 - 切换是**纯内存**的（写入 `$:/palette` 后同步校准 syncer 的 changeCount，阻止它 PUT 回服务端）——**不写回 wiki、不进 git 历史**，你的 palette 选择与知识库 git 状态始终干净；
 - 开关与深色 palette 可在设置页「常规配置」调整。
 
-**📝 快速笔记** — 右下角「**知识库**」悬浮按钮 →「📝 快速笔记」（可折叠）：
+**📝 快速笔记** — 两个入口，同一张卡片：
+- **入口一**：聊天输入框上方的**快捷按钮**（v0.16.4，`ui.showQuickNoteDock` 控制、默认开）——挂在 DSH 官方 `conversation.input.dock` 槽位（「输入框上方的全宽条目」，todo/cost-meter/goal/queue/git-graph 等插件内容也在这里），纵向 flex 排列，**天然不重叠**；
+- **入口二**：右下角「**知识库**」悬浮按钮 →「📝 快速笔记」；
+- 卡片（可折叠）**只能点右上角 ✕ 关闭**——点页面其他位置不会误关（v0.16.4 起移除「点外部收起」），草稿照常防抖自动保存；
 - **CodeMirror 6 编辑器**：真正的 Markdown 语法树高亮（标题/列表/代码/链接/表格/任务清单/删除线等，GFM），支持撤销/重做与行内编辑体验；
 - **草稿自动保存**：正文/标题/标签 500ms 防抖写入本地，关掉卡片或刷新页面都不丢；重开自动恢复，可一键「丢弃」；
 - **🕘 最近**：一键列出最近修改的笔记，点标题直接载入编辑器继续改（不需要开完整 TW 去找）；
@@ -146,8 +150,9 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 **🔧 一键同步 + 面板** —「知识库」按钮是一个**统一入口**，替代了旧版三个叠在右下角的悬浮按钮：
 - **🖥 打开/收起 TW 面板** 与 **🔄 重载 TW 面板**（`ui.showPanelStatus` 控制）；
 - **📝 快速笔记**（`ui.showQuickNote` 控制）；
+- 菜单顶部一行 **TW 服务状态**（v0.16.4 起去掉旧版第二行 git 状态行），**鼠标悬停弹出详细 tip**：TW 服务状态/地址 + git 状态（分支/领先/落后/上次同步）+ 最近日志；
 - **🔁 同步**：pull → commit → push；FAB 右下角的**状态点**实时反映 git 状态：
-  🟢 已同步 · 🟡 有未提交改动 · 🔴 落后于远端 · ⚪ 离线；悬停可看分支/领先/落后/上次同步时间；每 30s 自动刷新。
+  🟢 已同步 · 🟡 有未提交改动 · 🔴 落后于远端 · ⚪ 离线；悬停 FAB 可看分支/领先/落后/上次同步时间；每 30s 自动刷新。
   若这次 pull 拉到了新内容，TW 服务自动重启（同端口），界面立即显示最新快照（无需手动去面板点「重启 TW」）。
 
 **🔧 面板异常** — 面板服务异常时显示错误 +「重试」按钮（POST `/dsh-tiddlywiki/restart`）。
@@ -157,7 +162,7 @@ dsh plugin --profile web add link:/path/to/your/dsh-tiddlywiki
 | 区块 | 内容 |
 |---|---|
 | 状态/重启 | TW 运行状态 + git 概览 + 「同步」按钮 + 「重启 TW」按钮 |
-| 常规配置 | 快速笔记默认 tag、git 自动 commit/防抖/远端/分支、ui 开关（快速笔记/面板状态/同步按钮——分别控制「知识库」按钮里的对应入口）、**跟随 DSH 主题开关 + 深色 palette**——改了什么保存什么 |
+| 常规配置 | 快速笔记默认 tag、git 自动 commit/防抖/远端/分支、ui 开关（快速笔记/输入框上方快捷按钮/面板状态/同步按钮——分别控制对应入口）、**侧边栏 TW 入口显示名称**、**跟随 DSH 主题开关 + 深色 palette**——改了什么保存什么 |
 | 插件管理 | 自带官方插件勾选（可搜索）→ 应用并自动重启 TW |
 | 主题管理 | 自带主题**多选加载 + 单选活动** → 应用并自动重启 TW |
 | 语言管理 | 自带官方语言包勾选（含 zh-Hans 简体）→ 应用并自动重启 TW |
@@ -252,8 +257,10 @@ TW 子进程只监听 **127.0.0.1 回环**（更安全），**agent 工具、快
       tag: "inbox"
     ui:
       showQuickNote: true           # 是否显示「知识库」按钮里的「快速笔记」入口
+      showQuickNoteDock: true       # 是否显示聊天输入框上方的「快速笔记」快捷按钮
+      sidebarLabel: "TiddlyWiki"    # 左侧侧边栏 TW 入口的显示名称（可自定义）
       showPanelStatus: true         # 是否显示「知识库」按钮里的 TW 面板/重载入口与状态行
-      showSyncButton: true          # 是否显示「知识库」按钮里的「同步」入口与 git 状态点
+      showSyncButton: true          # 是否显示「知识库」按钮里的「同步」入口（git 状态点常驻 FAB）
       followDshTheme: true          # 嵌入式 TW 是否跟随 DSH 深浅主题（纯内存切换）
       darkPalette: "$:/palettes/CupertinoDark"   # DSH 暗色时 TW 使用的深色 palette
     auth:
