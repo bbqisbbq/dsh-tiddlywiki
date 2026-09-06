@@ -128,7 +128,10 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   display: flex; align-items: center; gap: 8px;
   font-size: 12px; font-weight: 600; letter-spacing: .2px;
   color: var(--dsw-alias-label-primary, #222);
+  /* 标题栏 = 拖动把手（拖卡片移动）；touch-action:none 让触屏也能拖动 */
+  cursor: move; user-select: none; -webkit-user-select: none; touch-action: none;
 }
+.dsh-tw-note-head-dragging { cursor: grabbing; opacity: .96; }
 .dsh-tw-note-head .dsh-tw-note-label { margin-right: auto; display: flex; align-items: center; gap: 6px; }
 .dsh-tw-note-close {
   border: none; background: transparent; color: var(--dsw-alias-label-secondary, #888);
