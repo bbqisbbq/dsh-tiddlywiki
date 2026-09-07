@@ -220,6 +220,8 @@ pull 冲突后：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep
 
 **Agent 笔记标签约定**：\`tiddlywiki_put\` / \`tiddlywiki_batch_put\` 新建笔记时，插件会自动补打 \`agent-written\` 标签（标记「由 Agent 撰写」），无需手动添加，也不要手动移除它（除非用户明确要求）。首页会把 Agent 笔记单独列在「Agent 区块」，主标签列表只统计人类笔记。若某篇 Agent 笔记后续被人类编辑过，请在该笔记上补打 \`human-edited\` 标签，首页会把它归入「Agent + 人工」档。覆盖写入已有的（人类）笔记时不会自动加 agent-written，请保持笔记原本的归属。
 
+**内容类型约定**：agent 笔记正文默认用 **Markdown** 写；\`tiddlywiki_put\` / \`tiddlywiki_batch_put\` 未指定内容类型时自动按 \`text/markdown\` 写入（\`$:/\` 系统条目除外），无需手动指定。要写 TW 原生 wikitext 才需要在 fields 里显式传 \`{"type":"text/vnd.tiddlywiki"}\`。⚠️ \`fields.type\` 是 TW 的**内容类型**保留字段——不要把业务分类值（如 \`"meeting"\`）写进去（会破坏渲染），业务分类请放 \`tags\`。
+
 **引用 wiki 笔记用可点击链接**：在回复流中引用某篇笔记时，用格式 \`[标题](/dsh-tiddlywiki/tw/#标题)\` 输出（标题含空格/特殊字符时做 URL 编码，如 \`A%20B\`；中文标题可直接写）。这类链接会被界面自动接管：点击后打开中央 TW 面板并跳转到该笔记的原生页面。回复里也优先用这个链接格式代替纯文本标题，让用户能一键跳到 wiki。`
 
 /**

@@ -18,12 +18,12 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.14`（npm latest = 0.16.14；git tag `v0.16.14`） | `package.json` `version` |
+| **插件版本** | `0.16.15`（npm latest = 0.16.15；git tag `v0.16.15`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
 | **Seed 注册表（7 项）** | 核心：`send-to-agent`、`render-route`、`tw-web-host`；可选：`doc-note`、`home-index`、`all-articles`、`menubar-theme` | `src/host/seeds.ts` 的 `SEED_DEFS` |
-| **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ 可点击链接格式 | `src/index.ts` |
+| **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **内容类型约定**（默认 markdown，`fields.type` 是内容类型保留字段勿放业务分类）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ 可点击链接格式 | `src/index.ts` |
 | **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`ui{showQuickNote,showQuickNoteDock,sidebarLabel,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize},tabLabel,showSessionTab}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
 | **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/sync` `/upload` `/restart` `/session/summary` `/agent/sessions` `/agent/modes` `/agent/send` `/agent/create` `/api/*` `/tw/*`；admin：`/admin/state` `/admin/info` `/admin/config` `/admin/restart` `/admin/seeds` `/admin/seeds/run` `/admin/seeds/remove` | `src/host/routes.ts` + `src/host/admin.ts` |
 | **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；`conversation.input.dock`（id `quick-note`，order 8，输入框上方快速笔记按钮，受 `ui.showQuickNoteDock` 控制，见 `src/client/quick-note-dock.ts`）；`conversation.view`（id `dsh-tiddlywiki-summary`，order 20，会话顶部「知识库」Tab = 本会话相关 wiki 汇总，TW 原生渲染 `$:/temp/dsh/session-summary/<会话ID>`——**浏览器端 TW 同步天生排除 `$:/temp`，由客户端在 iframe 就绪后注入（`addTiddler`）再走 TW 原生 hash 导航**，见 §8，受 `ui.showSessionTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/session-summary.ts`）；回复流工具卡片 `tool.call.toolview`（10 个工具各自 key） | `src/client/index.ts`、`src/client/quick-note-dock.ts`、`src/client/session-summary.ts`、`src/client/tool-views.ts` |
@@ -100,9 +100,11 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 
 10 个 `tiddlywiki_*` 工具，列表式注册。输出有 `render` 契约：模型看到的只是 render 后的文本，必须携带完整事实（标题/标签/摘要/git 状态），别写"UI 摘要"。
 
+- **内容类型默认**（v0.16.15）：`put`/`batch_put` 对未指定 `type` 的条目自动补 `text/markdown`（`$:/` 系统条目除外；显式 `fields.type` 优先）；`fields.type` 是 TW 内容类型**保留字段**，工具描述/提示词都明确警告勿放业务分类值。
+
 ### 提示词注入（src/index.ts `PROMPT_TEXT`）
 
-`systemPrompt.section({name:'dsh-tiddlywiki', order:100, text})`，内容要点：工具清单、知识库同步纪律（开工 pull / 收工 sync）、pull 冲突处理（`git_resolve` keep-local|keep-remote）、wiki 当长期记忆、自动建笔记带 workspace 标签、`agent-written`/`human-edited` 标签约定、**想法沉淀约定**（有价值但不在当前范围的 idea → `todo`+`agent-written` 独立 tiddler + 工作区/会话背景）、`[标题](/dsh-tiddlywiki/tw/#标题)` 可点击链接格式。
+`systemPrompt.section({name:'dsh-tiddlywiki', order:100, text})`，内容要点：工具清单、知识库同步纪律（开工 pull / 收工 sync）、pull 冲突处理（`git_resolve` keep-local|keep-remote）、wiki 当长期记忆、自动建笔记带 workspace 标签、`agent-written`/`human-edited` 标签约定、**内容类型约定**（agent 正文默认 Markdown，工具自动补 `text/markdown`；要写 wikitext 才显式传 `fields.type`；`fields.type` 勿放业务分类）、**想法沉淀约定**（有价值但不在当前范围的 idea → `todo`+`agent-written` 独立 tiddler + 工作区/会话背景）、`[标题](/dsh-tiddlywiki/tw/#标题)` 可点击链接格式。
 
 ### Seed 机制（src/host/seeds.ts）
 

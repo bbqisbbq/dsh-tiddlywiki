@@ -31,6 +31,13 @@ export const AGENT_WRITTEN_TAG = 'agent-written'
  */
 export const HUMAN_EDITED_TAG = 'human-edited'
 
+/**
+ * Agent 写入的默认内容类型。agent 正文按约定是 Markdown，而 TW 对无 type 的
+ * tiddler 按 wikitext（text/vnd.tiddlywiki）解析——`##`/`**` 之类原样显示，显示
+ * 解析全坏（v0.16.15 起 put/batch_put 自动补该默认；wiki 已启用 tiddlywiki/markdown）。
+ */
+export const DEFAULT_NOTE_TYPE = 'text/markdown'
+
 /** Structural tool-registry face (subset of the dsh tools service). */
 export interface ToolsCtx {
   tools: { register(tool: unknown): () => void }
@@ -109,6 +116,21 @@ function finalTagsForWrite(title: string, existing: Tiddler | undefined, tags: s
   if (title.startsWith('$:/')) return tags
   if (tags.includes(AGENT_WRITTEN_TAG)) return tags
   return [...tags, AGENT_WRITTEN_TAG]
+}
+
+/**
+ * Compute the final content type for a write (mutates the tiddler in place):
+ * - explicit `type` (normally via fields) wins — untouched;
+ * - `$:/` system tiddlers keep TW's own default (config/plugin internals must
+ *   not be force-marked as markdown);
+ * - everything else defaults to Markdown (DEFAULT_NOTE_TYPE) — agent notes are
+ *   written in Markdown and TW would otherwise parse them as wikitext.
+ */
+function finalTypeForWrite(title: string, tiddler: Tiddler): { defaulted: boolean } {
+  if (typeof tiddler.type === 'string' && tiddler.type.length > 0) return { defaulted: false }
+  if (title.startsWith('$:/')) return { defaulted: false }
+  tiddler.type = DEFAULT_NOTE_TYPE
+  return { defaulted: true }
 }
 
 export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<() => void> {
@@ -259,18 +281,19 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_put ───────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_put',
-    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；tags 为标签数组，fields 为附加自定义字段（json 对象，会写入 tiddler 字段）。写入后触发自动 commit。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。',
+    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；tags 为标签数组，fields 为附加自定义字段（json 对象，会写入 tiddler 字段）。写入后触发自动 commit。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。未指定内容类型时自动默认 text/markdown（$:/ 系统条目除外）；要写原生 wikitext 需显式在 fields 传 {"type":"text/vnd.tiddlywiki"}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配，覆盖同名）', required: true },
-      text: { type: 'string', description: 'tiddler 全文（wiki 文本）', required: true },
+      text: { type: 'string', description: 'tiddler 全文（默认按 Markdown 解析）', required: true },
       tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）' },
-      fields: { type: 'json', description: '附加自定义字段，如 {"type":"meeting","date":"2026-09-02"}（可选）' },
+      fields: { type: 'json', description: '附加自定义字段，如 {"date":"2026-09-02"}（可选）。注意：fields.type 是 TW 内容类型（保留字段，默认已自动补 text/markdown），不要写业务分类值' },
     },
     output: {
       schema: { type: 'json' },
       render: (_args, value: PutResult) => {
         const lines = [`已写入 tiddler「${value.title}」`]
         if (value.tags.length > 0) lines.push(`标签: ${value.tags.join(', ')}`)
+        if (value.type !== null) lines.push(`类型: ${value.type}${value.typeDefaulted === true ? '（未指定，已默认 markdown）' : ''}`)
         if (value.fields !== null) {
           const entries = Object.entries(value.fields)
           if (entries.length > 0) lines.push(`字段: ${entries.map(([k, v]) => `${k}=${String(v)}`).join(', ')}`)
@@ -285,16 +308,17 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const tiddler: Tiddler = { title: args.title, text: args.text }
       if (tags.length > 0) tiddler.tags = tags
       if (args.fields !== undefined && typeof args.fields === 'object' && args.fields !== null) Object.assign(tiddler, args.fields)
+      const { defaulted } = finalTypeForWrite(args.title, tiddler)
       await wiki.put(tiddler)
       deps.autoCommit()
-      return { ok: true, title: args.title, tags, fields: args.fields ?? null }
+      return { ok: true, title: args.title, tags, type: typeof tiddler.type === 'string' ? tiddler.type : null, ...(defaulted ? { typeDefaulted: true } : {}), fields: args.fields ?? null }
     },
   }))
 
   // ── tiddlywiki_batch_put ─────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_batch_put',
-    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果。写入后触发自动 commit。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。',
+    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果。写入后触发自动 commit。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。未指定内容类型（fields.type）的条目自动默认 text/markdown（$:/ 系统条目除外）。',
     parameters: {
       items: {
         type: 'array',
@@ -304,9 +328,9 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           description: '要写入的 tiddler 数组',
           properties: {
             title: { type: 'string', description: '标题（精确匹配，覆盖同名）', required: true },
-            text: { type: 'string', description: '全文（wiki 文本）', required: true },
+            text: { type: 'string', description: '全文（默认按 Markdown 解析）', required: true },
             tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）' },
-            fields: { type: 'json', description: '附加自定义字段（可选）' },
+            fields: { type: 'json', description: '附加自定义字段（可选）。注意：fields.type 是 TW 内容类型（保留字段，默认已自动补 text/markdown），不要写业务分类值' },
           },
         },
       },
@@ -343,6 +367,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         const tiddler: Tiddler = { title: item.title, text: item.text }
         if (tags.length > 0) tiddler.tags = tags
         if (item.fields !== undefined && typeof item.fields === 'object' && item.fields !== null) Object.assign(tiddler, item.fields)
+        finalTypeForWrite(item.title, tiddler)
         await wiki.put(tiddler)
         written++
         results.push({ title: item.title, written: true, skipped: false })
@@ -553,7 +578,7 @@ interface SearchResult { query: string; tags: string[]; since: string | null; ty
 interface RecentResult { since: string | null; results: SearchHit[] }
 interface TagListResult { count: number; tags: Array<{ tag: string; count: number }> }
 interface GetResult { notFound: boolean; title: string; text: string; tags: string[]; fields: Record<string, unknown>; modified: string | null }
-interface PutResult { ok: boolean; title: string; tags: string[]; fields: Record<string, unknown> | null }
+interface PutResult { ok: boolean; title: string; tags: string[]; type: string | null; typeDefaulted?: boolean; fields: Record<string, unknown> | null }
 interface BatchResult { ok: boolean; written: number; skipped: number; items: Array<{ title: string; written: boolean; skipped: boolean }> }
 interface RenameResult { ok: boolean; from: string; to: string; refsUpdated: number; refsTiddlers: number; warning?: string }
 interface DeleteResult { ok: boolean; title: string }
