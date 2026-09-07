@@ -572,8 +572,9 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 
 /* ── 会话「知识库」Tab（conversation.view 槽位）────────────────────
    根节点是 shell 的 viewArea（flex column）的直接 flex 子项，用
-   flex:1 + min-height:0 撑满会话体；iframe 再 flex:1 填满剩余高度，
-   TW 在 iframe 内部自行滚动。主题沿用 --dsw-alias-* 设计令牌。 */
+   flex:1 + min-height:0 撑满会话体；内容区（.dsh-tw-summary-native）再 flex:1
+   并自行滚动（v0.16.19 起为 /tw/render 原生片段，不再有 iframe）。
+   主题沿用 --dsw-alias-* 设计令牌。 */
 .dsh-tw-summary {
   flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
   box-sizing: border-box; background: var(--dsw-alias-bg-layer-1, #fff);
@@ -593,20 +594,26 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-summary-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 .dsh-tw-summary-btn:disabled { opacity: .55; cursor: default; }
-/* body 包一层 relative：注入落地前用绝对定位浮层遮住 TW 默认页（避免闪现主页）。 */
-.dsh-tw-summary-body { position: relative; flex: 1 1 0; min-height: 0; display: flex; }
-.dsh-tw-summary-frame {
-  flex: 1 1 0; min-height: 0; width: 100%; border: 0; display: block;
-  background: var(--dsw-alias-bg-layer-1, #fff);
+/* 原生片段容器：flex 撑满 + 内部滚动；tc-* 重主题复用
+   .dsh-tw-toolcard-native（与回复流工具卡同一条渲染管线与样式）。 */
+.dsh-tw-summary-native {
+  flex: 1 1 0; min-height: 0; overflow: auto; max-height: none;
+  padding: 10px 16px 16px; font-size: 13px; line-height: 1.6;
+  color: var(--dsw-alias-label-primary, #222);
 }
+.dsh-tw-summary-native > :first-child { margin-top: 0; }
+.dsh-tw-summary-native > :last-child { margin-bottom: 0; }
+.dsh-tw-summary-native h1 { font-size: 17px; margin: 10px 0 8px; }
+.dsh-tw-summary-native h2 { font-size: 15px; margin: 10px 0 6px; }
+.dsh-tw-summary-native h3 { font-size: 14px; margin: 8px 0 6px; }
+.dsh-tw-summary-native h4, .dsh-tw-summary-native h5, .dsh-tw-summary-native h6 { font-size: 13px; margin: 6px 0 4px; }
+.dsh-tw-summary-native p { margin: 6px 0; }
+.dsh-tw-summary-native ul, .dsh-tw-summary-native ol { margin: 6px 0; padding-left: 22px; }
+.dsh-tw-summary-native li { margin: 2px 0; }
 .dsh-tw-summary-state {
   flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 10px; padding: 24px;
   text-align: center; color: var(--dsw-alias-label-secondary, #666); font-size: 13px;
-}
-.dsh-tw-summary-state-over {
-  position: absolute; inset: 0; z-index: 1;
-  background: var(--dsw-alias-bg-layer-1, #fff);
 }
 .dsh-tw-summary-state-spin { font-size: 22px; }
 .dsh-tw-summary-state-title { font-weight: 600; color: var(--dsw-alias-label-primary, #222); }

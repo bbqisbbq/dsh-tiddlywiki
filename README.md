@@ -16,7 +16,7 @@
 | 📊 **回复流卡片** | 工具结果显示原生 TW 卡片；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
-| 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染 |
+| 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染（`/tw/render` 片段管线，v0.16.19） |
 | 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式 |
 | 🌗 **跟随主题** | 内嵌 TW 自适应 DSH 深浅主题（纯内存切换，不进 git） |
 | 🔄 **一键同步** | FAB「同步」一键 pull→commit→push，状态点实时反映 git 状态 |
@@ -81,7 +81,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 - **📤 发送给 Agent**：TW 工具栏按钮（首次启动自动写入 wiki，ONE-SHOT）。弹层可选**附加说明**（位于消息末尾）、**工作模式**（Agent 预设）、**权限**（权限预设），按工作区分组选会话或新建。消息自带待办说明。
 - **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`）。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。
-- **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），不可编辑。
+- **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），**TW 原生渲染**（v0.16.19 起 `/tw/render` 片段管线，与回复流工具卡同链路，不再用 iframe/story view），链接点击直达中央 TW 面板，不可编辑。
 - **🌗 跟随 DSH 主题**：内嵌 TW 随 DSH 深浅切换 palette，纯内存不写回 wiki（`ui.followDshTheme`/`ui.darkPalette`）。
 - **🔧 知识库 FAB**：统一入口（TW 面板开关/重载、快速笔记、同步、TW 服务状态悬停 tip）。同步拉取到新内容会自动重启 TW（同端口）。
 - **⚙️ 设置页**：DSH 设置 →「TiddlyWiki 知识库」：状态/重启、常规配置、插件/主题/语言管理、**初始化**（seed 状态与重新初始化）。配置写入 `$:/plugins/dsh-tiddlywiki/config` tiddler，覆盖 cordis `config:` 块（tiddler 优先）。
@@ -225,6 +225,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.16.19**（2026-09-07）：**修：会话「知识库」Tab 把汇总当源码显示（整页 wikitext、像包在代码标签里）**。根因（headless $tw 实测）：TW 5.4.1 核心的视图模板级联（`$:/config/ViewTemplateBodyFilters/system` 的 system 规则）把所有 `$:/temp/` 前缀 tiddler 一律按**代码块**渲染（`$:/core/ui/ViewTemplate/body/code` → `<pre><code>`）——因此即便 v0.16.14+ 把 volatile 条目注入 iframe store 再原生导航，story view 仍把汇总当源码展示。修复：客户端**不再用 iframe / story view**，改走与回复流工具卡同一条原生渲染管线——`POST /tw/render {title}`（服务端把汇总 wikitext 块解析成 HTML 片段，`[[链接]]` 重写为 `/dsh-tiddlywiki/tw/#标题`）→ 注入滚动容器（样式复用 `.dsh-tw-toolcard-native` 的 tc-* 重主题）；片段内链接点击仍打开中央 TW 面板。无 iframe → 无编辑按钮/草稿，v0.16.16 的三层防误编辑随之不再需要；保留 30s 自愈（volatile 条目被清自动重建）与「🔄 刷新」。**刷新页面**即生效。
 - **v0.16.18**（2026-09-07）：README 全面精简重写；seed 优化——首页 seed 跟随 wiki 现状（🏠 主页）、修「所有文章」回主页死链、doc-note 文案修正。
 - **v0.16.17**（2026-09-07）：点击快速笔记可选直达 TW 原生编辑页（`ui.quickNoteMode`）+ 修「在 TW 中编辑」弹窗 ✕ 关不掉。
 - **v0.16.16**（2026-09-07）：修会话知识库 Tab 误入编辑草稿显示源码——三层防误编辑（清残留草稿/吞草稿创建/禁 ✏️）。
