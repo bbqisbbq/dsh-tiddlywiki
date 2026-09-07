@@ -48,6 +48,64 @@ const NAV_RETRY_MAX = 20
 const SELF_HEAL_MS = 30_000
 /** 连续多少次「生成后服务端仍缺失」后停止自动重试，交还手动「🔄 刷新」。 */
 const MAX_MISSES = 3
+/** ✏️ 编辑按钮 tooltip 的本地化文案 tiddler（定位 iframe 内该按钮用）。 */
+const EDIT_BUTTON_HINT = '$:/language/Buttons/Edit/Hint'
+/** 已安装「吞草稿」守卫的 iframe wiki（幂等：每个 window 只包一次）。 */
+const guardedWikis = new WeakSet<object>()
+
+/**
+ * 让 iframe 内的会话汇总条目不进入可编辑状态——汇总正文是 wikitext 源码，一旦误入
+ * TW 编辑草稿视图（`Draft of '…'`）就会呈现为「整页源码、链接点不动」，草稿还会被
+ * browser 侧同步回流服务端/落盘。汇总条目本身是 volatile（不落盘、每次自动重新
+ * 生成），编辑它毫无意义。三层防护：
+ * 1) 清理每次挂载时已存在的残留草稿（含从故事列表移除）；
+ * 2) wiki 层吞掉指向该汇总的新草稿创建（`draft.of === 汇总标题` 一律不落 store）；
+ * 3) 禁用该 tiddler 帧的 ✏️ 编辑按钮（用本地化 tooltip 定位，不依赖固定语言）。
+ */
+function hardenSummaryFrame(tw: TwRuntime, frame: HTMLIFrameElement | null, summaryTitle: string): void {
+  // 1) 清理残留草稿（若用户在旧会话里编辑过，草稿会留在 iframe store/故事里）。
+  try {
+    const draftTitle = tw.wiki.findDraft?.(summaryTitle)
+    if (typeof draftTitle === 'string' && draftTitle.length > 0) {
+      tw.wiki.deleteTiddler?.(draftTitle)
+      const story = tw.wiki.getTiddlerList('$:/StoryList').filter((t) => t !== draftTitle)
+      tw.wiki.setText?.('$:/StoryList', 'list', undefined, story)
+    }
+  } catch {
+    /* best-effort：清理失败不阻塞其余防护 */
+  }
+  // 2) 拦截新草稿创建（幂等：每个 iframe window 只包装一次）。
+  try {
+    if (!guardedWikis.has(tw.wiki)) {
+      const original = tw.wiki.addTiddler.bind(tw.wiki)
+      tw.wiki.addTiddler = (tiddler: unknown): void => {
+        const fields = (tiddler as { fields?: Record<string, unknown> } | null)?.fields
+        if (fields?.['draft.of'] === summaryTitle) return // 汇总不可编辑 → 吞掉草稿
+        original(tiddler)
+      }
+      guardedWikis.add(tw.wiki)
+    }
+  } catch {
+    /* best-effort */
+  }
+  // 3) 禁用 ✏️ 编辑按钮。导航落地后 tiddler 帧 DOM 才出现，故尝试一次 + 一次延时重试。
+  const disableEditButton = (): void => {
+    if (frame === null) return
+    try {
+      const doc = frame.contentDocument
+      const frameEl = doc?.querySelector(`div.tc-tiddler-frame[data-tiddler-title="${CSS.escape(summaryTitle)}"]`)
+      if (frameEl === undefined || frameEl === null) return
+      const hint = tw.wiki.getTiddlerText?.(EDIT_BUTTON_HINT)
+      if (typeof hint !== 'string' || hint.length === 0) return
+      const btn = frameEl.querySelector<HTMLButtonElement>(`button[title="${CSS.escape(hint)}"]`)
+      if (btn !== null) btn.disabled = true
+    } catch {
+      /* 帧已卸载/跨文档瞬态 → 无视 */
+    }
+  }
+  disableEditButton()
+  window.setTimeout(disableEditButton, 600)
+}
 
 /** Tab 显示名缓存：客户端从 /status 读到 `ui.tabLabel` 后更新；默认「知识库」。 */
 let tabLabel = SESSION_SUMMARY_LABEL_DEFAULT
@@ -86,6 +144,11 @@ interface TwRuntime {
     addTiddler(tiddler: unknown): void
     tiddlerExists(title: string): boolean
     getTiddlerList(title: string): string[]
+    /** 汇总防误编辑（hardenSummaryFrame）需要的成员，5.4.1 均有。 */
+    findDraft?(target: string): string | undefined
+    deleteTiddler?(title: string): void
+    setText?(title: string, field?: string, index?: string | undefined, value?: unknown): void
+    getTiddlerText?(title: string): string | undefined
   }
 }
 
@@ -211,6 +274,8 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         type: fields.type ?? 'text/vnd.tiddlywiki',
         tags: fields.tags ?? [],
       }))
+      // 汇总不可编辑：清理残留草稿 + 吞新草稿 + 禁用 ✏️（见 hardenSummaryFrame）。
+      hardenSummaryFrame(tw, frameElRef.current, summaryTitle)
     } catch {
       /* 注入失败也继续尝试导航（store 里可能有旧版本可显示） */
     }

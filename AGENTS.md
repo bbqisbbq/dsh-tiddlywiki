@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.15`（npm latest = 0.16.15；git tag `v0.16.15`） | `package.json` `version` |
+| **插件版本** | `0.16.16`（npm latest = 0.16.16；git tag `v0.16.16`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
@@ -26,7 +26,7 @@
 | **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **内容类型约定**（默认 markdown，`fields.type` 是内容类型保留字段勿放业务分类）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ 可点击链接格式 | `src/index.ts` |
 | **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`ui{showQuickNote,showQuickNoteDock,sidebarLabel,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize},tabLabel,showSessionTab}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
 | **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/sync` `/upload` `/restart` `/session/summary` `/agent/sessions` `/agent/modes` `/agent/send` `/agent/create` `/api/*` `/tw/*`；admin：`/admin/state` `/admin/info` `/admin/config` `/admin/restart` `/admin/seeds` `/admin/seeds/run` `/admin/seeds/remove` | `src/host/routes.ts` + `src/host/admin.ts` |
-| **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；`conversation.input.dock`（id `quick-note`，order 8，输入框上方快速笔记按钮，受 `ui.showQuickNoteDock` 控制，见 `src/client/quick-note-dock.ts`）；`conversation.view`（id `dsh-tiddlywiki-summary`，order 20，会话顶部「知识库」Tab = 本会话相关 wiki 汇总，TW 原生渲染 `$:/temp/dsh/session-summary/<会话ID>`——**浏览器端 TW 同步天生排除 `$:/temp`，由客户端在 iframe 就绪后注入（`addTiddler`）再走 TW 原生 hash 导航**，见 §8，受 `ui.showSessionTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/session-summary.ts`）；回复流工具卡片 `tool.call.toolview`（10 个工具各自 key） | `src/client/index.ts`、`src/client/quick-note-dock.ts`、`src/client/session-summary.ts`、`src/client/tool-views.ts` |
+| **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；`conversation.input.dock`（id `quick-note`，order 8，输入框上方快速笔记按钮，受 `ui.showQuickNoteDock` 控制，见 `src/client/quick-note-dock.ts`）；`conversation.view`（id `dsh-tiddlywiki-summary`，order 20，会话顶部「知识库」Tab = 本会话相关 wiki 汇总，TW 原生渲染 `$:/temp/dsh/session-summary/<会话ID>`——**浏览器端 TW 同步天生排除 `$:/temp`，由客户端在 iframe 就绪后注入（`addTiddler`）再走 TW 原生 hash 导航**，**v0.16.16 起汇总不可编辑**（清理残留草稿 + 吞 `draft.of` 指向汇总之新草稿 + 禁用 ✏️，见 `hardenSummaryFrame`），见 §8，受 `ui.showSessionTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/session-summary.ts`）；回复流工具卡片 `tool.call.toolview`（10 个工具各自 key） | `src/client/index.ts`、`src/client/quick-note-dock.ts`、`src/client/session-summary.ts`、`src/client/tool-views.ts` |
 
 ## 2. 仓库布局与关键文件
 
@@ -196,5 +196,6 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **提示词/工具改动只影响重启 dsh web 后的新会话**；现有会话（含自己）不会变。
 - **`$:/temp` 条目对浏览器端 TW 永远不可见**（v0.16.11–13「佚失条目」的真正根因）：服务端 recipe 列表默认 `[all[tiddlers]!is[system]]`（`get-tiddlers-json.js`）排除一切 `$:/` 条目，tiddlyweb adaptor 的请求过滤器又显式 `-[prefix[$:/temp/]]`（`tiddlywebadaptor.js getSkinnyTiddlers`），lazyLoad 只补「已知 skinny」不拉「完全缺失」——所以 iframe 里的 TW 拿不到 volatile 条目，`#<标题>` hash 直达必然渲染「佚失条目」，服务端重新生成多少次都没用。要在 iframe 里显示 volatile 条目：客户端注入（同源 `/get` 读字段 → `contentWindow.$tw.wiki.addTiddler`）后设 `contentWindow.location.hash` 走原生导航（`session-summary.ts` 即此模式）。服务端直连 REST（tw-api）不受影响——单条 GET 一直能读到 `$:/temp`。
 - **bundle 是 ONE-SHOT、用户自有**：改了 bundle 源件后旧 wiki 不会自动更新，要手动覆盖 wiki tiddler + 用户重载 TW 面板。
+- **在「知识库」Tab 的汇总条目上点 ✏️ 编辑 → 整页显示 wikitext 源码、链接点不动**（v0.16.16 的坑）：TW 的编辑草稿 `Draft of '…'` 会**继承全文**并以编辑框（textarea）呈现，看起来就是「没正确渲染」；草稿还会被浏览器端同步回流服务端日志（`syncer-server-filesystem: Dispatching 'save' task: "…"的草稿`）甚至短暂落盘。根因不是渲染坏了（数据/类型/服务端 render 实测均正常；TW 5.4.1 也没有 `wiki.refreshTiddler`，强制重渲染要走 `$tw.rootWidget.refresh(changes)`）。v0.16.16 起插件在注入后对汇总条目做三层防误编辑：清残留草稿 + 吞 `draft.of` 指向汇总之新草稿（包 `wiki.addTiddler`，幂等 WeakSet）+ 禁用 ✏️ 按钮（本地化 tooltip 定位）。排查「汇总显示源码」类问题时先看 TW 日志有没有「…的草稿」save 任务。
 - Windows 下 git 的 LF→CRLF 警告无害。
 - 消息里**附加说明放消息末尾**（正文之后），别插在待办说明与正文之间。

@@ -56,6 +56,10 @@ const PANEL_HOST_SELECTOR = '[data-dsh-panel-host]'
 const APP_OVERLAY_Z_INDEX = 20
 /** Safety re-measure cadence for shell layout changes CSS can't see. */
 const SYNC_INTERVAL_MS = 2_000
+/** Sidebar template re-rendered on iframe load (core/ui/PageTemplate/sidebar.tid). */
+const SIDEBAR_TEMPLATE = '$:/core/ui/PageTemplate/sidebar'
+/** First-frame sidebar re-measure delays (ms): idle until TW boot, then retry. */
+const SIDEBAR_REMEASURE_DELAYS = [300, 1200, 3000]
 
 import { STATUS_ENDPOINT } from './endpoints.ts'
 const RESTART_ENDPOINT = '/dsh-tiddlywiki/restart'
@@ -103,6 +107,18 @@ interface StatusPayload {
   ui?: { followDshTheme?: boolean; darkPalette?: string }
 }
 
+/**
+ * iframe 内 TW 运行时的极小结构面：只声明侧边栏首帧重渲染需要的成员。
+ * TW 5.4.1 没有 `$tw.wiki.refreshTiddler`（≥5.3 才有），等价做法是驱动
+ * `$tw.rootWidget.refresh(changes)` 让 widget 树重渲染目标模板（load-modules.js
+ * 里 `$tw.rootWidget = new widget.widget(...)` 是官方挂载点，theme-sync 同款
+ * `contentWindow.$tw` 注入模式）。
+ */
+interface TwSidebarFace {
+  wiki?: { refreshTiddler?: (title: string) => unknown }
+  rootWidget?: { refresh?: (changes: Record<string, unknown>) => unknown }
+}
+
 function conversationColumn(): HTMLElement | undefined {
   for (const selector of COLUMN_SELECTORS) {
     const el = document.querySelector<HTMLElement>(selector)
@@ -145,6 +161,8 @@ export function mountPanel(state: PanelState): () => void {
   let pendingHash: string | null = null
   /** Set by the disposer: no timers/observers may touch DOM or the iframe after. */
   let disposed = false
+  /** Pending sidebar re-measure timers (cleared on dispose). */
+  const sidebarRemeasureTimers: number[] = []
 
   const build = (): HTMLDivElement => {
     const view = document.createElement('div')
@@ -164,6 +182,7 @@ export function mountPanel(state: PanelState): () => void {
     iframe.addEventListener('load', () => {
       frameLoaded = true
       applyPendingHash()
+      scheduleSidebarRemeasure()
     })
     // Embedded TW follows the DSH light/dark theme (non-persisting palette
     // swap inside the same-origin iframe; re-applied on load + theme change).
@@ -175,6 +194,39 @@ export function mountPanel(state: PanelState): () => void {
 
     view.append(frameArea, errorArea)
     return view
+  }
+
+  /**
+   * 首帧后强制 TW 重渲染侧边栏模板（`$:/core/ui/PageTemplate/sidebar`）并派发一次
+   * resize，纠正 iframe 首帧布局测量。TW 5.4.1 无 `$tw.wiki.refreshTiddler`，等价
+   * 改走 `$tw.rootWidget.refresh({<title>: {modified:true}})` 驱动 widget 树重渲染；
+   * 多次延时兜底 TW boot 时序（theme-sync 的 load 钩子同款节奏）。幂等、失败静默。
+   */
+  const scheduleSidebarRemeasure = (): void => {
+    if (disposed || iframe === undefined) return
+    const attempt = (): void => {
+      if (disposed || iframe === undefined) return
+      const w = iframe.contentWindow as (Window & { $tw?: TwSidebarFace }) | null
+      if (w === null || w === undefined) return
+      const wiki = w.$tw?.wiki
+      const rootWidget = w.$tw?.rootWidget
+      if (wiki === undefined || rootWidget === undefined || typeof rootWidget.refresh !== 'function') return
+      try {
+        if (typeof wiki.refreshTiddler === 'function') {
+          // TW ≥5.3 原生 API（本 wiki 5.4.1 不触发，留作前向兼容）。
+          wiki.refreshTiddler(SIDEBAR_TEMPLATE)
+        } else {
+          // 5.4.1 等价：change 事件同款信号，让 widget 树重渲染该模板。
+          rootWidget.refresh({ [SIDEBAR_TEMPLATE]: { modified: true } })
+        }
+        w.dispatchEvent(new Event('resize'))
+      } catch {
+        // TW 正在 boot 的瞬态竞态 → 交给下一轮延时 / 下次 load 重试。
+      }
+    }
+    for (const ms of SIDEBAR_REMEASURE_DELAYS) {
+      sidebarRemeasureTimers.push(window.setTimeout(attempt, ms))
+    }
   }
 
   /** Pin the overlay to the center column's current viewport rect. */
@@ -423,6 +475,8 @@ export function mountPanel(state: PanelState): () => void {
   return () => {
     disposed = true
     if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+    for (const id of sidebarRemeasureTimers) window.clearTimeout(id)
+    sidebarRemeasureTimers.length = 0
     window.clearInterval(syncInterval)
     window.removeEventListener('resize', onWindowResize)
     window.removeEventListener('scroll', onAnyScroll, true)
