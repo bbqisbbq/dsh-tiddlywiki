@@ -14,7 +14,7 @@
 |---|---|---|---|
 | 一键发送给 Agent | `$:/plugins/dsh/send-to-agent` 按钮插件 | TW 工具栏没有「发送给 Agent」按钮，后端路由在但无入口 | **核心**（功能必需） |
 | 嵌入式 TW 编辑器 | `$:/config/tiddlyweb/host` 指向同源代理 | iframe 里的 TW 前端 API 基址指向错误的 origin，编辑/保存失效 | **核心**（功能必需） |
-| 首页（待办四象限 / 标签统计 / Agent 区块） | 「主页」「所有标签」「标签笔记」三个 tiddler + `$:/DefaultTiddlers` → 主页 | 没有承诺的首页；TW 打开的是 GettingStarted | 可选（不强制） |
+| 首页（待办四象限 / 标签统计 / Agent 区块） | 「🏠 主页」「所有标签」「标签笔记」三个 tiddler + `$:/DefaultTiddlers` → 🏠 主页 | 没有承诺的首页；TW 打开的是 GettingStarted | 可选（不强制） |
 | 所有文章（两列分页总览） | 「所有文章」tiddler | 没有一键总览全部条目的入口 | 可选（不强制） |
 | menubar 顶栏主题自适应 | `$:/plugins/dsh-tiddlywiki/menubar-theme` 样式表（tag `$:/tags/Stylesheet`） | tiddlywiki/menubar 顶栏停留在默认色映射的蓝色（`$:/config/DefaultColourMappings/` → `#5778d8`） | 可选（不强制） |
 | 新手引导 | 「dsh-tiddlywiki 插件说明」笔记 | 新用户没有入门说明 | 可选（不强制） |
@@ -43,7 +43,7 @@ interface SeedDef {
 |---|---|---|---|---|
 | `doc-note` | `seed-notes.ts` → `seedDocNote` / `unseedDocNote` | 「dsh-tiddlywiki 插件说明」（tag `docs`） | `$:/plugins/dsh-tiddlywiki/seed-doc-note` | 可选 |
 | `send-to-agent` | `seed-send-to-agent.ts` → `seedSendToAgent` | `$:/plugins/dsh/send-to-agent` 按钮 bundle（`application/json`） | `$:/plugins/dsh-tiddlywiki/seed-send-to-agent` | **核心** |
-| `home-index` | `seed-home.ts` → `seedHomeIndex` / `unseedHomeIndex` | 「主页」+「所有标签」+「标签笔记」（tag `索引`），并把 `$:/DefaultTiddlers` 指向 `[[主页]]` | `$:/plugins/dsh-tiddlywiki/seed-home-index` | 可选 |
+| `home-index` | `seed-home.ts` → `seedHomeIndex` / `unseedHomeIndex` | 「🏠 主页」+「所有标签」+「标签笔记」（tag `索引`，标题/标签跟随生成时的 wiki 现状），并把 `$:/DefaultTiddlers` 指向 `[[🏠 主页]]` | `$:/plugins/dsh-tiddlywiki/seed-home-index` | 可选 |
 | `all-articles` | `seed-all-articles.ts` → `seedAllArticles` / `unseedAllArticles` | 「所有文章」（tag `索引`）——两列分页总览，每页条数实时读 `ui.allArticles.pageSize`（默认 10） | `$:/plugins/dsh-tiddlywiki/seed-all-articles` | 可选 |
 | `menubar-theme` | `seed-menubar-theme.ts` → `seedMenubarTheme` / `unseedMenubarTheme` | `$:/plugins/dsh-tiddlywiki/menubar-theme`（tag `$:/tags/Stylesheet`）——覆盖 tiddlywiki/menubar 顶栏：把 `<<colour menubar-background>>` 的「默认色映射蓝色」改为跟随活动 palette 的 `background`/`foreground`，随 DSH 主题切换（`$:/palette` 翻转）自动换色 | `$:/plugins/dsh-tiddlywiki/seed-menubar-theme` | 可选 |
 | `tw-web-host` | `seeds.ts` 内联 | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 无 marker（ensure 型，见 §4） | **核心** |
@@ -80,7 +80,7 @@ interface SeedDef {
 
 典型使用场景：
 
-- 「我把首页改坏了，想恢复成模板」→ `home-index` 重新初始化（恢复主页/所有标签/标签笔记 + `$:/DefaultTiddlers` → 主页）；
+- 「我把首页改坏了，想恢复成模板」→ `home-index` 重新初始化（恢复 🏠 主页/所有标签/标签笔记 + `$:/DefaultTiddlers` → 🏠 主页）；
 - 「所有文章页被删了 / 改坏了」→ `all-articles` 重新初始化；
 - 「menubar 顶栏又变回蓝色了 / 样式表被我改了」→ `menubar-theme` 重新初始化（恢复跟随 palette 的样式覆盖）；
 - 「发送给 Agent 按钮被我删了 / 改坏了」→ `send-to-agent` 重新初始化；
@@ -95,7 +95,7 @@ interface SeedDef {
 
 - 删除该 seed 写入的全部 tiddler **与** 一次性 marker，把 wiki 恢复到「从未初始化」状态；
 - 之后该 seed 在设置页状态为「缺失」，需要时可再用「重新初始化」写回；
-- `home-index` 反初始化时，若 `$:/DefaultTiddlers` 仍指向 seed 写出的 `[[主页]]`，一并恢复为 `[[GettingStarted]]`（用户自定义的默认页不受影响）；
+- `home-index` 反初始化时，若 `$:/DefaultTiddlers` 仍指向 seed 写出的 `[[🏠 主页]]`，一并恢复为 `[[GettingStarted]]`（用户自定义的默认页不受影响）；
 - **核心 seed（发送给 Agent 按钮 / TW 前端 API 基址）不可反初始化**——它们与插件自身功能强关联，移除会破坏对应能力；「全部反初始化」也只处理可选 seed。
 
 ---
@@ -114,7 +114,7 @@ interface SeedDef {
   "items": [
     { "id": "doc-note",      "title": "插件说明笔记",                "description": "…", "present": true,  "removable": true,  "detail": "已存在" },
     { "id": "send-to-agent", "title": "「发送给 Agent」按钮",         "description": "…", "present": true,  "removable": false, "detail": "已存在" },
-    { "id": "home-index",    "title": "首页（主页 / 所有标签 / 标签笔记）", "description": "…", "present": false, "removable": true,  "detail": "缺失：主页" },
+    { "id": "home-index",    "title": "首页（主页 / 所有标签 / 标签笔记）", "description": "…", "present": false, "removable": true,  "detail": "缺失：🏠 主页" },
     { "id": "all-articles",  "title": "所有文章（两列分页总览）",       "description": "…", "present": true,  "removable": true,  "detail": "已存在" },
     { "id": "menubar-theme", "title": "menubar 顶栏主题自适应",        "description": "…", "present": true,  "removable": true,  "detail": "已存在" },
     { "id": "tw-web-host",   "title": "TW 前端 API 基址（同源代理）",   "description": "…", "present": true,  "removable": false, "detail": "已指向 /dsh-tiddlywiki/tw/" }
@@ -196,8 +196,8 @@ DSH 设置 →「TiddlyWiki 知识库」→ 最底部「**初始化（一次性�
 # 改了 wiki 里的「发送给 Agent」按钮 bundle（$:/plugins/dsh/send-to-agent）：
 node scripts/gen-seed-send-to-agent.mjs '<wiki>/tiddlers/$__plugins_dsh_send-to-agent.json' src/host/seed-send-to-agent.ts
 
-# 改了 wiki 首页（主页 / 所有标签 / 标签笔记）：
-node scripts/gen-seed-home.mjs '<wiki>/tiddlers/主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts
+# 改了 wiki 首页（🏠 主页 / 所有标签 / 标签笔记）：
+node scripts/gen-seed-home.mjs '<wiki>/tiddlers/🏠 主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts
 
 # 「所有文章」页的内容维护在 src/host/seed-all-articles.ts 的 ALL_ARTICLES_TEXT
 # （来源：<wiki>/tiddlers/所有文章.tid；改 wiki 页后同步手工更新该常量）。

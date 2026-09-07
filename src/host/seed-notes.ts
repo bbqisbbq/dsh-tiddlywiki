@@ -30,12 +30,12 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
 
 * **10 个 agent 工具**：\`tiddlywiki_search\`（检索，支持 tags/since/type/limit 过滤）/ \`tiddlywiki_get\`（读）/ \`tiddlywiki_put\`（写）/ \`tiddlywiki_batch_put\`（批量写）/ \`tiddlywiki_rename\`（重命名+同步引用）/ \`tiddlywiki_delete\`（删）/ \`tiddlywiki_recent\`（最近修改）/ \`tiddlywiki_list_tags\`（标签清单）/ \`tiddlywiki_git_sync\`（git 同步）/ \`tiddlywiki_git_resolve\`（冲突按 tiddler 二选一）。
 * **TW 编辑器面板**：侧边栏「TiddlyWiki」按钮 → 在界面中央打开完整版 TW 编辑器。
-* **快速笔记**：右下角「知识库」悬浮按钮 → 「📝 快速笔记」写随手记（Markdown 高亮、文件上传、多选/自动补全 tag，草稿自动保存到本地），\`Ctrl+Enter\` 保存；「🕘 最近」可一键载入旧笔记继续编辑；「✏️ 在 TW 中编辑」会弹出独立小窗用 TW 原生编辑器编辑。
+* **快速笔记**：点击聊天输入框上方或右下角「知识库」菜单里的「📝 快速笔记」——默认**直达 TW 原生编辑页**（独立小窗，草稿自动续写）；也可在设置页切回 Markdown 卡片（语法高亮、文件上传、多选 tag、草稿自动保存、Ctrl+Enter 保存）。「✏️ 在 TW 中编辑」会弹出独立小窗用 TW 原生编辑器编辑。
 * **一键同步**：「知识库」按钮 → 「🔁 同步」一键 pull → commit → push，按钮上的状态点实时反映 git 状态。
 * **git 同步**：写入自动防抖 commit（默认 60 秒）；手动 \`tiddlywiki_git_sync action=sync\` 做 pull → commit → push。
 * **设置页**：DSH 设置 → 「TiddlyWiki 知识库」管理插件/主题/语言与运行配置（含「知识库」按钮相关显示开关）。
 
-!! 知识库纪律（三条）
+!! 知识库纪律（四条）
 
 1. 开工先 \`tiddlywiki_git_sync action=pull\`（rebase + autostash，真冲突会自动 abort 并报文件）。
 2. 冲突后：\`tiddlywiki_git_resolve files=[冲突文件] strategy=keep-local|keep-remote\` 按 tiddler 二选一解决，再重新 sync。

@@ -27,7 +27,7 @@ export const ALL_ARTICLES_TEXT = `\\whitespace trim
 \\define human-list() [all[tiddlers]!is[system]!has[draft.of]!tag[索引]!tag[agent-written]] [all[tiddlers]!is[system]!has[draft.of]!tag[索引]tag[agent-written]tag[human-edited]] +[!sort[modified]]
 
 <$button class="tc-btn-invisible tc-tiddlylink" style="margin:6px 0; padding:4px 10px; border:1px solid rgba(128,128,128,0.3); border-radius:6px; font-size:0.9em;">
-<$action-navigate $to="主页"/>
+<$action-navigate $to="🏠 主页"/>
 ← 回主页
 </$button>
 

@@ -149,7 +149,7 @@ function defineSeed(meta: SeedMeta, impl: {
 /** The full registry, in display order. */
 export const SEED_DEFS: SeedDef[] = [
   defineSeed(
-    { id: 'doc-note', title: '插件说明笔记', description: '「dsh-tiddlywiki 插件说明」——新 wiki 首启自动写入的入门说明（ONE-SHOT，用户可改可删）。', core: false },
+    { id: 'doc-note', title: '插件说明笔记', description: '「dsh-tiddlywiki 插件说明」——入门说明笔记（可选，设置页「初始化」手动写入；ONE-SHOT，用户可改可删）。', core: false },
     { presentTitle: DOC_NOTE_TITLE, write: seedDocNote, unseed: unseedDocNote },
   ),
   defineSeed(
@@ -161,14 +161,14 @@ export const SEED_DEFS: SeedDef[] = [
     { presentTitle: RENDER_PLUGIN_TITLE, write: seedRenderRoute },
   ),
   defineSeed(
-    { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页同时写入 $:/DefaultTiddlers。', core: false },
+    { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页（🏠 主页）同时写入 $:/DefaultTiddlers。', core: false },
     {
       check: async (ctx) => {
         const missing: string[] = []
         for (const item of HOME_INDEX_ITEMS) {
           if (!(await presentOf(ctx, item.title))) missing.push(item.title)
         }
-        return { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页同时写入 $:/DefaultTiddlers。', present: missing.length === 0, removable: true, detail: missing.length === 0 ? '已存在' : `缺失：${missing.join('、')}` }
+        return { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页（🏠 主页）同时写入 $:/DefaultTiddlers。', present: missing.length === 0, removable: true, detail: missing.length === 0 ? '已存在' : `缺失：${missing.join('、')}` }
       },
       write: seedHomeIndex,
       unseed: unseedHomeIndex,

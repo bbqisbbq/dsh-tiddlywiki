@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.17`（npm latest = 0.16.17；git tag `v0.16.17`） | `package.json` `version` |
+| **插件版本** | `0.16.18`（npm latest = 0.16.18；git tag `v0.16.18`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
@@ -84,7 +84,7 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
   ```
   版本号在 `build-send-to-agent-bundle.mjs`（改了行为要 bump），`verify-*.mjs` 里同步检查。
 - **渲染路由**：改 `scripts/bundle/render/server-routes/render.js` → `node scripts/build-render-bundle.mjs` → `node scripts/gen-seed-render.mjs scripts/bundle/render.bundle.json src/host/seed-render.ts` → `npm run build`。
-- **首页**：改 wiki 里的 `主页.tid`/`所有标签.tid`/`标签笔记.tid` → `node scripts/gen-seed-home.mjs <wiki>/tiddlers/主页.tid <wiki>/tiddlers/所有标签.tid <wiki>/tiddlers/标签笔记.tid src/host/seed-home.ts` → `npm run build`。
+- **首页**：改 wiki 里的 `🏠 主页.tid`/`所有标签.tid`/`标签笔记.tid` → `node scripts/gen-seed-home.mjs <wiki>/tiddlers/🏠 主页.tid <wiki>/tiddlers/所有标签.tid <wiki>/tiddlers/标签笔记.tid src/host/seed-home.ts` → `npm run build`。
 
 > 改 bundle 后要**同步到线上 wiki**（见 §5「运行时装配 / 部署」）——seed 是 ONE-SHOT，旧 wiki 不会自动更新。
 
