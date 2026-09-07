@@ -593,6 +593,8 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-summary-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 .dsh-tw-summary-btn:disabled { opacity: .55; cursor: default; }
+/* body 包一层 relative：注入落地前用绝对定位浮层遮住 TW 默认页（避免闪现主页）。 */
+.dsh-tw-summary-body { position: relative; flex: 1 1 0; min-height: 0; display: flex; }
 .dsh-tw-summary-frame {
   flex: 1 1 0; min-height: 0; width: 100%; border: 0; display: block;
   background: var(--dsw-alias-bg-layer-1, #fff);
@@ -601,6 +603,10 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 10px; padding: 24px;
   text-align: center; color: var(--dsw-alias-label-secondary, #666); font-size: 13px;
+}
+.dsh-tw-summary-state-over {
+  position: absolute; inset: 0; z-index: 1;
+  background: var(--dsw-alias-bg-layer-1, #fff);
 }
 .dsh-tw-summary-state-spin { font-size: 22px; }
 .dsh-tw-summary-state-title { font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
