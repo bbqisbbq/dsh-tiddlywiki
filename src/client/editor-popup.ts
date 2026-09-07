@@ -16,6 +16,7 @@ let root: HTMLDivElement | undefined
 let frame: HTMLIFrameElement | undefined
 let titleEl: HTMLSpanElement | undefined
 let themeSyncDispose: (() => void) | undefined
+let onKeyDown: ((event: KeyboardEvent) => void) | undefined
 
 /** Open (create on first use) the popup and load `url` (twUrl#draftTitle). */
 export function openEditorPopup(url: string, label: string): void {
@@ -28,10 +29,24 @@ export function openEditorPopup(url: string, label: string): void {
   frame.src = url
 }
 
+/** Whether the popup is currently visible. */
+export function isEditorPopupOpen(): boolean {
+  return root !== undefined && root.style.display !== 'none'
+}
+
+/** Hide the popup (the ✕ button and the input-dock toggle call this). */
+export function closeEditorPopup(): void {
+  if (root !== undefined) root.style.display = 'none'
+}
+
 /** Remove the popup DOM entirely (plugin dispose). */
 export function disposeEditorPopup(): void {
   themeSyncDispose?.()
   themeSyncDispose = undefined
+  if (onKeyDown !== undefined) {
+    document.removeEventListener('keydown', onKeyDown)
+    onKeyDown = undefined
+  }
   root?.remove()
   root = undefined
   frame = undefined
@@ -71,16 +86,27 @@ function ensurePopup(): void {
   root.append(bar, frame, resize)
   document.body.append(root)
 
-  close.addEventListener('click', () => {
-    if (root !== undefined) root.style.display = 'none'
-  })
+  close.addEventListener('click', () => closeEditorPopup())
+
+  // Esc closes the popup too (when the parent document has focus — inside the
+  // iframe TW's own editor shortcuts take precedence).
+  onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === 'Escape' && isEditorPopupOpen()) closeEditorPopup()
+  }
+  document.addEventListener('keydown', onKeyDown)
 
   // Drag by the title bar (un-center by setting explicit left/top + margin 0).
   // Pointer Events + setPointerCapture: the pointer is captured by the bar, so
   // pointermove/pointerup keep firing on it even over the iframe or outside the
   // window — no window-level listeners, hence nothing to leak on a lost mouseup.
+  // The ✕ close button must be EXCLUDED: this handler calls preventDefault(),
+  // and a canceled pointerdown suppresses the derived click event entirely (the
+  // note-card drag handler guards the same way) — otherwise the popup could
+  // never be closed. Same for any other focusable control on the bar.
   bar.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || root === undefined) return
+    const target = event.target as Node
+    if (close.contains(target)) return
     event.preventDefault()
     bar.setPointerCapture(event.pointerId)
     const rect = root.getBoundingClientRect()

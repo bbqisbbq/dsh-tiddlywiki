@@ -324,6 +324,12 @@ export interface NoteWidgetHandle {
    * falls back to its default bottom-right position.
    */
   open(anchor?: HTMLElement): Promise<void>
+  /**
+   * 直达 TW 原生编辑器（quickNoteMode=native 时点击「快速笔记」走这里）：
+   * 把待存草稿（若有）或「时间戳标题 + 默认 tag 的空草稿」POST 到 /edit，
+   * 成功后弹出 TW 原生编辑页。不依赖 Markdown 卡片。
+   */
+  openNative(): Promise<void>
   close(): void
   toggle(): Promise<void>
   isOpen(): boolean
@@ -411,6 +417,45 @@ export function createNoteWidget(): NoteWidgetHandle {
 
   const hideDraftBanner = (): void => {
     if (ui !== undefined) ui.draftBanner.hidden = true
+  }
+
+  /**
+   * POST /edit and open the native TW editor popup. Shared by the card's
+   * 「✏️ 在 TW 中编辑」(doEdit) and the direct native mode (openNative).
+   * Clears the pending draft on success. Returns true when the editor opened.
+   */
+  const postEditAndOpen = async (title: string, text: string, tags: string[]): Promise<boolean> => {
+    try {
+      const res = await fetch(EDIT_ENDPOINT, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title, tags, text }),
+        signal: AbortSignal.timeout(10_000),
+      })
+      const payload = (await res.json().catch(() => null)) as
+        | { ok?: boolean; title?: string; draftTitle?: string; twUrl?: string; error?: string }
+        | null
+      if (!res.ok || payload?.ok !== true) {
+        toast(`打开失败：${payload?.error ?? `HTTP ${res.status}`}`)
+        return false
+      }
+      if (typeof payload.twUrl !== 'string' || typeof payload.draftTitle !== 'string') {
+        toast('打开失败：服务未返回编辑器地址')
+        return false
+      }
+      clearDraft()
+      hideDraftBanner()
+      // twUrl is the same-origin proxy path (e.g. /dsh-tiddlywiki/tw/);
+      // resolve it against this page's origin so the popup works from any
+      // host/domain DSH is reached on (loopback, LAN, Tailscale, HTTPS).
+      const popupUrl = `${new URL(payload.twUrl, location.origin).href}#${encodeURIComponent(payload.draftTitle)}`
+      openEditorPopup(popupUrl, payload.title ?? title)
+      toast(`已在弹出窗口打开「${payload.title ?? title}」编辑器`)
+      return true
+    } catch (err) {
+      toast(`打开失败：${err instanceof Error ? err.message : String(err)}`)
+      return false
+    }
   }
 
   const closeRecent = (): void => {
@@ -687,33 +732,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       editBtn.disabled = true
       editBtn.textContent = '打开中…'
       try {
-        const res = await fetch(EDIT_ENDPOINT, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ title, tags, text }),
-          signal: AbortSignal.timeout(10_000),
-        })
-        const payload = (await res.json().catch(() => null)) as
-          | { ok?: boolean; title?: string; draftTitle?: string; twUrl?: string; error?: string }
-          | null
-        if (!res.ok || payload?.ok !== true) {
-          toast(`打开失败：${payload?.error ?? `HTTP ${res.status}`}`)
-          return
-        }
-        if (typeof payload.twUrl !== 'string' || typeof payload.draftTitle !== 'string') {
-          toast('打开失败：服务未返回编辑器地址')
-          return
-        }
-        clearDraft()
-        hideDraftBanner()
-        // twUrl is the same-origin proxy path (e.g. /dsh-tiddlywiki/tw/);
-        // resolve it against this page's origin so the popup works from any
-        // host/domain DSH is reached on (loopback, LAN, Tailscale, HTTPS).
-        const popupUrl = `${new URL(payload.twUrl, location.origin).href}#${encodeURIComponent(payload.draftTitle)}`
-        openEditorPopup(popupUrl, payload.title ?? title)
-        toast(`已在弹出窗口打开「${payload.title ?? title}」编辑器`)
-      } catch (err) {
-        toast(`打开失败：${err instanceof Error ? err.message : String(err)}`)
+        await postEditAndOpen(title, text, tags)
       } finally {
         editBtn.disabled = false
         editBtn.textContent = '✏️ 在 TW 中编辑'
@@ -820,6 +839,24 @@ export function createNoteWidget(): NoteWidgetHandle {
     async toggle() {
       if (opened) this.close()
       else await this.open()
+    },
+    async openNative() {
+      // 直达 TW 原生编辑页（quickNoteMode=native 时点击「快速笔记」走这里）：
+      // 有未保存草稿就继续编辑它，否则新建「时间戳标题 + 默认 tag」的空草稿。
+      if (disposed) return
+      const draft = loadDraft()
+      const hasDraft = draft !== null && (draft.text.trim().length > 0 || draft.title.trim().length > 0)
+      const title = hasDraft && draft.title.trim().length > 0 ? draft.title.trim() : timestampTitle()
+      const text = hasDraft ? draft.text : ''
+      let tags: string[] = []
+      if (hasDraft) {
+        tags = draft.tags
+      } else {
+        defaultTag = (await fetchUiOptions()).defaultTag
+        if (disposed) return
+        tags = [defaultTag]
+      }
+      void postEditAndOpen(title, text, tags)
     },
     isOpen() {
       return opened

@@ -22,6 +22,7 @@ import type { SyncController } from './sync-button.ts'
 import { PANEL_RELOAD_EVENT } from './panel.ts'
 
 import { STATUS_ENDPOINT } from './endpoints.ts'
+import { fetchUiConfig } from './ui-config.ts'
 
 /** Book icon (same visual family as the sidebar entry). */
 const BOOK_ICON = '<svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2.5h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z"/><path d="M6 6h4M6 8.5h2.5"/></svg>'
@@ -164,10 +165,15 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       item.type = 'button'
       item.className = 'dsh-tw-fab-item'
       item.textContent = '📝 快速笔记'
+      item.title = 'ui.quickNoteMode=native 时直接打开 TW 原生编辑器；card 时打开 Markdown 卡片'
       item.addEventListener('click', () => {
         closeMenu()
-        // open-only：弹窗只能由卡片上的 ✕ 关闭，触发按钮不负责收起。
-        void note.open()
+        // open-only：卡片弹窗只能由卡片上的 ✕ 关闭，触发按钮不负责收起。
+        // 原生模式：点击直达 TW 原生编辑页（与输入框上方的快速笔记按钮一致）。
+        void fetchUiConfig().then((cfg) => {
+          if (cfg.quickNoteMode === 'native') void note.openNative()
+          else void note.open()
+        })
       })
       menu.append(item)
     }

@@ -137,6 +137,8 @@ export interface UiDefaultsPublic {
   showQuickNote: boolean
   /** 聊天输入框上方的「快速笔记」快捷按钮（conversation.input.dock 槽位）。 */
   showQuickNoteDock: boolean
+  /** 点击「快速笔记」后的打开方式：native=直达 TW 原生编辑器；card=Markdown 卡片。 */
+  quickNoteMode: 'native' | 'card'
   /** 左侧侧边栏 TW 入口的显示名称。 */
   sidebarLabel: string
   showPanelStatus: boolean

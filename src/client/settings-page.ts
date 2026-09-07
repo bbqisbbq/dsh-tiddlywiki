@@ -79,7 +79,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 /** Form controls registry for the config section (changed-only patch). */
 interface ConfigField {
   key: string
-  input: HTMLInputElement
+  input: HTMLInputElement | HTMLSelectElement
   initial: string | boolean | number
   read: () => string | boolean | number
   changed: () => boolean
@@ -221,6 +221,20 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     fields.push({ key, input, initial, read: () => Number(input.value) || initial, changed: () => (Number(input.value) || initial) !== initial })
     section.append(wrap)
   }
+  const selectField = (key: string, label: string, initial: string, options: Array<{ value: string; label: string }>): void => {
+    const select = make('select', 'dsh-tw-settings-input')
+    for (const opt of options) {
+      const option = document.createElement('option')
+      option.value = opt.value
+      option.textContent = opt.label
+      if (opt.value === initial) option.selected = true
+      select.append(option)
+    }
+    const wrap = make('label', 'dsh-tw-settings-field')
+    wrap.append(make('span', 'dsh-tw-settings-label', label), select)
+    fields.push({ key, input: select, initial, read: () => select.value, changed: () => select.value !== initial })
+    section.append(wrap)
+  }
 
   textField('note.tag', '快速笔记默认 tag', typeof note.tag === 'string' ? note.tag : 'inbox')
   checkField('git.autoCommit', '自动 commit（防抖）', git.autoCommit !== false)
@@ -229,6 +243,10 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   textField('git.branch', 'git 分支', typeof git.branch === 'string' ? git.branch : 'main')
   checkField('ui.showQuickNote', '显示「知识库」按钮里的「快速笔记」入口', ui.showQuickNote !== false)
   checkField('ui.showQuickNoteDock', '显示聊天输入框上方的「快速笔记」快捷按钮', ui.showQuickNoteDock !== false)
+  selectField('ui.quickNoteMode', '点击「快速笔记」的打开方式', typeof ui.quickNoteMode === 'string' && ui.quickNoteMode === 'card' ? 'card' : 'native', [
+    { value: 'native', label: '原生编辑器：直接弹出 TW 原生编辑页（新建/恢复草稿）' },
+    { value: 'card', label: 'Markdown 卡片：弹出现有快速笔记卡片（CodeMirror 编辑器）' },
+  ])
   textField('ui.sidebarLabel', '侧边栏 TW 入口显示名称', typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : 'TiddlyWiki')
   checkField('ui.showPanelStatus', '显示「知识库」按钮里的 TW 面板/重载入口与状态行', ui.showPanelStatus !== false)
   checkField('ui.showSyncButton', '显示「知识库」按钮里的「同步」入口与 git 状态点', ui.showSyncButton !== false)

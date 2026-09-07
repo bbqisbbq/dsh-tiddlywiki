@@ -41,6 +41,12 @@ export interface PluginConfigShape {
      * 等）注入的内容同处一个纵向排列的 dock 区，天然不重叠。
      */
     showQuickNoteDock?: boolean
+    /**
+     * 点击「快速笔记」后的打开方式（默认 `native`）：
+     * `native` = 直接弹出 TW 原生编辑器（新建/恢复草稿）；`card` = 弹出现有
+     * 的 Markdown 快速笔记卡片。设置页可切换。
+     */
+    quickNoteMode?: 'native' | 'card'
     /** 左侧侧边栏 TW 入口的显示名称（默认「TiddlyWiki」，可自定义）。 */
     sidebarLabel?: string
     /** 是否显示 TW 面板右下角的「状态/重载」悬浮按钮（默认 true）。 */

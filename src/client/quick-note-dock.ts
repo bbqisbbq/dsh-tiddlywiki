@@ -16,6 +16,8 @@
  */
 import * as React from 'react'
 import { NOTE_STATE_EVENT, type NoteWidgetHandle } from './note-widget.ts'
+import { fetchUiConfig } from './ui-config.ts'
+import { isEditorPopupOpen, closeEditorPopup } from './editor-popup.ts'
 
 /**
  * Build the dock entry component bound to one note-widget handle. Called once
@@ -30,6 +32,9 @@ import { NOTE_STATE_EVENT, type NoteWidgetHandle } from './note-widget.ts'
 export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactElement {
   return function QuickNoteDock() {
     const [open, setOpen] = React.useState(false)
+    // 点击行为由 ui.quickNoteMode 决定：native=直达 TW 原生编辑页（弹窗）；
+    // card=Markdown 卡片。null = 配置尚未加载（点击时按配置实时分发）。
+    const [mode, setMode] = React.useState<'native' | 'card' | null>(null)
     const wrapRef = React.useRef<HTMLDivElement | null>(null)
     const btnRef = React.useRef<HTMLButtonElement | null>(null)
     React.useEffect(() => {
@@ -38,6 +43,7 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
         setOpen(detail?.open === true)
       }
       window.addEventListener(NOTE_STATE_EVENT, onState)
+      void fetchUiConfig().then((cfg) => setMode(cfg.quickNoteMode))
       return () => window.removeEventListener(NOTE_STATE_EVENT, onState)
     }, [])
     React.useLayoutEffect(() => {
@@ -109,6 +115,11 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
         window.clearTimeout(t2)
       }
     }, [])
+    const native = mode === 'native'
+    const label = native ? '快速笔记' : (open ? '快速笔记（已打开）' : '快速笔记')
+    const title = native
+      ? '快速笔记：直接打开 TiddlyWiki 原生编辑器（再次点击可收起弹窗）'
+      : (open ? '快速笔记已打开（点此按钮或卡片右上角 ✕ 收起）' : '打开快速笔记（在按钮上方弹出，可拖动标题栏移动）')
     return React.createElement(
       'div',
       { ref: wrapRef, className: 'dsh-tw-dock-note' },
@@ -118,15 +129,24 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
           ref: btnRef,
           type: 'button',
           className: open ? 'dsh-tw-dock-note-btn dsh-tw-dock-note-btn-active' : 'dsh-tw-dock-note-btn',
-          title: open ? '快速笔记已打开（点此按钮或卡片右上角 ✕ 收起）' : '打开快速笔记（在按钮上方弹出，可拖动标题栏移动）',
+          title,
           onClick: () => {
-            // 开关：打开时再次点击即收起；打开时在按钮上方弹出（✕ 亦可关闭）。
-            if (note.isOpen()) note.close()
-            else void note.open(btnRef.current ?? undefined)
+            // 开关：打开时再次点击即收起；card 模式在按钮上方弹出（✕ 亦可关闭），
+            // native 模式直接开/关 TW 原生编辑弹窗。配置实时读取（短缓存）。
+            void fetchUiConfig().then((cfg) => {
+              if (cfg.quickNoteMode === 'native') {
+                if (isEditorPopupOpen()) closeEditorPopup()
+                else void note.openNative()
+              } else if (note.isOpen()) {
+                note.close()
+              } else {
+                void note.open(btnRef.current ?? undefined)
+              }
+            })
           },
         },
         React.createElement('span', { className: 'dsh-tw-dock-note-icon', 'aria-hidden': 'true' }, '📝'),
-        React.createElement('span', { className: 'dsh-tw-dock-note-label' }, open ? '快速笔记（已打开）' : '快速笔记'),
+        React.createElement('span', { className: 'dsh-tw-dock-note-label' }, label),
       ),
     )
   }
