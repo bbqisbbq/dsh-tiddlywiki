@@ -26,7 +26,7 @@ import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type
 import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
-import { TiddlyWebClient } from './host/tw-api.ts'
+import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
@@ -38,7 +38,7 @@ export const name = 'dsh-tiddlywiki'
 export const inject = ['tools', 'systemPrompt']
 
 /** Re-exports for the headless selftest and future consumers. */
-export { AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, WikiServer, dshHomePath, defineTool }
+export { AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool }
 export { ConfigStore, deepMerge } from './host/config.ts'
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './host/routes.ts'
@@ -201,8 +201,8 @@ const PROMPT_TEXT = `## TiddlyWiki 持久知识库
 
 本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。你可以用工具读写 tiddler：
 
-- \`tiddlywiki_search\`（query 必填；可选 tags[]/tag、since 修改时间、type、limit）检索；\`tiddlywiki_get\`（title）读全文；\`tiddlywiki_put\`（title, text, tags?, fields?）写/覆盖；\`tiddlywiki_batch_put\`（items[]）批量写；\`tiddlywiki_rename\`（oldTitle, newTitle, updateRefs?）重命名并尽量同步引用；\`tiddlywiki_delete\`（title）删除。
-- \`tiddlywiki_recent\`（limit?, since?）看最近修改的笔记；\`tiddlywiki_list_tags\` 看现有 tag 及计数。
+- \`tiddlywiki_search\`（query 必填；可选 tags[]/tag、since 修改时间、type、limit）检索（图片等二进制附件不参与检索）；\`tiddlywiki_get\`（title）读全文（二进制附件只返回元数据，不含 base64 正文）；\`tiddlywiki_put\`（title, text, tags?, fields?）写/覆盖；\`tiddlywiki_batch_put\`（items[]）批量写；\`tiddlywiki_rename\`（oldTitle, newTitle, updateRefs?）重命名并尽量同步引用；\`tiddlywiki_delete\`（title）删除。
+- \`tiddlywiki_recent\`（limit?, since?）看最近修改的笔记（不含图片等二进制附件）；\`tiddlywiki_list_tags\` 看现有 tag 及计数。
 - \`tiddlywiki_git_sync\`（pull|push|sync）做 git 同步；\`tiddlywiki_git_resolve\`（files, strategy=keep-local|keep-remote|list）在 pull 冲突后按 tiddler 二选一解决。
 
 知识库同步纪律（三条）：

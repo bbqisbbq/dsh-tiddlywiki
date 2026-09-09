@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -52,6 +52,28 @@ try {
   assert(tagList.some((x) => x.tag === 'inbox' && x.count >= 1), 'listTags returns tag counts')
   const listed = await api.list()
   assert(listed.some((t) => t.title === '第二篇'), 'recipe list contains new tiddler')
+
+  // 2b2. Binary tiddlers never ride along in search/recent/full listings
+  // (v0.16.20): list(includeText) runs TEXT_LIST_FILTER server-side, the first
+  // search self-heals the ExternalFilters whitelist tiddler, and get() withholds
+  // base64 from the model.
+  assert(isBinaryType('image/jpeg') === true && isBinaryType('application/pdf') === true && isBinaryType('text/markdown') === false && isBinaryType(undefined) === false, 'isBinaryType classifies binary vs text types')
+  await api.put({ title: 'BigImage.jpg', text: 'a'.repeat(300_000), type: 'image/jpeg', tags: ['binary-test'] })
+  const fullList = await api.list(undefined, true)
+  assert(!fullList.some((t) => t.title === 'BigImage.jpg'), 'list(includeText) excludes binary tiddlers')
+  const base64Search = await api.search('aaaa')
+  assert(!base64Search.items.some((t) => t.title === 'BigImage.jpg'), 'search never matches binary base64 payloads')
+  const titleSearch = await api.search('BigImage')
+  assert(titleSearch.total === 0, 'search skips binary tiddlers even on a title match (flood guard)')
+  const recentNoBin = await api.recent(50)
+  assert(!recentNoBin.some((t) => t.title === 'BigImage.jpg'), 'recent excludes binary tiddlers')
+  const binRaw = await api.get('BigImage.jpg')
+  assert(binRaw !== undefined && (binRaw.text ?? '').length === 300_000, 'raw client still returns the binary payload (the base64 guard lives in the tool layer)')
+  const whitelist = await api.get(`$:/config/Server/ExternalFilters/${TEXT_LIST_FILTER}`)
+  assert(whitelist !== undefined && whitelist.text === 'yes', 'first text listing self-heals the ExternalFilters whitelist tiddler')
+  const textStillWorks = await api.search('hello')
+  assert(textStillWorks.total >= 1, 'text search still works with binary tiddlers present')
+  await api.delete('BigImage.jpg')
 
   await api.delete('Hello')
   const gone = await api.get('Hello')
@@ -100,7 +122,19 @@ try {
   await api.delete('RenamedTitle')
   await api.delete('RefHolder')
 
-  // 3. Git face over the wiki folder
+  // 2a2. tiddlywiki_get binary guard through the REAL tool registry: an
+  // image/audio/… tiddler returns metadata only — never the base64 payload.
+  await api.put({ title: 'BigImageTool.jpg', text: 'b'.repeat(100_000), type: 'image/png', tags: [] })
+  const getTool = toolsByName.get('tiddlywiki_get')
+  const binToolResult = await getTool.execute({ title: 'BigImageTool.jpg' }, undefined)
+  assert(binToolResult.binary === true && binToolResult.text === '' && binToolResult.binaryType === 'image/png' && binToolResult.binaryChars === 100_000, 'get tool withholds base64 for binary tiddlers (binary=true, text empty)')
+  const textGetResult = await getTool.execute({ title: '第二篇' }, undefined)
+  assert(textGetResult.binary !== true && (textGetResult.text ?? '').includes('一篇中文笔记'), 'get tool still returns full text for a normal note')
+  await api.delete('BigImageTool.jpg')
+
+  // 3. Git face over the wiki folder (the whitelist tiddler written by 2b2 is
+  // on disk here, so this also guards the "Filename too long" regression that
+  // a too-long TEXT_LIST_FILTER would cause on Windows).
   const git = new GitFace()
   const wikiDir = join(tempRoot, 'main')
   assert(await git.isRepo(wikiDir) === false, 'fresh wiki folder is not a repo')

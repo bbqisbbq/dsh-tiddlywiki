@@ -15,8 +15,10 @@
  *
  * SEARCH (R2): the server blocks arbitrary `filter=` queries with 403 unless
  * the exact filter is whitelisted in $:/config/Server/ExternalFilters. So
- * `search()` fetches the default listing WITH text (`?exclude=` a sentinel)
- * and matches locally — one request, no 403, no per-tiddler round-trips.
+ * `search()` fetches the TEXT-BEARING listing WITH text (TEXT_LIST_FILTER +
+ * `?exclude=` a sentinel, whitelist self-healed on first 403) and matches
+ * locally — one request, no 403, no per-tiddler round-trips, and binary
+ * tiddlers (images etc.) never ship their base64 payload (v0.16.20).
  *
  * @module dsh-tiddlywiki/host/tw-api
  */
@@ -41,6 +43,61 @@ const CSRF_HEADER = { 'x-requested-with': 'TiddlyWiki' }
 
 /** Sentinel `exclude` value: excludes nothing, so `text` stays in the list. */
 const LIST_WITH_TEXT_EXCLUDE = '__dsh_tw_none__'
+
+/**
+ * Recipe-list filter that keeps ONLY text-bearing tiddlers (notes): no `type`
+ * field at all, or a `text/*` type. Binary tiddlers (images/audio/video/fonts/
+ * PDF/zip…) carry their payload as a base64 `text` field — on a big wiki (e.g.
+ * thousands of scanned book pages) the full listing serializes 500+MB of base64
+ * and times every agent read out. This filter drops them SERVER-SIDE so the
+ * listing stays ~6MB (v0.16.20, verified on a 2418-tiddler wiki:
+ * 515MB/17s → 6MB/0.3s).
+ *
+ * TW 5.4.1 filter facts that matter here (all verified empirically):
+ * - `prefix`/`match` operators match the TITLE only — field matching needs
+ *   `regexp:<field>` / `field:<field>`.
+ * - `[has[type]]` = "has a non-empty type field"; `[has:type[]]` is a DIFFERENT
+ *   call (suffix "type" + empty operand) that matches everything.
+ * - space-separated operations UNION (no prefix = "or"); `+` means
+ *   intersection.
+ * - negated `regexp:type`/`field:type` DROP type-less tiddlers (their field
+ *   string is null), so "exclude binary" must be written as the positive
+ *   "no type OR text-ish" union below.
+ *
+ * FILENAME BUDGET (Windows, verified): the whitelist tiddler below is stored
+ * as a .tid file whose name contains the ENTIRE filter string, so the filter
+ * must stay short — a ~180-char filter produced a ~217-char filename that
+ * broke `git add` on Windows ("Filename too long", MAX_PATH) and killed the
+ * auto-committer. 86 chars keeps the file at ~123 chars even on a deep wiki
+ * path. (Consequence: application/json tiddlers are not searchable — on this
+ * wiki there are none, and they are config/data tiddlers, not notes.)
+ */
+export const TEXT_LIST_FILTER = [
+  '[all[tiddlers]!is[system]!has[type]]',
+  '[all[tiddlers]!is[system]regexp:type[(?i)^text/]]',
+].join(' ')
+
+/** TiddlyWeb blocks every non-default filter with 403 unless the EXACT filter
+ *  string is whitelisted at `$:/config/Server/ExternalFilters/<filter>` = "yes".
+ *  This client writes that tiddler once on 403 (self-heal, idempotent) and
+ *  retries; the tiddler lives in the wiki and travels with its git history. */
+function externalFilterWhitelistTitle(filter: string): string {
+  return `$:/config/Server/ExternalFilters/${filter}`
+}
+
+/** Binary MIME type prefixes — their `text` field is base64 payload, not content. */
+const BINARY_TYPE_PREFIXES = ['image/', 'audio/', 'video/', 'font/']
+const BINARY_TYPE_EXACT = new Set([
+  'application/octet-stream', 'application/pdf', 'application/zip', 'application/gzip',
+  'application/x-gzip', 'application/x-7z-compressed', 'application/x-rar-compressed',
+  'application/epub+zip', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+])
+
+/** True when a tiddler's `type` marks it as binary (base64 in `text`). */
+export function isBinaryType(type: string | undefined): boolean {
+  if (typeof type !== 'string' || type.length === 0) return false
+  return BINARY_TYPE_PREFIXES.some((p) => type.startsWith(p)) || BINARY_TYPE_EXACT.has(type)
+}
 
 /** Split TW's whitespace-joined tags string into an array. */
 function normalizeTags(tags: unknown): string[] | undefined {
@@ -115,32 +172,65 @@ export class TiddlyWebClient {
    * List tiddlers via the default server filter. Arbitrary `filter=` queries
    * are blocked by the server (403) unless whitelisted, so callers needing a
    * subset should use search(); a supplied filter that is 403-blocked falls
-   * back to the default listing.
+   * back to the text-bearing filter.
+   *
+   * `includeText=true` returns only TEXT-BEARING tiddlers WITH their `text`
+   * (never the base64 payloads of binary tiddlers): on 403 the whitelist
+   * tiddler for TEXT_LIST_FILTER is written once and the request retried
+   * (self-heal); if that write fails (read-only wiki) it degrades to the
+   * skinny listing (title/tags matchable, empty snippets).
    */
   async list(filter?: string, includeText = false): Promise<Tiddler[]> {
+    if (!includeText) return this.fetchListing(filter)
+    const explicit = filter !== undefined && filter.length > 0
+    const target = explicit ? (filter as string) : TEXT_LIST_FILTER
+    let res = await this.requestListWithText(target)
+    if (res.status === 403) {
+      await this.ensureExternalFilterWhitelist(TEXT_LIST_FILTER).catch(() => undefined)
+      res = await this.requestListWithText(TEXT_LIST_FILTER)
+    }
+    if (res.status === 403) return this.fetchListing(undefined)
+    if (!res.ok) throw new Error(`TiddlyWeb recipe list HTTP ${res.status}`)
+    return this.parseList(res)
+  }
+
+  /** GET the recipe listing WITHOUT text payloads (server default excludes `text`). */
+  private async fetchListing(filter?: string): Promise<Tiddler[]> {
     const params = new URLSearchParams()
-    if (includeText) params.set('exclude', LIST_WITH_TEXT_EXCLUDE)
     if (filter !== undefined && filter.length > 0) params.set('filter', filter)
     const query = params.toString()
     let res = await this.request(`/recipes/default/tiddlers.json${query.length > 0 ? `?${query}` : ''}`)
     if (!res.ok && res.status === 403 && filter !== undefined && filter.length > 0) {
-      // Filter not whitelisted → refetch with the default filter.
-      const retry = new URLSearchParams()
-      if (includeText) retry.set('exclude', LIST_WITH_TEXT_EXCLUDE)
-      const retryQuery = retry.toString()
-      res = await this.request(`/recipes/default/tiddlers.json${retryQuery.length > 0 ? `?${retryQuery}` : ''}`)
+      // Filter not whitelisted → refetch with the default (whitelisted) filter.
+      res = await this.request('/recipes/default/tiddlers.json')
     }
     if (!res.ok) throw new Error(`TiddlyWeb recipe list HTTP ${res.status}`)
+    return this.parseList(res)
+  }
+
+  /** GET the recipe listing WITH text for a specific (whitelisted) filter. */
+  private async requestListWithText(filter: string): Promise<Response> {
+    return this.request(`/recipes/default/tiddlers.json?filter=${encodeURIComponent(filter)}&exclude=${LIST_WITH_TEXT_EXCLUDE}`)
+  }
+
+  /** Write `$:/config/Server/ExternalFilters/<filter>` = "yes" (idempotent). */
+  private async ensureExternalFilterWhitelist(filter: string): Promise<void> {
+    await this.put({ title: externalFilterWhitelistTitle(filter), text: 'yes' })
+  }
+
+  private async parseList(res: Response): Promise<Tiddler[]> {
     const data = (await res.json()) as Array<Record<string, unknown>> | { tiddlers?: Array<Record<string, unknown>> }
     const items = Array.isArray(data) ? data : (data.tiddlers ?? [])
     return items.map(normalizeTiddler)
   }
 
   /**
-   * Search non-system tiddlers: one request (default listing with text) plus
-   * local case-insensitive substring matching on title + text, optional exact
-   * tags (AND), a `since` modified-time floor, an exact `type`, capped at
-   * `limit`. Robust against the server's external-filter 403.
+   * Search text-bearing tiddlers: one request (text-bearing listing with text)
+   * plus local case-insensitive substring matching on title + text, optional
+   * exact tags (AND), a `since` modified-time floor, an exact `type`, capped at
+   * `limit`. Robust against the server's external-filter 403 (whitelist is
+   * self-healed). Binary tiddlers (images/audio/…) are NOT in the listing, so
+   * they can never match — a deliberate flood guard on big wikis.
    */
   async search(query: string, options: SearchOptions = {}): Promise<{ items: Tiddler[]; total: number }> {
     const items = await this.list(undefined, true)
@@ -166,9 +256,11 @@ export class TiddlyWebClient {
   }
 
   /**
-   * List the most recently modified NON-SYSTEM tiddlers, newest first
-   * (missing/modified-less tiddlers sort to the tail). `since` keeps only
-   * tiddlers modified at/after that instant.
+   * List the most recently modified TEXT-BEARING (non-system, non-binary)
+   * tiddlers, newest first (missing/modified-less tiddlers sort to the tail).
+   * `since` keeps only tiddlers modified at/after that instant. Binary
+   * attachments never appear — a book import touching hundreds of images must
+   * not crowd the "最近修改" list.
    */
   async recent(limit = 15, since?: string): Promise<Tiddler[]> {
     const items = await this.list(undefined, true)

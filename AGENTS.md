@@ -18,12 +18,12 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.19`（npm latest = 0.16.19；git tag `v0.16.19`） | `package.json` `version` |
+| **插件版本** | `0.16.20`（npm latest = 0.16.20；git tag `v0.16.20`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
 | **Seed 注册表（7 项）** | 核心：`send-to-agent`、`render-route`、`tw-web-host`；可选：`doc-note`、`home-index`、`all-articles`、`menubar-theme` | `src/host/seeds.ts` 的 `SEED_DEFS` |
-| **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **内容类型约定**（默认 markdown，`fields.type` 是内容类型保留字段勿放业务分类）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ 可点击链接格式 | `src/index.ts` |
+| **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **内容类型约定**（默认 markdown，`fields.type` 是内容类型保留字段勿放业务分类）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ **二进制附件说明**（v0.16.20：`search`/`recent` 不含二进制，`get` 只回元数据）/ 可点击链接格式 | `src/index.ts` |
 | **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`ui{showQuickNote,showQuickNoteDock,quickNoteMode,sidebarLabel,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize},tabLabel,showSessionTab}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
 | **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/sync` `/upload` `/restart` `/session/summary` `/agent/sessions` `/agent/modes` `/agent/send` `/agent/create` `/api/*` `/tw/*`；admin：`/admin/state` `/admin/info` `/admin/config` `/admin/restart` `/admin/seeds` `/admin/seeds/run` `/admin/seeds/remove` | `src/host/routes.ts` + `src/host/admin.ts` |
 | **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；`conversation.input.dock`（id `quick-note`，order 8，输入框上方快速笔记按钮，受 `ui.showQuickNoteDock` 控制；点击行为由 `ui.quickNoteMode` 决定——native=直达 TW 原生编辑弹窗（默认，`openNative`+`openEditorPopup`），card=Markdown 卡片，见 `src/client/quick-note-dock.ts`、`src/client/note-widget.ts`、`src/client/editor-popup.ts`）；`conversation.view`（id `dsh-tiddlywiki-summary`，order 20，会话顶部「知识库」Tab = 本会话相关 wiki 汇总，**TW 原生渲染**：后端写 volatile `$:/temp/dsh/session-summary/<会话ID>`，前端 **POST /tw/render 取原生片段**注入 Tab——v0.16.19 起**不再用 iframe / story view**（TW 核心把 `$:/temp/` 前缀 tiddler 一律按代码块渲染，见 §8），链接点击直达中央 TW 面板，不可编辑；受 `ui.showSessionTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/session-summary.ts`）；回复流工具卡片 `tool.call.toolview`（10 个工具各自 key） | `src/client/index.ts`、`src/client/quick-note-dock.ts`、`src/client/session-summary.ts`、`src/client/tool-views.ts` |
@@ -101,10 +101,11 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 10 个 `tiddlywiki_*` 工具，列表式注册。输出有 `render` 契约：模型看到的只是 render 后的文本，必须携带完整事实（标题/标签/摘要/git 状态），别写"UI 摘要"。
 
 - **内容类型默认**（v0.16.15）：`put`/`batch_put` 对未指定 `type` 的条目自动补 `text/markdown`（`$:/` 系统条目除外；显式 `fields.type` 优先）；`fields.type` 是 TW 内容类型**保留字段**，工具描述/提示词都明确警告勿放业务分类值。
+- **检索/最近跳过二进制附件**（v0.16.20）：`search`/`recent` 的列表在**服务端**用外部 filter 只取文本 tiddler（无 `type` 或 `text/*`，见 `tw-api.ts` 的 `TEXT_LIST_FILTER`），图片等二进制 tiddler（base64 正文）完全不参与检索/不出现在结果（含标题命中，防同名书页图刷屏）；`get` 对二进制 tiddler 只回元数据（`binary=true`/`binaryType`/`binaryChars` + 链接）。403 时自动 PUT `$:/config/Server/ExternalFilters/<filter>`="yes" 自愈重试，仍 403 降级瘦身列表。**filter 串必须保持短**（白名单 tiddler 文件名 = 整个 filter，见 §8）。
 
 ### 提示词注入（src/index.ts `PROMPT_TEXT`）
 
-`systemPrompt.section({name:'dsh-tiddlywiki', order:100, text})`，内容要点：工具清单、知识库同步纪律（开工 pull / 收工 sync）、pull 冲突处理（`git_resolve` keep-local|keep-remote）、wiki 当长期记忆、自动建笔记带 workspace 标签、`agent-written`/`human-edited` 标签约定、**内容类型约定**（agent 正文默认 Markdown，工具自动补 `text/markdown`；要写 wikitext 才显式传 `fields.type`；`fields.type` 勿放业务分类）、**想法沉淀约定**（有价值但不在当前范围的 idea → `todo`+`agent-written` 独立 tiddler + 工作区/会话背景）、`[标题](/dsh-tiddlywiki/tw/#标题)` 可点击链接格式。
+`systemPrompt.section({name:'dsh-tiddlywiki', order:100, text})`，内容要点：工具清单、知识库同步纪律（开工 pull / 收工 sync）、pull 冲突处理（`git_resolve` keep-local|keep-remote）、wiki 当长期记忆、自动建笔记带 workspace 标签、`agent-written`/`human-edited` 标签约定、**内容类型约定**（agent 正文默认 Markdown，工具自动补 `text/markdown`；要写 wikitext 才显式传 `fields.type`；`fields.type` 勿放业务分类）、**想法沉淀约定**（有价值但不在当前范围的 idea → `todo`+`agent-written` 独立 tiddler + 工作区/会话背景）、**二进制附件说明**（v0.16.20：`search`/`recent` 不返回图片等二进制 tiddler，`get` 对二进制只回元数据）、`[标题](/dsh-tiddlywiki/tw/#标题)` 可点击链接格式。
 
 ### Seed 机制（src/host/seeds.ts）
 
@@ -198,4 +199,5 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **bundle 是 ONE-SHOT、用户自有**：改了 bundle 源件后旧 wiki 不会自动更新，要手动覆盖 wiki tiddler + 用户重载 TW 面板。
 - **在「知识库」Tab 的汇总条目上点 ✏️ 编辑 → 整页显示 wikitext 源码、链接点不动**（v0.16.16 的坑）：TW 的编辑草稿 `Draft of '…'` 会**继承全文**并以编辑框（textarea）呈现，看起来就是「没正确渲染」；草稿还会被浏览器端同步回流服务端日志（`syncer-server-filesystem: Dispatching 'save' task: "…"的草稿`）甚至短暂落盘。根因不是渲染坏了（数据/类型/服务端 render 实测均正常；TW 5.4.1 也没有 `wiki.refreshTiddler`，强制重渲染要走 `$tw.rootWidget.refresh(changes)`）。v0.16.16 起插件在注入后对汇总条目做三层防误编辑：清残留草稿 + 吞 `draft.of` 指向汇总之新草稿（包 `wiki.addTiddler`，幂等 WeakSet）+ 禁用 ✏️ 按钮（本地化 tooltip 定位）。排查「汇总显示源码」类问题时先看 TW 日志有没有「…的草稿」save 任务。
 - Windows 下 git 的 LF→CRLF 警告无害。
+- **TiddlyWeb 外部 filter 的坑（v0.16.20 教训）**：① 非默认 filter 一律 403，除非 `$:/config/Server/ExternalFilters/<filter串>` = "yes"（白名单 tiddler 文件名 = **整个 filter 串**——filter 必须短：此前 180 字符版在 Windows 上文件名顶到 217 字符，撑爆 MAX_PATH，`git add` 报 "Filename too long"、自动 commit 失效；86 字符版文件名 ~123 字符安全。selftest 的 git 段就是这个回归的守门员）；② `prefix`/`match` 只匹配 **title**，字段匹配用 `regexp:type[...]`/`field:type[...]`；③ `[has[type]]`=有 type 字段，`[has:type[]]` 是另一种调用（suffix+空 operand，匹配一切）；④ 空格分隔=**并集**、`+`=交集；⑤ 取反的 `regexp:type`/`field:type` 会**丢掉无 type 字段**的 tiddler——「排除二进制」必须写成正向并集（无 type OR `text/*`），见 `tw-api.ts` 的 `TEXT_LIST_FILTER`。
 - 消息里**附加说明放消息末尾**（正文之后），别插在待办说明与正文之间。

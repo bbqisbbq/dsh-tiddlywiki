@@ -15,6 +15,7 @@
  * @module dsh-tiddlywiki/host/tools
  */
 import { defineTool } from '../sdk.ts'
+import { isBinaryType } from './tw-api.ts'
 import type { TiddlyWebClient, Tiddler } from './tw-api.ts'
 import type { GitFace } from './git.ts'
 
@@ -148,7 +149,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_search ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_search',
-    description: '检索 TiddlyWiki 持久知识库：按关键词（可选 tags 数组 / since 修改时间 / type / limit）搜索非系统 tiddler，返回标题、标签、修改时间与摘要片段。',
+    description: '检索 TiddlyWiki 持久知识库：按关键词（可选 tags 数组 / since 修改时间 / type / limit）搜索非系统 tiddler，返回标题、标签、修改时间与摘要片段。二进制 tiddler（图片等附件，正文为 base64）不参与检索。',
     parameters: {
       query: { type: 'string', description: '搜索关键词（大小写不敏感，子串匹配）', required: true },
       tags: { type: 'array', items: { type: 'string' }, description: '可选：要求同时包含的标签（AND）' },
@@ -200,7 +201,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_recent ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_recent',
-    description: '查看 TiddlyWiki 知识库最近修改的笔记（按修改时间倒序，排除系统 tiddler），返回标题、标签、修改时间与摘要。适合开工时快速了解近期动态。',
+    description: '查看 TiddlyWiki 知识库最近修改的笔记（按修改时间倒序，排除系统 tiddler 与图片等二进制附件），返回标题、标签、修改时间与摘要。适合开工时快速了解近期动态。',
     parameters: {
       limit: { type: 'integer', description: '可选：返回条数（默认 15，最大 200）' },
       since: { type: 'string', description: '可选：只返回修改时间不早于该 ISO 时间的 tiddler' },
@@ -252,7 +253,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_get ───────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_get',
-    description: '读取一个 TiddlyWiki tiddler 的完整内容（标题、全文、标签、自定义字段）。',
+    description: '读取一个 TiddlyWiki tiddler 的完整内容（标题、全文、标签、自定义字段）。二进制 tiddler（图片等附件）只返回元数据，不返回 base64 正文。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配）', required: true },
     },
@@ -260,6 +261,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       schema: { type: 'json' },
       render: (_args, value: GetResult) => {
         if (value.notFound) return [{ type: 'text', text: `tiddler「${value.title}」不存在。可用 tiddlywiki_search 检索，或用 tiddlywiki_put 新建。` }]
+        if (value.binary === true) {
+          const lines = [`tiddler「${value.title}」是二进制附件（type=${value.binaryType ?? '?'}，base64 正文约 ${value.binaryChars ?? 0} 字符），不返回正文。`]
+          if (value.tags.length > 0) lines.push(`标签: ${value.tags.join(', ')}`)
+          if (value.modified !== null) lines.push(`修改: ${value.modified}`)
+          const fields = Object.entries(value.fields)
+          if (fields.length > 0) lines.push(`字段: ${fields.map(([k, v]) => `${k}=${String(v)}`).join(', ')}`)
+          lines.push(`如需查看附件本身，可打开 [${value.title}](/dsh-tiddlywiki/tw/#${encodeURIComponent(value.title)})。`)
+          return [{ type: 'text', text: lines.join('\n') }]
+        }
         const lines = [`tiddler「${value.title}」`]
         if (value.tags.length > 0) lines.push(`标签: ${value.tags.join(', ')}`)
         if (value.modified !== null) lines.push(`修改: ${value.modified}`)
@@ -274,7 +284,21 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const wiki = requireWiki()
       const t = await wiki.get(args.title)
       if (t === undefined) return { notFound: true, title: args.title, text: '', tags: [], fields: {}, modified: null }
-      return { notFound: false, title: t.title, text: t.text ?? '', tags: t.tags ?? [], fields: pickFields(t), modified: typeof t.modified === 'string' ? t.modified : null }
+      const binary = isBinaryType(typeof t.type === 'string' ? t.type : undefined)
+      const result: GetResult = {
+        notFound: false,
+        title: t.title,
+        text: binary ? '' : (t.text ?? ''),
+        tags: t.tags ?? [],
+        fields: pickFields(t),
+        modified: typeof t.modified === 'string' ? t.modified : null,
+      }
+      if (binary) {
+        result.binary = true
+        result.binaryType = typeof t.type === 'string' ? t.type : undefined
+        result.binaryChars = (t.text ?? '').length
+      }
+      return result
     },
   }))
 
@@ -577,7 +601,18 @@ interface SearchHit { title: string; tags: string[]; modified: string | null; sn
 interface SearchResult { query: string; tags: string[]; since: string | null; type: string | null; total: number; results: SearchHit[] }
 interface RecentResult { since: string | null; results: SearchHit[] }
 interface TagListResult { count: number; tags: Array<{ tag: string; count: number }> }
-interface GetResult { notFound: boolean; title: string; text: string; tags: string[]; fields: Record<string, unknown>; modified: string | null }
+interface GetResult {
+  notFound: boolean
+  title: string
+  text: string
+  tags: string[]
+  fields: Record<string, unknown>
+  modified: string | null
+  /** Binary attachment (image/audio/…): `text` is withheld, these carry its type+size. */
+  binary?: boolean
+  binaryType?: string
+  binaryChars?: number
+}
 interface PutResult { ok: boolean; title: string; tags: string[]; type: string | null; typeDefaulted?: boolean; fields: Record<string, unknown> | null }
 interface BatchResult { ok: boolean; written: number; skipped: number; items: Array<{ title: string; written: boolean; skipped: boolean }> }
 interface RenameResult { ok: boolean; from: string; to: string; refsUpdated: number; refsTiddlers: number; warning?: string }

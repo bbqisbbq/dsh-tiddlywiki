@@ -12,7 +12,7 @@
 
 | 能力 | 说明 |
 |---|---|
-| 🤖 **Agent 工具** | 10 个 `tiddlywiki_*` 工具：检索、读写、批量、重命名、删除、git 同步与冲突解决 |
+| 🤖 **Agent 工具** | 10 个 `tiddlywiki_*` 工具：检索、读写、批量、重命名、删除、git 同步与冲突解决（v0.16.20 起检索/最近在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
 | 📊 **回复流卡片** | 工具结果显示原生 TW 卡片；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
@@ -73,6 +73,8 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 1. 开工先 `tiddlywiki_git_sync action=pull`（rebase + autostash，真冲突会 abort 并报文件）。
 2. 冲突后用 `tiddlywiki_git_resolve` 二选一解决，再重新 sync（**绝不自动覆盖**）。
 3. 收工 `tiddlywiki_git_sync action=sync`（pull → commit → push）。
+
+> 🔍 **检索/最近跳过二进制附件**（v0.16.20）：`search`/`recent` 在**服务端**只取文本 tiddler（无 `type` 字段或 `text/*`），图片/音频/视频/PDF/zip 等二进制 tiddler（base64 正文）不参与检索、不出现在结果里——大 wiki（如数千张书籍扫描页图）从此从 515MB/17s 降到 ~0.4s，也不会被同名书页图刷屏。`get` 对二进制 tiddler 只返回元数据（`binary=true` + 类型/大小 + 链接），不返回 base64 正文。
 
 > ⚠️ `fields.type` 是 TW 的**内容类型保留字段**（`text/markdown` 等），业务分类请放 `tags`，别写进 `fields.type`。
 
@@ -225,6 +227,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.16.20**（2026-09-09）：**修：`search`/`recent` 在大 wiki 上超时**。根因：列表请求把全部 tiddler（含图片等二进制附件）的 base64 正文拉回来（2418 个 tiddler ≈ 515MB/17s，超过 10s 请求超时）。修复：`search`/`recent`/`get` 在**服务端**只取文本 tiddler（无 `type` 或 `text/*`）——用外部 filter `[all[tiddlers]!is[system]!has[type]] [all[tiddlers]!is[system]regexp:type[(?i)^text/]]`（含 `$:/config/Server/ExternalFilters/<filter>` 白名单自愈，403 时自动 PUT 重试，仍 403 降级瘦身列表）；二进制 tiddler 完全排除（含标题命中，防同名书页图刷屏），`get` 对二进制只回元数据（`binary=true`/`binaryType`/`binaryChars` + 链接）。实测线上 wiki（2418 tiddler/958 图）：515MB/17s → **6.24MB/0.3s**，图片零泄漏。⚠️ 白名单 tiddler 文件名含整个 filter 串——filter 必须短（此前 180 字符版在 Windows 上把文件名顶到 217 字符，撑爆 MAX_PATH 使 `git add` 报 "Filename too long"、自动 commit 失效；selftest 已把该场景纳入回归）。代价：`application/json` 等类型 tiddler 不进检索（本 wiki 无此类，且多为配置数据）。
 - **v0.16.19**（2026-09-07）：**修：会话「知识库」Tab 把汇总当源码显示（整页 wikitext、像包在代码标签里）**。根因（headless $tw 实测）：TW 5.4.1 核心的视图模板级联（`$:/config/ViewTemplateBodyFilters/system` 的 system 规则）把所有 `$:/temp/` 前缀 tiddler 一律按**代码块**渲染（`$:/core/ui/ViewTemplate/body/code` → `<pre><code>`）——因此即便 v0.16.14+ 把 volatile 条目注入 iframe store 再原生导航，story view 仍把汇总当源码展示。修复：客户端**不再用 iframe / story view**，改走与回复流工具卡同一条原生渲染管线——`POST /tw/render {title}`（服务端把汇总 wikitext 块解析成 HTML 片段，`[[链接]]` 重写为 `/dsh-tiddlywiki/tw/#标题`）→ 注入滚动容器（样式复用 `.dsh-tw-toolcard-native` 的 tc-* 重主题）；片段内链接点击仍打开中央 TW 面板。无 iframe → 无编辑按钮/草稿，v0.16.16 的三层防误编辑随之不再需要；保留 30s 自愈（volatile 条目被清自动重建）与「🔄 刷新」。**刷新页面**即生效。
 - **v0.16.18**（2026-09-07）：README 全面精简重写；seed 优化——首页 seed 跟随 wiki 现状（🏠 主页）、修「所有文章」回主页死链、doc-note 文案修正。
 - **v0.16.17**（2026-09-07）：点击快速笔记可选直达 TW 原生编辑页（`ui.quickNoteMode`）+ 修「在 TW 中编辑」弹窗 ✕ 关不掉。
