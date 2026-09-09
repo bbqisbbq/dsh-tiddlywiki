@@ -30,6 +30,7 @@
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
 | 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
+| 🧩 **Better Sidebar Tab** | dsh-better-sidebar 侧边栏：+ 菜单注册 TiddlyWiki tab，与聊天并排；链接点击可直达；未安装该插件自动跳过（v0.16.23） |
 | 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染（`/tw/render` 片段管线，v0.16.19） |
 | 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式；首页内置「快速记笔记（完整编辑器）」 |
 | ✅ **待办四象限** | 首页看板：任务打 `todo` 标签即收录，拖动即可分类/完成（正文附 `q` 字段），逾期/今日到期自动统计 |
@@ -99,6 +100,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 - **📤 发送给 Agent**：TW 工具栏按钮（首次启动自动写入 wiki，ONE-SHOT）。弹层可选**附加说明**（位于消息末尾）、**工作模式**（Agent 预设）、**权限**（权限预设），按工作区分组选会话或新建。消息自带待办说明。
 - **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`）。
 - **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过。
+- **🧩 Better Sidebar Tab**（v0.16.23）：安装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 插件时，其侧边栏 **+ 菜单**会出现「TiddlyWiki 知识库」tab，点击即打开完整 TW 编辑器（同一套同源代理 iframe / 主题跟随 / 互斥协议，与右侧栏完全相同），**与聊天并排**。由 `ui.showBetterSidebarTab` 控制（默认开）；未安装 Better Sidebar 自动跳过；Better Sidebar 自己的设置页也会为该 tab 提供独立的启用开关。**更新后刷新页面**即可看到入口。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。
 - **🏠 首页（初始化 home-index 后）**：待办四象限（`todo` 标签 + `q` 字段拖放分类）+ 快速记笔记（完整编辑器，勾选「同时加入待办」即建任务）+「所有标签 / 所有文章」入口 +「📚 插件文档」栏（自动收录所有带 `dsh-docs` 标签的 seed 文档）。
 - **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），**TW 原生渲染**（v0.16.19 起 `/tw/render` 片段管线，与回复流工具卡同链路），链接点击直达中央 TW 面板，不可编辑。
@@ -252,6 +254,8 @@ src/
     ├── session-summary.ts  # 会话「知识库」Tab（conversation.view 槽位）
     ├── tool-views.ts       # 回复流工具卡片（tool.call.toolview）
     ├── theme-sync.ts / panel.ts / sidebar-entry.ts / sync-button.ts / rightbar-tab.ts
+    │                   # 共享 TW iframe 机制在 tw-frame.ts（v0.16.23：lazy-load/status/主题/互斥/live-frame 路由）；
+    │                   # better-sidebar-tab.ts 经 ctx.betterSidebar 注册 DSH Better Sidebar 的 TW tab（v0.16.23）
     └── settings-page.ts / ui-config.ts / state.ts / styles.ts / toast.ts
 scripts/                # 构建/校验/再生成脚本
 docs/seed-initialization.md  # seed 机制详解（权威）
@@ -264,6 +268,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.16.23**（2026-09-09）：**新：DSH Better Sidebar（dsh-better-sidebar）集成**。插件通过 `ctx.betterSidebar` 服务注册 TiddlyWiki 为 Better Sidebar 侧边栏的 tab 类型——+ 菜单点击即以 tab 打开完整 TW 编辑器（同源代理 iframe，与聊天并排）；TW iframe 机制抽成共享模块（rightbar/better-sidebar 复用：lazy-load / status 轮询 / 主题同步 / hash 导航 / 互斥协议），回复流 wiki 链接在同一处统一路由到任一可见的侧边 TW tab。配置 `ui.showBetterSidebarTab`（默认 true）可开关；未安装 Better Sidebar 自动跳过。**更新后刷新页面**即可看到入口。
 - **v0.16.22**（2026-09-09）：**seed 体系三层化 + 文档中心起步包**。① 分层：**核心**（自动、不可移除：发送按钮/渲染路由/代理基址）+ **起步**（首次安装默认写、可移除：插件说明 + 新增「示例与文档」seed——主题汇总模板/教程/三个示例主题页）+ **可选**（手动：首页/所有文章/新增「自定义样式」seed/顶栏主题）；所有种子**安全跳过**（同名 tiddler 已存在绝不覆盖）。② 新增 **`dsh-docs`** 文档合集约定：所有 seed 文档打该标签，首页「📚 插件文档」tabs 栏自动收录。③ seed 版首页改为**通用版**（`gen-seed-home --strip-private`：剥离作者私有人口，注入文档栏）。④ **修**：首页快速记笔记的 tags 筛选器 bug（`then[[todo]]` 操作数双括号导致「筛选器错误」被拆成 6 个 tag → 改为 `then[todo]`）。
 - **v0.16.21**（2026-09-09）：**新：DSH 右侧边栏（rightbar）集成**。注册 TiddlyWiki 为右侧栏 tab 类型——rightbar 首页出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器（同源代理 iframe，跟随 DSH 主题），**与聊天并排**；配置 `ui.showRightbarTab`（默认 true）可开关。**更新后刷新页面**即可看到入口。
 - **v0.16.20**（2026-09-09）：**修：`search`/`recent` 在大 wiki 上超时**。根因：列表请求把全部 tiddler（含图片等二进制附件）的 base64 正文拉回来（2418 个 tiddler ≈ 515MB/17s）。修复：`search`/`recent`/`get` 在**服务端**只取文本 tiddler（无 `type` 或 `text/*`）；二进制 tiddler 完全排除，`get` 对二进制只回元数据。实测 515MB/17s → **6.24MB/0.3s**。

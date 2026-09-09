@@ -26,9 +26,11 @@ export interface UiConfig {
   showSessionTab: boolean
   /** 是否在 DSH 右侧边栏提供 TiddlyWiki 入口/Tab（默认 true）。 */
   showRightbarTab: boolean
+  /** 是否在 DSH Better Sidebar 侧边栏注册 TiddlyWiki tab（默认 true）。 */
+  showBetterSidebarTab: boolean
 }
 
-const FALLBACK: UiConfig = { showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: '知识库', showSessionTab: true, showRightbarTab: true }
+const FALLBACK: UiConfig = { showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, showBetterSidebarTab: true }
 
 const CACHE_TTL_MS = 15_000
 let cache: { at: number; value: UiConfig } | undefined
@@ -43,7 +45,7 @@ export async function fetchUiConfig(opts: { force?: boolean } = {}): Promise<UiC
   try {
     const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
     if (!res.ok) return FALLBACK
-    const p = (await res.json()) as { ui?: { showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean } }
+    const p = (await res.json()) as { ui?: { showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; showBetterSidebarTab?: boolean } }
     const value: UiConfig = {
       showQuickNoteDock: p.ui?.showQuickNoteDock !== false,
       quickNoteMode: p.ui?.quickNoteMode === 'card' ? 'card' : 'native',
@@ -55,6 +57,7 @@ export async function fetchUiConfig(opts: { force?: boolean } = {}): Promise<UiC
         : '知识库',
       showSessionTab: p.ui?.showSessionTab !== false,
       showRightbarTab: p.ui?.showRightbarTab !== false,
+      showBetterSidebarTab: p.ui?.showBetterSidebarTab !== false,
     }
     cache = { at: Date.now(), value }
     return value
