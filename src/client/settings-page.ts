@@ -254,6 +254,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   textField('ui.darkPalette', '暗色时 TW palette（tiddler 标题）', typeof ui.darkPalette === 'string' && ui.darkPalette.trim().length > 0 ? ui.darkPalette.trim() : '$:/palettes/CupertinoDark')
   textField('ui.tabLabel', '会话顶部「知识库」Tab 名称', typeof ui.tabLabel === 'string' && ui.tabLabel.trim().length > 0 ? ui.tabLabel.trim() : '知识库')
   checkField('ui.showSessionTab', '显示会话顶部「知识库」Tab（本会话相关 wiki 笔记汇总）', ui.showSessionTab !== false)
+  checkField('ui.showRightbarTab', '在 DSH 右侧边栏提供 TiddlyWiki 入口/Tab（与聊天并排）', ui.showRightbarTab !== false)
   const sendToAgent = (ui.sendToAgent ?? {}) as Record<string, unknown>
   checkField('ui.sendToAgent.enabled', '启用「发送给 Agent」（TW 笔记 → DSH 会话注入）', sendToAgent.enabled !== false)
   textField('ui.sendToAgent.endpoint', 'TW 端请求基址（空=自动取当前 DSH origin）', typeof sendToAgent.endpoint === 'string' ? sendToAgent.endpoint : '')

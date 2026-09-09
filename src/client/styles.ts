@@ -69,6 +69,33 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-panel-error button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 .dsh-tw-panel-error code { font-size: 11px; opacity: .8; max-width: 80%; overflow-wrap: anywhere; }
 
+/* ── right-sidebar tab (DSH new rightbar) ──────────────────────
+   The React body host fills the rightbar pane; the TW iframe lives inside
+   it and follows the DSH theme like the center-column panel. */
+.dsh-tw-rightbar-tab {
+  position: relative; display: flex; flex-direction: column;
+  width: 100%; height: 100%; min-height: 0; box-sizing: border-box;
+  background: var(--dsw-alias-bg-layer-1, var(--dsw-bg, #fff));
+}
+.dsh-tw-rightbar-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dsh-tw-rightbar-frame-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dsh-tw-rightbar-frame {
+  flex: 1; min-height: 0; border: 0; width: 100%; display: block;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.dsh-tw-rightbar-frame[hidden],
+.dsh-tw-rightbar-error[hidden] { display: none !important; }
+.dsh-tw-rightbar-error {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; color: var(--dsw-alias-label-secondary, #666); font-size: 13px; text-align: center; padding: 20px;
+}
+.dsh-tw-rightbar-error button {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25)); background: transparent;
+  color: inherit; font: inherit; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+}
+.dsh-tw-rightbar-error button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-rightbar-error code { font-size: 11px; opacity: .8; max-width: 80%; overflow-wrap: anywhere; }
+
 /* ── floating quick-note widget ────────────────────────────────
    Positioned ABOVE the shutdown launcher FAB (fixed right:24 bottom:24,
    z-index 900, 46px) and BELOW its confirm overlay (z-index 1000).

@@ -151,6 +151,8 @@ export interface UiDefaultsPublic {
   tabLabel: string
   /** 是否在会话顶部显示「知识库」Tab（会话相关 wiki 汇总，默认 true）。 */
   showSessionTab: boolean
+  /** 是否在 DSH 右侧边栏提供 TiddlyWiki 入口/Tab（默认 true）。 */
+  showRightbarTab: boolean
 }
 
 export interface RouteDeps {

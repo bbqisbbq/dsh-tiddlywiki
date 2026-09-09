@@ -81,6 +81,13 @@ export interface PluginConfigShape {
     tabLabel?: string
     /** 是否在会话顶部显示「知识库」Tab（会话相关 wiki 汇总，默认 true）。 */
     showSessionTab?: boolean
+    /**
+     * 是否在 DSH 右侧边栏（new rightbar）提供 TiddlyWiki 入口/Tab（默认
+     * true）：在 rightbar 首页（guide 页）注册「TiddlyWiki 知识库」入口盒，
+     * 点击即在右侧栏以 tab 形式打开完整 TW 编辑器（与聊天并排）。老版本
+     * DSH 无 rightbar 时该配置不生效（客户端自动跳过）。
+     */
+    showRightbarTab?: boolean
   }
   uiLanguage?: string
   [key: string]: unknown

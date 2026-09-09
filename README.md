@@ -16,6 +16,7 @@
 | 📊 **回复流卡片** | 工具结果显示原生 TW 卡片；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
+| 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
 | 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染（`/tw/render` 片段管线，v0.16.19） |
 | 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式 |
 | 🌗 **跟随主题** | 内嵌 TW 自适应 DSH 深浅主题（纯内存切换，不进 git） |
@@ -82,6 +83,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 - **📤 发送给 Agent**：TW 工具栏按钮（首次启动自动写入 wiki，ONE-SHOT）。弹层可选**附加说明**（位于消息末尾）、**工作模式**（Agent 预设）、**权限**（权限预设），按工作区分组选会话或新建。消息自带待办说明。
 - **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`）。
+- **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。右侧栏 TW tab 可见时，回复流里的 wiki 链接直接在该 tab 打开；互斥保证同时只存在一个 TW 客户端（打开右侧栏 TW 会收起中央面板，反之亦然）。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过、不影响其他功能。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。
 - **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），**TW 原生渲染**（v0.16.19 起 `/tw/render` 片段管线，与回复流工具卡同链路，不再用 iframe/story view），链接点击直达中央 TW 面板，不可编辑。
 - **🌗 跟随 DSH 主题**：内嵌 TW 随 DSH 深浅切换 palette，纯内存不写回 wiki（`ui.followDshTheme`/`ui.darkPalette`）。
@@ -127,6 +129,7 @@ seed 注册表分两层（详细见 [docs/seed-initialization.md](docs/seed-init
       darkPalette: "$:/palettes/CupertinoDark"
       tabLabel: "知识库"               # 会话 Tab 名
       showSessionTab: true
+      showRightbarTab: true            # DSH 右侧边栏提供 TiddlyWiki 入口/Tab
       sendToAgent: { enabled: true }
     uiLanguage: ""                     # 留空不干预；"zh-Hans" 自动启用简体
     auth:
@@ -227,6 +230,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.16.21**（2026-09-09）：**新：DSH 右侧边栏（rightbar）集成**。注册 TiddlyWiki 为右侧栏 tab 类型——rightbar 首页出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器（同源代理 iframe，跟随 DSH 主题），**与聊天并排**；回复流 wiki 链接在右侧栏 TW 可见时直接于该 tab 打开；与中央面板/Taskboard 等**互斥**（同一时刻只有一个 TW 客户端，防止双写冲突）。配置 `ui.showRightbarTab`（默认 true）可开关；客户端对 `sidebarRightTabs` 服务做**可选访问**（老版本 DSH 无右侧栏时自动跳过，插件其余功能不受影响）。**更新后刷新页面**（客户端）即可看到入口；host 端配置项在重启 dsh web 后生效。
 - **v0.16.20**（2026-09-09）：**修：`search`/`recent` 在大 wiki 上超时**。根因：列表请求把全部 tiddler（含图片等二进制附件）的 base64 正文拉回来（2418 个 tiddler ≈ 515MB/17s，超过 10s 请求超时）。修复：`search`/`recent`/`get` 在**服务端**只取文本 tiddler（无 `type` 或 `text/*`）——用外部 filter `[all[tiddlers]!is[system]!has[type]] [all[tiddlers]!is[system]regexp:type[(?i)^text/]]`（含 `$:/config/Server/ExternalFilters/<filter>` 白名单自愈，403 时自动 PUT 重试，仍 403 降级瘦身列表）；二进制 tiddler 完全排除（含标题命中，防同名书页图刷屏），`get` 对二进制只回元数据（`binary=true`/`binaryType`/`binaryChars` + 链接）。实测线上 wiki（2418 tiddler/958 图）：515MB/17s → **6.24MB/0.3s**，图片零泄漏。⚠️ 白名单 tiddler 文件名含整个 filter 串——filter 必须短（此前 180 字符版在 Windows 上把文件名顶到 217 字符，撑爆 MAX_PATH 使 `git add` 报 "Filename too long"、自动 commit 失效；selftest 已把该场景纳入回归）。代价：`application/json` 等类型 tiddler 不进检索（本 wiki 无此类，且多为配置数据）。
 - **v0.16.19**（2026-09-07）：**修：会话「知识库」Tab 把汇总当源码显示（整页 wikitext、像包在代码标签里）**。根因（headless $tw 实测）：TW 5.4.1 核心的视图模板级联（`$:/config/ViewTemplateBodyFilters/system` 的 system 规则）把所有 `$:/temp/` 前缀 tiddler 一律按**代码块**渲染（`$:/core/ui/ViewTemplate/body/code` → `<pre><code>`）——因此即便 v0.16.14+ 把 volatile 条目注入 iframe store 再原生导航，story view 仍把汇总当源码展示。修复：客户端**不再用 iframe / story view**，改走与回复流工具卡同一条原生渲染管线——`POST /tw/render {title}`（服务端把汇总 wikitext 块解析成 HTML 片段，`[[链接]]` 重写为 `/dsh-tiddlywiki/tw/#标题`）→ 注入滚动容器（样式复用 `.dsh-tw-toolcard-native` 的 tc-* 重主题）；片段内链接点击仍打开中央 TW 面板。无 iframe → 无编辑按钮/草稿，v0.16.16 的三层防误编辑随之不再需要；保留 30s 自愈（volatile 条目被清自动重建）与「🔄 刷新」。**刷新页面**即生效。
 - **v0.16.18**（2026-09-07）：README 全面精简重写；seed 优化——首页 seed 跟随 wiki 现状（🏠 主页）、修「所有文章」回主页死链、doc-note 文案修正。

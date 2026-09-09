@@ -24,6 +24,7 @@ import { mountSessionSummaryView } from './session-summary.ts'
 import { disposeEditorPopup } from './editor-popup.ts'
 import { SettingsSection } from './settings-page.ts'
 import { registerToolViews, installWikiLinkInterceptor } from './tool-views.ts'
+import { mountRightbarTab, type RightbarSlotsFace } from './rightbar-tab.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-tiddlywiki/client'
@@ -40,7 +41,14 @@ interface ClientContextFace {
       component: unknown,
     ): () => void
   }
+  /** Optional service read without the inject requirement (cordis ctx.get). */
+  get?: (name: string) => unknown
   effect?(fn: () => unknown, label?: string): void
+}
+
+/** Structural face over the rightbar tab registry (dsh-client-ui-sidebar-right). */
+interface SidebarRightTabsFace {
+  register(definition: unknown): () => void
 }
 
 /**
@@ -90,6 +98,34 @@ export function apply(ctx: ClientContextFace): void {
     } catch (error) {
       // DOM failures degrade the plugin, never the GUI.
       console.error('[dsh-tiddlywiki] mount failed:', error)
+    }
+    try {
+      // 右侧边栏（DSH new rightbar）集成：可选挂载——仅当
+      // dsh-client-ui-sidebar-right 提供了 sidebarRightTabs 服务时才启用
+      // （老版本 DSH / 无右侧栏时静默跳过，插件其余功能不受影响）。注册 TW
+      // tab 类型 + guide 首页入口盒；由 ui.showRightbarTab 控制（默认开）。
+      let retryTimer: number | undefined
+      const tryMountRightbar = (attempt: number): void => {
+        const tabs = ctx.get?.('sidebarRightTabs') as SidebarRightTabsFace | undefined
+        if (tabs === undefined) {
+          // rightbar 插件可能在本次 apply 之后才就绪：有限重试几次即可。
+          if (attempt < 6 && !clientDisposed) {
+            retryTimer = window.setTimeout(() => tryMountRightbar(attempt + 1), 500 * (attempt + 1))
+          }
+          return
+        }
+        void fetchUiConfig().then((cfg) => {
+          if (clientDisposed) return
+          if (!cfg.showRightbarTab) return
+          const removeRightbar = mountRightbarTab(tabs, ctx.slots as unknown as RightbarSlotsFace)
+          if (removeRightbar !== undefined) disposers.push(removeRightbar)
+        })
+      }
+      tryMountRightbar(0)
+      disposers.push(() => { if (retryTimer !== undefined) window.clearTimeout(retryTimer) })
+    } catch (error) {
+      // 右侧栏集成失败只影响该功能本身，绝不让整个插件挂掉。
+      console.error('[dsh-tiddlywiki] rightbar mount failed:', error)
     }
     try {
       // Reply-stream native tool cards: keyed `tool.call.toolview` slots for

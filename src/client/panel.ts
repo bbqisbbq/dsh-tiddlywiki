@@ -23,6 +23,7 @@
 import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
+import { openTiddlerInRightbar } from './rightbar-tab.ts'
 
 export const PANEL_RELOAD_EVENT = 'dsh-tw-panel-reload'
 
@@ -316,6 +317,9 @@ export function mountPanel(state: PanelState): () => void {
     const detail = (event as CustomEvent).detail as { title?: unknown } | undefined
     const title = typeof detail?.title === 'string' && detail.title.length > 0 ? detail.title : ''
     if (title.length === 0) return
+    // 右侧栏的 TW tab 可见时，链接直接在那里打开（与聊天并排）；否则退回
+    // 中央面板。互斥由 rightbar-tab 的 dsh-panel-activate 协议保证。
+    if (openTiddlerInRightbar(title)) return
     pendingHash = `#${encodeURIComponent(title)}`
     state.openPanel()
     applyPendingHash()
