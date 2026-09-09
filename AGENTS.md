@@ -18,11 +18,11 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.21`（npm latest = 0.16.21；git tag `v0.16.21`） | `package.json` `version` |
+| **插件版本** | `0.16.22`（npm latest = 0.16.22；git tag `v0.16.22`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
-| **Seed 注册表（7 项）** | 核心：`send-to-agent`、`render-route`、`tw-web-host`；可选：`doc-note`、`home-index`、`all-articles`、`menubar-theme` | `src/host/seeds.ts` 的 `SEED_DEFS` |
+| **Seed 注册表（9 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（首次安装默认写、可移除）：`doc-note`、`starter-docs`；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`。文档类内容统一打 `dsh-docs` 标签（进首页「📚 插件文档」栏） | `src/host/seeds.ts` 的 `SEED_DEFS` |
 | **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **内容类型约定**（默认 markdown，`fields.type` 是内容类型保留字段勿放业务分类）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ **二进制附件说明**（v0.16.20：`search`/`recent` 不含二进制，`get` 只回元数据）/ 可点击链接格式 | `src/index.ts` |
 | **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`ui{showQuickNote,showQuickNoteDock,quickNoteMode,sidebarLabel,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize},tabLabel,showSessionTab,showRightbarTab}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
 | **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/sync` `/upload` `/restart` `/session/summary` `/agent/sessions` `/agent/modes` `/agent/send` `/agent/create` `/api/*` `/tw/*`；admin：`/admin/state` `/admin/info` `/admin/config` `/admin/restart` `/admin/seeds` `/admin/seeds/run` `/admin/seeds/remove` | `src/host/routes.ts` + `src/host/admin.ts` |
@@ -43,9 +43,9 @@ src/
 │   ├── session-summary.ts # 会话「知识库」Tab 后端：sessionQuery 读日志+后代 → 产生/读取/检索 → $:/temp 汇总 wikitext
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/* 路由（seeds run/remove）
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层（tiddler 优先）
-│   ├── seeds.ts        # 统一 seed 注册表 SEED_DEFS（check/run(force)/remove）
+│   ├── seeds.ts        # 统一 seed 注册表 SEED_DEFS（check/run(force)/remove，三层：核心/起步/可选）
 │   ├── tools.ts        # 10 个 tiddlywiki_* 工具（列表式注册）
-│   ├── seed-*.ts       # 各 seed 实现（内含由脚本生成的 bundle/首页 常量，勿手改）
+│   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量由脚本生成，勿手改；starter-docs/menubar-theme 为手工维护的净化常量）
 ├── client/             # 浏览器半部：panel/theme-sync/note-widget/knowledge-fab/tool-views/settings-page…
 │   ├── index.ts        # client 入口（inject ['slots']，纯 DOM，永不 throw）
 │   ├── endpoints.ts    # 客户端同源端点常量（/dsh-tiddlywiki/status 等，与 §1 路由表对应）
@@ -85,7 +85,9 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
   ```
   版本号在 `build-send-to-agent-bundle.mjs`（改了行为要 bump），`verify-*.mjs` 里同步检查。
 - **渲染路由**：改 `scripts/bundle/render/server-routes/render.js` → `node scripts/build-render-bundle.mjs` → `node scripts/gen-seed-render.mjs scripts/bundle/render.bundle.json src/host/seed-render.ts` → `npm run build`。
-- **首页**：改 wiki 里的 `🏠 主页.tid`/`所有标签.tid`/`标签笔记.tid` → `node scripts/gen-seed-home.mjs <wiki>/tiddlers/🏠 主页.tid <wiki>/tiddlers/所有标签.tid <wiki>/tiddlers/标签笔记.tid src/host/seed-home.ts` → `npm run build`。
+- **首页**：改 wiki 里的 `🏠 主页.tid`/`所有标签.tid`/`标签笔记.tid` → `node scripts/gen-seed-home.mjs <wiki>/tiddlers/🏠 主页.tid <wiki>/tiddlers/所有标签.tid <wiki>/tiddlers/标签笔记.tid src/host/seed-home.ts --strip-private` → `npm run build`。⚠️ **必须带 `--strip-private`**：产出**通用版**首页（剥离作者私有人口：主题页 tabs / 主题汇总死链 / 书籍书架；注入「📚 插件文档」tabs 栏）。不再用「跟随 wiki 现状」原样同步——会把作者私有元素带进新 wiki。
+- **自定义样式**：改 wiki 里的样式 `.css`（+ `.meta`）→ `node scripts/gen-seed-ui-styles.mjs <wiki>/tiddlers/<样式.css> … src/host/seed-ui-styles.ts` → `npm run build`（脚本会把 tag 收窄为只留 `$:/tags/Stylesheet`）。
+- **示例与文档**（starter-docs）/ **menubar 顶栏主题**：内容维护在 `src/host/seed-starter-docs.ts` / `seed-menubar-theme.ts`（**手工维护的净化常量**，无 gen 脚本）。
 
 > 改 bundle 后要**同步到线上 wiki**（见 §5「运行时装配 / 部署」）——seed 是 ONE-SHOT，旧 wiki 不会自动更新。
 
@@ -110,8 +112,9 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 
 ### Seed 机制（src/host/seeds.ts）
 
-- `core: true`（功能必需）启动自动写：`send-to-agent`、`render-route`、`tw-web-host`；可选（默认不写、可反初始化）：`doc-note`、`home-index`、`all-articles`、`menubar-theme`。
-- 语义：非 force = ONE-SHOT（只写缺失、绝不覆盖用户改动）；force = 设置页「重新初始化」；`remove` = 反初始化（仅可选）。带 server route 的 seed（render）写完后要**重启 TW** 才生效（`waitForFileWrite` 先等磁盘 flush 再重启）。
+- **三层**：核心（启动自动写、不可反初始化）：`send-to-agent`、`render-route`、`tw-web-host`；**起步**（首次安装默认写、可反初始化，`startup: true`）：`doc-note`、`starter-docs`；可选（默认不写、可反初始化）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`。
+- **文档合集约定**：所有说明/教程/模板/示例类 seed 内容打 **`dsh-docs`** 标签——seed 版首页「📚 插件文档」tabs 栏（`[tag[dsh-docs]!is[system]]`）自动收录。以后新增 TW 侧说明/配置文档一律走 seed（ONE-SHOT + 同名跳过，绝不覆盖用户数据）。
+- 语义：非 force = ONE-SHOT（只写缺失、**同名 tiddler 已存在即安全跳过**、绝不覆盖用户改动）；force = 设置页「重新初始化」；`remove` = 反初始化（非核心 seed）。带 server route 的 seed（render）写完后要**重启 TW** 才生效（`waitForFileWrite` 先等磁盘 flush 再重启）。
 - 详细见 `docs/seed-initialization.md`。
 
 ### 配置双层
@@ -201,4 +204,5 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **在「知识库」Tab 的汇总条目上点 ✏️ 编辑 → 整页显示 wikitext 源码、链接点不动**（v0.16.16 的坑）：TW 的编辑草稿 `Draft of '…'` 会**继承全文**并以编辑框（textarea）呈现，看起来就是「没正确渲染」；草稿还会被浏览器端同步回流服务端日志（`syncer-server-filesystem: Dispatching 'save' task: "…"的草稿`）甚至短暂落盘。根因不是渲染坏了（数据/类型/服务端 render 实测均正常；TW 5.4.1 也没有 `wiki.refreshTiddler`，强制重渲染要走 `$tw.rootWidget.refresh(changes)`）。v0.16.16 起插件在注入后对汇总条目做三层防误编辑：清残留草稿 + 吞 `draft.of` 指向汇总之新草稿（包 `wiki.addTiddler`，幂等 WeakSet）+ 禁用 ✏️ 按钮（本地化 tooltip 定位）。排查「汇总显示源码」类问题时先看 TW 日志有没有「…的草稿」save 任务。
 - Windows 下 git 的 LF→CRLF 警告无害。
 - **TiddlyWeb 外部 filter 的坑（v0.16.20 教训）**：① 非默认 filter 一律 403，除非 `$:/config/Server/ExternalFilters/<filter串>` = "yes"（白名单 tiddler 文件名 = **整个 filter 串**——filter 必须短：此前 180 字符版在 Windows 上文件名顶到 217 字符，撑爆 MAX_PATH，`git add` 报 "Filename too long"、自动 commit 失效；86 字符版文件名 ~123 字符安全。selftest 的 git 段就是这个回归的守门员）；② `prefix`/`match` 只匹配 **title**，字段匹配用 `regexp:type[...]`/`field:type[...]`；③ `[has[type]]`=有 type 字段，`[has:type[]]` 是另一种调用（suffix+空 operand，匹配一切）；④ 空格分隔=**并集**、`+`=交集；⑤ 取反的 `regexp:type`/`field:type` 会**丢掉无 type 字段**的 tiddler——「排除二进制」必须写成正向并集（无 type OR `text/*`），见 `tw-api.ts` 的 `TEXT_LIST_FILTER`。
+- **筛选器操作数别用 `[[...]]` 双括号**（v0.16.22 首页快速记笔记 tags 变「筛选器错误」的坑）：`then` 等**操作符**的 operand 只接受普通 `[...]`（或 `{$var}`），`then[[todo]]` 会被解析器报 `Missing [ in filter expression`——`{{{...}}}` 求值失败后错误文本被当成 tags 写入（`Tiddler` 构造按空白切分 → 出现「筛选器错误: / Missing / [ / in ...」6 个 tag）。正确写法 `then[todo]`。selftest 已断言首页 seed 不含 `then[[`。
 - 消息里**附加说明放消息末尾**（正文之后），别插在待办说明与正文之间。

@@ -18,6 +18,12 @@ export const DOC_NOTE_TITLE = 'dsh-tiddlywiki 插件说明'
 /** Tag that makes the note easy to find via `tiddlywiki_search tag=docs`. */
 export const DOC_NOTE_TAG = 'docs'
 
+/**
+ * Shared tag that collects every plugin-seeded doc into the seeded home's
+ *「📚 插件文档」tabs strip (see seed-starter-docs.ts DSH_DOCS_TAG).
+ */
+export const DOC_NOTE_DSH_DOCS_TAG = 'dsh-docs'
+
 /** One-time marker: its presence means "the note was offered once — hands off". */
 export const SEED_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-doc-note'
 
@@ -50,6 +56,7 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
 !! 说明
 
 * 本笔记由插件在**首次启动**时自动写入（一次性：只写一次）。删除后重启 dsh web **不会自动恢复**——它从此归你所有。
+* 本笔记带 \`dsh-docs\` 标签，会出现在首页「📚 插件文档」栏（与「示例与文档」seed 的教程/模板一起），不需要可自由删除。
 * 更多细节见插件仓库 README。`
 
 /**
@@ -74,7 +81,7 @@ export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: bool
       title: DOC_NOTE_TITLE,
       text: DOC_NOTE_TEXT,
       type: 'text/vnd.tiddlywiki',
-      tags: [DOC_NOTE_TAG],
+      tags: [DOC_NOTE_TAG, DOC_NOTE_DSH_DOCS_TAG],
     })
     wrote = true
   }

@@ -1,9 +1,10 @@
 // One-shot E2E: real wiki + real HTTP server exposing the admin routes —
 // verify GET /admin/seeds (statuses), POST /admin/seeds/run (force single +
 // all) and POST /admin/seeds/remove (反初始化) drive the unified seed registry
-// end to end. v0.15.0: the startup path (runAllSeeds) seeds ONLY the CORE
-// items (send-to-agent / render-route / tw-web-host); optional seeds are
-// opt-in from the settings page.
+// end to end. v0.16.22: the startup path (runAllSeeds) seeds the CORE items
+// (send-to-agent / render-route / tw-web-host) PLUS the STARTER items (doc-note
+// / starter-docs, safe-skip); the four optional seeds are opt-in from the
+// settings page.
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -89,25 +90,27 @@ try {
 
   const base = `http://127.0.0.1:${await new Promise((resolveP) => mini.listen(0, '127.0.0.1', () => resolveP(mini.address().port)))}`
 
-  // 1. GET statuses on a FRESH wiki: all seven seeds missing.
+  // 1. GET statuses on a FRESH wiki: all nine seeds missing.
   let res = await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)
   let data = await res.json()
   console.log('fresh statuses:', data.items?.map((i) => `${i.id}:${i.present}`).join(' '))
-  if (res.status !== 200 || data.ok !== true || data.items?.length !== 7) throw new Error('expected 7 seed statuses')
+  if (res.status !== 200 || data.ok !== true || data.items?.length !== 9) throw new Error('expected 9 seed statuses')
   if (data.items.some((i) => i.present)) throw new Error('fresh wiki must report everything missing')
 
-  // 2. Startup path (runAllSeeds, v0.15.0) seeds ONLY the three CORE items;
-  // the four optional seeds stay missing (opt-in, never forced).
+  // 2. Startup path (v0.16.22) seeds the three CORE items + two STARTER items
+  // (doc-note 插件说明 / starter-docs 示例与文档); the four optional seeds stay
+  // missing (opt-in, never forced).
   const startup = await runAllSeeds({ client: clientRef })
-  if (startup.length !== 3 || !startup.every((r) => r.ok && r.wrote)) throw new Error('runAllSeeds must seed exactly the three core items')
-  if (!startup.every((r) => ['send-to-agent', 'render-route', 'tw-web-host'].includes(r.id))) throw new Error('runAllSeeds must only touch core seeds')
+  if (startup.length !== 5 || !startup.every((r) => r.ok && r.wrote)) throw new Error('runAllSeeds must seed exactly the three core + two starter items')
+  if (!startup.every((r) => ['send-to-agent', 'render-route', 'tw-web-host', 'doc-note', 'starter-docs'].includes(r.id))) throw new Error('runAllSeeds must only touch core + starter seeds')
   res = await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)
   data = await res.json()
   console.log('after startup:', data.items?.map((i) => `${i.id}:${i.present}`).join(' '))
   const coreIds = ['send-to-agent', 'render-route', 'tw-web-host']
-  const optionalIds = ['doc-note', 'home-index', 'all-articles', 'menubar-theme']
-  if (!data.items.every((i) => coreIds.includes(i.id) ? i.present : !i.present)) throw new Error('after startup: core present, optional missing')
-  if (!data.items.every((i) => i.removable === optionalIds.includes(i.id))) throw new Error('removable flag must mark exactly the optional seeds')
+  const starterIds = ['doc-note', 'starter-docs']
+  const optionalIds = ['home-index', 'all-articles', 'ui-styles', 'menubar-theme']
+  if (!data.items.every((i) => coreIds.includes(i.id) || starterIds.includes(i.id) ? i.present : !i.present)) throw new Error('after startup: core + starter present, optional missing')
+  if (!data.items.every((i) => i.removable === !coreIds.includes(i.id))) throw new Error('removable flag must mark every non-core seed (core = not removable)')
 
   // 3. Force single seed via HTTP: corrupt home tiddler, then POST run force.
   await clientRef.put({ title: '所有标签', text: 'corrupted', tags: ['索引'] })
@@ -150,10 +153,11 @@ try {
   console.log('remove core tw-web-host:', run.status, JSON.stringify(run.json))
   if (run.status !== 400 || run.json?.ok !== false) throw new Error('core seed remove must 400')
   if ((await clientRef.get('$:/config/tiddlyweb/host'))?.text !== TW_PROXY_PATH) throw new Error('core tw-web-host must survive remove attempt')
-  // Remove-all removes the remaining optional seeds, keeps the core ones.
+  // Remove-all removes the remaining non-core seeds (4 optional + 2 starter),
+  // keeps the core ones.
   run = await post(`${base}${ROUTE_PREFIX}/admin/seeds/remove`, {})
   console.log('remove all:', run.json?.results?.map((r) => `${r.id}:${r.ok}`).join(' '))
-  if (run.status !== 200 || run.json?.results?.length !== 4 || !run.json.results.every((r) => r.ok)) throw new Error('remove-all failed')
+  if (run.status !== 200 || run.json?.results?.length !== 6 || !run.json.results.every((r) => r.ok)) throw new Error('remove-all failed')
   const finalStatuses = await (await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)).json()
   console.log('final statuses:', finalStatuses.items?.map((i) => `${i.id}:${i.present}`).join(' '))
   const presentIds = finalStatuses.items.filter((i) => i.present).map((i) => i.id).sort()

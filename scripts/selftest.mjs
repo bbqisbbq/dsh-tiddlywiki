@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -762,7 +762,7 @@ try {
   // 5d. Unified seed registry: home-index seed + checkAllSeeds + runSeedById
   // force (the settings-page 重新初始化 path) + tw-web-host ensure.
   // 5b/5c left doc-note and send-to-agent markers removed, so runAllSeeds here
-  // must (re)write all four missing seeds.
+  // must (re)write every missing seed.
   const seedCtx = { client: seedApi }
 
   // home-index first-run (marker-gated) + content sanity.
@@ -774,6 +774,10 @@ try {
   assert(tagPage !== undefined && tagPage.text.includes('$:/state/tag'), 'home 标签笔记 page seeded')
   const mainHome = await seedApi.get('🏠 主页')
   assert(mainHome !== undefined && mainHome.text.includes('quadrant-board') && mainHome.text.includes('所有文章'), '主页 seeded with quadrant board + entries')
+  // The seeded home is the GENERIC one: no personal 主题页 tabs / private nav
+  // buttons, and it carries the「📚 插件文档」tabs strip (tag dsh-docs).
+  assert(!mainHome.text.includes('主题页·工作') && !mainHome.text.includes('$to="书籍"'), 'seeded home strips personal tabs/private entries')
+  assert(mainHome.text.includes('插件文档') && mainHome.text.includes('tag[dsh-docs]'), 'seeded home carries the docs tabs strip')
   const defTiddlers = await seedApi.get('$:/DefaultTiddlers')
   assert(defTiddlers !== undefined && (defTiddlers.text ?? '').includes('[[🏠 主页]]'), '$:/DefaultTiddlers points at 🏠 主页')
   assert(await seedHomeIndex(seedApi) === false, 'home-index NOT re-seeded while marker present')
@@ -790,10 +794,10 @@ try {
   await seedApi.delete('所有标签')
   await seedApi.delete(HOME_INDEX_MARKER_TITLE)
 
-  // checkAllSeeds: the registry has exactly the seven联动 items.
+  // checkAllSeeds: the registry has exactly the nine联动 items.
   const statuses = await checkAllSeeds(seedCtx)
   const ids = statuses.map((s) => s.id).sort()
-  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'menubar-theme', 'render-route', 'send-to-agent', 'tw-web-host']), `seed registry lists all seven联动 items (${ids.join(',')})`)
+  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'menubar-theme', 'render-route', 'send-to-agent', 'starter-docs', 'tw-web-host', 'ui-styles']), `seed registry lists all nine联动 items (${ids.join(',')})`)
   assert(statuses.every((s) => typeof s.title === 'string' && s.title.length > 0), 'every seed has a display title')
 
   // all-articles first-run (marker-gated) + content sanity + force.
@@ -823,13 +827,50 @@ try {
   await seedApi.delete(MENUBAR_THEME_TIDDLER)
   await seedApi.delete(MENUBAR_THEME_MARKER_TITLE)
 
-  // runAllSeeds (startup path, v0.15.0): seeds ONLY the CORE items
-  // (功能必需：发送给 Agent 按钮 + TW 前端 API 基址 + 原生渲染路由). Optional
-  // seeds (说明笔记 / 首页 / 所有文章 / menubar 顶栏主题自适应) are never forced.
+  // starter-docs (示例与文档) first-run + safe-skip + force + dsh-docs tag.
+  assert(await seedStarterDocs(seedApi) === true, 'starter-docs seeded on first run')
+  const tutT = await seedApi.get('教程：按主题/标签做汇总页')
+  assert(tutT !== undefined && tutT.text.includes('核心思路'), 'starter-docs carries the 汇总页 tutorial')
+  assert(Array.isArray(tutT.tags) && tutT.tags.includes('dsh-docs'), 'starter doc is tagged dsh-docs (lands in the home docs tab)')
+  const tmplT = await seedApi.get('主题汇总页·模板')
+  assert(tmplT !== undefined && tmplT.text.includes('主题A'), 'template tiddler seeded with placeholder tag')
+  const exLog = await seedApi.get('主题页·日志')
+  assert(exLog !== undefined && exLog.text.includes('[tag[日志]'), 'example theme page 日志 seeded')
+  // safe-skip: a same-named tiddler already present is NEVER overwritten.
+  await seedApi.put({ title: '主题页·日志', text: 'user edit', tags: ['主题页'] })
+  assert(await seedStarterDocs(seedApi) === false, 'starter-docs NOT re-seeded while marker present')
+  assert((await seedApi.get('主题页·日志'))?.text === 'user edit', 'user edit to a starter doc survives (safe-skip)')
+  assert(await seedStarterDocs(seedApi, { force: true }) === true, 'starter-docs force re-initializes')
+  assert((await seedApi.get('主题页·日志'))?.text.includes('[tag[日志]'), 'force restored built-in example content')
+  await seedApi.delete('主题页·日志')
+  await seedApi.delete(STARTER_DOCS_MARKER_TITLE)
+
+  // ui-styles (自定义样式) first-run + one-shot + force + clean stylesheet tag.
+  assert(await seedUiStyles(seedApi) === true, 'ui-styles seeded on first run')
+  const styleT = await seedApi.get('编辑器美化 CSS')
+  assert(styleT !== undefined && styleT.text.includes('CodeMirror'), 'ui-styles carries the editor beautification sheet')
+  assert(styleT.type === 'text/css' && Array.isArray(styleT.tags) && styleT.tags.length === 1 && styleT.tags[0] === '$:/tags/Stylesheet', 'ui-style tiddlers carry ONLY the functional stylesheet tag')
+  const nbSheet = await seedApi.get('侧边栏窄屏自动隐藏.css')
+  assert(nbSheet !== undefined && nbSheet.text.includes('max-width: 959px'), 'narrow-sidebar sheet seeded')
+  const mbSheet = await seedApi.get('menubar 顶栏加高样式')
+  assert(mbSheet !== undefined && mbSheet.text.includes('min-height: 44px'), 'menubar-height sheet seeded')
+  assert(await seedUiStyles(seedApi) === false, 'ui-styles NOT re-seeded while marker present')
+  await seedApi.put({ title: '编辑器美化 CSS', text: 'user edit', tags: ['$:/tags/Stylesheet'] })
+  assert(await seedUiStyles(seedApi) === false, 'edited ui-style sheet never overwritten')
+  assert(await seedUiStyles(seedApi, { force: true }) === true, 'ui-styles force re-initializes an edited sheet')
+  assert((await seedApi.get('编辑器美化 CSS'))?.text.includes('CodeMirror'), 'force restored built-in stylesheet content')
+  await seedApi.delete('编辑器美化 CSS')
+  await seedApi.delete(UI_STYLES_MARKER_TITLE)
+
+  // runAllSeeds (startup path, v0.16.22): seeds the CORE items (功能必需：
+  // 发送给 Agent 按钮 + TW 前端 API 基址 + 原生渲染路由) AND the STARTER items
+  // (首次安装默认: 插件说明 + 示例与文档). The remaining optional seeds (首页 /
+  // 所有文章 / 自定义样式 / menubar 顶栏主题自适应) are never forced.
   // Earlier sections left mixed state: doc-note's marker stays while its
   // tiddler was deleted, and the earlier ensureTwWebHost test left a CUSTOM
   // host override. Clear the core markers + bundles so send-to-agent,
-  // tw-web-host and render-route are genuinely missing here.
+  // tw-web-host and render-route are genuinely missing here; also clear the
+  // starter markers so doc-note + starter-docs are re-seeded by startup.
   await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-doc-note')
   await seedApi.delete(TW_WEB_HOST_TIDDLER)
   await seedApi.delete(SEND_TO_AGENT_MARKER_TITLE)
@@ -837,21 +878,24 @@ try {
   await seedApi.delete(RENDER_MARKER_TITLE)
   await seedApi.delete(RENDER_PLUGIN_TITLE)
   const startup = await runAllSeeds(seedCtx)
-  assert(startup.length === 3, 'startup runAllSeeds seeds only the three core items')
-  assert(startup.every((r) => r.ok), 'core seeds run ok at startup')
-  assert(startup.every((r) => r.wrote), 'all three core seeds were missing and got written')
-  assert(startup.every((r) => r.id === 'send-to-agent' || r.id === 'tw-web-host' || r.id === 'render-route'), 'startup only touches send-to-agent + tw-web-host + render-route')
-  assert((await seedApi.get(DOC_NOTE_TITLE)) === undefined, 'startup path does NOT re-create the optional doc note')
+  assert(startup.length === 5, 'startup runAllSeeds seeds the three core + two starter items')
+  assert(startup.every((r) => r.ok), 'core + starter seeds run ok at startup')
+  assert(startup.every((r) => r.wrote), 'all five startup seeds were missing and got written')
+  assert(startup.every((r) => ['send-to-agent', 'tw-web-host', 'render-route', 'doc-note', 'starter-docs'].includes(r.id)), 'startup only touches the core + starter seeds')
+  assert((await seedApi.get(DOC_NOTE_TITLE)) !== undefined, 'startup path re-creates the starter doc note')
+  assert((await seedApi.get('教程：按主题/标签做汇总页')) !== undefined, 'startup path re-creates the starter docs')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined, 'startup path does NOT re-create the optional menubar-theme')
   assert((await seedApi.get(ALL_ARTICLES_TITLE)) === undefined, 'startup path does NOT re-create the optional all-articles')
+  assert((await seedApi.get('所有标签')) === undefined, 'startup path does NOT re-create the optional home-index')
+  assert((await seedApi.get('编辑器美化 CSS')) === undefined, 'startup path does NOT re-create the optional ui-styles')
 
   // Manual run-all (settings "全部重新初始化", non-force) still covers every
-  // registry item; the four optional seeds are the ones that get written now.
+  // registry item; only the missing optional seeds get written now.
   const all = await runSeedById(seedCtx, undefined, false)
-  assert(all.length === 7, 'manual run-all covers every registry item')
+  assert(all.length === 9, 'manual run-all covers every registry item')
   assert(all.every((r) => r.ok), 'all seeds run ok')
   const allWrote = all.filter((r) => r.wrote).map((r) => r.id).sort()
-  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'menubar-theme']), `manual run-all writes exactly the missing optional seeds (${allWrote.join(',')})`)
+  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'home-index', 'menubar-theme', 'ui-styles']), `manual run-all writes exactly the missing optional seeds (${allWrote.join(',')})`)
 
   // runSeedById with an id runs only that one; force rewrites regardless.
   const onlyHome = await runSeedById(seedCtx, 'home-index', false)
@@ -913,11 +957,14 @@ try {
   // Unknown id → explicit error result, not thrown.
   const rmUnknown = await removeSeedById(seedCtx, 'nope')
   assert(rmUnknown.length === 1 && !rmUnknown[0].ok && (rmUnknown[0].error ?? '').includes('unknown seed'), 'remove unknown seed id is reported, not thrown')
-  // Remove-all targets exactly the four optional seeds, keeps the core ones.
+  // Remove-all targets exactly the six non-core seeds (4 optional + 2 starter),
+  // keeps the core ones.
   await runSeedById(seedCtx, 'menubar-theme', true)
   await runSeedById(seedCtx, 'doc-note', true)
+  await runSeedById(seedCtx, 'starter-docs', true)
+  await runSeedById(seedCtx, 'ui-styles', true)
   const rmAll = await removeSeedById(seedCtx, undefined)
-  assert(rmAll.length === 4, 'remove-all targets exactly the four optional seeds')
+  assert(rmAll.length === 6, 'remove-all targets exactly the six non-core seeds')
   assert(rmAll.every((r) => r.ok), 'remove-all all ok')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined && (await seedApi.get(DOC_NOTE_TITLE)) === undefined, 'remove-all cleaned optional tiddlers')
   assert((await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)) !== undefined && (await seedApi.get(TW_WEB_HOST_TIDDLER)) !== undefined && (await seedApi.get(RENDER_PLUGIN_TITLE)) !== undefined, 'remove-all keeps the core seeds')

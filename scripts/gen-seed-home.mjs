@@ -5,11 +5,19 @@
 // Titles and tags come from each .tid file itself (not hardcoded), so the
 // seed always mirrors the live wiki — including a renamed home page (e.g.
 // "🏠 主页"). The default tiddler + un-seed check follow the actual home title.
+//
+// Sanitization: pass `--strip-private` (recommended) to strip the wiki
+// owner's PERSONAL home elements before embedding — the 主题页 tag tabs (只对
+// 作者自己的主题页有意义) and any entry buttons whose $action-navigate target
+// is a private/dead page (此 wiki 现状：主题汇总 死链、书籍 个人书架). The
+// seeded home must stay generic — it is what EVERY fresh wiki gets.
 import fs from 'node:fs'
 import path from 'node:path'
 
-// Usage: node gen-seed-home.mjs <主页.tid> <所有标签.tid> <标签笔记.tid> <out.ts>
-const [homeTid, tagTid, noteTid, outFile] = process.argv.slice(2)
+// Usage: node gen-seed-home.mjs <主页.tid> <所有标签.tid> <标签笔记.tid> <out.ts> [--strip-private]
+const args = process.argv.slice(2)
+const stripPrivate = args.includes('--strip-private')
+const [homeTid, tagTid, noteTid, outFile] = args.filter((a) => a !== '--strip-private')
 
 /** Parse a .tid file into { fields, text }: fields = meta lines before the first
  *  blank line, text = everything after. Normalizes CRLF. */
@@ -34,6 +42,45 @@ for (const [name, t] of [['主页', home], ['所有标签', tag], ['标签笔记
   if (!t.fields.title) throw new Error(`${name}.tid 缺少 title 字段`)
 }
 
+// ---------------------------------------------------------------- sanitize
+// The wiki owner's home carries PERSONAL (or locally dead) elements that must
+// NEVER ship inside the seed — a fresh wiki would get tabs/buttons pointing at
+// pages only the author has. With --strip-private we:
+//   1. remove the owner's `<<tabs ...>>` theme-page strip (主题页 tabs);
+//   2. remove entry buttons whose $action-navigate target is a private/dead
+//      page (此 wiki 现状：主题汇总 死链、书籍 个人书架);
+//   3. append the GENERIC 「📚 插件文档」 tabs strip (tag dsh-docs) so every
+//      fresh wiki's home has the seeded docs (说明/教程/模板) one click away.
+// The strip is opt-in: without the flag the seed mirrors the wiki verbatim.
+const DOCS_TABS = `\n!! 📚 插件文档\n\n<div class="tc-message-box">这里收纳插件初始化时 seed 进来的说明 / 教程 / 模板。给新文档打上 <code>dsh-docs</code> 标签即自动出现在本栏；不需要可自由删除（删除后不会自动恢复）。</div>\n\n<<tabs "[tag[dsh-docs]!is[system]]" "dsh-tiddlywiki 插件说明">>\n\n`
+const PRIVATE_NAV_TARGETS = ['主题汇总', '书籍']
+
+function sanitizeHomeText(raw) {
+  let text = raw
+  // 1. drop the owner's personal theme-page tabs strip
+  text = text.replace(/\n<<tabs[^\n]*>>\n/g, '\n')
+  // 2. drop entry buttons navigating to private/dead pages. The lazy span is
+  //    bounded by a negative lookahead so it never swallows a SIBLING button
+  //    (the strip must keep 所有标签 / 所有文章).
+  for (const target of PRIVATE_NAV_TARGETS) {
+    const re = new RegExp(`<\\$button class="tc-btn-invisible tc-tiddlylink"(?:(?!<\\$button)[\\s\\S])*?\\$to="${target}"(?:(?!<\\$button)[\\s\\S])*?<\\/\\$button>\\s*`, 'g')
+    text = text.replace(re, '')
+  }
+  // 3. append the generic docs tabs strip right before the quick-note section
+  //    (or at the end if that heading is absent — keeps the seed generic)
+  const marker = '!! ✍️ 快速记笔记'
+  if (text.includes(marker)) {
+    text = text.replace(marker, DOCS_TABS.trimStart() + marker)
+  } else {
+    text = text + DOCS_TABS
+  }
+  // tidy: collapse 3+ consecutive blank lines
+  text = text.replace(/\n{3,}/g, '\n\n')
+  return text.trimEnd() + '\n'
+}
+
+if (stripPrivate) home.text = sanitizeHomeText(home.text)
+
 const homeTitle = home.fields.title
 // tags field is space-separated, e.g. "索引 TableOfContents"; fall back to 索引.
 const tagsOf = (t) => (t.fields.tags ? t.fields.tags.split(/\s+/).filter(Boolean) : ['索引'])
@@ -48,6 +95,10 @@ const literal = (v) => JSON.stringify(v)
 const out = `/**
  * Generated from the wiki home tiddlers (do not hand-edit the constants).
  * Source: ${path.basename(homeTid)}, ${path.basename(tagTid)}, ${path.basename(noteTid)}
+ *${stripPrivate ? `
+ * Sanitized with --strip-private: the seed home is the GENERIC home (without
+ * the wiki owner's personal 主题页 tabs / private entry buttons), plus the
+ *「📚 插件文档」tabs strip (tag dsh-docs) so seeded docs are one click away.` : ''}
  *
  * The "首页" tiddlers that the plugin's system prompt promises (待办四象限 +
  * 所有标签统计 + 标签笔记): seeded into fresh wikis by seedHomeIndex, so new

@@ -1,6 +1,6 @@
 # dsh-tiddlywiki
 
-> 把 **TiddlyWiki 5** 变成 DSH 的**持久知识库**：Agent 用 `tiddlywiki_*` 工具读写笔记，你在界面里用完整 TW 编辑器或快速笔记记录，一切通过 **git** 自动同步备份。
+> 把 **TiddlyWiki 5** 变成你和 Agent 之间的**文档中心**：一个嵌在 DSH 里、人手一个的私人知识库——Agent 用 `tiddlywiki_*` 工具读写，你在界面里用完整 TW 编辑器记录，一切通过 **git** 自动同步备份。
 
 [![npm](https://img.shields.io/npm/v/dsh-tiddlywiki)](https://www.npmjs.com/package/dsh-tiddlywiki)
 [![license](https://img.shields.io/npm/l/dsh-tiddlywiki)](https://github.com/bbqisbbq/dsh-tiddlywiki/blob/main/LICENSE)
@@ -8,17 +8,31 @@
 
 ---
 
+## 🗂 它是什么：你的「文档 × Agent」一站式文档中心
+
+这个插件**首先不是一个"AI 记忆工具"**（虽然它顺带就是）。它把一件事做顺了——**文档和人、文档和 Agent 之间的协作**：
+
+- **TiddlyWiki 天生适合当文档中心**：卡片化组织（标签 / 双向链接 / 一键成文 / 一个文件夹就是整个 wiki）、纯文本 git 仓库天然可迁移可备份。它能是你的**私人笔记本**、**GTD 工具**、**Agent 的记忆库**，甚至让 AI 帮你把电子书导入 TW 来阅读批注——**TW + DSH 能做到的唯一限制，只是人类的想象力**。
+- **人会参与**：完整 TW 5 编辑器内嵌在 DSH 里，随时翻、随时改、随时批注。文档不是 Agent 写给你的黑盒，而是**方便人类参与的文档中心**。
+- **Agent 也能进**：Agent 用 10 个 `tiddlywiki_*` 工具读写；TW 里「发送给 Agent」把笔记一键注入某个会话；每个会话顶部自动汇总它读写过的 wiki 笔记。**切换会话、方案终结、多轮合作，成果最终都回到文档里**——文档成为跨会话、跨 Agent 的公共底座。
+- **AI 填平 TiddlyWiki 的门槛**：TW 功能强大但上手有门槛，这正是 AI 擅长的——让 Agent 按你的习惯定制首页、标签体系、样式与工作流。曾经要折腾 Obsidian / Logseq 插件体系才能搭出来的个人知识库，现在**一句话就能初始化一整套开箱即用的文档中心**。
+
+> Obsidian、Logseq 也能做到其中一部分，但**从没有像这样一站式地顺畅**：编辑器、工具、会话、同步、主题全部在同一个界面里闭环。
+
 ## ✨ 特性一览
 
 | 能力 | 说明 |
 |---|---|
+| 🏠 **文档中心起步包** | 首次安装自动 seed：插件说明 + 「示例与文档」（主题汇总模板 / 教程 / 三个示例主题页），首页「📚 插件文档」栏一键查阅；**同名 tiddler 已存在一律安全跳过，绝不覆盖你的数据**（v0.16.22） |
+| 🎨 **自定义样式** | 「自定义样式」seed：编辑器美化 / 窄屏侧栏隐藏 / menubar 加高 / 批注弹窗等 5 张通用样式表，新 wiki 也能一键初始化（可选，v0.16.22） |
 | 🤖 **Agent 工具** | 10 个 `tiddlywiki_*` 工具：检索、读写、批量、重命名、删除、git 同步与冲突解决（v0.16.20 起检索/最近在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
 | 📊 **回复流卡片** | 工具结果显示原生 TW 卡片；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
 | 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
 | 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染（`/tw/render` 片段管线，v0.16.19） |
-| 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式 |
+| 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式；首页内置「快速记笔记（完整编辑器）」 |
+| ✅ **待办四象限** | 首页看板：任务打 `todo` 标签即收录，拖动即可分类/完成（正文附 `q` 字段），逾期/今日到期自动统计 |
 | 🌗 **跟随主题** | 内嵌 TW 自适应 DSH 深浅主题（纯内存切换，不进 git） |
 | 🔄 **一键同步** | FAB「同步」一键 pull→commit→push，状态点实时反映 git 状态 |
 | 💾 **数据即备份** | wiki 文件夹本身就是 git 仓库，自动 commit（60s 防抖） |
@@ -38,7 +52,7 @@ dsh plugin --profile web add github:bbqisbbq/dsh-tiddlywiki
 dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 ```
 
-装完**重启 dsh web** 生效。首次启动自动完成：初始化 wiki 目录、`git init` 并提交基线、写入**功能必需**的 seed（「发送给 Agent」按钮 + 同源代理基址）。可选项（说明笔记/首页/所有文章/menubar 主题）需在设置页「初始化」手动写入。
+装完**重启 dsh web** 生效。首次启动自动完成：初始化 wiki 目录、`git init` 并提交基线、写入**功能必需的 seed**（发送给 Agent 按钮 + 原生渲染路由 + 同源代理基址）与**起步文档**（插件说明 + 示例与文档）；首页/所有文章/自定义样式等为可选项，需要时在设置页「初始化」手动写入。
 
 ---
 
@@ -46,10 +60,11 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 1. **安装并重启** dsh web。
 2. 侧边栏「**TiddlyWiki**」→ 中央打开完整 TW 编辑器。
-3. **随手记**：点输入框上方「📝」或右下角「知识库」→「快速笔记」，写完保存即成为 tiddler 并自动进 git。
-4. **收工同步**：「知识库」→「🔁 同步」一键 push 备份。
-5. **让 Agent 参与**：直接说「把刚才的会议纪要存进知识库」——Agent 用 `tiddlywiki_*` 工具读写。
-6. **发笔记给 Agent**：TW 里打开笔记 → 工具栏「发送给 Agent」→ 选会话 → 作为消息注入。
+3. **随手记**：点输入框上方「📝」或右下角「知识库」→「快速笔记」；或在首页直接用「✍️ 快速记笔记」区块，写完保存即成为 tiddler 并自动进 git。
+4. **看文档**：新 wiki 首页（初始化 home-index 后）有「**📚 插件文档**」栏——插件说明、汇总教程、模板都在里面，可自由删改。
+5. **收工同步**：「知识库」→「🔁 同步」一键 push 备份。
+6. **让 Agent 参与**：直接说「把刚才的会议纪要存进知识库」——Agent 用 `tiddlywiki_*` 工具读写。
+7. **发笔记给 Agent**：TW 里打开笔记 → 工具栏「发送给 Agent」→ 选会话 → 作为消息注入。
 
 ---
 
@@ -79,25 +94,37 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 > ⚠️ `fields.type` 是 TW 的**内容类型保留字段**（`text/markdown` 等），业务分类请放 `tags`，别写进 `fields.type`。
 
-### 🧑💻 界面操作
+### 🧑‍💻 界面操作
 
 - **📤 发送给 Agent**：TW 工具栏按钮（首次启动自动写入 wiki，ONE-SHOT）。弹层可选**附加说明**（位于消息末尾）、**工作模式**（Agent 预设）、**权限**（权限预设），按工作区分组选会话或新建。消息自带待办说明。
 - **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`）。
-- **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。右侧栏 TW tab 可见时，回复流里的 wiki 链接直接在该 tab 打开；互斥保证同时只存在一个 TW 客户端（打开右侧栏 TW 会收起中央面板，反之亦然）。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过、不影响其他功能。
+- **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。
-- **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），**TW 原生渲染**（v0.16.19 起 `/tw/render` 片段管线，与回复流工具卡同链路，不再用 iframe/story view），链接点击直达中央 TW 面板，不可编辑。
+- **🏠 首页（初始化 home-index 后）**：待办四象限（`todo` 标签 + `q` 字段拖放分类）+ 快速记笔记（完整编辑器，勾选「同时加入待办」即建任务）+「所有标签 / 所有文章」入口 +「📚 插件文档」栏（自动收录所有带 `dsh-docs` 标签的 seed 文档）。
+- **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），**TW 原生渲染**（v0.16.19 起 `/tw/render` 片段管线，与回复流工具卡同链路），链接点击直达中央 TW 面板，不可编辑。
 - **🌗 跟随 DSH 主题**：内嵌 TW 随 DSH 深浅切换 palette，纯内存不写回 wiki（`ui.followDshTheme`/`ui.darkPalette`）。
 - **🔧 知识库 FAB**：统一入口（TW 面板开关/重载、快速笔记、同步、TW 服务状态悬停 tip）。同步拉取到新内容会自动重启 TW（同端口）。
 - **⚙️ 设置页**：DSH 设置 →「TiddlyWiki 知识库」：状态/重启、常规配置、插件/主题/语言管理、**初始化**（seed 状态与重新初始化）。配置写入 `$:/plugins/dsh-tiddlywiki/config` tiddler，覆盖 cordis `config:` 块（tiddler 优先）。
 
-### 🧩 初始化（一次性预置）
+### 🧩 初始化（一次性预置 seed）：哪些「必备」，哪些「可有可无」
 
-seed 注册表分两层（详细见 [docs/seed-initialization.md](docs/seed-initialization.md)）：
+seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只写缺失）+ 安全跳过（同名 tiddler 已存在绝不覆盖你的数据）**，需要时可「重新初始化」恢复、可「反初始化」移除。详细见 [docs/seed-initialization.md](docs/seed-initialization.md)。
 
-- **核心项**（功能必需，首次启动自动写入、不可移除）：`send-to-agent`（发送按钮）、`render-route`（原生渲染路由）、`tw-web-host`（同源代理基址）。
-- **可选项**（默认不写，设置页可「重新初始化」/「反初始化」）：`doc-note`（说明笔记）、`home-index`（首页 🏠 主页/所有标签/标签笔记 + `$:/DefaultTiddlers`）、`all-articles`（所有文章两列分页）、`menubar-theme`（menubar 顶栏跟随主题）。
+| 层级 | seed | 说明 | 首次安装 |
+|---|---|---|---|
+| 🔒 **核心**（功能必需，不可移除） | `send-to-agent` | TW 工具栏「发送给 Agent」按钮插件 | 自动写 |
+| | `render-route` | 原生渲染路由（回复流卡片 / 链接直达依赖） | 自动写 |
+| | `tw-web-host` | TW 前端 API 基址 → 同源代理（内嵌编辑器前提） | 自动写 |
+| 📖 **起步**（默认写、可移除，**想要完整体验建档案**） | `doc-note` | 「dsh-tiddlywiki 插件说明」笔记 | 自动写 |
+| | `starter-docs` | 「示例与文档」：主题汇总页·模板 + 教程 + 三个示例主题页（日志/决策记录/排障） | 自动写 |
+| 🎀 **可选**（默认不写、设置页手动、可移除，**可有可无**） | `home-index` | 首页（四象限待办 + 快速记笔记 + 所有标签/所有文章 + 📚 文档栏）——文档中心的「门面」 | 手动 |
+| | `all-articles` | 「所有文章」两列分页总览（🤖 Agent / 👤 人工） | 手动 |
+| | `ui-styles` | 自定义样式 5 张（编辑器美化 / 窄屏侧栏 / menubar 加高 / 批注弹窗等） | 手动 |
+| | `menubar-theme` | menubar 顶栏跟随 DSH 主题换色 | 手动 |
 
-语义：**ONE-SHOT**——只写缺失、绝不覆盖你的改动；删掉重启不会自动恢复（用「重新初始化」找回）。
+- **想获得完整插件体验**：核心 3 项首次安装就有；再补 `home-index`（首页）+ `starter-docs`（示例文档）即是一个开箱即用的文档中心。
+- **一个可选项都不想要**：完全不影响功能——设置页「反初始化」即可，核心项受保护不可移除。
+- **文档怎么扩散到更多**：以后插件新增的任何说明 / 教程 / 模板类内容都走 seed 并带 **`dsh-docs`** 标签——首页「📚 插件文档」栏自动收录，你无需任何配置。
 
 ---
 
@@ -156,6 +183,7 @@ npm install
 npm run typecheck     # tsc --noEmit
 npm run build         # clean + host tsdown + client tsdown + wrap
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收
+node scripts/verify-seeds-admin.mjs   # /admin/seeds 状态与 run 的 E2E
 ```
 
 **改 bundle/seed 的再生成流水线**（不要手改 `seed-*.ts` 里的生成常量）：
@@ -170,8 +198,14 @@ node scripts/verify-send-to-agent-bundle.mjs
 node scripts/build-render-bundle.mjs
 node scripts/gen-seed-render.mjs scripts/bundle/render.bundle.json src/host/seed-render.ts
 
-# 首页（改 wiki 的 🏠 主页/所有标签/标签笔记 .tid 后）
-node scripts/gen-seed-home.mjs '<wiki>/tiddlers/🏠 主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts
+# 首页（改 wiki 的 🏠 主页/所有标签/标签笔记 .tid 后；必须 --strip-private，
+# 产出通用版：剥离作者私有人口 + 注入「📚 插件文档」栏）
+node scripts/gen-seed-home.mjs '<wiki>/tiddlers/🏠 主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts --strip-private
+
+# 自定义样式（改 wiki 的样式 .css + .meta 后；tag 自动收窄为 $:/tags/Stylesheet）
+node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/<样式.css>' … src/host/seed-ui-styles.ts
+
+# 示例与文档（starter-docs）/ menubar 主题：直接维护 src/host/seed-starter-docs.ts / seed-menubar-theme.ts
 
 # 随后 npm run build
 ```
@@ -206,8 +240,8 @@ src/
 │   ├── session-summary.ts # 会话「知识库」Tab 后端
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/*
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层
-│   ├── seeds.ts        # 统一 seed 注册表（7 项：check/run(force)/remove）
-│   ├── seed-*.ts       # 各 seed 实现（bundle/首页常量由脚本生成，勿手改）
+│   ├── seeds.ts        # 统一 seed 注册表（9 项，三层：核心/起步/可选）
+│   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量脚本生成；starter-docs/menubar 手工维护）
 │   └── tools.ts        # 10 个 tiddlywiki_* 工具（列表式注册）
 └── client/             # 浏览器半部
     ├── index.ts        # client 入口（inject ['slots']，纯 DOM，永不 throw）
@@ -217,7 +251,7 @@ src/
     ├── markdown-editor.ts  # CodeMirror 6 Markdown 编辑器
     ├── session-summary.ts  # 会话「知识库」Tab（conversation.view 槽位）
     ├── tool-views.ts       # 回复流工具卡片（tool.call.toolview）
-    ├── theme-sync.ts / panel.ts / sidebar-entry.ts / sync-button.ts
+    ├── theme-sync.ts / panel.ts / sidebar-entry.ts / sync-button.ts / rightbar-tab.ts
     └── settings-page.ts / ui-config.ts / state.ts / styles.ts / toast.ts
 scripts/                # 构建/校验/再生成脚本
 docs/seed-initialization.md  # seed 机制详解（权威）
@@ -230,10 +264,11 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
-- **v0.16.21**（2026-09-09）：**新：DSH 右侧边栏（rightbar）集成**。注册 TiddlyWiki 为右侧栏 tab 类型——rightbar 首页出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器（同源代理 iframe，跟随 DSH 主题），**与聊天并排**；回复流 wiki 链接在右侧栏 TW 可见时直接于该 tab 打开；与中央面板/Taskboard 等**互斥**（同一时刻只有一个 TW 客户端，防止双写冲突）。配置 `ui.showRightbarTab`（默认 true）可开关；客户端对 `sidebarRightTabs` 服务做**可选访问**（老版本 DSH 无右侧栏时自动跳过，插件其余功能不受影响）。**更新后刷新页面**（客户端）即可看到入口；host 端配置项在重启 dsh web 后生效。
-- **v0.16.20**（2026-09-09）：**修：`search`/`recent` 在大 wiki 上超时**。根因：列表请求把全部 tiddler（含图片等二进制附件）的 base64 正文拉回来（2418 个 tiddler ≈ 515MB/17s，超过 10s 请求超时）。修复：`search`/`recent`/`get` 在**服务端**只取文本 tiddler（无 `type` 或 `text/*`）——用外部 filter `[all[tiddlers]!is[system]!has[type]] [all[tiddlers]!is[system]regexp:type[(?i)^text/]]`（含 `$:/config/Server/ExternalFilters/<filter>` 白名单自愈，403 时自动 PUT 重试，仍 403 降级瘦身列表）；二进制 tiddler 完全排除（含标题命中，防同名书页图刷屏），`get` 对二进制只回元数据（`binary=true`/`binaryType`/`binaryChars` + 链接）。实测线上 wiki（2418 tiddler/958 图）：515MB/17s → **6.24MB/0.3s**，图片零泄漏。⚠️ 白名单 tiddler 文件名含整个 filter 串——filter 必须短（此前 180 字符版在 Windows 上把文件名顶到 217 字符，撑爆 MAX_PATH 使 `git add` 报 "Filename too long"、自动 commit 失效；selftest 已把该场景纳入回归）。代价：`application/json` 等类型 tiddler 不进检索（本 wiki 无此类，且多为配置数据）。
-- **v0.16.19**（2026-09-07）：**修：会话「知识库」Tab 把汇总当源码显示（整页 wikitext、像包在代码标签里）**。根因（headless $tw 实测）：TW 5.4.1 核心的视图模板级联（`$:/config/ViewTemplateBodyFilters/system` 的 system 规则）把所有 `$:/temp/` 前缀 tiddler 一律按**代码块**渲染（`$:/core/ui/ViewTemplate/body/code` → `<pre><code>`）——因此即便 v0.16.14+ 把 volatile 条目注入 iframe store 再原生导航，story view 仍把汇总当源码展示。修复：客户端**不再用 iframe / story view**，改走与回复流工具卡同一条原生渲染管线——`POST /tw/render {title}`（服务端把汇总 wikitext 块解析成 HTML 片段，`[[链接]]` 重写为 `/dsh-tiddlywiki/tw/#标题`）→ 注入滚动容器（样式复用 `.dsh-tw-toolcard-native` 的 tc-* 重主题）；片段内链接点击仍打开中央 TW 面板。无 iframe → 无编辑按钮/草稿，v0.16.16 的三层防误编辑随之不再需要；保留 30s 自愈（volatile 条目被清自动重建）与「🔄 刷新」。**刷新页面**即生效。
-- **v0.16.18**（2026-09-07）：README 全面精简重写；seed 优化——首页 seed 跟随 wiki 现状（🏠 主页）、修「所有文章」回主页死链、doc-note 文案修正。
+- **v0.16.22**（2026-09-09）：**seed 体系三层化 + 文档中心起步包**。① 分层：**核心**（自动、不可移除：发送按钮/渲染路由/代理基址）+ **起步**（首次安装默认写、可移除：插件说明 + 新增「示例与文档」seed——主题汇总模板/教程/三个示例主题页）+ **可选**（手动：首页/所有文章/新增「自定义样式」seed/顶栏主题）；所有种子**安全跳过**（同名 tiddler 已存在绝不覆盖）。② 新增 **`dsh-docs`** 文档合集约定：所有 seed 文档打该标签，首页「📚 插件文档」tabs 栏自动收录。③ seed 版首页改为**通用版**（`gen-seed-home --strip-private`：剥离作者私有人口，注入文档栏）。④ **修**：首页快速记笔记的 tags 筛选器 bug（`then[[todo]]` 操作数双括号导致「筛选器错误」被拆成 6 个 tag → 改为 `then[todo]`）。
+- **v0.16.21**（2026-09-09）：**新：DSH 右侧边栏（rightbar）集成**。注册 TiddlyWiki 为右侧栏 tab 类型——rightbar 首页出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器（同源代理 iframe，跟随 DSH 主题），**与聊天并排**；配置 `ui.showRightbarTab`（默认 true）可开关。**更新后刷新页面**即可看到入口。
+- **v0.16.20**（2026-09-09）：**修：`search`/`recent` 在大 wiki 上超时**。根因：列表请求把全部 tiddler（含图片等二进制附件）的 base64 正文拉回来（2418 个 tiddler ≈ 515MB/17s）。修复：`search`/`recent`/`get` 在**服务端**只取文本 tiddler（无 `type` 或 `text/*`）；二进制 tiddler 完全排除，`get` 对二进制只回元数据。实测 515MB/17s → **6.24MB/0.3s**。
+- **v0.16.19**（2026-09-07）：**修：会话「知识库」Tab 把汇总当源码显示**——TW 5.4.1 把 `$:/temp/` 条目一律按代码块渲染；改为 `/tw/render` 原生片段管线（与回复流工具卡同链路），不再用 iframe/story view。
+- **v0.16.18**（2026-09-07）：README 全面精简重写；seed 优化——首页 seed 跟随 wiki 现状、修「所有文章」回主页死链、doc-note 文案修正。
 - **v0.16.17**（2026-09-07）：点击快速笔记可选直达 TW 原生编辑页（`ui.quickNoteMode`）+ 修「在 TW 中编辑」弹窗 ✕ 关不掉。
 - **v0.16.16**（2026-09-07）：修会话知识库 Tab 误入编辑草稿显示源码——三层防误编辑（清残留草稿/吞草稿创建/禁 ✏️）。
 - **v0.16.15**（2026-09-07）：`put`/`batch_put` 未指定类型自动默认 `text/markdown`；警告 `fields.type` 是内容类型保留字段。
@@ -267,5 +302,5 @@ npm publish    # 版本号在 package.json；文件白名单见 files 字段
 
 - **GitHub**：https://github.com/bbqisbbq/dsh-tiddlywiki
 - **npm**：`dsh-tiddlywiki`（https://www.npmjs.com/package/dsh-tiddlywiki）
-- 说明笔记、首页、所有文章等预置内容由 seed 机制写入 wiki（见 [🧩 初始化](#🧩-初始化一次性预置)）
+- 说明笔记、首页、示例文档、样式等预置内容由 seed 机制写入 wiki（见 [🧩 初始化](#-初始化一次性预置-seed哪些必备哪些可有可无)）
 - MIT；Node ≥ 22；GitHub topics：`dsh` `dsh-plugin` `tiddlywiki` `knowledge-base` `note-taking` `git-sync` `agent-tools` 等

@@ -2,32 +2,39 @@
  * Unified seed registry (design: every one-time "与 dsh 联动需要 wiki 预置"
  * item is a SeedDef here).
  *
- * Two tiers (v0.15.0):
+ * Three tiers (v0.16.22):
  *   - CORE seeds (`core: true`) are functionally required by the plugin's
- *     own features — the startup path seeds exactly these (non-force).
- *   - OPTIONAL seeds (`core: false`) are nice-to-have content (说明笔记 /
- *     首页 / 所有文章 / menubar 顶栏主题自适应) — they are NEVER auto-seeded;
- *     the user opts in from the settings page「初始化」section (重新初始化)
- *     and can opt out again with 反初始化 (remove).
+ *     own features — the startup path seeds exactly these (non-force) and
+ *     they can never be 反初始化'd.
+ *   - STARTER seeds (`startup: true`, removable) are docs / examples that
+ *     give a fresh wiki a working「文档中心」out of the box — the startup path
+ *     ALSO seeds them on first install (safe-skip: same-named tiddlers are
+ *     never overwritten), and the user can 反初始化 them anytime.
+ *   - OPTIONAL seeds (`core: false`, `startup: false`) are nice-to-have
+ *     content (首页 / 所有文章 / 自定义样式 / menubar 顶栏主题自适应) — they are
+ *     NEVER auto-seeded; the user opts in from the settings page「初始化」section
+ *     (重新初始化) and can opt out again with 反初始化 (remove).
  *
  * Each seed owns:
  *   - `check` — current state (present / missing / needs-update) for the UI;
  *   - `run(force)` — non-force keeps the ONE-SHOT / user-owned semantics
  *     (write only when missing, never overwrite), force (re)writes the
  *     built-in content and (re)records the marker;
- *   - `remove` — optional seeds only: delete the seeded tiddlers + markers,
- *     returning the wiki to the "never seeded" state.
+ *   - `remove` — optional + starter seeds only: delete the seeded tiddlers +
+ *     markers, returning the wiki to the "never seeded" state.
  *
- * Registry: doc-note / send-to-agent / render-route / home-index /
- * all-articles / menubar-theme / tw-web-host.
+ * Registry: doc-note / starter-docs / send-to-agent / render-route /
+ * home-index / all-articles / ui-styles / menubar-theme / tw-web-host.
  *
  * @module dsh-tiddlywiki/host/seeds
  */
 import type { TiddlyWebClient } from './tw-api.ts'
 import { seedDocNote, unseedDocNote, DOC_NOTE_TITLE } from './seed-notes.ts'
+import { seedStarterDocs, unseedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE } from './seed-starter-docs.ts'
 import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE } from './seed-send-to-agent.ts'
 import { seedHomeIndex, unseedHomeIndex, HOME_INDEX_ITEMS } from './seed-home.ts'
 import { seedAllArticles, unseedAllArticles, ALL_ARTICLES_TITLE } from './seed-all-articles.ts'
+import { seedUiStyles, unseedUiStyles, UI_STYLE_ITEMS } from './seed-ui-styles.ts'
 import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER } from './seed-menubar-theme.ts'
 import { seedRenderRoute, RENDER_PLUGIN_TITLE } from './seed-render.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
@@ -70,13 +77,19 @@ export interface SeedDef {
   title: string
   description: string
   /**
-   * Core seeds are seeded automatically on startup (功能必需). Optional
-   * seeds are manual-only from the settings page — never forced on users.
+   * Core seeds are seeded automatically on startup (功能必需) and can never
+   * be 反初始化'd — removing them would break a plugin feature.
    */
   core: boolean
+  /**
+   * STARTER tier (v0.16.22): docs / examples that the startup path ALSO seeds
+   * on first install (safe-skip: same-named tiddlers never overwritten), but
+   * which stay removable via「反初始化」. Meaningful only when `core` is false.
+   */
+  startup?: boolean
   check(ctx: SeedContext): Promise<SeedStatus>
   run(ctx: SeedContext, force: boolean): Promise<SeedRunResult>
-  /** Optional seeds only: delete the seeded tiddlers + markers (反初始化). */
+  /** Non-core seeds only: delete the seeded tiddlers + markers (反初始化). */
   remove?(ctx: SeedContext): Promise<SeedRunResult>
 }
 
@@ -99,6 +112,8 @@ interface SeedMeta {
   title: string
   description: string
   core: boolean
+  /** STARTER tier: also auto-seeded on first install (removable). */
+  startup?: boolean
 }
 
 type SeedWriter = (client: TiddlyWebClient, opts?: { force?: boolean }) => Promise<boolean>
@@ -122,7 +137,7 @@ function defineSeed(meta: SeedMeta, impl: {
   run?: (ctx: SeedContext, force: boolean) => Promise<SeedRunResult>
   unseed?: SeedUnseeder
 }): SeedDef {
-  const { id, title, description, core } = meta
+  const { id, title, description, core, startup } = meta
   const removable = !core
   const check: SeedDef['check'] = impl.check ?? (async (ctx) => {
     const present = await presentOf(ctx, impl.presentTitle ?? '')
@@ -143,14 +158,28 @@ function defineSeed(meta: SeedMeta, impl: {
       return { id, ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
-  return { id, title, description, core, check, run, ...(remove === undefined ? {} : { remove }) }
+  return { id, title, description, core, ...(startup === undefined ? {} : { startup }), check, run, ...(remove === undefined ? {} : { remove }) }
 }
 
 /** The full registry, in display order. */
 export const SEED_DEFS: SeedDef[] = [
   defineSeed(
-    { id: 'doc-note', title: '插件说明笔记', description: '「dsh-tiddlywiki 插件说明」——入门说明笔记（可选，设置页「初始化」手动写入；ONE-SHOT，用户可改可删）。', core: false },
+    { id: 'doc-note', title: '插件说明笔记', description: '「dsh-tiddlywiki 插件说明」——入门说明笔记（首次安装默认写入；ONE-SHOT，用户可改可删，标记 dsh-docs 自动进首页「📚 插件文档」栏）。', core: false, startup: true },
     { presentTitle: DOC_NOTE_TITLE, write: seedDocNote, unseed: unseedDocNote },
+  ),
+  defineSeed(
+    { id: 'starter-docs', title: '示例与文档（汇总模板 / 教程 / 主题页示例）', description: '新手文档中心起步包：主题汇总页·模板、教程（按主题/标签做汇总页）、三个可直接运行的示例主题页（日志 / 决策记录 / 排障）。全部打 dsh-docs 标签，自动出现在首页「📚 插件文档」栏；纯示例无个人数据，同名 tiddler 已存在则安全跳过，不会覆盖。首次安装默认写入，可反初始化。', core: false, startup: true },
+    {
+      check: async (ctx) => {
+        const missing: string[] = []
+        for (const item of STARTER_DOCS_ITEMS) {
+          if (!(await presentOf(ctx, item.title))) missing.push(item.title)
+        }
+        return { id: 'starter-docs', title: '示例与文档（汇总模板 / 教程 / 主题页示例）', description: '新手文档中心起步包：主题汇总页·模板、教程（按主题/标签做汇总页）、三个可直接运行的示例主题页（日志 / 决策记录 / 排障）。全部打 dsh-docs 标签，自动出现在首页「📚 插件文档」栏；纯示例无个人数据，同名 tiddler 已存在则安全跳过，不会覆盖。首次安装默认写入，可反初始化。', present: missing.length === 0, removable: true, detail: missing.length === 0 ? '已存在' : `缺失：${missing.join('、')}` }
+      },
+      write: seedStarterDocs,
+      unseed: unseedStarterDocs,
+    },
   ),
   defineSeed(
     { id: 'send-to-agent', title: '「发送给 Agent」按钮', description: 'TW 笔记工具栏「发送给 Agent」按钮插件（$:/plugins/dsh/send-to-agent）——把笔记一键注入 DSH 会话。', core: true },
@@ -177,6 +206,20 @@ export const SEED_DEFS: SeedDef[] = [
   defineSeed(
     { id: 'all-articles', title: '所有文章（两列分页总览）', description: '「所有文章」——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页展示。每页条数取插件设置 ui.allArticles.pageSize（默认 10）。', core: false },
     { presentTitle: ALL_ARTICLES_TITLE, write: seedAllArticles, unseed: unseedAllArticles },
+  ),
+  defineSeed(
+    { id: 'ui-styles', title: '自定义样式（编辑器美化 / 窄屏侧栏 / menubar 加高 / 批注弹窗）', description: '5 张通用样式表（tag $:/tags/Stylesheet）：编辑器美化（CodeMirror 字体/光标/行号）、标题与按钮区分开、侧边栏窄屏自动隐藏（<960px）、menubar 顶栏加高、批注弹窗美化。纯样式无个人数据。', core: false },
+    {
+      check: async (ctx) => {
+        const missing: string[] = []
+        for (const item of UI_STYLE_ITEMS) {
+          if (!(await presentOf(ctx, item.title))) missing.push(item.title)
+        }
+        return { id: 'ui-styles', title: '自定义样式（编辑器美化 / 窄屏侧栏 / menubar 加高 / 批注弹窗）', description: '5 张通用样式表（tag $:/tags/Stylesheet）：编辑器美化（CodeMirror 字体/光标/行号）、标题与按钮区分开、侧边栏窄屏自动隐藏（<960px）、menubar 顶栏加高、批注弹窗美化。纯样式无个人数据。', present: missing.length === 0, removable: true, detail: missing.length === 0 ? '已存在' : `缺失：${missing.join('、')}` }
+      },
+      write: seedUiStyles,
+      unseed: unseedUiStyles,
+    },
   ),
   defineSeed(
     { id: 'menubar-theme', title: 'menubar 顶栏主题自适应', description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。', core: false },
@@ -256,25 +299,28 @@ export async function runSeedById(ctx: SeedContext, id: string | undefined, forc
 }
 
 /**
- * Startup path: seed ONLY the core items (功能必需：发送给 Agent 按钮 +
- * TW 前端 API 基址), non-force (write only what is missing). Optional seeds
- * (说明笔记 / 首页 / 所有文章 / menubar 顶栏主题自适应) are never forced on
- * users — they opt in from the settings page「初始化」section.
+ * Startup path: seed the CORE items (功能必需：发送给 Agent 按钮 + 原生渲染
+ * 路由 + TW 前端 API 基址) AND the STARTER items (首次安装默认：插件说明 +
+ * 示例与文档), all non-force (write only what is missing — a same-named
+ * tiddler already present is NEVER overwritten, so user data stays user data).
+ * Remaining optional seeds (首页 / 所有文章 / 自定义样式 / menubar 顶栏主题自
+ * 适应) are never forced on users — they opt in from the settings page
+ * 「初始化」section.
  */
 export async function runAllSeeds(ctx: SeedContext): Promise<SeedRunResult[]> {
   const out: SeedRunResult[] = []
   for (const def of SEED_DEFS) {
-    if (!def.core) continue
+    if (!def.core && def.startup !== true) continue
     out.push(await def.run(ctx, false))
   }
   return out
 }
 
 /**
- * 反初始化 (remove): delete one optional seed's seeded tiddlers + markers, or
- * all optional seeds when `id` is undefined. Core seeds are functionally
- * required and cannot be removed — a direct request for one returns an error
- * result (and is skipped when removing all).
+ * 反初始化 (remove): delete one non-core seed's (starter 或 optional) seeded
+ * tiddlers + markers, or all non-core seeds when `id` is undefined. Core
+ * seeds are functionally required and cannot be removed — a direct request
+ * for one returns an error result (and is skipped when removing all).
  */
 export async function removeSeedById(ctx: SeedContext, id: string | undefined): Promise<SeedRunResult[]> {
   if (id === undefined) {
