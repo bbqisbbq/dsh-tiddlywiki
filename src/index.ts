@@ -27,6 +27,7 @@ import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_W
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
+import { ClipBridge, buildClipTiddler, hostAllowed, parseClipPayload, resolveClipTitle, type BridgeConfig } from './host/clip-bridge.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
@@ -52,8 +53,10 @@ export { seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, HOME_DEFAULT_
 export { seedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE, ALL_ARTICLES_TEXT } from './host/seed-all-articles.ts'
 export { seedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } from './host/seed-ui-styles.ts'
 export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './host/seed-menubar-theme.ts'
+export { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT } from './host/seed-clip-bridge.ts'
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools } from './host/tools.ts'
+export { ClipBridge, buildClipTiddler, hostAllowed, parseClipPayload, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps } from './host/clip-bridge.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
 export type { Tiddler } from './host/tw-api.ts'
@@ -68,6 +71,8 @@ export interface TiddlywikiConfig {
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   note?: { tag?: string }
+  /** 本地剪藏桥（书签小工具）：见 host/clip-bridge.ts 与 seed-clip-bridge.ts 文档。 */
+  bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
   ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; showBetterSidebarTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
   /** 启动时自动启用的 TW 语言代码（如 "zh-Hans"），也受配置 tiddler 覆盖。 */
   uiLanguage?: string
@@ -91,10 +96,14 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
+  bridge: { enabled: boolean; port: number; token: string; tag: string }
   ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; showBetterSidebarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
   uiLanguage: string
   auth: { username?: string; password?: string }
 }
+
+/** 剪藏桥默认端口（与 seed 文档书签代码里的地址保持一致）。 */
+export const CLIP_BRIDGE_DEFAULT_PORT = 8618
 
 const DEFAULTS: ResolvedConfig = {
   wikiRoot: '',
@@ -102,6 +111,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
+  bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip' },
   ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, showBetterSidebarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
   uiLanguage: '',
   auth: { username: '', password: '' },
@@ -238,6 +248,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     port: rawConfig.port ?? DEFAULTS.port,
     git: { ...DEFAULTS.git, ...(rawConfig.git ?? {}) },
     note: { ...DEFAULTS.note, ...(rawConfig.note ?? {}) },
+    bridge: { ...DEFAULTS.bridge, ...(rawConfig.bridge ?? {}) },
     ui: {
       ...DEFAULTS.ui,
       ...(rawConfig.ui ?? {}),
@@ -255,11 +266,23 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // Runtime-editable config (settings page): the cordis `config:` block is the
   // BASE; a config tiddler ($:/plugins/dsh-tiddlywiki/config) written by the
   // settings page overlays it. Effective values come from configStore.get().
-  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage } satisfies PluginConfigShape)
+  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge } satisfies PluginConfigShape)
   const eff = (): PluginConfigShape => configStore.get()
   const effectiveNoteTag = (): string => {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
+  }
+  /**
+   * Effective bridge config (defaults + settings-page overlay). Used PER
+   * REQUEST by the clip bridge — enabled/token/tag edits on the settings page
+   * apply immediately; only the port is fixed at startup (listener binds once).
+   */
+  const effectiveBridge = (): BridgeConfig => {
+    const b = eff().bridge ?? {}
+    const port = typeof b.port === 'number' && Number.isInteger(b.port) && b.port > 0 && b.port < 65536 ? b.port : config.bridge.port
+    const token = typeof b.token === 'string' ? b.token : ''
+    const tag = typeof b.tag === 'string' && b.tag.trim().length > 0 ? b.tag.trim() : config.bridge.tag
+    return { enabled: b.enabled === true, port, token, tag }
   }
   const effectiveUi = (): { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; showBetterSidebarTab: boolean } => {
     const ui = eff().ui ?? {}
@@ -309,6 +332,26 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     clientCache ??= new TiddlyWebClient(`http://127.0.0.1:${port}`)
     return clientCache
   }
+
+  // 本地剪藏桥（书签小工具后端）：只监听 127.0.0.1，per-request 读 effective
+  // config —— enabled/token/tag 在设置页保存后立即生效；port 只在启动时绑定
+  // 一次（改端口需重启 dsh web，seed 文档已说明）。写入走唯一的 TiddlyWebClient
+  // 通道（D1），不存在第二条写路径。
+  const clipBridge = new ClipBridge({
+    getConfig: effectiveBridge,
+    write: async (tiddler) => {
+      const c = client()
+      if (c === undefined) throw new Error('wiki not ready')
+      await c.put(tiddler)
+    },
+    exists: async (title) => {
+      const c = client()
+      if (c === undefined) throw new Error('wiki not ready')
+      return (await c.get(title)) !== undefined
+    },
+    log: (m) => console.info('[dsh-tiddlywiki] clip bridge:', m),
+  })
+  ctx.effect(() => () => clipBridge.stop(), 'dsh-tiddlywiki: clip bridge')
 
   // Auto-committer + filesystem watcher (created after the wiki dir exists).
   // Reads the EFFECTIVE config so a settings-page git change survives a restart.
@@ -373,6 +416,15 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     try {
       await server.start()
       await configStore.load(client())
+      // Clip bridge: bind once on the configured port (works even while
+      // disabled — every request re-checks the effective enabled flag, so the
+      // settings-page toggle applies without a dsh web restart).
+      try {
+        await clipBridge.start(config.bridge.port)
+        console.info(`[dsh-tiddlywiki] clip bridge listening on 127.0.0.1:${clipBridge.port} (enabled=${effectiveBridge().enabled})`)
+      } catch (err) {
+        console.warn('[dsh-tiddlywiki] clip bridge start:', err)
+      }
       // Point TW's frontend at the same-origin DSH proxy (remote-access mode):
       // part of the seed registry below (tw-web-host), so it is also covered by
       // the settings page's 重新初始化. Runs before git bootstrap so the config
@@ -382,9 +434,9 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // The startup path seeds ONLY the CORE items (功能必需：发送给 Agent
       // 按钮 + TW 前端 API 基址) NON-force — write only what is missing, never
       // overwrite user content. Optional seeds (说明笔记 / 首页 / 所有文章 /
-      // menubar 顶栏主题自适应) are never forced on users: they opt in from
-      // the settings page「初始化」section (重新初始化) and can opt out again
-      // with 反初始化 (remove).
+      // menubar 顶栏主题自适应 / 剪藏桥说明) are never forced on users: they
+      // opt in from the settings page「初始化」section (重新初始化) and can opt
+      // out again with 反初始化 (remove).
       try {
         const seedClient = client()
         if (seedClient !== undefined) {

@@ -11,9 +11,10 @@
  *     ALSO seeds them on first install (safe-skip: same-named tiddlers are
  *     never overwritten), and the user can 反初始化 them anytime.
  *   - OPTIONAL seeds (`core: false`, `startup: false`) are nice-to-have
- *     content (首页 / 所有文章 / 自定义样式 / menubar 顶栏主题自适应) — they are
- *     NEVER auto-seeded; the user opts in from the settings page「初始化」section
- *     (重新初始化) and can opt out again with 反初始化 (remove).
+ *     content (首页 / 所有文章 / 自定义样式 / menubar 顶栏主题自适应 / 剪藏桥
+ *     说明文档) — they are NEVER auto-seeded; the user opts in from the
+ *     settings page「初始化」section (重新初始化) and can opt out again with
+ *     反初始化 (remove).
  *
  * Each seed owns:
  *   - `check` — current state (present / missing / needs-update) for the UI;
@@ -24,7 +25,8 @@
  *     markers, returning the wiki to the "never seeded" state.
  *
  * Registry: doc-note / starter-docs / send-to-agent / render-route /
- * home-index / all-articles / ui-styles / menubar-theme / tw-web-host.
+ * home-index / all-articles / ui-styles / menubar-theme / clip-bridge /
+ * tw-web-host.
  *
  * @module dsh-tiddlywiki/host/seeds
  */
@@ -36,6 +38,7 @@ import { seedHomeIndex, unseedHomeIndex, HOME_INDEX_ITEMS } from './seed-home.ts
 import { seedAllArticles, unseedAllArticles, ALL_ARTICLES_TITLE } from './seed-all-articles.ts'
 import { seedUiStyles, unseedUiStyles, UI_STYLE_ITEMS } from './seed-ui-styles.ts'
 import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER } from './seed-menubar-theme.ts'
+import { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE } from './seed-clip-bridge.ts'
 import { seedRenderRoute, RENDER_PLUGIN_TITLE } from './seed-render.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
@@ -224,6 +227,10 @@ export const SEED_DEFS: SeedDef[] = [
   defineSeed(
     { id: 'menubar-theme', title: 'menubar 顶栏主题自适应', description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。', core: false },
     { presentTitle: MENUBAR_THEME_TIDDLER, write: seedMenubarTheme, unseed: unseedMenubarTheme },
+  ),
+  defineSeed(
+    { id: 'clip-bridge', title: '本地剪藏桥（书签小工具）', description: '「本地剪藏桥 + 书签小工具」使用说明（Markdown 文档，带书签代码/启用步骤/安全说明）：DSH 监听 127.0.0.1 端口接收剪藏请求，浏览器书签一键把当前页标题/URL/选中文字写进知识库（配置 bridge.*，默认 clip 标签）。真功能在插件运行时代码里，此 seed 只预置说明文档。', core: false },
+    { presentTitle: CLIP_BRIDGE_DOC_TITLE, write: seedClipBridge, unseed: unseedClipBridge },
   ),
   defineSeed(
     { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', core: true },

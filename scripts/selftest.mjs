@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -794,10 +794,10 @@ try {
   await seedApi.delete('所有标签')
   await seedApi.delete(HOME_INDEX_MARKER_TITLE)
 
-  // checkAllSeeds: the registry has exactly the nine联动 items.
+  // checkAllSeeds: the registry has exactly the ten联动 items.
   const statuses = await checkAllSeeds(seedCtx)
   const ids = statuses.map((s) => s.id).sort()
-  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'doc-note', 'home-index', 'menubar-theme', 'render-route', 'send-to-agent', 'starter-docs', 'tw-web-host', 'ui-styles']), `seed registry lists all nine联动 items (${ids.join(',')})`)
+  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'clip-bridge', 'doc-note', 'home-index', 'menubar-theme', 'render-route', 'send-to-agent', 'starter-docs', 'tw-web-host', 'ui-styles']), `seed registry lists all ten联动 items (${ids.join(',')})`)
   assert(statuses.every((s) => typeof s.title === 'string' && s.title.length > 0), 'every seed has a display title')
 
   // all-articles first-run (marker-gated) + content sanity + force.
@@ -862,10 +862,23 @@ try {
   await seedApi.delete('编辑器美化 CSS')
   await seedApi.delete(UI_STYLES_MARKER_TITLE)
 
+  // clip-bridge (本地剪藏桥说明文档, v0.16.24) first-run + one-shot + force + dsh-docs tag.
+  assert(await seedClipBridge(seedApi) === true, 'clip-bridge doc seeded on first run')
+  const clipDoc = await seedApi.get(CLIP_BRIDGE_DOC_TITLE)
+  assert(clipDoc !== undefined && clipDoc.type === 'text/markdown' && clipDoc.text.includes('javascript:('), 'clip-bridge doc is markdown and carries the bookmarklet')
+  assert(Array.isArray(clipDoc.tags) && clipDoc.tags.includes('dsh-docs'), 'clip-bridge doc is tagged dsh-docs (lands in the home docs tab)')
+  assert(await seedClipBridge(seedApi) === false, 'clip-bridge NOT re-seeded while marker present')
+  await seedApi.put({ title: CLIP_BRIDGE_DOC_TITLE, text: 'user edit' })
+  assert(await seedClipBridge(seedApi) === false, 'edited clip-bridge doc never overwritten by the seed')
+  assert(await seedClipBridge(seedApi, { force: true }) === true, 'clip-bridge force re-initializes an edited doc')
+  assert((await seedApi.get(CLIP_BRIDGE_DOC_TITLE))?.text.includes('本地剪藏桥'), 'force restored built-in clip-bridge doc content')
+  await seedApi.delete(CLIP_BRIDGE_DOC_TITLE)
+  await seedApi.delete(CLIP_BRIDGE_MARKER_TITLE)
+
   // runAllSeeds (startup path, v0.16.22): seeds the CORE items (功能必需：
   // 发送给 Agent 按钮 + TW 前端 API 基址 + 原生渲染路由) AND the STARTER items
   // (首次安装默认: 插件说明 + 示例与文档). The remaining optional seeds (首页 /
-  // 所有文章 / 自定义样式 / menubar 顶栏主题自适应) are never forced.
+  // 所有文章 / 自定义样式 / menubar 顶栏主题自适应 / 剪藏桥说明) are never forced.
   // Earlier sections left mixed state: doc-note's marker stays while its
   // tiddler was deleted, and the earlier ensureTwWebHost test left a CUSTOM
   // host override. Clear the core markers + bundles so send-to-agent,
@@ -888,14 +901,15 @@ try {
   assert((await seedApi.get(ALL_ARTICLES_TITLE)) === undefined, 'startup path does NOT re-create the optional all-articles')
   assert((await seedApi.get('所有标签')) === undefined, 'startup path does NOT re-create the optional home-index')
   assert((await seedApi.get('编辑器美化 CSS')) === undefined, 'startup path does NOT re-create the optional ui-styles')
+  assert((await seedApi.get(CLIP_BRIDGE_DOC_TITLE)) === undefined, 'startup path does NOT re-create the optional clip-bridge doc')
 
   // Manual run-all (settings "全部重新初始化", non-force) still covers every
   // registry item; only the missing optional seeds get written now.
   const all = await runSeedById(seedCtx, undefined, false)
-  assert(all.length === 9, 'manual run-all covers every registry item')
+  assert(all.length === 10, 'manual run-all covers every registry item')
   assert(all.every((r) => r.ok), 'all seeds run ok')
   const allWrote = all.filter((r) => r.wrote).map((r) => r.id).sort()
-  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'home-index', 'menubar-theme', 'ui-styles']), `manual run-all writes exactly the missing optional seeds (${allWrote.join(',')})`)
+  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'clip-bridge', 'home-index', 'menubar-theme', 'ui-styles']), `manual run-all writes exactly the missing optional seeds (${allWrote.join(',')})`)
 
   // runSeedById with an id runs only that one; force rewrites regardless.
   const onlyHome = await runSeedById(seedCtx, 'home-index', false)
@@ -957,16 +971,17 @@ try {
   // Unknown id → explicit error result, not thrown.
   const rmUnknown = await removeSeedById(seedCtx, 'nope')
   assert(rmUnknown.length === 1 && !rmUnknown[0].ok && (rmUnknown[0].error ?? '').includes('unknown seed'), 'remove unknown seed id is reported, not thrown')
-  // Remove-all targets exactly the six non-core seeds (4 optional + 2 starter),
+  // Remove-all targets exactly the seven non-core seeds (5 optional + 2 starter),
   // keeps the core ones.
   await runSeedById(seedCtx, 'menubar-theme', true)
   await runSeedById(seedCtx, 'doc-note', true)
   await runSeedById(seedCtx, 'starter-docs', true)
   await runSeedById(seedCtx, 'ui-styles', true)
+  await runSeedById(seedCtx, 'clip-bridge', true)
   const rmAll = await removeSeedById(seedCtx, undefined)
-  assert(rmAll.length === 6, 'remove-all targets exactly the six non-core seeds')
+  assert(rmAll.length === 7, 'remove-all targets exactly the seven non-core seeds')
   assert(rmAll.every((r) => r.ok), 'remove-all all ok')
-  assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined && (await seedApi.get(DOC_NOTE_TITLE)) === undefined, 'remove-all cleaned optional tiddlers')
+  assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined && (await seedApi.get(DOC_NOTE_TITLE)) === undefined && (await seedApi.get(CLIP_BRIDGE_DOC_TITLE)) === undefined, 'remove-all cleaned optional tiddlers')
   assert((await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)) !== undefined && (await seedApi.get(TW_WEB_HOST_TIDDLER)) !== undefined && (await seedApi.get(RENDER_PLUGIN_TITLE)) !== undefined, 'remove-all keeps the core seeds')
 
   // 5e. Active-palette flip round-trip (before the server stops; kept AFTER

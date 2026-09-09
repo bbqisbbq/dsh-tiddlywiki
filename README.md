@@ -33,6 +33,7 @@
 | 🧩 **Better Sidebar Tab** | dsh-better-sidebar 侧边栏：+ 菜单注册 TiddlyWiki tab，与聊天并排；链接点击可直达；未安装该插件自动跳过（v0.16.23） |
 | 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染（`/tw/render` 片段管线，v0.16.19） |
 | 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式；首页内置「快速记笔记（完整编辑器）」 |
+| 📌 **本地剪藏桥** | 可选「剪藏桥 + 书签小工具」：DSH 监听 127.0.0.1 端口接收剪藏请求（Host 校验防 rebinding），浏览器书签一键把当前页标题/URL/选中文字写进知识库（配置 `bridge.*`，默认 `clip` 标签，随 wiki 自动进 git） |
 | ✅ **待办四象限** | 首页看板：任务打 `todo` 标签即收录，拖动即可分类/完成（正文附 `q` 字段），逾期/今日到期自动统计 |
 | 🌗 **跟随主题** | 内嵌 TW 自适应 DSH 深浅主题（纯内存切换，不进 git） |
 | 🔄 **一键同步** | FAB「同步」一键 pull→commit→push，状态点实时反映 git 状态 |
@@ -102,6 +103,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 - **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过。
 - **🧩 Better Sidebar Tab**（v0.16.23）：安装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 插件时，其侧边栏 **+ 菜单**会出现「TiddlyWiki 知识库」tab，点击即打开完整 TW 编辑器（同一套同源代理 iframe / 主题跟随 / 互斥协议，与右侧栏完全相同），**与聊天并排**。由 `ui.showBetterSidebarTab` 控制（默认开）；未安装 Better Sidebar 自动跳过；Better Sidebar 自己的设置页也会为该 tab 提供独立的启用开关。**更新后刷新页面**即可看到入口。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。
+- **📌 本地剪藏桥**（可选，v0.16.24）：DSH 设置 → 常规配置 → 勾选「**启用本地剪藏桥**」（保存后立即生效）——DSH 即监听 `127.0.0.1:8618` 接收剪藏请求。浏览器书签栏新建书签，把设置页/知识库文档里的 JS 代码粘贴为地址，点一下就把**当前页标题 / URL / 选中文字**写进 wiki（默认 `clip` 标签、正文含来源与选中文字、重名自动 `（2）` 去重；随 wiki 自动 git commit）。「📚 插件文档」栏的 `本地剪藏桥（书签小工具）` seed 文档含完整步骤、书签代码、安全说明与 curl 用法。安全：桥只监听 127.0.0.1 + Host 白名单防 DNS rebinding；**强烈建议设 `bridge.token`**（非空时校验书签的 `x-clip-token` 头，防止任意网页往 wiki 里塞内容）。
 - **🏠 首页（初始化 home-index 后）**：待办四象限（`todo` 标签 + `q` 字段拖放分类）+ 快速记笔记（完整编辑器，勾选「同时加入待办」即建任务）+「所有标签 / 所有文章」入口 +「📚 插件文档」栏（自动收录所有带 `dsh-docs` 标签的 seed 文档）。
 - **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），**TW 原生渲染**（v0.16.19 起 `/tw/render` 片段管线，与回复流工具卡同链路），链接点击直达中央 TW 面板，不可编辑。
 - **🌗 跟随 DSH 主题**：内嵌 TW 随 DSH 深浅切换 palette，纯内存不写回 wiki（`ui.followDshTheme`/`ui.darkPalette`）。
@@ -123,6 +125,7 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
 | | `all-articles` | 「所有文章」两列分页总览（🤖 Agent / 👤 人工） | 手动 |
 | | `ui-styles` | 自定义样式 5 张（编辑器美化 / 窄屏侧栏 / menubar 加高 / 批注弹窗等） | 手动 |
 | | `menubar-theme` | menubar 顶栏跟随 DSH 主题换色 | 手动 |
+| | `clip-bridge` | 「本地剪藏桥（书签小工具）」使用说明——含书签代码 / 启用步骤 / 安全说明（真功能在插件运行时代码里，此 seed 只预置文档） | 手动 |
 
 - **想获得完整插件体验**：核心 3 项首次安装就有；再补 `home-index`（首页）+ `starter-docs`（示例文档）即是一个开箱即用的文档中心。
 - **一个可选项都不想要**：完全不影响功能——设置页「反初始化」即可，核心项受保护不可移除。
@@ -147,6 +150,11 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       branch: "main"
     note:
       tag: "inbox"                     # 快速笔记默认 tag
+    bridge:
+      enabled: false                   # 本地剪藏桥（书签小工具）；保存后立即生效
+      port: 8618                       # 监听端口（127.0.0.1；改后需重启 dsh web）
+      token: ""                        # 共享口令；非空时校验书签的 x-clip-token 头（强烈建议设置）
+      tag: "clip"                      # 剪藏笔记默认 tag
     ui:
       showQuickNote: true              # FAB 里显示快速笔记入口
       showQuickNoteDock: true          # 输入框上方快捷按钮
@@ -185,6 +193,7 @@ npm install
 npm run typecheck     # tsc --noEmit
 npm run build         # clean + host tsdown + client tsdown + wrap
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收
+node scripts/verify-clip-bridge.mjs   # 剪藏桥 headless 验收（build 后跑）
 node scripts/verify-seeds-admin.mjs   # /admin/seeds 状态与 run 的 E2E
 ```
 
@@ -239,11 +248,12 @@ src/
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
 │   ├── routes.ts       # 全部 DSH 路由 + agent-send/create/modes + session/summary
 │   ├── http.ts         # 共用 HTTP 助手（readBody/json）
+│   ├── clip-bridge.ts  # 本地剪藏桥（v0.16.24）：127.0.0.1 监听 + POST /clip 写 wiki（Host 校验/token/CORS preflight）
 │   ├── session-summary.ts # 会话「知识库」Tab 后端
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/*
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层
-│   ├── seeds.ts        # 统一 seed 注册表（9 项，三层：核心/起步/可选）
-│   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量脚本生成；starter-docs/menubar 手工维护）
+│   ├── seeds.ts        # 统一 seed 注册表（10 项，三层：核心/起步/可选）
+│   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量脚本生成；starter-docs/menubar/clip-bridge 手工维护）
 │   └── tools.ts        # 10 个 tiddlywiki_* 工具（列表式注册）
 └── client/             # 浏览器半部
     ├── index.ts        # client 入口（inject ['slots']，纯 DOM，永不 throw）
@@ -267,6 +277,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.16.24**（2026-09-09）：**新：本地剪藏桥 + 书签小工具**。DSH 进程内新增只监听 **127.0.0.1** 的 HTTP 桥（配置组 `bridge.*`：`enabled` 默认关、`port` 默认 8618、`token` 可选共享口令、`tag` 默认 `clip`）——浏览器书签（JS 小工具）把当前页标题/URL/选中文字 POST 给它，经唯一写入通道落进 wiki（markdown、重名自动 `（2）` 去重、默认 `clip` 标签、随 wiki 自动 git commit）。安全：Host 头白名单防 DNS rebinding、CORS/PNA 预检放行（https 页面书签可用）、`bridge.token` 强烈建议设置。附**可选 seed** `clip-bridge`：「本地剪藏桥（书签小工具）」说明文档（含书签代码/启用步骤/安全说明/curl 用法，打 `dsh-docs` 标签进「📚 插件文档」栏，可反初始化）；设置页新增 4 个配置字段。`enabled`/`token`/`tag` 设置页保存即生效，改端口需重启 dsh web。
 
 - **v0.16.23**（2026-09-09）：**新：DSH Better Sidebar（dsh-better-sidebar）集成**。插件通过 `ctx.betterSidebar` 服务注册 TiddlyWiki 为 Better Sidebar 侧边栏的 tab 类型——+ 菜单点击即以 tab 打开完整 TW 编辑器（同源代理 iframe，与聊天并排）；TW iframe 机制抽成共享模块（rightbar/better-sidebar 复用：lazy-load / status 轮询 / 主题同步 / hash 导航 / 互斥协议），回复流 wiki 链接在同一处统一路由到任一可见的侧边 TW tab。配置 `ui.showBetterSidebarTab`（默认 true）可开关；未安装 Better Sidebar 自动跳过。**更新后刷新页面**即可看到入口。
 - **v0.16.22**（2026-09-09）：**seed 体系三层化 + 文档中心起步包**。① 分层：**核心**（自动、不可移除：发送按钮/渲染路由/代理基址）+ **起步**（首次安装默认写、可移除：插件说明 + 新增「示例与文档」seed——主题汇总模板/教程/三个示例主题页）+ **可选**（手动：首页/所有文章/新增「自定义样式」seed/顶栏主题）；所有种子**安全跳过**（同名 tiddler 已存在绝不覆盖）。② 新增 **`dsh-docs`** 文档合集约定：所有 seed 文档打该标签，首页「📚 插件文档」tabs 栏自动收录。③ seed 版首页改为**通用版**（`gen-seed-home --strip-private`：剥离作者私有人口，注入文档栏）。④ **修**：首页快速记笔记的 tags 筛选器 bug（`then[[todo]]` 操作数双括号导致「筛选器错误」被拆成 6 个 tag → 改为 `then[todo]`）。

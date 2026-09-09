@@ -262,6 +262,11 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   textField('ui.sendToAgent.token', '共享 token（非空时路由校验 x-send-to-agent-token 头）', typeof sendToAgent.token === 'string' ? sendToAgent.token : '')
   const allArticles = (ui.allArticles ?? {}) as Record<string, unknown>
   numField('ui.allArticles.pageSize', '「所有文章」每页条数', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10)
+  const bridge = (config.bridge ?? {}) as Record<string, unknown>
+  checkField('bridge.enabled', '启用「本地剪藏桥」（书签小工具后端监听 127.0.0.1 端口，保存后立即生效）', bridge.enabled === true)
+  numField('bridge.port', '剪藏桥端口（改端口需重启 dsh web 生效）', typeof bridge.port === 'number' && bridge.port > 0 ? bridge.port : 8618)
+  textField('bridge.token', '剪藏桥 token（非空时校验书签的 x-clip-token 头；强烈建议设置）', typeof bridge.token === 'string' ? bridge.token : '')
+  textField('bridge.tag', '剪藏笔记默认 tag', typeof bridge.tag === 'string' && bridge.tag.trim().length > 0 ? bridge.tag.trim() : 'clip')
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
 
   const save = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '保存配置')

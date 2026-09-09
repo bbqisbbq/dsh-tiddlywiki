@@ -30,6 +30,13 @@ export const DARK_PALETTE_DEFAULT = '$:/palettes/CupertinoDark'
 
 /** Extensible, loose plugin config shape (future fields just appear here). */
 export interface PluginConfigShape {
+  /**
+   * 本地剪藏桥（书签小工具）：DSH 进程内监听 127.0.0.1 的 HTTP 桥，接收
+   * 书签 POST 的 {title,url,text} 并写入 wiki。`enabled` 保存后立即生效
+   * （每个请求实时判定）；`token` 非空时校验 `x-clip-token` 头；`tag` 为
+   * 剪藏笔记默认 tag；`port` 改动需重启 dsh web（监听只在启动时绑定一次）。
+   */
+  bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
   note?: { tag?: string }
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   ui?: {

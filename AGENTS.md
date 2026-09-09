@@ -18,13 +18,13 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.23`（npm latest = 0.16.23；git tag `v0.16.23`） | `package.json` `version` |
+| **插件版本** | `0.16.24`（npm latest = 0.16.24；git tag `v0.16.24`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
-| **Seed 注册表（9 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（首次安装默认写、可移除）：`doc-note`、`starter-docs`；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`。文档类内容统一打 `dsh-docs` 标签（进首页「📚 插件文档」栏） | `src/host/seeds.ts` 的 `SEED_DEFS` |
+| **Seed 注册表（10 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（首次安装默认写、可移除）：`doc-note`、`starter-docs`；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge`（剪藏桥使用说明，真功能在 `clip-bridge.ts` 运行时代码里）。文档类内容统一打 `dsh-docs` 标签（进首页「📚 插件文档」栏） | `src/host/seeds.ts` 的 `SEED_DEFS` |
 | **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **内容类型约定**（默认 markdown，`fields.type` 是内容类型保留字段勿放业务分类）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ **二进制附件说明**（v0.16.20：`search`/`recent` 不含二进制，`get` 只回元数据）/ 可点击链接格式 | `src/index.ts` |
-| **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`ui{showQuickNote,showQuickNoteDock,quickNoteMode,sidebarLabel,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize},tabLabel,showSessionTab,showRightbarTab,showBetterSidebarTab}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
+| **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`bridge{enabled,port,token,tag}`/`ui{showQuickNote,showQuickNoteDock,quickNoteMode,sidebarLabel,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize},tabLabel,showSessionTab,showRightbarTab,showBetterSidebarTab}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
 | **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/sync` `/upload` `/restart` `/session/summary` `/agent/sessions` `/agent/modes` `/agent/send` `/agent/create` `/api/*` `/tw/*`；admin：`/admin/state` `/admin/info` `/admin/config` `/admin/restart` `/admin/seeds` `/admin/seeds/run` `/admin/seeds/remove` | `src/host/routes.ts` + `src/host/admin.ts` |
 | **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；`conversation.input.dock`（id `quick-note`，order 8，输入框上方快速笔记按钮，受 `ui.showQuickNoteDock` 控制；点击行为由 `ui.quickNoteMode` 决定——native=直达 TW 原生编辑弹窗（默认，`openNative`+`openEditorPopup`），card=Markdown 卡片，见 `src/client/quick-note-dock.ts`、`src/client/note-widget.ts`、`src/client/editor-popup.ts`）；`conversation.view`（id `dsh-tiddlywiki-summary`，order 20，会话顶部「知识库」Tab = 本会话相关 wiki 汇总，**TW 原生渲染**：后端写 volatile `$:/temp/dsh/session-summary/<会话ID>`，前端 **POST /tw/render 取原生片段**注入 Tab——v0.16.19 起**不再用 iframe / story view**（TW 核心把 `$:/temp/` 前缀 tiddler 一律按代码块渲染，见 §8），链接点击直达中央 TW 面板，不可编辑；受 `ui.showSessionTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/session-summary.ts`）；`sidebar.right.pane.tab`（keyed，key=`dsh-tiddlywiki`，**右侧栏 TW tab**（v0.16.21）：type 注册进 `ctx.sidebarRightTabs`（服务**可选访问** `ctx.get('sidebarRightTabs')`，老版本 DSH 自动跳过），body 为 React 包装的 TW iframe（同源代理 + theme-sync + 链接 hash 导航），guide 首页入口盒点击打开；受 `ui.showRightbarTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/rightbar-tab.ts`）；**DSH Better Sidebar TW tab**（v0.16.23）：type 经 `ctx.betterSidebar.registerTab` 注册进 dsh-better-sidebar（服务**可选访问** `ctx.get('betterSidebar')`，未安装自动跳过、老版本 DSH 自动跳过），body 与 rightbar 共用 `tw-frame.ts` 的 iframe 机制（同源代理 + theme-sync + hash 导航 + 互斥协议 + live-frame 链接路由注册表 `openTiddlerInLiveTab`），受 `ui.showBetterSidebarTab` 控制（默认开）、tab 名跟随 `ui.tabLabel`，见 `src/client/better-sidebar-tab.ts`）；回复流工具卡片 `tool.call.toolview`（10 个工具各自 key） | `src/client/index.ts`、`src/client/quick-note-dock.ts`、`src/client/rightbar-tab.ts`、`src/client/better-sidebar-tab.ts`、`src/client/tw-frame.ts`、`src/client/session-summary.ts`、`src/client/tool-views.ts` |
 
@@ -40,12 +40,13 @@ src/
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
 │   ├── routes.ts       # 全部 DSH 路由（见 §1 路由表）+ agent-send/create/modes/sessions + session/summary
 │   ├── http.ts         # 共用 HTTP 助手：readBody/readBodyBuffer（带大小上限）+ json() 响应（routes/admin 共用）
+│   ├── clip-bridge.ts  # 本地剪藏桥（v0.16.24）：只监听 127.0.0.1 的 HTTP 桥，POST /clip 把书签剪藏写进 wiki；Host 校验防 DNS rebinding + 可选 token + CORS/PNA preflight；端口启动时绑定一次，enabled/token/tag 每请求读 effective config
 │   ├── session-summary.ts # 会话「知识库」Tab 后端：sessionQuery 读日志+后代 → 产生/读取/检索 → $:/temp 汇总 wikitext
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/* 路由（seeds run/remove）
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层（tiddler 优先）
 │   ├── seeds.ts        # 统一 seed 注册表 SEED_DEFS（check/run(force)/remove，三层：核心/起步/可选）
 │   ├── tools.ts        # 10 个 tiddlywiki_* 工具（列表式注册）
-│   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量由脚本生成，勿手改；starter-docs/menubar-theme 为手工维护的净化常量）
+│   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量由脚本生成，勿手改；starter-docs/menubar-theme/clip-bridge 为手工维护的净化常量）
 ├── client/             # 浏览器半部：panel/theme-sync/note-widget/knowledge-fab/tool-views/settings-page…
 │   ├── index.ts        # client 入口（inject ['slots']，纯 DOM，永不 throw）
 │   ├── endpoints.ts    # 客户端同源端点常量（/dsh-tiddlywiki/status 等，与 §1 路由表对应）
@@ -68,6 +69,7 @@ npm run build:host    # 只重建 host（改 src/index.ts / src/host/** 时用�
 npm run build:client  # 只重建 client（改 src/client/** 时用）
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收（改核心路径后跑）
 node scripts/verify-send-to-agent-bundle.mjs  # bundle 字段/内容校验
+node scripts/verify-clip-bridge.mjs            # 剪藏桥 headless 验收（build 后跑：绑定/CORS/Host 校验/token/去重/503/400）
 node scripts/verify-seed-send-to-agent.mjs    # E2E：全新 wiki 上验证按钮 seed
 node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 ```
@@ -89,7 +91,7 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 - **渲染路由**：改 `scripts/bundle/render/server-routes/render.js` → `node scripts/build-render-bundle.mjs` → `node scripts/gen-seed-render.mjs scripts/bundle/render.bundle.json src/host/seed-render.ts` → `npm run build`。
 - **首页**：改 wiki 里的 `🏠 主页.tid`/`所有标签.tid`/`标签笔记.tid` → `node scripts/gen-seed-home.mjs <wiki>/tiddlers/🏠 主页.tid <wiki>/tiddlers/所有标签.tid <wiki>/tiddlers/标签笔记.tid src/host/seed-home.ts --strip-private` → `npm run build`。⚠️ **必须带 `--strip-private`**：产出**通用版**首页（剥离作者私有人口：主题页 tabs / 主题汇总死链 / 书籍书架；注入「📚 插件文档」tabs 栏）。不再用「跟随 wiki 现状」原样同步——会把作者私有元素带进新 wiki。
 - **自定义样式**：改 wiki 里的样式 `.css`（+ `.meta`）→ `node scripts/gen-seed-ui-styles.mjs <wiki>/tiddlers/<样式.css> … src/host/seed-ui-styles.ts` → `npm run build`（脚本会把 tag 收窄为只留 `$:/tags/Stylesheet`）。
-- **示例与文档**（starter-docs）/ **menubar 顶栏主题**：内容维护在 `src/host/seed-starter-docs.ts` / `seed-menubar-theme.ts`（**手工维护的净化常量**，无 gen 脚本）。
+- **示例与文档**（starter-docs）/ **menubar 顶栏主题** / **剪藏桥说明**（seed-clip-bridge）：内容维护在 `src/host/seed-starter-docs.ts` / `seed-menubar-theme.ts` / `seed-clip-bridge.ts`（**手工维护的净化常量**，无 gen 脚本）。
 
 > 改 bundle 后要**同步到线上 wiki**（见 §5「运行时装配 / 部署」）——seed 是 ONE-SHOT，旧 wiki 不会自动更新。
 
@@ -98,6 +100,7 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 ### 运行时装配（host/client、生效时机）
 
 - host 半部跑在 DSH Node 进程（从 `lib/index.js` 加载，`dsh plugin --profile web add link:<repo>` 挂载）；改 host 源码 → **`npm run build:host` + 重启 dsh web** 才对新会话生效（提示词、工具集都是启动时装配）。
+- **本地剪藏桥**（v0.16.24）：监听端口在启动时绑定一次（改 `bridge.port` 需重启 dsh web）；`enabled`/`token`/`tag` **每请求**读 effective config，设置页保存即生效。桥只绑定 127.0.0.1 + Host 头白名单（防 DNS rebinding）+ 可选 `x-clip-token` 校验；CORS 预检放行（含 `Access-Control-Allow-Private-Network`）以便 https 页面书签可用。写入走 tw-api 唯一通道。
 - client 半部是浏览器 JS（`/plugins/dsh-tiddlywiki/client.js`）；改 client → `npm run build:client` + **刷新页面**（若 DSH checkout 里同时跑着 `pnpm run dev:web`，client 改动才自动热更，否则必须重建）。
 - 插件生命周期：所有 side effect（路由/工具/定时器/监听）用 `ctx.effect`/`disposer` 注册，保证热更新不泄漏。
 
@@ -114,7 +117,7 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 
 ### Seed 机制（src/host/seeds.ts）
 
-- **三层**：核心（启动自动写、不可反初始化）：`send-to-agent`、`render-route`、`tw-web-host`；**起步**（首次安装默认写、可反初始化，`startup: true`）：`doc-note`、`starter-docs`；可选（默认不写、可反初始化）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`。
+- **三层**：核心（启动自动写、不可反初始化）：`send-to-agent`、`render-route`、`tw-web-host`；**起步**（首次安装默认写、可反初始化，`startup: true`）：`doc-note`、`starter-docs`；可选（默认不写、可反初始化）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge`（剪藏桥使用说明文档 seed，ONE-SHOT + marker；真功能在 `clip-bridge.ts`）。
 - **文档合集约定**：所有说明/教程/模板/示例类 seed 内容打 **`dsh-docs`** 标签——seed 版首页「📚 插件文档」tabs 栏（`[tag[dsh-docs]!is[system]]`）自动收录。以后新增 TW 侧说明/配置文档一律走 seed（ONE-SHOT + 同名跳过，绝不覆盖用户数据）。
 - 语义：非 force = ONE-SHOT（只写缺失、**同名 tiddler 已存在即安全跳过**、绝不覆盖用户改动）；force = 设置页「重新初始化」；`remove` = 反初始化（非核心 seed）。带 server route 的 seed（render）写完后要**重启 TW** 才生效（`waitForFileWrite` 先等磁盘 flush 再重启）。
 - 详细见 `docs/seed-initialization.md`。

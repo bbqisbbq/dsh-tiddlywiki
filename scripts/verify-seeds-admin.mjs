@@ -90,11 +90,11 @@ try {
 
   const base = `http://127.0.0.1:${await new Promise((resolveP) => mini.listen(0, '127.0.0.1', () => resolveP(mini.address().port)))}`
 
-  // 1. GET statuses on a FRESH wiki: all nine seeds missing.
+  // 1. GET statuses on a FRESH wiki: all ten seeds missing.
   let res = await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)
   let data = await res.json()
   console.log('fresh statuses:', data.items?.map((i) => `${i.id}:${i.present}`).join(' '))
-  if (res.status !== 200 || data.ok !== true || data.items?.length !== 9) throw new Error('expected 9 seed statuses')
+  if (res.status !== 200 || data.ok !== true || data.items?.length !== 10) throw new Error('expected 10 seed statuses')
   if (data.items.some((i) => i.present)) throw new Error('fresh wiki must report everything missing')
 
   // 2. Startup path (v0.16.22) seeds the three CORE items + two STARTER items
@@ -108,7 +108,7 @@ try {
   console.log('after startup:', data.items?.map((i) => `${i.id}:${i.present}`).join(' '))
   const coreIds = ['send-to-agent', 'render-route', 'tw-web-host']
   const starterIds = ['doc-note', 'starter-docs']
-  const optionalIds = ['home-index', 'all-articles', 'ui-styles', 'menubar-theme']
+  const optionalIds = ['home-index', 'all-articles', 'ui-styles', 'menubar-theme', 'clip-bridge']
   if (!data.items.every((i) => coreIds.includes(i.id) || starterIds.includes(i.id) ? i.present : !i.present)) throw new Error('after startup: core + starter present, optional missing')
   if (!data.items.every((i) => i.removable === !coreIds.includes(i.id))) throw new Error('removable flag must mark every non-core seed (core = not removable)')
 
@@ -153,11 +153,11 @@ try {
   console.log('remove core tw-web-host:', run.status, JSON.stringify(run.json))
   if (run.status !== 400 || run.json?.ok !== false) throw new Error('core seed remove must 400')
   if ((await clientRef.get('$:/config/tiddlyweb/host'))?.text !== TW_PROXY_PATH) throw new Error('core tw-web-host must survive remove attempt')
-  // Remove-all removes the remaining non-core seeds (4 optional + 2 starter),
+  // Remove-all removes the remaining non-core seeds (5 optional + 2 starter),
   // keeps the core ones.
   run = await post(`${base}${ROUTE_PREFIX}/admin/seeds/remove`, {})
   console.log('remove all:', run.json?.results?.map((r) => `${r.id}:${r.ok}`).join(' '))
-  if (run.status !== 200 || run.json?.results?.length !== 6 || !run.json.results.every((r) => r.ok)) throw new Error('remove-all failed')
+  if (run.status !== 200 || run.json?.results?.length !== 7 || !run.json.results.every((r) => r.ok)) throw new Error('remove-all failed')
   const finalStatuses = await (await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)).json()
   console.log('final statuses:', finalStatuses.items?.map((i) => `${i.id}:${i.present}`).join(' '))
   const presentIds = finalStatuses.items.filter((i) => i.present).map((i) => i.id).sort()
