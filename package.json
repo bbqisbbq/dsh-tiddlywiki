@@ -1,6 +1,6 @@
 {
   "name": "dsh-tiddlywiki",
-  "description": "TiddlyWiki 5 as the DSH persistent knowledge base: tiddlywiki_* agent tools (search with filters/recent/tags/batch/rename + git sync & conflict resolve), a full TiddlyWiki editor embedded in the GUI center column (same-origin proxy, works over Tailscale/LAN/domain), a quick-note card with draft auto-save & recent-notes picker behind a single knowledge FAB, and git-based sync with auto-commit. Mounts via the official dsh plugin system — no DSH source changes.",
+  "description": "TiddlyWiki 5 as the DSH persistent knowledge base: ten tiddlywiki_* agent tools (filtered search/recent/tags/batch/rename/delete + git sync & conflict resolve), a full TiddlyWiki editor embedded in the GUI center column (same-origin proxy, works over Tailscale/LAN/domain), a right-side wiki tab, a per-session summary tab, a quick-note card with draft auto-save behind a single knowledge FAB, an optional clip bookmarklet that also saves selected images as attachments, and git-based sync with auto-commit. Mounts via the official dsh plugin system — no DSH source changes.",
   "version": "0.17.0",
   "type": "module",
   "keywords": [
