@@ -125,6 +125,16 @@ test('seed doc bookmarklet is valid JS (new Function)', () => {
   assert.doesNotThrow(() => new Function(code), 'bookmarklet body must parse')
   assert.ok(fence[1].includes('x-clip-token'), 'bookmarklet ships the token header')
   assert.ok(fence[1].includes('images:urls'), 'bookmarklet sends chosen images')
+  // v0.16.26 regression guards: overlay fields must be resolved SCOPED to the
+  // overlay (p.querySelector) — never unscoped document.getElementById — and
+  // values set only AFTER document.body.appendChild(ov). The 0.16.25
+  // bookmarklet crashed in real pages: getElementById returned null because p
+  // was still detached from the document when cb_t/cb_s were populated.
+  assert.ok(!code.includes("document.getElementById('cb_"), 'overlay ids resolved via p.querySelector, not document.getElementById')
+  assert.ok(code.includes("Q('cb_t')") && !code.includes("E('cb_t')"), 'field getter is Q (scoped) everywhere')
+  const attachAt = code.indexOf('document.body.appendChild(ov)')
+  const valueAt = code.indexOf("Q('cb_t').value=t")
+  assert.ok(attachAt >= 0 && valueAt > attachAt, 'overlay is attached BEFORE field values are set')
 })
 
 // ---------------------------------------------------------------------------

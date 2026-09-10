@@ -278,6 +278,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.16.26**（2026-09-10）：**修：剪藏书签在真实页面上崩溃**（`Cannot set properties of null (setting 'value')`）。根因：浮层字段在 `p` 尚未挂到 document 前就用 `document.getElementById` 取值（脱离文档树查不到 → null）；同时 `cb_*` id 可能与页面自身元素冲突。修复：所有浮层字段改为 `p.querySelector` 作用域内查找 + 字段赋值挪到 `appendChild` 之后；并把书签放进 **jsdom 真实 DOM 端到端跑通**（浮层/填充/选图/提交载荷/结果态 12 项全过）作为验证，`verify-clip-bridge.mjs` 新增静态回归断言（禁未限定 getElementById + 挂载时序）。行为无变化，仅书签代码（seed 文档）修复。
 - **v0.16.25**（2026-09-10）：**剪藏桥支持图片剪藏（浮层选图）**。书签升级为**选择式浮层**：可改标题/编辑选中文字，浮层列出页面图片缩略图（自动跳过 <80px 小图标与 data:/blob: 占位、去重，`og:image` 标「封面」并默认勾选）勾选图片后一键剪藏。图片由桥（DSH 进程侧）**下载字节存为二进制附件 tiddler**（`type: image/*` + base64 正文，即 TW 原生附件形态；`clip-url`/`clip-note` 溯源），笔记改用 wikitext 用 `[img[标题]]` 内嵌展示；某张下载失败自动降级为链接、不阻塞整次剪藏；纯文字剪藏保持原 markdown 路径不变。安全不变（127.0.0.1 + Host 校验 + 可选 token；下载带 referer/UA 应对常见防盗链）。验收新增 image-flow 测试 + 书签语法检查（`verify-clip-bridge.mjs` 24 项全过）。
 
 - **v0.16.24**（2026-09-09）：**新：本地剪藏桥 + 书签小工具**。DSH 进程内新增只监听 **127.0.0.1** 的 HTTP 桥（配置组 `bridge.*`：`enabled` 默认关、`port` 默认 8618、`token` 可选共享口令、`tag` 默认 `clip`）——浏览器书签（JS 小工具）把当前页标题/URL/选中文字 POST 给它，经唯一写入通道落进 wiki（markdown、重名自动 `（2）` 去重、默认 `clip` 标签、随 wiki 自动 git commit）。安全：Host 头白名单防 DNS rebinding、CORS/PNA 预检放行（https 页面书签可用）、`bridge.token` 强烈建议设置。附**可选 seed** `clip-bridge`：「本地剪藏桥（书签小工具）」说明文档（含书签代码/启用步骤/安全说明/curl 用法，打 `dsh-docs` 标签进「📚 插件文档」栏，可反初始化）；设置页新增 4 个配置字段。`enabled`/`token`/`tag` 设置页保存即生效，改端口需重启 dsh web。
