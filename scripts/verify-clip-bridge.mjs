@@ -135,15 +135,18 @@ test('seed doc bookmarklet is valid JS (new Function)', () => {
   const attachAt = code.indexOf('document.body.appendChild(ov)')
   const valueAt = code.indexOf("Q('cb_t').value=t")
   assert.ok(attachAt >= 0 && valueAt > attachAt, 'overlay is attached BEFORE field values are set')
-  // v0.16.27: the doc ships a DRAGGABLE anchor in addition to the code fence.
-  // Its href (HTML-entity-escaped) must decode to EXACTLY the fenced code, so
-  // the two copies can never drift.
+  // v0.16.27+: the doc ships a DRAGGABLE anchor. Its href is percent-ENCODED
+  // (v0.16.28) — HTML entity escaping broke dragged bookmarks (real Chrome:
+  // a.href does NOT entity-decode, so the entitized code raised SyntaxError on
+  // EVERY page); Chrome percent-DECODES javascript: URLs before executing, so
+  // encoding is the correct distribution form. Assert href ↔ fence equality.
   assert.ok(CLIP_BRIDGE_DOC_TEXT.includes('draggable="true"') && CLIP_BRIDGE_DOC_TEXT.includes('📌 剪藏 — 拖到书签栏'), 'seed doc carries the draggable anchor')
   const hrefMatch = CLIP_BRIDGE_DOC_TEXT.match(/<a href="([^"]+)" draggable="true"/)
   assert.ok(hrefMatch, 'draggable anchor has a javascript: href')
-  const decodedHref = hrefMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-  assert.ok(decodedHref.startsWith('javascript:('), 'anchor href is the bookmarklet code')
-  assert.equal(decodedHref, CLIP_BRIDGE_BOOKMARKLET, 'anchor href === CLIP_BRIDGE_BOOKMARKLET')
+  assert.ok(hrefMatch[1].startsWith('javascript:'), 'anchor href starts with javascript:')
+  assert.ok(!/["&< ]/.test(hrefMatch[1]), 'anchor href needs NO HTML entity escaping (percent-encoded)')
+  const decodedBody = decodeURIComponent(hrefMatch[1].slice('javascript:'.length))
+  assert.equal(`javascript:${decodedBody}`, CLIP_BRIDGE_BOOKMARKLET, 'percent-decoded href === CLIP_BRIDGE_BOOKMARKLET')
   assert.equal(fence[1], CLIP_BRIDGE_BOOKMARKLET, 'fenced code === CLIP_BRIDGE_BOOKMARKLET')
 })
 

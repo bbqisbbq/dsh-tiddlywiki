@@ -80,18 +80,27 @@ try {
   const anchor = rendered.anchors.find((a) => a.text.includes('拖到书签栏')) ?? rendered.anchors[0]
   ok(!!anchor, 'draggable anchor present with javascript: href')
   ok(anchor?.draggable === 'true', 'anchor is draggable=true')
-  // getAttribute returns the attribute value with HTML entities NOT decoded
-  // (&quot; &amp; inflation), while the browser resolves .href (used by drag
-  // and click) to the DECODED code — so decode here before comparing.
-  const decodedHref = (anchor?.rawHref ?? '').replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
-  ok(decodedHref.startsWith('javascript:('), 'anchor href is the bookmarklet code')
-  ok(decodedHref === CLIP_BRIDGE_BOOKMARKLET, 'anchor href decodes to EXACTLY the shipped bookmarklet')
-  ok((anchor?.rawHref ?? '').length > CLIP_BRIDGE_BOOKMARKLET.length, `raw attr is entity-inflated (${anchor?.rawHref.length} > ${CLIP_BRIDGE_BOOKMARKLET.length}) — escaping worked`)
+  // v0.16.28: the href is percent-encoded (entity escaping broke dragged
+  // bookmarks — Chrome keeps a.href raw, no entity decode, so the entitized
+  // code raised SyntaxError). The rendered anchor must carry the ENCODED form,
+  // which percent-decodes to exactly the shipped clean code.
+  const raw = anchor?.rawHref ?? ''
+  ok(raw.startsWith('javascript:'), 'anchor href is a javascript: URL')
+  ok(!/["&< ]/.test(raw), 'href is percent-encoded — no raw " & < space to mangle')
+  const decodedBody = decodeURIComponent(raw.slice('javascript:'.length))
+  ok(`javascript:${decodedBody}` === CLIP_BRIDGE_BOOKMARKLET, 'percent-decoded href === shipped bookmarklet')
+  ok(raw.length > CLIP_BRIDGE_BOOKMARKLET.length, `encoded href is longer than the clean code (${raw.length} > ${CLIP_BRIDGE_BOOKMARKLET.length})`)
 
-  // Execute the drag-installed code in the real browser page → overlay opens.
-  await page.evaluate((code) => { window.fetch = async () => ({ ok: false, status: 503, json: async () => ({ ok: false, error: 'test' }) }); window.eval(code) }, CLIP_BRIDGE_BOOKMARKLET.replace(/^javascript:/, ''))
+  // Execute EXACTLY what the dragged bookmark would run: the encoded anchor
+// href verbatim via javascript: URL — Chrome percent-decodes it before
+// executing (proven in the v0.16.28 experiment). The overlay must open.
+  await page.evaluate((href) => {
+    window.fetch = async () => ({ ok: false, status: 503, json: async () => ({ ok: false, error: 'test' }) })
+    location.href = href
+  }, raw)
+  await new Promise((r) => setTimeout(r, 500))
   const overlay = await page.evaluate(() => !!document.querySelector('#cb_p'))
-  ok(overlay, 'bookmarklet code opens the #cb_p overlay in a real browser')
+  ok(overlay, 'encoded drag-href executes (percent-decoded) and opens the #cb_p overlay in a real browser')
   ok(jsErrors.length === 0, `no page JS exceptions (${jsErrors.length})${jsErrors.length ? ': ' + jsErrors[0] : ''}`)
 } finally {
   if (browser) await browser.close()

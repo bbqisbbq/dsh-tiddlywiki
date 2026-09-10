@@ -19,9 +19,14 @@
  * markdown — verified: TW 5.4.1 markdown keeps a javascript: href + draggable
  * intact, real-TW + headless-Chrome spike) so users can drag it straight to
  * the bookmarks bar; the copy-paste code fence stays as the fallback. The
- * anchor href and the fence share the SAME CLIP_BRIDGE_BOOKMARKLET constant
- * (escaped for the HTML attribute), with a sync guard in verify-clip-bridge.mjs
- * + a browser E2E in verify-clip-bridge-browser.mjs.
+ * anchor href and the fence share the SAME CLIP_BRIDGE_BOOKMARKLET constant,
+ * with a sync guard in verify-clip-bridge.mjs + a browser E2E in
+ * verify-clip-bridge-browser.mjs.
+ * v0.16.28: FIXES the drag-install — the href is now percent-ENCODED
+ * (CLIP_BRIDGE_DRAG_HREF). v0.16.27 used HTML entity escaping, which real
+ * Chrome does NOT decode for javascript: URLs (a.href keeps the raw attribute,
+ * so the dragged bookmark executed entitized text → 'SyntaxError: Unexpected
+ * token';' on every page). Chrome DOES percent-decode before executing.
  *
  * The bookmarklet is ONE long line by design (bookmarks-bar URL fields; no
  * backticks / ${} inside, which also lets it live in this backtick literal).
@@ -47,10 +52,17 @@ export const CLIP_BRIDGE_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-clip-bri
  */
 export const CLIP_BRIDGE_BOOKMARKLET = `javascript:(function(){var t=(document.title||location.hostname).trim();var sel=(window.getSelection()?window.getSelection().toString():'').trim();var imgs=[],seen={};function add(u,a,c){u=String(u||'').trim();if(!u||u.indexOf('data:')===0||u.indexOf('blob:')===0||seen[u])return;seen[u]=1;imgs.push({u:u,a:(a||'').slice(0,60),c:!!c})}var mm=document.querySelector('meta[property="og:image"],meta[name="twitter:image"],link[rel="image_src"]');if(mm){var mu=mm.content||mm.href;if(mu)add(mu,'封面',true)}for(var ii=0;ii<document.images.length;ii++){var im=document.images[ii],iu=im.currentSrc||im.src;if(!iu)continue;if(im.naturalWidth&&im.naturalHeight&&(im.naturalWidth<80||im.naturalHeight<80))continue;add(iu,im.alt||im.title,false)}if(imgs.length>60)imgs=imgs.slice(0,60);var ov=document.createElement('div');ov.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(10,14,20,.62);z-index:2147483647;display:flex;align-items:flex-start;justify-content:center;padding:4vh 12px';var p=document.createElement('div');p.id='cb_p';p.style.cssText='background:#1c2128;border:1px solid #3a414c;border-radius:12px;max-width:680px;width:100%;max-height:86vh;overflow:auto;padding:16px 18px;color:#e6e6e6;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;box-sizing:border-box';p.innerHTML='<div style="font-size:16px;font-weight:700">剪藏到 TiddlyWiki</div><label style="display:block;font-size:12px;opacity:.7;margin:10px 0 2px">标题</label><input id="cb_t" style="width:100%;box-sizing:border-box;background:#0f131a;border:1px solid #3a414c;border-radius:6px;color:#eee;padding:7px 9px;font-size:13px" value=""><label style="display:block;font-size:12px;opacity:.7;margin:10px 0 2px">正文 / 选中文字（可选）</label><textarea id="cb_s" rows="5" style="width:100%;box-sizing:border-box;background:#0f131a;border:1px solid #3a414c;border-radius:6px;color:#eee;padding:7px 9px;font-size:13px;resize:vertical"></textarea>';var Q=function(id){return p.querySelector('#'+id)};var grid=document.createElement('div');grid.style.cssText='display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px;margin:10px 0';for(var j=0;j<imgs.length;j++){(function(idx){var it=imgs[idx],lab=document.createElement('label');lab.style.cssText='display:flex;flex-direction:column;gap:4px;cursor:pointer;background:#0f131a;border:1px solid #3a414c;border-radius:8px;padding:6px;overflow:hidden';var top=document.createElement('div');top.style.cssText='position:relative';var imgE=document.createElement('img');imgE.style.cssText='display:block;width:100%;height:76px;object-fit:cover;border-radius:4px;background:#000';imgE.src=it.u;imgE.loading='lazy';imgE.referrerPolicy='no-referrer';top.appendChild(imgE);if(it.c){var bd=document.createElement('span');bd.style.cssText='position:absolute;top:2px;left:2px;background:#f5a623;color:#000;font-size:10px;padding:0 4px;border-radius:3px';bd.textContent='封面';top.appendChild(bd)}var row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:6px';var ch=document.createElement('input');ch.type='checkbox';ch.id='cb_i_'+idx;ch.checked=it.c;var nm=document.createElement('span');nm.style.cssText='font-size:11px;opacity:.85;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1';nm.textContent=it.a||(it.u.split('/').pop()||'');nm.title=it.u;row.appendChild(ch);row.appendChild(nm);lab.appendChild(top);lab.appendChild(row);grid.appendChild(lab)})(j)};var foot=document.createElement('div');foot.style.cssText='display:flex;align-items:center;justify-content:space-between;margin-top:12px';var cnt=document.createElement('span');cnt.id='cb_cnt';cnt.style.cssText='font-size:12px;opacity:.75';foot.appendChild(cnt);var btns=document.createElement('div');btns.style.cssText='display:flex;gap:8px';var cancel=document.createElement('button');cancel.textContent='取消';cancel.style.cssText='cursor:pointer;background:#333a45;border:0;color:#eee;border-radius:6px;padding:7px 14px;font-size:13px';var go=document.createElement('button');go.id='cb_btn';go.textContent='剪藏';go.style.cssText='cursor:pointer;background:#2f6feb;border:0;color:#fff;border-radius:6px;padding:7px 14px;font-size:13px';btns.appendChild(cancel);btns.appendChild(go);foot.appendChild(btns);p.appendChild(grid);p.appendChild(foot);ov.appendChild(p);document.body.appendChild(ov);Q('cb_t').value=t;Q('cb_s').value=sel;function upd(){var n=0;for(var q=0;q<imgs.length;q++){var c=Q('cb_i_'+q);if(c&&c.checked)n++}cnt.textContent=(imgs.length?('共 '+imgs.length+' 张，已选 '+n+' 张'):'页面没有可选图片（仍可剪藏文字）')}upd();grid.onchange=function(){upd()};function close(){document.removeEventListener('keydown',onKey,true);if(ov.parentNode){document.body.removeChild(ov)}}var onKey=function(ev){if(ev.key==='Escape')close()};cancel.onclick=close;ov.onclick=function(ev){if(ev.target===ov)close()};p.onclick=function(ev){ev.stopPropagation()};document.addEventListener('keydown',onKey,true);function doClip(){var tt=(Q('cb_t').value||'').trim()||t;var urls=[];for(var k=0;k<imgs.length;k++){var ck=Q('cb_i_'+k);if(ck&&ck.checked)urls.push(imgs[k].u)}var btn=Q('cb_btn');btn.disabled=true;btn.textContent='剪藏中…';fetch('http://127.0.0.1:8618/clip',{method:'POST',headers:{'content-type':'application/json','x-clip-token':''},body:JSON.stringify({title:tt,url:location.href,text:(Q('cb_s').value||''),images:urls})}).then(function(r){return r.json().then(function(j){return {ok:r.ok&&!!j.ok,error:(j.error||('HTTP '+r.status)),title:j.title,images:j.images||[]}})}).then(function(res){var okN=0;for(var v=0;v<res.images.length;v++)if(res.images[v].ok)okN++;var line=res.ok?('已剪藏：'+(res.title||tt)+(res.images.length?('　图片 '+okN+'/'+res.images.length+' 成功'):'')):('剪藏失败：'+res.error);p.innerHTML='<div style="font-size:15px;font-weight:700;margin:8px 0">'+line+'</div><div style="font-size:12px;opacity:.8;margin-bottom:12px">图片以附件形式存进知识库（失败项已降级为链接）。</div><button id="cb_d" style="cursor:pointer;background:#2f6feb;border:0;color:#fff;border-radius:6px;padding:7px 14px;font-size:13px">完成</button>';Q('cb_d').onclick=close}).catch(function(e){p.innerHTML='<div style="font-size:14px;color:#ff8080;font-weight:700;margin:8px 0">剪藏桥不可达</div><div style="font-size:12px;opacity:.85;margin-bottom:12px">'+(e&&e.message?e.message:'')+'　请确认：① dsh web 在运行；② 设置页已启用「本地剪藏桥」；③ 书签里的端口与设置一致；④ 设置了 token 的话书签已带上。</div><button id="cb_d" style="cursor:pointer;background:#333a45;border:0;color:#fff;border-radius:6px;padding:7px 14px;font-size:13px">关闭</button>';Q('cb_d').onclick=close})}go.onclick=doClip})()`
 
-/** Escape & " < for an HTML attribute (the bookmarklet href). */
-function htmlAttrEscape(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
-}
+/**
+ * The drag-install href: `javascript:` + percent-ENCODED code. v0.16.27 used
+ * HTML-entity escaping (&quot;/&amp;/&lt;) which BREAKS dragged bookmarks —
+ * real-Chrome experiment: `a.href` keeps the raw attribute (no entity decode),
+ * so the stored bookmark executes the entitized text → SyntaxError. Chrome
+ * DOES percent-decode javascript: URLs before executing (verified: encoded
+ * alert sets a flag), and %XX needs no attribute escaping — so encoding is the
+ * correct distribution form. decodeURIComponent(encoded) === the clean code
+ * (guarded in verify-clip-bridge.mjs).
+ */
+export const CLIP_BRIDGE_DRAG_HREF = `javascript:${encodeURIComponent(CLIP_BRIDGE_BOOKMARKLET.slice('javascript:'.length))}`
 
 /**
  * The instruction body, Markdown. Ships BOTH a draggable anchor (raw HTML;
@@ -76,7 +88,7 @@ DSH 进程里运行着一个只监听 **127.0.0.1**（本机回环）的 HTTP �
 3. **装书签**（二选一）：
    - **拖拽安装**：按住下面这个按钮，**拖到浏览器书签栏**（或地址栏）松手即装好，自动命名为「剪藏」：
 
-   <a href="${htmlAttrEscape(CLIP_BRIDGE_BOOKMARKLET)}" draggable="true" title="按住我，拖到浏览器书签栏即可安装" style="display:inline-block;padding:8px 16px;border-radius:8px;background:#2f6feb;color:#fff;text-decoration:none;font-size:14px;cursor:grab;margin:4px 0">📌 剪藏 — 拖到书签栏</a>
+   <a href="${CLIP_BRIDGE_DRAG_HREF}" draggable="true" title="按住我，拖到浏览器书签栏即可安装" style="display:inline-block;padding:8px 16px;border-radius:8px;background:#2f6feb;color:#fff;text-decoration:none;font-size:14px;cursor:grab;margin:4px 0">📌 剪藏 — 拖到书签栏</a>
 
    - **复制粘贴**（部分浏览器/环境禁止从页面拖动书签时用）：浏览器书签栏新建书签，名称随意（如「剪藏」），**地址（URL）粘贴下面整段代码**。若设置了 token，把代码里 \`'x-clip-token': ''\` 的空字符串换成你的口令；若改了端口，把 \`127.0.0.1:8618\` 一起改掉：
 
