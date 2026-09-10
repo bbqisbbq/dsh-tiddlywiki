@@ -27,7 +27,7 @@ import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_W
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
-import { ClipBridge, buildClipTiddler, hostAllowed, parseClipPayload, resolveClipTitle, type BridgeConfig } from './host/clip-bridge.ts'
+import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, resolveClipTitle, MAX_IMAGE_BYTES, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
@@ -56,7 +56,7 @@ export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, ME
 export { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT } from './host/seed-clip-bridge.ts'
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools } from './host/tools.ts'
-export { ClipBridge, buildClipTiddler, hostAllowed, parseClipPayload, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps } from './host/clip-bridge.ts'
+export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
 export type { Tiddler } from './host/tw-api.ts'
@@ -348,6 +348,24 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       const c = client()
       if (c === undefined) throw new Error('wiki not ready')
       return (await c.get(title)) !== undefined
+    },
+    // Server-side image download: no browser CORS; a browser-ish UA + the clip
+    // source page as Referer get past most hotlink-protected CDNs.
+    download: async (imageUrl, referer): Promise<ClipImageDownload> => {
+      const res = await fetch(imageUrl, {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (compatible; dsh-tiddlywiki clip bridge)',
+          referer,
+          accept: 'image/*,*/*;q=0.8',
+        },
+        redirect: 'follow',
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`)
+      const buffer = Buffer.from(await res.arrayBuffer())
+      if (buffer.length === 0) throw new Error('下载内容为空')
+      if (buffer.length > MAX_IMAGE_BYTES) throw new Error('图片超过 15MB 上限')
+      return { buffer, type: res.headers.get('content-type') }
     },
     log: (m) => console.info('[dsh-tiddlywiki] clip bridge:', m),
   })

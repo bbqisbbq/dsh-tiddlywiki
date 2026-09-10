@@ -33,7 +33,7 @@
 | 🧩 **Better Sidebar Tab** | dsh-better-sidebar 侧边栏：+ 菜单注册 TiddlyWiki tab，与聊天并排；链接点击可直达；未安装该插件自动跳过（v0.16.23） |
 | 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染（`/tw/render` 片段管线，v0.16.19） |
 | 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式；首页内置「快速记笔记（完整编辑器）」 |
-| 📌 **本地剪藏桥** | 可选「剪藏桥 + 书签小工具」：DSH 监听 127.0.0.1 端口接收剪藏请求（Host 校验防 rebinding），浏览器书签一键把当前页标题/URL/选中文字写进知识库（配置 `bridge.*`，默认 `clip` 标签，随 wiki 自动进 git） |
+| 📌 **本地剪藏桥** | 可选「剪藏桥 + 书签小工具」：DSH 监听 127.0.0.1 端口接收剪藏请求（Host 校验防 rebinding），点书签弹出浮层——可改标题/编辑选中文字/**勾选图片**，一键写入知识库；文字成笔记（默认 `clip` 标签），图片由桥下载存为**二进制附件**（`type: image/*` + base64，笔记内 `[img[标题]]` 内嵌），随 wiki 自动进 git |
 | ✅ **待办四象限** | 首页看板：任务打 `todo` 标签即收录，拖动即可分类/完成（正文附 `q` 字段），逾期/今日到期自动统计 |
 | 🌗 **跟随主题** | 内嵌 TW 自适应 DSH 深浅主题（纯内存切换，不进 git） |
 | 🔄 **一键同步** | FAB「同步」一键 pull→commit→push，状态点实时反映 git 状态 |
@@ -103,7 +103,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 - **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过。
 - **🧩 Better Sidebar Tab**（v0.16.23）：安装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 插件时，其侧边栏 **+ 菜单**会出现「TiddlyWiki 知识库」tab，点击即打开完整 TW 编辑器（同一套同源代理 iframe / 主题跟随 / 互斥协议，与右侧栏完全相同），**与聊天并排**。由 `ui.showBetterSidebarTab` 控制（默认开）；未安装 Better Sidebar 自动跳过；Better Sidebar 自己的设置页也会为该 tab 提供独立的启用开关。**更新后刷新页面**即可看到入口。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。
-- **📌 本地剪藏桥**（可选，v0.16.24）：DSH 设置 → 常规配置 → 勾选「**启用本地剪藏桥**」（保存后立即生效）——DSH 即监听 `127.0.0.1:8618` 接收剪藏请求。浏览器书签栏新建书签，把设置页/知识库文档里的 JS 代码粘贴为地址，点一下就把**当前页标题 / URL / 选中文字**写进 wiki（默认 `clip` 标签、正文含来源与选中文字、重名自动 `（2）` 去重；随 wiki 自动 git commit）。「📚 插件文档」栏的 `本地剪藏桥（书签小工具）` seed 文档含完整步骤、书签代码、安全说明与 curl 用法。安全：桥只监听 127.0.0.1 + Host 白名单防 DNS rebinding；**强烈建议设 `bridge.token`**（非空时校验书签的 `x-clip-token` 头，防止任意网页往 wiki 里塞内容）。
+- **📌 本地剪藏桥**（可选，v0.16.24+/v0.16.25 支持图片）：DSH 设置 → 常规配置 → 勾选「**启用本地剪藏桥**」（保存后立即生效）——DSH 即监听 `127.0.0.1:8618` 接收剪藏请求。浏览器书签栏新建书签，把知识库文档里的 JS 代码粘贴为地址，点一下弹出**浮层**：确认/修改标题与划线文字、勾选页面图片（封面自动标出）→「剪藏」即写入 wiki。文字成笔记（默认 `clip` 标签、正文含来源与选中文字、重名自动 `（2）` 去重）；**图片由 DSH 本机下载字节存为二进制附件**（`clip-url`/`clip-note` 溯源字段，笔记内 `[img[标题]]` 内嵌展示；某张下载失败自动降级为链接），全部随 wiki 自动 git commit。「📚 插件文档」栏的 `本地剪藏桥（书签小工具）` seed 文档含完整步骤、书签代码、安全说明与 curl 用法。安全：桥只监听 127.0.0.1 + Host 白名单防 DNS rebinding；**强烈建议设 `bridge.token`**（非空时校验书签的 `x-clip-token` 头，防止任意网页往 wiki 里塞内容）。图片附件按设计不参与 `search`/`recent`（避免刷屏），`get` 只回元数据。
 - **🏠 首页（初始化 home-index 后）**：待办四象限（`todo` 标签 + `q` 字段拖放分类）+ 快速记笔记（完整编辑器，勾选「同时加入待办」即建任务）+「所有标签 / 所有文章」入口 +「📚 插件文档」栏（自动收录所有带 `dsh-docs` 标签的 seed 文档）。
 - **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），**TW 原生渲染**（v0.16.19 起 `/tw/render` 片段管线，与回复流工具卡同链路），链接点击直达中央 TW 面板，不可编辑。
 - **🌗 跟随 DSH 主题**：内嵌 TW 随 DSH 深浅切换 palette，纯内存不写回 wiki（`ui.followDshTheme`/`ui.darkPalette`）。
@@ -277,6 +277,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.16.25**（2026-09-10）：**剪藏桥支持图片剪藏（浮层选图）**。书签升级为**选择式浮层**：可改标题/编辑选中文字，浮层列出页面图片缩略图（自动跳过 <80px 小图标与 data:/blob: 占位、去重，`og:image` 标「封面」并默认勾选）勾选图片后一键剪藏。图片由桥（DSH 进程侧）**下载字节存为二进制附件 tiddler**（`type: image/*` + base64 正文，即 TW 原生附件形态；`clip-url`/`clip-note` 溯源），笔记改用 wikitext 用 `[img[标题]]` 内嵌展示；某张下载失败自动降级为链接、不阻塞整次剪藏；纯文字剪藏保持原 markdown 路径不变。安全不变（127.0.0.1 + Host 校验 + 可选 token；下载带 referer/UA 应对常见防盗链）。验收新增 image-flow 测试 + 书签语法检查（`verify-clip-bridge.mjs` 24 项全过）。
 
 - **v0.16.24**（2026-09-09）：**新：本地剪藏桥 + 书签小工具**。DSH 进程内新增只监听 **127.0.0.1** 的 HTTP 桥（配置组 `bridge.*`：`enabled` 默认关、`port` 默认 8618、`token` 可选共享口令、`tag` 默认 `clip`）——浏览器书签（JS 小工具）把当前页标题/URL/选中文字 POST 给它，经唯一写入通道落进 wiki（markdown、重名自动 `（2）` 去重、默认 `clip` 标签、随 wiki 自动 git commit）。安全：Host 头白名单防 DNS rebinding、CORS/PNA 预检放行（https 页面书签可用）、`bridge.token` 强烈建议设置。附**可选 seed** `clip-bridge`：「本地剪藏桥（书签小工具）」说明文档（含书签代码/启用步骤/安全说明/curl 用法，打 `dsh-docs` 标签进「📚 插件文档」栏，可反初始化）；设置页新增 4 个配置字段。`enabled`/`token`/`tag` 设置页保存即生效，改端口需重启 dsh web。
 

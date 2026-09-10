@@ -2,10 +2,20 @@
  * 本地剪藏桥（bookmarklet 剪藏小工具的后端）。
  *
  * A tiny loopback-only HTTP bridge that turns a browser bookmarklet's
- * "剪藏" request into a TiddlyWiki tiddler. The bookmarklet (JS in the
- * browser's bookmarks bar) POSTs { title, url, text } to the bridge; the
- * bridge writes one markdown tiddler through the SAME TiddlyWebClient every
- * other writer uses (D1 — there is never a second write path).
+ * "剪藏" request into TiddlyWiki tiddlers. The bookmarklet (JS in the
+ * browser's bookmarks bar) POSTs { title, url, text, images } to the bridge;
+ * the bridge writes ONE note tiddler (markdown, or wikitext when images are
+ * stored) plus optional IMAGE ATTACHMENTS through the SAME TiddlyWebClient
+ * every other writer uses (D1 — there is never a second write path).
+ *
+ * Images (v0.16.25): TW 5.4.1's REST facade is JSON-only (put-tiddler.js
+ * JSON.parses the body — there is no binary upload route), but its binary
+ * tiddlers ARE representable as `{ type: image/*, text: <base64> }` — verified
+ * empirically: type + base64 roundtrip byte-exact, tags survive, custom fields
+ * nest under `fields`. So the bridge downloads each chosen image (server-side,
+ * no CORS; referer + UA sent for hotlink-protected CDNs), stores it as a
+ * binary ATTACHMENT tiddler, and embeds it in the note with `[img[Title]]`.
+ * A failed download degrades gracefully to a plain source-URL line.
  *
  * Security posture (deliberate):
  * - binds `127.0.0.1` ONLY — never reachable from the network;
@@ -42,6 +52,12 @@ export interface BridgeConfig {
   tag: string
 }
 
+/** A downloaded image (raw bytes + declared content-type, nullable). */
+export interface ClipImageDownload {
+  buffer: Buffer
+  type: string | null
+}
+
 /** Everything the bridge needs from the plugin (no @deepseek-ai deps). */
 export interface ClipBridgeDeps {
   /** Resolve the EFFECTIVE bridge config per request. */
@@ -50,6 +66,8 @@ export interface ClipBridgeDeps {
   write(tiddler: Tiddler): Promise<unknown>
   /** True when a tiddler with that title already exists (title dedupe). */
   exists(title: string): Promise<boolean>
+  /** Download an image's bytes (server-side fetch; throws on failure). */
+  download(url: string, referer: string): Promise<ClipImageDownload>
   /** Optional logger (console.info prefixed by the caller). */
   log?(message: string): void
 }
@@ -58,6 +76,10 @@ export interface ClipBridgeDeps {
 export const MAX_CLIP_TEXT_LENGTH = 200_000
 /** Cap on a single /clip request body (bytes). */
 export const MAX_CLIP_BODY_BYTES = 256 * 1024
+/** Cap on one downloaded image (bytes) — 15 MB keeps the wiki sane. */
+export const MAX_IMAGE_BYTES = 15 * 1024 * 1024
+/** Max images stored per clip (the picker already caps the page list). */
+export const MAX_CLIP_IMAGES = 10
 
 /** Validated request body accepted by POST /clip (all fields normalized). */
 export interface ClipPayload {
@@ -68,6 +90,18 @@ export interface ClipPayload {
   tags: string[]
   /** Where the clip came from ("bookmarklet" default; "api"/"script"…). */
   source: string
+  /** Chosen image URLs to download + store as attachments (≤ MAX_CLIP_IMAGES). */
+  images: string[]
+}
+
+/** Per-image result echoed back to the bookmarklet. */
+export interface ClipImageResult {
+  url: string
+  ok: boolean
+  /** Stored attachment tiddler title (when ok). */
+  title?: string
+  /** Human-readable failure reason (when !ok). */
+  error?: string
 }
 
 /** Constant-time-ish string compare (token check). */
@@ -100,7 +134,7 @@ export async function resolveClipTitle(exists: (title: string) => Promise<boolea
   return `${base}（${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}）`
 }
 
-/** Build the markdown tiddler for one clip (pure, unit-verifiable). */
+/** Build the markdown tiddler for ONE TEXT-ONLY clip (no images). */
 export function buildClipTiddler(opts: {
   title: string
   url: string
@@ -127,11 +161,102 @@ export function buildClipTiddler(opts: {
   }
 }
 
+/**
+ * Build the note tiddler for a clip WITH stored images: wikitext so the
+ * attachments render inline via `[img[Title]]` (works in the embedded TW,
+ * story view and /tw/render). Failed downloads degrade to plain URL lines.
+ */
+export function buildImageNoteTiddler(opts: {
+  title: string
+  url: string
+  text?: string
+  tag: string
+  source?: string
+  at?: string
+  stored: string[]
+  failed: Array<{ url: string; error: string }>
+  extraTags?: string[]
+}): Tiddler {
+  const at = opts.at ?? new Date().toISOString()
+  const selection = typeof opts.text === 'string' ? opts.text.trim() : ''
+  const lines = [`> 来源：${opts.url}`, '']
+  if (selection.length > 0) lines.push(selection, '')
+  lines.push('---', '!! 图片')
+  for (const title of opts.stored) lines.push(`[img[${title}]]`)
+  for (const f of opts.failed) lines.push(`* ${f.url}（${f.error}）`)
+  lines.push('', '---', `剪藏时间：${at}`)
+  const tags = [opts.tag, ...(opts.extraTags ?? [])].filter((t) => t.trim().length > 0)
+  return {
+    title: opts.title,
+    text: lines.join('\n'),
+    type: 'text/vnd.tiddlywiki',
+    ...(tags.length > 0 ? { tags } : {}),
+    'clip-url': opts.url,
+    'clip-source': opts.source ?? 'bookmarklet',
+    'clip-at': at,
+  }
+}
+
+/** Build a binary attachment tiddler: `type: <mime>`, `text: <base64>`. */
+export function buildBinaryTiddler(opts: {
+  title: string
+  mime: string
+  buffer: Uint8Array | Buffer
+  srcUrl: string
+  noteTitle: string
+  tag: string
+  source?: string
+  at?: string
+}): Tiddler {
+  const at = opts.at ?? new Date().toISOString()
+  const tags = [opts.tag].filter((t) => t.trim().length > 0)
+  return {
+    title: opts.title,
+    type: opts.mime,
+    text: Buffer.from(opts.buffer).toString('base64'),
+    ...(tags.length > 0 ? { tags } : {}),
+    'clip-url': opts.srcUrl,
+    'clip-source': opts.source ?? 'bookmarklet',
+    'clip-at': at,
+    'clip-note': opts.noteTitle,
+  }
+}
+
+/** Known image extensions → mime (used when a CDN mislabels as octet-stream). */
+const IMAGE_EXT_MIME: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif', bmp: 'image/bmp', ico: 'image/x-icon',
+}
+
+/**
+ * Decide the stored mime for a downloaded image: an `image/*` content-type
+ * wins; otherwise a known image extension in the URL rescues CDNs that serve
+ * `application/octet-stream`. null = not (recognizably) an image.
+ */
+export function pickImageMime(contentType: string | null, url: string): string | null {
+  const ct = ((contentType ?? '').split(';')[0] ?? '').trim().toLowerCase()
+  if (ct.startsWith('image/')) return ct
+  const ext = ((url.split('?')[0] ?? '').split('.').pop() ?? '').toLowerCase()
+  if (ct === 'application/octet-stream' && IMAGE_EXT_MIME[ext] !== undefined) return IMAGE_EXT_MIME[ext]
+  return null
+}
+
+/** File extension for a stored image mime. */
+export function imageExtensionForMime(mime: string): string {
+  const map: Record<string, string> = {
+    'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
+    'image/svg+xml': 'svg', 'image/avif': 'avif', 'image/bmp': 'bmp', 'image/x-icon': 'ico',
+  }
+  if (map[mime] !== undefined) return map[mime]
+  const subtype = (mime.split('/')[1] ?? 'img').replace(/[^a-z0-9]/gi, '')
+  return subtype.length > 0 ? subtype.slice(0, 8) : 'img'
+}
+
 function cleanStr(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
-/** Validate a clip payload → { title, url, text, tags, source } or an error. */
+/** Validate a clip payload → normalized value or an error. */
 export function parseClipPayload(body: unknown): { ok: true; value: ClipPayload } | { ok: false; error: string } {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     return { ok: false, error: '请求体必须是 JSON 对象' }
@@ -145,9 +270,17 @@ export function parseClipPayload(body: unknown): { ok: true; value: ClipPayload 
   if (Array.isArray(raw.tags)) {
     extraTags = raw.tags.filter((t): t is string => typeof t === 'string').map((t) => t.trim()).filter(Boolean).slice(0, 10)
   }
+  let images: string[] = []
+  if (Array.isArray(raw.images)) {
+    images = raw.images
+      .filter((u): u is string => typeof u === 'string')
+      .map((u) => u.trim())
+      .filter((u) => u.length > 0 && u.length <= 2000)
+      .slice(0, MAX_CLIP_IMAGES)
+  }
   if (title.length === 0) return { ok: false, error: '缺少 title（页面标题）' }
   if (url.length === 0) return { ok: false, error: '缺少 url（页面地址）' }
-  return { ok: true, value: { title, url, text, tags: extraTags, source } }
+  return { ok: true, value: { title, url, text, tags: extraTags, source, images } }
 }
 
 /** CORS + no-store headers for every bridge response. */
@@ -293,7 +426,7 @@ export class ClipBridge {
       this.respond(res, { ok: false, error: parsed.error }, 400)
       return
     }
-    const { title, url, text, tags, source } = parsed.value
+    const { title, url, text, tags, source, images } = parsed.value
 
     let resolvedTitle: string
     try {
@@ -303,20 +436,66 @@ export class ClipBridge {
       return
     }
 
-    const tiddler = buildClipTiddler({
-      title: resolvedTitle,
-      url,
-      ...(text.length > 0 ? { text } : {}),
-      tag: cfg.tag,
-      source: source.length > 0 ? source : undefined,
-      extraTags: tags,
-    })
+    const at = new Date().toISOString()
+    const sourceName = source.length > 0 ? source : 'bookmarklet'
+
+    // Download + store the chosen images as binary attachment tiddlers.
+    const stored: string[] = []
+    const failed: Array<{ url: string; error: string }> = []
+    const imageResults: ClipImageResult[] = []
+    for (let i = 0; i < images.length; i++) {
+      const imageUrl = images[i]
+      if (imageUrl === undefined) continue
+      try {
+        const { buffer, type } = await this.deps.download(imageUrl, url)
+        if (buffer.length > MAX_IMAGE_BYTES) {
+          throw new Error('图片超过 15MB 上限')
+        }
+        const mime = pickImageMime(type, imageUrl)
+        if (mime === null) {
+          throw new Error('内容不是可识别的图片')
+        }
+        const ext = imageExtensionForMime(mime)
+        const imageTitle = await resolveClipTitle((t) => this.deps.exists(t), `${resolvedTitle} 图片 ${i + 1}.${ext}`)
+        await this.deps.write(buildBinaryTiddler({
+          title: imageTitle,
+          mime,
+          buffer,
+          srcUrl: imageUrl,
+          noteTitle: resolvedTitle,
+          tag: cfg.tag,
+          source: sourceName,
+          at,
+        }))
+        stored.push(imageTitle)
+        imageResults.push({ url: imageUrl, ok: true, title: imageTitle })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        failed.push({ url: imageUrl, error: message })
+        imageResults.push({ url: imageUrl, ok: false, error: message })
+      }
+    }
+
+    // The note: when images were chosen (stored or failed), wikitext with
+    // `[img[Title]]` embeds + failed ones degrade to URL lines; a pure
+    // text-only clip stays markdown as before.
+    const noteTiddler = stored.length > 0 || images.length > 0
+      ? buildImageNoteTiddler({
+          title: resolvedTitle, url, ...(text.length > 0 ? { text } : {}),
+          tag: cfg.tag, source: sourceName, at, stored, failed, extraTags: tags,
+        })
+      : buildClipTiddler({
+          title: resolvedTitle, url, ...(text.length > 0 ? { text } : {}),
+          tag: cfg.tag, source: sourceName, at, extraTags: tags,
+        })
     try {
-      await this.deps.write(tiddler)
+      await this.deps.write(noteTiddler)
     } catch {
+      // The note is the primary artifact — fail the clip (images may already
+      // be stored; they are still referenced by the note if it lands later).
       this.respond(res, { ok: false, error: 'TiddlyWiki 服务暂不可用，剪藏未写入' }, 503)
       return
     }
-    this.respond(res, { ok: true, title: resolvedTitle, url, tag: cfg.tag, source: tiddler['clip-source'] })
+    this.respond(res, { ok: true, title: resolvedTitle, url, tag: cfg.tag, source: sourceName, images: imageResults })
   }
 }

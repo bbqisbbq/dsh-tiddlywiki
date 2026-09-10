@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.24`（npm latest = 0.16.24；git tag `v0.16.24`） | `package.json` `version` |
+| **插件版本** | `0.16.25`（npm latest = 0.16.25；git tag `v0.16.25`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
@@ -40,7 +40,7 @@ src/
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
 │   ├── routes.ts       # 全部 DSH 路由（见 §1 路由表）+ agent-send/create/modes/sessions + session/summary
 │   ├── http.ts         # 共用 HTTP 助手：readBody/readBodyBuffer（带大小上限）+ json() 响应（routes/admin 共用）
-│   ├── clip-bridge.ts  # 本地剪藏桥（v0.16.24）：只监听 127.0.0.1 的 HTTP 桥，POST /clip 把书签剪藏写进 wiki；Host 校验防 DNS rebinding + 可选 token + CORS/PNA preflight；端口启动时绑定一次，enabled/token/tag 每请求读 effective config
+│   ├── clip-bridge.ts  # 本地剪藏桥（v0.16.25）：只监听 127.0.0.1 的 HTTP 桥，POST /clip 把书签剪藏写进 wiki；v0.16.25 起支持「浮层选图」——桥下载所选图片字节存为二进制附件 tiddler（type image/* + base64，笔记 [img[标题]] 内嵌，失败降级链接）；Host 校验防 DNS rebinding + 可选 token + CORS/PNA preflight；端口启动时绑定一次，enabled/token/tag 每请求读 effective config
 │   ├── session-summary.ts # 会话「知识库」Tab 后端：sessionQuery 读日志+后代 → 产生/读取/检索 → $:/temp 汇总 wikitext
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/* 路由（seeds run/remove）
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层（tiddler 优先）
@@ -100,7 +100,7 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 ### 运行时装配（host/client、生效时机）
 
 - host 半部跑在 DSH Node 进程（从 `lib/index.js` 加载，`dsh plugin --profile web add link:<repo>` 挂载）；改 host 源码 → **`npm run build:host` + 重启 dsh web** 才对新会话生效（提示词、工具集都是启动时装配）。
-- **本地剪藏桥**（v0.16.24）：监听端口在启动时绑定一次（改 `bridge.port` 需重启 dsh web）；`enabled`/`token`/`tag` **每请求**读 effective config，设置页保存即生效。桥只绑定 127.0.0.1 + Host 头白名单（防 DNS rebinding）+ 可选 `x-clip-token` 校验；CORS 预检放行（含 `Access-Control-Allow-Private-Network`）以便 https 页面书签可用。写入走 tw-api 唯一通道。
+- **本地剪藏桥**（v0.16.24+/v0.16.25 图片）：监听端口在启动时绑定一次（改 `bridge.port` 需重启 dsh web）；`enabled`/`token`/`tag` **每请求**读 effective config，设置页保存即生效。桥只绑定 127.0.0.1 + Host 头白名单（防 DNS rebinding）+ 可选 `x-clip-token` 校验；CORS 预检放行（含 `Access-Control-Allow-Private-Network`）以便 https 页面书签可用。图片下载走 `deps.download`（服务端 fetch，带 referer/UA 对付防盗链；上限 15MB/张、10 张/次），二进制附件 = `type: image/*` + base64 `text`（TW 5.4.1 REST 无原生二进制上传，此即官方形态，proven：selftest BigImage.jpg 段 + verify-clip-bridge 图片测试）；带图笔记自动改 wikitext。写入走 tw-api 唯一通道。
 - client 半部是浏览器 JS（`/plugins/dsh-tiddlywiki/client.js`）；改 client → `npm run build:client` + **刷新页面**（若 DSH checkout 里同时跑着 `pnpm run dev:web`，client 改动才自动热更，否则必须重建）。
 - 插件生命周期：所有 side effect（路由/工具/定时器/监听）用 `ctx.effect`/`disposer` 注册，保证热更新不泄漏。
 
