@@ -153,8 +153,6 @@ export interface UiDefaultsPublic {
   showSessionTab: boolean
   /** 是否在 DSH 右侧边栏提供 TiddlyWiki 入口/Tab（默认 true）。 */
   showRightbarTab: boolean
-  /** 是否在 DSH Better Sidebar 侧边栏注册 TiddlyWiki tab（默认 true）。 */
-  showBetterSidebarTab: boolean
 }
 
 export interface RouteDeps {

@@ -25,7 +25,6 @@ import { disposeEditorPopup } from './editor-popup.ts'
 import { SettingsSection } from './settings-page.ts'
 import { registerToolViews, installWikiLinkInterceptor } from './tool-views.ts'
 import { mountRightbarTab, type RightbarSlotsFace } from './rightbar-tab.ts'
-import { mountBetterSidebarTab, type BetterSidebarFace } from './better-sidebar-tab.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-tiddlywiki/client'
@@ -127,35 +126,6 @@ export function apply(ctx: ClientContextFace): void {
     } catch (error) {
       // 右侧栏集成失败只影响该功能本身，绝不让整个插件挂掉。
       console.error('[dsh-tiddlywiki] rightbar mount failed:', error)
-    }
-    try {
-      // DSH Better Sidebar（dsh-better-sidebar 插件）集成：可选挂载——仅当该
-      // 插件的 client 半部提供了 betterSidebar 服务时才启用（未安装 / 老版本
-      // DSH 静默跳过，插件其余功能不受影响）。注册 TW tab 类型（+ 菜单可开）；
-      // 由 ui.showBetterSidebarTab 控制（默认开）。better-sidebar 的 Side
-      // 设置页也会为已注册 tab 自动提供它自己的启用开关。
-      let bsRetryTimer: number | undefined
-      const tryMountBetterSidebar = (attempt: number): void => {
-        const service = ctx.get?.('betterSidebar') as BetterSidebarFace | undefined
-        if (service === undefined) {
-          // better-sidebar 插件可能在本次 apply 之后才就绪：有限重试几次即可。
-          if (attempt < 6 && !clientDisposed) {
-            bsRetryTimer = window.setTimeout(() => tryMountBetterSidebar(attempt + 1), 500 * (attempt + 1))
-          }
-          return
-        }
-        void fetchUiConfig().then((cfg) => {
-          if (clientDisposed) return
-          if (!cfg.showBetterSidebarTab) return
-          const removeBs = mountBetterSidebarTab(service)
-          if (removeBs !== undefined) disposers.push(removeBs)
-        })
-      }
-      tryMountBetterSidebar(0)
-      disposers.push(() => { if (bsRetryTimer !== undefined) window.clearTimeout(bsRetryTimer) })
-    } catch (error) {
-      // Better Sidebar 集成失败只影响该功能本身，绝不让整个插件挂掉。
-      console.error('[dsh-tiddlywiki] better-sidebar mount failed:', error)
     }
     try {
       // Reply-stream native tool cards: keyed `tool.call.toolview` slots for

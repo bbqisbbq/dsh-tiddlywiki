@@ -1,8 +1,8 @@
 /**
  * Shared TiddlyWiki iframe machinery for DSH side surfaces (v0.16.23).
  *
- * The center-column panel, the native right-sidebar tab (rightbar-tab.ts) and
- * the DSH Better Sidebar tab (better-sidebar-tab.ts) all embed the SAME-ORIGIN
+ * The center-column panel and the native right-sidebar tab (rightbar-tab.ts)
+ * both embed the SAME-ORIGIN
  * TW proxy (`/dsh-tiddlywiki/tw/`) in an iframe and share the same lifecycle:
  * lazy-load on first show, `/status` polling with restart/error states, DSH
  * theme sync, reload-on-FAB-event, and tiddler-hash navigation. This module
@@ -11,7 +11,7 @@
  *
  * Link routing: each mounted TW surface registers its live frame controller
  * here; panel.ts asks `openTiddlerInLiveTab` first, so a wiki link lands in a
- * visible side TW tab (rightbar / better-sidebar) before falling back to the
+ * visible side TW tab (the native rightbar tab) before falling back to the
  * center overlay. Mutual exclusion (one TW client at a time) rides the
  * `dsh-panel-activate` protocol — each surface dispatches its own panel name
  * on becoming visible and closes itself when another name activates.

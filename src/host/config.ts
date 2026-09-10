@@ -95,14 +95,6 @@ export interface PluginConfigShape {
      * DSH 无 rightbar 时该配置不生效（客户端自动跳过）。
      */
     showRightbarTab?: boolean
-    /**
-     * 是否在 DSH Better Sidebar（dsh-better-sidebar 插件）侧边栏提供
-     * TiddlyWiki tab（默认 true）：通过其 client 服务 `ctx.betterSidebar`
-     * 注册 tab 类型，+ 菜单可打开完整 TW 编辑器（与聊天并排）。未安装
-     * Better Sidebar 时该配置不生效（客户端自动跳过）；该插件自己的设置页
-     * 也为本 tab 提供独立的启用开关。
-     */
-    showBetterSidebarTab?: boolean
   }
   uiLanguage?: string
   [key: string]: unknown

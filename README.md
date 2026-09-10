@@ -30,7 +30,7 @@
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
 | 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
-| 🧩 **Better Sidebar Tab** | dsh-better-sidebar 侧边栏：+ 菜单注册 TiddlyWiki tab，与聊天并排；链接点击可直达；未安装该插件自动跳过（v0.16.23） |
+| 🧩 **Better Sidebar 共存** | 与 dsh-better-sidebar 侧边栏共存（其展开/收起按钮浮在 TW 面板之上）；**不再向该侧边栏注册 TW tab**（v0.17.0 移除了 tab 注册，避免 tab kind 冲突） |
 | 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染（`/tw/render` 片段管线，v0.16.19） |
 | 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式；首页内置「快速记笔记（完整编辑器）」 |
 | 📌 **本地剪藏桥** | 可选「剪藏桥 + 书签小工具」：DSH 监听 127.0.0.1 端口接收剪藏请求（Host 校验防 rebinding），点书签弹出浮层——可改标题/编辑选中文字/**勾选图片**，一键写入知识库；文字成笔记（默认 `clip` 标签），图片由桥下载存为**二进制附件**（`type: image/*` + base64，笔记内 `[img[标题]]` 内嵌），随 wiki 自动进 git |
@@ -101,7 +101,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 - **📤 发送给 Agent**：TW 工具栏按钮（首次启动自动写入 wiki，ONE-SHOT）。弹层可选**附加说明**（位于消息末尾）、**工作模式**（Agent 预设）、**权限**（权限预设），按工作区分组选会话或新建。消息自带待办说明。
 - **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`）。
 - **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过。
-- **🧩 Better Sidebar Tab**（v0.16.23）：安装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 插件时，其侧边栏 **+ 菜单**会出现「TiddlyWiki 知识库」tab，点击即打开完整 TW 编辑器（同一套同源代理 iframe / 主题跟随 / 互斥协议，与右侧栏完全相同），**与聊天并排**。由 `ui.showBetterSidebarTab` 控制（默认开）；未安装 Better Sidebar 自动跳过；Better Sidebar 自己的设置页也会为该 tab 提供独立的启用开关。**更新后刷新页面**即可看到入口。
+- **🧩 Better Sidebar 共存**：装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 时，插件只做 UI 共存（中央 TW 面板的 z-index 自动压在其侧边栏展开/收起按钮之下，按钮始终可点）。**v0.17.0 起不再向 dsh-better-sidebar 注册「TiddlyWiki 知识库」tab**（旧版可用 `ui.showBetterSidebarTab` 关闭）——该 tab 的 kind 会与其它注册方冲突报 `tab kind "dsh-tiddlywiki" is already registered`。右侧边栏入口请用上面的 **右侧边栏 Tab**（DSH 原生 rightbar）。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。
 - **📌 本地剪藏桥**（可选，v0.16.24+/v0.16.25 支持图片）：DSH 设置 → 常规配置 → 勾选「**启用本地剪藏桥**」（保存后立即生效）——DSH 即监听 `127.0.0.1:8618` 接收剪藏请求。浏览器书签栏新建书签，把知识库文档里的 JS 代码粘贴为地址，点一下弹出**浮层**：确认/修改标题与划线文字、勾选页面图片（封面自动标出）→「剪藏」即写入 wiki。文字成笔记（默认 `clip` 标签、正文含来源与选中文字、重名自动 `（2）` 去重）；**图片由 DSH 本机下载字节存为二进制附件**（`clip-url`/`clip-note` 溯源字段，笔记内 `[img[标题]]` 内嵌展示；某张下载失败自动降级为链接），全部随 wiki 自动 git commit。「📚 插件文档」栏的 `本地剪藏桥（书签小工具）` seed 文档含完整步骤、书签代码、安全说明与 curl 用法。安全：桥只监听 127.0.0.1 + Host 白名单防 DNS rebinding；**强烈建议设 `bridge.token`**（非空时校验书签的 `x-clip-token` 头，防止任意网页往 wiki 里塞内容）。图片附件按设计不参与 `search`/`recent`（避免刷屏），`get` 只回元数据。
 - **🏠 首页（初始化 home-index 后）**：待办四象限（`todo` 标签 + `q` 字段拖放分类）+ 快速记笔记（完整编辑器，勾选「同时加入待办」即建任务）+「所有标签 / 所有文章」入口 +「📚 插件文档」栏（自动收录所有带 `dsh-docs` 标签的 seed 文档）。
@@ -265,7 +265,7 @@ src/
     ├── tool-views.ts       # 回复流工具卡片（tool.call.toolview）
     ├── theme-sync.ts / panel.ts / sidebar-entry.ts / sync-button.ts / rightbar-tab.ts
     │                   # 共享 TW iframe 机制在 tw-frame.ts（v0.16.23：lazy-load/status/主题/互斥/live-frame 路由）；
-    │                   # better-sidebar-tab.ts 经 ctx.betterSidebar 注册 DSH Better Sidebar 的 TW tab（v0.16.23）
+    │                   # TW tab 只注册在 DSH 原生右侧栏（rightbar-tab.ts）
     └── settings-page.ts / ui-config.ts / state.ts / styles.ts / toast.ts
 scripts/                # 构建/校验/再生成脚本
 docs/seed-initialization.md  # seed 机制详解（权威）
@@ -278,6 +278,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.17.0**（2026-09-10）：**移除：DSH Better Sidebar（dsh-better-sidebar）Tab 集成**。旧版通过 `ctx.betterSidebar.registerTab({id:'dsh-tiddlywiki'})` 注册的 tab kind 会与其它注册方冲突，浏览器控制台报 `sidebarRight: tab kind "dsh-tiddlywiki" is already registered (extension)`；本版**整体删除**该注册路径（删除 `better-sidebar-tab.ts`、client 入口的挂载块，以及 `ui.showBetterSidebarTab` 配置项/设置页开关），插件不再引用 `ctx.betterSidebar` 服务。与 dsh-better-sidebar 的**界面共存**（中央面板 z-index 让位于其侧边栏按钮）保留；右侧边栏入口请用 DSH 原生 rightbar（`ui.showRightbarTab`）。**更新后刷新页面**生效；旧版可临时用 `ui.showBetterSidebarTab=false` 规避冲突。
 - **v0.16.28**（2026-09-10）：**修：拖拽版剪藏书签在知乎等真实页面报 `SyntaxError: Unexpected token ';'`**。根因（真实 Chrome 实验证实）：0.16.27 把书签 href 做 **HTML 实体转义**（`&quot;`/`&amp;`/`&lt;`），但浏览器的 `a.href` **不做实体还原**——拖拽成书签后存的就是实体文本，执行时即解析失败。修复：href 改为 **percent-encoding**（`CLIP_BRIDGE_DRAG_HREF`，属性里只剩 `%XX`，天然无需任何属性转义）；Chrome 执行 `javascript:` URL 前会 percent 解码（实测通过）。浏览器 E2E 升级为**直接以编码 href 走 `location.href` 执行**（完全等价拖拽书签的执行路径）并断言浮层弹出；静态验收改为 `decodeURIComponent(href) === 代码常量` 一致性校验。行为不变——**已拖过旧版书签的用户需重新初始化 seed 后重新拖一次**（旧书签仍然坏的，因为里面的代码是实体文本）。
 - **v0.16.27**（2026-09-10）：**剪藏书签支持「拖拽安装」**。seed 文档新增一个**可拖拽按钮**（markdown 内嵌原始 HTML 锚点，href 即书签代码）——按住拖到浏览器书签栏/地址栏松手即装好，免去复制粘贴；代码 fence 保留作兜底。书签代码抽成单一常量 `CLIP_BRIDGE_BOOKMARKLET`（锚点 href 做 HTML 实体转义），并新增**同步一致性校验**（`verify-clip-bridge.mjs`：href 解码后与代码逐字相等）与**浏览器 E2E**（`verify-clip-bridge-browser.mjs`：真实 TW + 无头 Chrome 渲染真实 seed 文档，断言 javascript: href 原样保留 / draggable / 解码一致 / 真浏览器里执行书签弹出浮层 / 无 JS 异常）。
 - **v0.16.26**（2026-09-10）：**修：剪藏书签在真实页面上崩溃**（`Cannot set properties of null (setting 'value')`）。根因：浮层字段在 `p` 尚未挂到 document 前就用 `document.getElementById` 取值（脱离文档树查不到 → null）；同时 `cb_*` id 可能与页面自身元素冲突。修复：所有浮层字段改为 `p.querySelector` 作用域内查找 + 字段赋值挪到 `appendChild` 之后；并把书签放进 **jsdom 真实 DOM 端到端跑通**（浮层/填充/选图/提交载荷/结果态 12 项全过）作为验证，`verify-clip-bridge.mjs` 新增静态回归断言（禁未限定 getElementById + 挂载时序）。行为无变化，仅书签代码（seed 文档）修复。

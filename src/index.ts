@@ -73,7 +73,7 @@ export interface TiddlywikiConfig {
   note?: { tag?: string }
   /** 本地剪藏桥（书签小工具）：见 host/clip-bridge.ts 与 seed-clip-bridge.ts 文档。 */
   bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
-  ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; showBetterSidebarTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
+  ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
   /** 启动时自动启用的 TW 语言代码（如 "zh-Hans"），也受配置 tiddler 覆盖。 */
   uiLanguage?: string
   auth?: { username?: string; password?: string }
@@ -97,7 +97,7 @@ interface ResolvedConfig {
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string }
   bridge: { enabled: boolean; port: number; token: string; tag: string }
-  ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; showBetterSidebarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
+  ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
   uiLanguage: string
   auth: { username?: string; password?: string }
 }
@@ -112,7 +112,7 @@ const DEFAULTS: ResolvedConfig = {
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox' },
   bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip' },
-  ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, showBetterSidebarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
+  ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
   uiLanguage: '',
   auth: { username: '', password: '' },
 }
@@ -284,7 +284,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const tag = typeof b.tag === 'string' && b.tag.trim().length > 0 ? b.tag.trim() : config.bridge.tag
     return { enabled: b.enabled === true, port, token, tag }
   }
-  const effectiveUi = (): { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; showBetterSidebarTab: boolean } => {
+  const effectiveUi = (): { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean } => {
     const ui = eff().ui ?? {}
     const palette = typeof ui.darkPalette === 'string' && ui.darkPalette.trim().length > 0 ? ui.darkPalette.trim() : DARK_PALETTE_DEFAULT
     const label = typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : config.ui.sidebarLabel
@@ -302,7 +302,6 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       tabLabel,
       showSessionTab: ui.showSessionTab !== false,
       showRightbarTab: ui.showRightbarTab !== false,
-      showBetterSidebarTab: ui.showBetterSidebarTab !== false,
     }
   }
 

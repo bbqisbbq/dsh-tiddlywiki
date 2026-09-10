@@ -50,7 +50,9 @@ const PANEL_Z_INDEX = 40
  * expand/collapse toggle cluster lives inside it, at a global z-index of 25
  * — its internal 45 is trapped by the host's stacking context). When this
  * host is present the panel must stay BELOW it, so the sidebar toggle
- * buttons stay visible and clickable above the full-screen TW panel.
+ * buttons stay visible and clickable above the full-screen TW panel. This is
+ * about the HOST chrome only (dsh-tiddlywiki no longer registers a tab in
+ * that sidebar).
  */
 const PANEL_HOST_SELECTOR = '[data-dsh-panel-host]'
 /** The app's own shell overlay layer (dsh-client-ui-layout pins it at 20). */
@@ -317,7 +319,7 @@ export function mountPanel(state: PanelState): () => void {
     const detail = (event as CustomEvent).detail as { title?: unknown } | undefined
     const title = typeof detail?.title === 'string' && detail.title.length > 0 ? detail.title : ''
     if (title.length === 0) return
-    // 侧边栏（rightbar / better-sidebar）的 TW tab 可见时，链接直接在那里
+    // 侧边栏（rightbar）的 TW tab 可见时，链接直接在那里
     // 打开（与聊天并排）；否则退回中央面板。互斥由 tw-frame.ts 共享的
     // dsh-panel-activate 协议保证。
     if (openTiddlerInLiveTab(title)) return
