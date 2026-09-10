@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.16.26`（npm latest = 0.16.26；git tag `v0.16.26`） | `package.json` `version` |
+| **插件版本** | `0.16.27`（npm latest = 0.16.27；git tag `v0.16.27`） | `package.json` `version` |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
@@ -70,6 +70,7 @@ npm run build:client  # 只重建 client（改 src/client/** 时用）
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收（改核心路径后跑）
 node scripts/verify-send-to-agent-bundle.mjs  # bundle 字段/内容校验
 node scripts/verify-clip-bridge.mjs            # 剪藏桥 headless 验收（build 后跑：绑定/CORS/Host 校验/token/去重/503/400）
+node scripts/verify-clip-bridge-browser.mjs    # 浏览器 E2E（v0.16.27，真实 TW+无头 Chrome）：seed 文档「拖拽书签」锚点 href 原样保留/解码一致/真浏览器执行弹浮层；缺 Chrome/puppeteer 时 SKIP
 node scripts/verify-seed-send-to-agent.mjs    # E2E：全新 wiki 上验证按钮 seed
 node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 ```

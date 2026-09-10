@@ -16,7 +16,7 @@
  */
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, resolveClipTitle, CLIP_BRIDGE_DOC_TEXT } from '../lib/index.js'
+import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, resolveClipTitle, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET } from '../lib/index.js'
 
 let failures = 0
 function test(name, fn) {
@@ -135,6 +135,16 @@ test('seed doc bookmarklet is valid JS (new Function)', () => {
   const attachAt = code.indexOf('document.body.appendChild(ov)')
   const valueAt = code.indexOf("Q('cb_t').value=t")
   assert.ok(attachAt >= 0 && valueAt > attachAt, 'overlay is attached BEFORE field values are set')
+  // v0.16.27: the doc ships a DRAGGABLE anchor in addition to the code fence.
+  // Its href (HTML-entity-escaped) must decode to EXACTLY the fenced code, so
+  // the two copies can never drift.
+  assert.ok(CLIP_BRIDGE_DOC_TEXT.includes('draggable="true"') && CLIP_BRIDGE_DOC_TEXT.includes('📌 剪藏 — 拖到书签栏'), 'seed doc carries the draggable anchor')
+  const hrefMatch = CLIP_BRIDGE_DOC_TEXT.match(/<a href="([^"]+)" draggable="true"/)
+  assert.ok(hrefMatch, 'draggable anchor has a javascript: href')
+  const decodedHref = hrefMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+  assert.ok(decodedHref.startsWith('javascript:('), 'anchor href is the bookmarklet code')
+  assert.equal(decodedHref, CLIP_BRIDGE_BOOKMARKLET, 'anchor href === CLIP_BRIDGE_BOOKMARKLET')
+  assert.equal(fence[1], CLIP_BRIDGE_BOOKMARKLET, 'fenced code === CLIP_BRIDGE_BOOKMARKLET')
 })
 
 // ---------------------------------------------------------------------------
