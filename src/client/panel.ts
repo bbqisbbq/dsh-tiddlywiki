@@ -23,9 +23,11 @@
 import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
-import { openTiddlerInLiveTab } from './tw-frame.ts'
+// 事件名单一来源：两个协议常量由 tw-frame.ts 定义（panel/rightbar 共同依赖），
+// 这里再 re-export 以兼容既有 `import { PANEL_RELOAD_EVENT } from './panel.ts'`。
+import { ACTIVATE_EVENT, openTiddlerInLiveTab, PANEL_RELOAD_EVENT } from './tw-frame.ts'
 
-export const PANEL_RELOAD_EVENT = 'dsh-tw-panel-reload'
+export { ACTIVATE_EVENT, PANEL_RELOAD_EVENT }
 
 /**
  * Center-column targets, most-specific shell generation first. The official
@@ -39,8 +41,6 @@ const COLUMN_SELECTORS = ['[class*="centerCol"]', '[data-pane="conversation"]', 
 const ACTIVE_ATTR = 'data-dsh-tw-active'
 /** Sibling panels' activation attributes, evicted when this panel opens. */
 const OTHER_ACTIVE_ATTRS = ['data-dsh-atb-active', 'data-dsh-taskboard-active', 'data-dsh-ssh-active']
-/** Cross-plugin activation event; detail is the activating panel name. */
-const ACTIVATE_EVENT = 'dsh-panel-activate'
 const PANEL_NAME = 'dsh-tiddlywiki'
 
 /** Overlay z-index: above the shell content, below the note widget (950). */
@@ -148,6 +148,8 @@ export function mountPanel(state: PanelState): () => void {
   let pendingHash: string | null = null
   /** Set by the disposer: no timers/observers may touch DOM or the iframe after. */
   let disposed = false
+  /** Last observed presence of the better-sidebar host layer (applyChrome cache). */
+  let lastHasHost: boolean | undefined
 
   const build = (): HTMLDivElement => {
     const view = document.createElement('div')
@@ -199,23 +201,31 @@ export function mountPanel(state: PanelState): () => void {
    * Coexist with dsh-better-sidebar: keep the panel's z-index below the
    * host layer (so its toggle cluster stays clickable above the panel) and
    * flag the host's presence so CSS can reserve the cluster's width at the
-   * panel bar's right end. Re-run whenever the host mounts/unmounts.
+   * panel bar's right end. Re-run only while the panel is open (the z-index
+   * must track the host layer) or when the host's presence actually flipped:
+   * the querySelector + getComputedStyle here force a style recalc, so running
+   * them on every DOM mutation (chat streaming!) is not affordable.
    */
-  const applyChrome = (): void => {
+  const applyChrome = (force = false): void => {
     if (container === undefined) return
-    container.style.zIndex = String(resolvePanelZIndex())
     const hasHost = document.querySelector(PANEL_HOST_SELECTOR) !== null
+    if (!force && !state.isOpen() && hasHost === lastHasHost) return
+    lastHasHost = hasHost
+    container.style.zIndex = String(resolvePanelZIndex())
     if (hasHost) container.dataset.sidebarHost = '1'
     else delete container.dataset.sidebarHost
   }
 
   const ensure = (): void => {
+    // 中心列可能被 React 整体重建：overlay 已存在时也要自愈——脱离文档的节点
+    // getBoundingClientRect() 恒为 0，syncRect() 会一直提前 return，面板位置/
+    // 尺寸永久错位。首次挂载时中心列尚未出现（undefined）则继续等待。
+    if (columnEl === undefined || !columnEl.isConnected) columnEl = conversationColumn()
     if (container !== undefined) return
-    columnEl = conversationColumn()
     if (columnEl === undefined) return
     container = build()
     container.style.position = 'fixed'
-    applyChrome()
+    applyChrome(true)
     document.body.append(container)
     syncRect()
   }
@@ -399,18 +409,33 @@ export function mountPanel(state: PanelState): () => void {
     if (target.closest(SIDEBAR_ROW_SELECTOR) !== null) state.closePanel()
   }
 
+  // DOM 变更 / 滚动 / 尺寸三类高频信号合并到同一帧：一帧最多一次
+  // ensure + syncRect + applyChrome。rect 仍然跟手（rAF 在下一帧绘制前执行），
+  // 但聊天流式输出的高频 mutation 不会再每次都强制样式重算。
+  let layoutRaf: number | undefined
+  const scheduleLayout = (): void => {
+    if (disposed || layoutRaf !== undefined) return
+    layoutRaf = window.requestAnimationFrame(() => {
+      layoutRaf = undefined
+      if (disposed) return
+      ensure()
+      syncRect()
+      applyChrome()
+    })
+  }
+
   // Mount the container once the column exists; self-heal on re-renders and
   // re-resolve the coexistence chrome when better-sidebar mounts/unmounts.
-  const waitObserver = new MutationObserver(() => { ensure(); applyChrome() })
+  const waitObserver = new MutationObserver(() => { scheduleLayout() })
   waitObserver.observe(document.body, { childList: true, subtree: true })
 
   // Keep the overlay pinned to the column: resize, layout mutations, scroll.
-  const resizeObserver = new ResizeObserver(() => syncRect())
+  const resizeObserver = new ResizeObserver(() => { scheduleLayout() })
   resizeObserver.observe(document.body)
   const syncInterval = window.setInterval(syncRect, SYNC_INTERVAL_MS)
-  const onWindowResize = (): void => syncRect()
+  const onWindowResize = (): void => { scheduleLayout() }
   window.addEventListener('resize', onWindowResize)
-  const onAnyScroll = (): void => syncRect()
+  const onAnyScroll = (): void => { scheduleLayout() }
   window.addEventListener('scroll', onAnyScroll, true)
 
   document.addEventListener('click', onClickSidebarRow, true)
@@ -430,6 +455,8 @@ export function mountPanel(state: PanelState): () => void {
   return () => {
     disposed = true
     if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+    if (layoutRaf !== undefined) window.cancelAnimationFrame(layoutRaf)
+    layoutRaf = undefined
     window.clearInterval(syncInterval)
     window.removeEventListener('resize', onWindowResize)
     window.removeEventListener('scroll', onAnyScroll, true)

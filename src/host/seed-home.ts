@@ -14,6 +14,7 @@
  * @module dsh-tiddlywiki/host/seed-home
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** One-time marker: presence means "the home was offered once — hands off". */
 export const HOME_INDEX_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-home-index'
@@ -41,12 +42,12 @@ export const HOME_INDEX_ITEMS: HomeIndexItem[] = [{"title":"🏠 主页","tags":
 export async function seedHomeIndex(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(HOME_INDEX_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, HOME_INDEX_MARKER_TITLE)
     if (marker !== undefined) return false
   }
   let wrote = false
   for (const item of HOME_INDEX_ITEMS) {
-    const existing = await client.get(item.title).catch(() => undefined)
+    const existing = await readSeedTiddler(client, item.title)
     if (force || existing === undefined) {
       await client.put({ title: item.title, text: item.text, type: item.type, tags: item.tags })
       wrote = true
@@ -55,15 +56,13 @@ export async function seedHomeIndex(client: TiddlyWebClient, opts?: { force?: bo
   // Ensure the default home page is 🏠 主页. A fresh wiki's $:/DefaultTiddlers is
   // the core shadow "GettingStarted" (or absent), so a first seed writes it;
   // a user-customised DefaultTiddlers is left alone unless force.
-  const dt = await client.get('$:/DefaultTiddlers').catch(() => undefined)
+  const dt = await readSeedTiddler(client, '$:/DefaultTiddlers')
   const dtText = typeof dt?.text === 'string' ? dt.text.trim() : ''
   if (force || dt === undefined || dtText === 'GettingStarted' || dtText === '[[GettingStarted]]') {
     await client.put({ title: '$:/DefaultTiddlers', text: HOME_DEFAULT_TIDDLERS, type: 'text/vnd.tiddlywiki', tags: [] })
     wrote = true
   }
-  await client
-    .put({ title: HOME_INDEX_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, HOME_INDEX_MARKER_TITLE)
   return wrote
 }
 
@@ -76,18 +75,18 @@ export async function seedHomeIndex(client: TiddlyWebClient, opts?: { force?: bo
 export async function unseedHomeIndex(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []
   for (const item of HOME_INDEX_ITEMS) {
-    const t = await client.get(item.title).catch(() => undefined)
+    const t = await readSeedTiddler(client, item.title)
     if (t !== undefined) {
       await client.delete(item.title)
       removed.push(item.title)
     }
   }
-  const marker = await client.get(HOME_INDEX_MARKER_TITLE).catch(() => undefined)
+  const marker = await readSeedTiddler(client, HOME_INDEX_MARKER_TITLE)
   if (marker !== undefined) {
     await client.delete(HOME_INDEX_MARKER_TITLE)
     removed.push(HOME_INDEX_MARKER_TITLE)
   }
-  const dt = await client.get('$:/DefaultTiddlers').catch(() => undefined)
+  const dt = await readSeedTiddler(client, '$:/DefaultTiddlers')
   if (dt !== undefined && typeof dt.text === 'string' && dt.text.trim() === "[[🏠 主页]]") {
     await client.put({ title: '$:/DefaultTiddlers', text: '[[GettingStarted]]', type: 'text/vnd.tiddlywiki', tags: [] })
     removed.push('$:/DefaultTiddlers')

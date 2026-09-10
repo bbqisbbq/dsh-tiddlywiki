@@ -34,25 +34,28 @@
  */
 import * as React from 'react'
 import { GET_ENDPOINT } from './endpoints.ts'
+import { getTabLabel, setTabLabel } from './tw-frame.ts'
 
 export const SESSION_SUMMARY_VIEW_ID = 'dsh-tiddlywiki-summary'
 const SUMMARY_ENDPOINT = '/dsh-tiddlywiki/session/summary'
 const RENDER_ENDPOINT = '/dsh-tiddlywiki/tw/render'
-const SESSION_SUMMARY_LABEL_DEFAULT = '知识库'
 /** 自愈探测周期：服务端 volatile 条目被清（TW 重启）→ 自动重新生成。 */
 const SELF_HEAL_MS = 30_000
 /** 连续多少次「生成后服务端仍缺失」后停止自动重试，交还手动「🔄 刷新」。 */
 const MAX_MISSES = 3
 
-/** Tab 显示名缓存：客户端从 /status 读到 `ui.tabLabel` 后更新；默认「知识库」。 */
-let tabLabel = SESSION_SUMMARY_LABEL_DEFAULT
+/**
+ * Tab 名写入共享标签（tw-frame.ts 的 `ui.tabLabel`）：/status 每次刷新都会调
+ * 那里的 setTabLabel，labelThunk 直接读 getTabLabel()，所以设置页改
+ * `ui.tabLabel` 后无需整页刷新（旧实现只在这里 mount 时缓存一次）。
+ */
 export function setSessionSummaryTabLabel(label: string): void {
-  tabLabel = typeof label === 'string' && label.trim().length > 0 ? label.trim() : SESSION_SUMMARY_LABEL_DEFAULT
+  setTabLabel(label)
 }
 
-/** 槽位 label thunk：每次投影重读，配置变更即时生效。 */
+/** 槽位 label thunk：每次投影重读共享标签，配置变更即时生效。 */
 function labelThunk(): string {
-  return tabLabel
+  return getTabLabel()
 }
 
 /** conversation.view 标准 props（scope=session）的极小子集 + ownerProps。 */

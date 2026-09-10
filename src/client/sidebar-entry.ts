@@ -66,18 +66,28 @@ function createEntry(state: PanelState, label: string): { entry: HTMLButtonEleme
 
 /** Re-insert the entry before the whole family block (stable ordering). */
 function placeEntry(root: HTMLElement, entry: HTMLButtonElement): boolean {
-  const button = newSessionButton(root)
-  if (button === undefined) return false
-  if (entry.parentElement !== root) {
-    const row = button.closest('[class*="logoRow"]')
-    const base = (row !== null && row.parentElement === root) ? row : button
-    const family = Array.from(root.children).filter(
-      (el): el is HTMLElement => el instanceof HTMLElement && el.matches(FAMILY_SELECTOR),
-    )
-    const anchor = family.length > 0 ? (family[0] ?? null) : (base.nextElementSibling ?? null)
-    root.insertBefore(entry, anchor)
+  try {
+    const button = newSessionButton(root)
+    if (button === undefined) return false
+    if (entry.parentElement !== root) {
+      const row = button.closest('[class*="logoRow"]')
+      const base = (row !== null && row.parentElement === root) ? row : button
+      const family = Array.from(root.children).filter(
+        (el): el is HTMLElement => el instanceof HTMLElement && el.matches(FAMILY_SELECTOR),
+      )
+      // `base` may be a DEEP descendant (newSessionButton queries any depth):
+      // insertBefore throws NotFoundError when the anchor is not a child of
+      // root, so only a real root child may serve as the anchor.
+      let anchor: Element | null = family.length > 0 ? (family[0] ?? null) : base.nextElementSibling
+      if (anchor !== null && anchor.parentElement !== root) anchor = null
+      root.insertBefore(entry, anchor)
+    }
+    return true
+  } catch (error) {
+    // DOM 挂载问题只记日志、永不 throw（插件约定）。
+    console.error('[dsh-tiddlywiki] sidebar entry placement failed:', error)
+    return false
   }
-  return true
 }
 
 /** Debug counters (window.__twDebug) — evidence if the entry fails to appear. */

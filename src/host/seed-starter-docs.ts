@@ -17,6 +17,7 @@
  * @module dsh-tiddlywiki/host/seed-starter-docs
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** One-time marker: presence means "the docs were offered once — hands off". */
 export const STARTER_DOCS_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-starter-docs'
@@ -212,20 +213,18 @@ export const STARTER_DOCS_ITEMS: StarterDocItem[] = [
 export async function seedStarterDocs(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(STARTER_DOCS_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, STARTER_DOCS_MARKER_TITLE)
     if (marker !== undefined) return false
   }
   let wrote = false
   for (const item of STARTER_DOCS_ITEMS) {
-    const existing = await client.get(item.title).catch(() => undefined)
+    const existing = await readSeedTiddler(client, item.title)
     if (force || existing === undefined) {
       await client.put({ title: item.title, text: item.text, type: item.type, tags: item.tags })
       wrote = true
     }
   }
-  await client
-    .put({ title: STARTER_DOCS_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, STARTER_DOCS_MARKER_TITLE)
   return wrote
 }
 
@@ -236,13 +235,13 @@ export async function seedStarterDocs(client: TiddlyWebClient, opts?: { force?: 
 export async function unseedStarterDocs(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []
   for (const item of STARTER_DOCS_ITEMS) {
-    const t = await client.get(item.title).catch(() => undefined)
+    const t = await readSeedTiddler(client, item.title)
     if (t !== undefined) {
       await client.delete(item.title)
       removed.push(item.title)
     }
   }
-  const marker = await client.get(STARTER_DOCS_MARKER_TITLE).catch(() => undefined)
+  const marker = await readSeedTiddler(client, STARTER_DOCS_MARKER_TITLE)
   if (marker !== undefined) {
     await client.delete(STARTER_DOCS_MARKER_TITLE)
     removed.push(STARTER_DOCS_MARKER_TITLE)

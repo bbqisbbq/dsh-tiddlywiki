@@ -26,14 +26,15 @@
 | 🏠 **文档中心起步包** | 首次安装自动 seed：插件说明 + 「示例与文档」（主题汇总模板 / 教程 / 三个示例主题页），首页「📚 插件文档」栏一键查阅；**同名 tiddler 已存在一律安全跳过，绝不覆盖你的数据**（v0.16.22） |
 | 🎨 **自定义样式** | 「自定义样式」seed：编辑器美化 / 窄屏侧栏隐藏 / menubar 加高 / 批注弹窗等 5 张通用样式表，新 wiki 也能一键初始化（可选，v0.16.22） |
 | 🤖 **Agent 工具** | 10 个 `tiddlywiki_*` 工具：检索、读写、批量、重命名、删除、git 同步与冲突解决（v0.16.20 起检索/最近在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
-| 📊 **回复流卡片** | 工具结果显示原生 TW 卡片；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
+| 📊 **回复流卡片** | 工具结果显示原生 TW 卡片（**按笔记自己的内容类型渲染**：Markdown 笔记就是 Markdown，v0.18.0）；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
 | 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
 | 🧩 **Better Sidebar 共存** | 与 dsh-better-sidebar 侧边栏共存（其展开/收起按钮浮在 TW 面板之上）；**不再向该侧边栏注册 TW tab**（v0.17.0 移除了 tab 注册，避免 tab kind 冲突） |
 | 📚 **会话知识库 Tab** | 每个会话顶部汇总本会话读写过的 wiki 笔记，TW 原生渲染（`/tw/render` 片段管线，v0.16.19） |
 | 📝 **快速笔记** | 输入框上方快捷按钮或右下角「知识库」FAB；原生编辑页或 Markdown 卡片两种模式；首页内置「快速记笔记（完整编辑器）」 |
-| 📌 **本地剪藏桥** | 可选「剪藏桥 + 书签小工具」：DSH 监听 127.0.0.1 端口接收剪藏请求（Host 校验防 rebinding），点书签弹出浮层——可改标题/编辑选中文字/**勾选图片**，一键写入知识库；文字成笔记（默认 `clip` 标签），图片由桥下载存为**二进制附件**（`type: image/*` + base64，笔记内 `[img[标题]]` 内嵌），随 wiki 自动进 git |
+| 📌 **本地剪藏桥** | 可选「剪藏桥 + 书签小工具」：DSH 监听 127.0.0.1 端口接收剪藏请求（Host 校验防 rebinding），点书签弹出浮层——可改标题/编辑选中文字/**勾选图片**，一键写入知识库；文字成笔记（默认 `clip` 标签），图片由桥下载存为**二进制附件**（`type: image/*` + base64，笔记内 `[img[标题]]` 内嵌），随 wiki 自动进 git；图片下载有 **SSRF 守卫**（仅公网 http(s)、逐跳校验重定向，v0.18.0） |
+| 🔐 **写操作防跨站** | 所有写路由（笔记/上传/同步/后台/代理）拒绝跨站请求（403），仅同源的 GUI 与内嵌 TW 可写；跨站 GET 与浏览器地址栏直达不受影响（v0.18.0） |
 | ✅ **待办四象限** | 首页看板：任务打 `todo` 标签即收录，拖动即可分类/完成（正文附 `q` 字段），逾期/今日到期自动统计 |
 | 🌗 **跟随主题** | 内嵌 TW 自适应 DSH 深浅主题（纯内存切换，不进 git） |
 | 🔄 **一键同步** | FAB「同步」一键 pull→commit→push，状态点实时反映 git 状态 |
@@ -152,7 +153,7 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       tag: "inbox"                     # 快速笔记默认 tag
     bridge:
       enabled: false                   # 本地剪藏桥（书签小工具）；保存后立即生效
-      port: 8618                       # 监听端口（127.0.0.1；改后需重启 dsh web）
+      port: 8618                       # 监听端口（127.0.0.1；改后需重启 dsh web 才绑定新端口）
       token: ""                        # 共享口令；非空时校验书签的 x-clip-token 头（强烈建议设置）
       tag: "clip"                      # 剪藏笔记默认 tag
     ui:
@@ -171,10 +172,10 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
     uiLanguage: ""                     # 留空不干预；"zh-Hans" 自动启用简体
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非回环才需要
-      password: ""
+      password: ""                     # 非空时插件内置客户端/就绪探测/浏览器代理都带 Basic 认证（v0.18.0 起真正可用）
 ```
 
-> **运行时配置**：设置页写入的 `$:/plugins/dsh-tiddlywiki/config` tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki git 同步），改 note tag / git / ui 开关无需动 cordis。
+> **运行时配置**：设置页写入的 `$:/plugins/dsh-tiddlywiki/config` tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki git 同步），改 note tag / git / ui 开关**以及剪藏桥端口**都无需动 cordis（端口改动仍需重启 dsh web 重新绑定监听）。
 
 ---
 
@@ -191,13 +192,16 @@ TW 子进程只监听 **127.0.0.1 回环**；Agent 工具/快速笔记/同步都
 ```bash
 npm install
 npm run typecheck     # tsc --noEmit
-npm run build         # clean + host tsdown + client tsdown + wrap
+npm run build         # clean + host tsdown + client tsdown + wrap（wrap 会校验 id 与体积 <900KB）
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收
-node scripts/verify-clip-bridge.mjs   # 剪藏桥 headless 验收（build 后跑）
+npm run smoke:client  # client bundle 的 module-loader 形状冒烟
+node scripts/verify-send-to-agent-bundle.mjs  # bundle 字段 + 源件逐字一致
+node scripts/verify-seed-send-to-agent.mjs    # 全新 wiki 上的 seed E2E
+node scripts/verify-clip-bridge.mjs   # 剪藏桥 headless 验收（含 SSRF 守卫）
 node scripts/verify-seeds-admin.mjs   # /admin/seeds 状态与 run 的 E2E
 ```
 
-**改 bundle/seed 的再生成流水线**（不要手改 `seed-*.ts` 里的生成常量）：
+**改 bundle/seed 的再生成流水线**（不要手改 `seed-*.ts` 里的生成常量；bundle 版本号只在 `scripts/bundle/versions.mjs` 定义一处）：
 
 ```bash
 # 发送给 Agent 按钮（改 scripts/bundle/send-to-agent/ 后）
@@ -205,13 +209,13 @@ node scripts/build-send-to-agent-bundle.mjs
 node scripts/gen-seed-send-to-agent.mjs scripts/bundle/send-to-agent.bundle.json src/host/seed-send-to-agent.ts
 node scripts/verify-send-to-agent-bundle.mjs
 
-# 渲染路由（改 scripts/bundle/render/server-routes/render.js 后）
+# 渲染路由（改 scripts/bundle/render/server-routes/render.js 后；版本在 versions.mjs）
 node scripts/build-render-bundle.mjs
 node scripts/gen-seed-render.mjs scripts/bundle/render.bundle.json src/host/seed-render.ts
 
-# 首页（改 wiki 的 🏠 主页/所有标签/标签笔记 .tid 后；必须 --strip-private，
-# 产出通用版：剥离作者私有人口 + 注入「📚 插件文档」栏）
-node scripts/gen-seed-home.mjs '<wiki>/tiddlers/🏠 主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts --strip-private
+# 首页（改 wiki 的 🏠 主页/所有标签/标签笔记 .tid 后；默认就剥离作者私有人口 +
+# 注入「📚 插件文档」栏，确要保留私有内容才加 --keep-private）
+node scripts/gen-seed-home.mjs '<wiki>/tiddlers/🏠 主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts
 
 # 自定义样式（改 wiki 的样式 .css + .meta 后；tag 自动收窄为 $:/tags/Stylesheet）
 node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/<样式.css>' … src/host/seed-ui-styles.ts
@@ -278,6 +282,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.18.0**（2026-09-10）：**一轮全量代码审计后的修复版**（数据安全 / 安全面 / 前端稳定性 / 工程卫生，共 40+ 项）。**数据不再静默丢失**：① seed 只在**真的 404** 时才认为条目缺失（此前任何读取错误都被当「不存在」，瞬时故障会让非 force 的启动 seed 覆盖你改过的同名笔记、`$:/DefaultTiddlers`、send-to-agent / render bundle）；② `wiki/.gitignore` 不再每次启动被整份重写（用户自定规则改前会被冲掉）；③ 配置 tiddler 读失败不再清空内存覆盖层（随后在设置页保存一项配置会丢掉其余全部覆盖）；④ 只有 **render-route 真的重写后**才重启 TW，且要等它落盘（否则重启会丢掉未 flush 的写入——这条是本版新引入又被测试抓出的回归）。**正确性**：`/render` 现在按 tiddler 自己的 `type` 渲染——**Markdown 笔记在回复流卡片/汇总里终于按 Markdown 渲染**（此前硬编码 wikitext，`## 现象` 会被当成 wikitext 列表，实测复现）。**安全**：所有写路由（`/admin/*`、`/note`、`/edit`、`/upload`、`/sync`、`/restart`、`/api`、`/tw` 的写方法）加**同源/CSRF 守卫**（跨站写请求 403，跨站 GET 不受影响）；剪藏桥图片下载加 **SSRF 守卫**（仅公网 http(s)，逐跳校验重定向，拒绝回环/内网/云元数据地址）；`bridge.port` 设置页改动现在**真的生效**（此前只读 cordis 基座）；`auth.username/password` 从此**可用**（内置 REST 客户端与就绪探测带 Basic 认证，代理转发 `WWW-Authenticate` 让浏览器弹登录框，此前配置了用户名会让插件 20s 后启动失败）。**前端**：编辑器弹窗不再因同草稿重开而整机重载、并纳入面板互斥；中央面板自愈列元素重建；右栏 Tab 重新可见会重新探测状态；侧边栏入口插入不再抛 `NotFoundError` 连带拖垮 FAB/面板；同步中不再被 30s 轮询覆盖状态；`injectStyles` 可卸载（热重载拿到新样式）；每处 mount 独立 try/catch；面板的 DOM 观察/滚动测量合并到 requestAnimationFrame（流式输出时不再每帧强制样式重算）。**工具与仓库**：`put`/`batch_put` 不再把读取失败当新条目而误打 `agent-written`，`fields` 不能覆盖 `title/text/tags`，`batch_put` 逐条报告失败；git 的 commit 与 pull 串行化（不再争 `.git/index.lock`）；`/status` 的 git 摘要加 2s 缓存（每次调用少跑 5 个 git 进程）；请求中途断开不再挂住路由；自动端口被占时会重新探测；`tiddlywiki.info` 损坏不再让后台 500；会话汇总对后代会话/条目数设上限。**工程卫生**：bundle 版本单一来源（`scripts/bundle/versions.mjs`，渲染路由 0.2.0）、生成器从 bundle 读版本（外层 0.3.2 漂移修正为 0.3.4）、发布包不再带 `client.bundle.js` 中间产物、`verify-*` 假阳性修复（未 await 的用例、被当成断言的 console.log）、selftest 失败也会回收 TW 子进程、`gen-seed-home` 默认剥离私有人口、`verify-menubar-theme` 不再默认打作者本机端口。
 - **v0.17.0**（2026-09-10）：**移除：DSH Better Sidebar（dsh-better-sidebar）Tab 集成**。旧版通过 `ctx.betterSidebar.registerTab({id:'dsh-tiddlywiki'})` 注册的 tab kind 会与其它注册方冲突，浏览器控制台报 `sidebarRight: tab kind "dsh-tiddlywiki" is already registered (extension)`；本版**整体删除**该注册路径（删除 `better-sidebar-tab.ts`、client 入口的挂载块，以及 `ui.showBetterSidebarTab` 配置项/设置页开关），插件不再引用 `ctx.betterSidebar` 服务。与 dsh-better-sidebar 的**界面共存**（中央面板 z-index 让位于其侧边栏按钮）保留；右侧边栏入口请用 DSH 原生 rightbar（`ui.showRightbarTab`）。**更新后刷新页面**生效；旧版可临时用 `ui.showBetterSidebarTab=false` 规避冲突。
 - **v0.16.28**（2026-09-10）：**修：拖拽版剪藏书签在知乎等真实页面报 `SyntaxError: Unexpected token ';'`**。根因（真实 Chrome 实验证实）：0.16.27 把书签 href 做 **HTML 实体转义**（`&quot;`/`&amp;`/`&lt;`），但浏览器的 `a.href` **不做实体还原**——拖拽成书签后存的就是实体文本，执行时即解析失败。修复：href 改为 **percent-encoding**（`CLIP_BRIDGE_DRAG_HREF`，属性里只剩 `%XX`，天然无需任何属性转义）；Chrome 执行 `javascript:` URL 前会 percent 解码（实测通过）。浏览器 E2E 升级为**直接以编码 href 走 `location.href` 执行**（完全等价拖拽书签的执行路径）并断言浮层弹出；静态验收改为 `decodeURIComponent(href) === 代码常量` 一致性校验。行为不变——**已拖过旧版书签的用户需重新初始化 seed 后重新拖一次**（旧书签仍然坏的，因为里面的代码是实体文本）。
 - **v0.16.27**（2026-09-10）：**剪藏书签支持「拖拽安装」**。seed 文档新增一个**可拖拽按钮**（markdown 内嵌原始 HTML 锚点，href 即书签代码）——按住拖到浏览器书签栏/地址栏松手即装好，免去复制粘贴；代码 fence 保留作兜底。书签代码抽成单一常量 `CLIP_BRIDGE_BOOKMARKLET`（锚点 href 做 HTML 实体转义），并新增**同步一致性校验**（`verify-clip-bridge.mjs`：href 解码后与代码逐字相等）与**浏览器 E2E**（`verify-clip-bridge-browser.mjs`：真实 TW + 无头 Chrome 渲染真实 seed 文档，断言 javascript: href 原样保留 / draggable / 解码一致 / 真浏览器里执行书签弹出浮层 / 无 JS 异常）。

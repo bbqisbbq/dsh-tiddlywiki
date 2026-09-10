@@ -17,13 +17,31 @@ const assert = (cond, label) => {
   console.log(`  ok - ${label}`)
 }
 
+/** Poll `cond` every 100ms until it is truthy (or the 10s cap passes) — a
+ *  bounded replacement for fixed sleeps: continue the moment the awaited state
+ *  lands, never wait longer than the cap. Returns whether it was hit. */
+async function waitFor(cond, timeoutMs = 10_000, stepMs = 100) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    let hit = false
+    try { hit = await cond() } catch { hit = false }
+    if (hit) return true
+    if (Date.now() >= deadline) return false
+    await new Promise((r) => setTimeout(r, stepMs))
+  }
+}
+
 const tempRoot = await mkdtemp(join(tmpdir(), 'dsh-tw-selftest-'))
 console.log(`selftest root: ${tempRoot}`)
 
 let exitCode = 0
+// Hoisted out of the try so the finally can ALWAYS reap the TW child: a failed
+// assertion used to skip server.stop() and leave a process holding the port
+// (stop() is idempotent, so the success path may still stop it explicitly).
+let server
 try {
   // 1. WikiServer lifecycle
-  const server = new WikiServer({ wikiRoot: tempRoot, wiki: 'main', port: 0 })
+  server = new WikiServer({ wikiRoot: tempRoot, wiki: 'main', port: 0 })
   const view = await server.start()
   assert(view.status === 'running', `wiki status running (got ${view.status})`)
   assert(typeof view.url === 'string' && view.url.startsWith('http://127.0.0.1:'), `url is loopback: ${view.url}`)
@@ -152,7 +170,9 @@ try {
   })
   await api.put({ title: 'Draft', text: 'auto commit me' })
   committer.touch()
-  await new Promise((r) => setTimeout(r, 1_000))
+  // Bounded poll instead of a fixed 1s sleep: continue as soon as the debounced
+  // commit fires (auto-commit is asynchronous).
+  await waitFor(() => committed.some((c) => c.committed))
   assert(committed.some((c) => c.committed), 'auto-commit fired after debounce')
   const after = await git.status(wikiDir)
   assert(!after.dirty, 'working tree clean after auto-commit')
@@ -725,8 +745,16 @@ try {
   await seedApi.delete(RENDER_MARKER_TITLE)
   assert(await seedRenderRoute(seedApi) === true, 'render-route re-seeds after marker removed (fresh wiki)')
   // Leave it seeded; the route needs a TW restart to load (server-routes modules
-  // are registered at boot). Wait out TW's async filesystem flush first.
-  await new Promise((r) => setTimeout(r, 1500))
+  // are registered at boot). Wait out TW's async filesystem flush first — a
+  // bounded poll for the bundle actually landing on disk (title $:/plugins/dsh/render
+  // is path-escaped to tiddlers/, .tid or .json depending on the adaptor).
+  await waitFor(async () => {
+    const dir = join(wikiDir, 'tiddlers')
+    const files = await readdir(dir).catch(() => [])
+    const file = files.find((name) => name.includes('plugins_dsh_render'))
+    if (file === undefined) return false
+    return (await readFile(join(dir, file), 'utf8').catch(() => '')).includes('server-routes')
+  })
   await server.restart()
   const renderUrl = `${server.url}/render`
   const postJson = async (url, body) => {
@@ -996,8 +1024,16 @@ try {
     assert((await api.get('$:/palette'))?.text === '$:/palettes/CupertinoDark', 'palette flip round-trips via TiddlyWeb')
     await api.put({ title: '$:/palette', text: origPalette })
     assert((await api.get('$:/palette'))?.text === origPalette, 'palette restore round-trips via TiddlyWeb')
-    // Let TW's async save queue flush the restored file before stop/cleanup.
-    await new Promise((r) => setTimeout(r, 800))
+    // Wait (bounded poll) for TW's async save queue to flush the restored
+    // palette file before stop/cleanup (path-escaped title $:/palette).
+    await waitFor(async () => {
+      if (origPalette.length === 0) return false
+      const dir = join(wikiDir, 'tiddlers')
+      const files = await readdir(dir).catch(() => [])
+      const file = files.find((name) => name.startsWith('$__palette'))
+      if (file === undefined) return false
+      return (await readFile(join(dir, file), 'utf8').catch(() => '')).includes(origPalette)
+    })
   }
 
   // 6. Teardown: no orphan process
@@ -1076,6 +1112,9 @@ try {
   console.error('\nSELFTEST FAILED')
   console.error(err)
 } finally {
+  // Always reap the TW child (idempotent), even when an assertion failed —
+  // otherwise the port stays held and the temp tree cannot be removed.
+  await server?.stop().catch(() => {})
   await rm(tempRoot, { recursive: true, force: true }).catch(() => {})
 }
 process.exit(exitCode)

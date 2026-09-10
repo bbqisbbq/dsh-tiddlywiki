@@ -12,6 +12,7 @@
  * @module dsh-tiddlywiki/host/seed-all-articles
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** One-time marker: presence means "the page was offered once — hands off". */
 export const ALL_ARTICLES_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-all-articles'
@@ -130,18 +131,16 @@ export const ALL_ARTICLES_TEXT = `\\whitespace trim
 export async function seedAllArticles(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(ALL_ARTICLES_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, ALL_ARTICLES_MARKER_TITLE)
     if (marker !== undefined) return false
   }
-  const existing = await client.get(ALL_ARTICLES_TITLE).catch(() => undefined)
+  const existing = await readSeedTiddler(client, ALL_ARTICLES_TITLE)
   let wrote = false
   if (force || existing === undefined) {
     await client.put({ title: ALL_ARTICLES_TITLE, text: ALL_ARTICLES_TEXT, type: 'text/vnd.tiddlywiki', tags: ['索引'] })
     wrote = true
   }
-  await client
-    .put({ title: ALL_ARTICLES_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, ALL_ARTICLES_MARKER_TITLE)
   return wrote
 }
 
@@ -153,7 +152,7 @@ export async function seedAllArticles(client: TiddlyWebClient, opts?: { force?: 
 export async function unseedAllArticles(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []
   for (const title of [ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE]) {
-    const t = await client.get(title).catch(() => undefined)
+    const t = await readSeedTiddler(client, title)
     if (t !== undefined) {
       await client.delete(title)
       removed.push(title)

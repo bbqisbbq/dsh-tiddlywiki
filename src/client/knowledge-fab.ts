@@ -19,7 +19,7 @@
 import type { PanelState } from './state.ts'
 import type { NoteWidgetHandle } from './note-widget.ts'
 import type { SyncController } from './sync-button.ts'
-import { PANEL_RELOAD_EVENT } from './panel.ts'
+import { PANEL_RELOAD_EVENT } from './tw-frame.ts'
 
 import { STATUS_ENDPOINT } from './endpoints.ts'
 import { fetchUiConfig } from './ui-config.ts'

@@ -16,12 +16,15 @@
  */
 import assert from 'node:assert/strict'
 import http from 'node:http'
-import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, resolveClipTitle, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET } from '../lib/index.js'
+import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, resolveClipTitle, assertPublicImageUrl, isPrivateAddress, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET } from '../lib/index.js'
 
 let failures = 0
-function test(name, fn) {
+// Sequential + awaited: cases touch shared state (enabled/token/ports), so they
+// must NOT run concurrently, and a rejected assertion must be a recorded FAIL
+// (not an unhandled rejection that can silently pass under some runtimes).
+async function test(name, fn) {
   try {
-    fn()
+    await fn()
     console.log(`  ok  ${name}`)
   } catch (err) {
     failures++
@@ -46,7 +49,7 @@ const PNG_B64 = PNG.toString('base64')
 // ---------------------------------------------------------------------------
 console.log('pure builders')
 // ---------------------------------------------------------------------------
-test('hostAllowed accepts loopback hosts only', () => {
+await test('hostAllowed accepts loopback hosts only', () => {
   assert.equal(hostAllowed('127.0.0.1:8618', 8618), true)
   assert.equal(hostAllowed('127.0.0.1', 8618), true)
   assert.equal(hostAllowed('localhost:8618', 8618), true)
@@ -56,7 +59,7 @@ test('hostAllowed accepts loopback hosts only', () => {
   assert.equal(hostAllowed(undefined, 8618), false)
 })
 
-test('parseClipPayload validates and normalizes (incl. images cap)', () => {
+await test('parseClipPayload validates and normalizes (incl. images cap)', () => {
   const ok = parseClipPayload({ title: '  A  ', url: 'https://x', text: 'sel', tags: ['t1', 42, '', 't2'], source: ' api ', images: [' https://x/a.png ', '', 7] })
   assert.equal(ok.ok, true)
   if (ok.ok) {
@@ -72,14 +75,14 @@ test('parseClipPayload validates and normalizes (incl. images cap)', () => {
   assert.equal(parseClipPayload('nope').ok, false)
 })
 
-test('resolveClipTitle dedupes with（n）suffix then timestamp', async () => {
+await test('resolveClipTitle dedupes with（n）suffix then timestamp', async () => {
   const taken = new Set(['A', 'A（2）'])
   const exists = async (t) => taken.has(t)
   assert.equal(await resolveClipTitle(exists, 'A'), 'A（3）')
   assert.equal(await resolveClipTitle(exists, 'B'), 'B')
 })
 
-test('buildClipTiddler produces expected markdown + fields', () => {
+await test('buildClipTiddler produces expected markdown + fields', () => {
   const t = buildClipTiddler({ title: 'A', url: 'https://x', text: '  sel  ', tag: 'clip', source: 'bookmarklet', at: '2026-09-09T08:00:00.000Z' })
   assert.equal(t.type, 'text/markdown')
   assert.deepEqual(t.tags, ['clip'])
@@ -89,7 +92,7 @@ test('buildClipTiddler produces expected markdown + fields', () => {
   assert.match(t.text, /sel/)
 })
 
-test('buildImageNoteTiddler embeds stored + lists failed', () => {
+await test('buildImageNoteTiddler embeds stored + lists failed', () => {
   const t = buildImageNoteTiddler({
     title: 'N', url: 'https://x', text: '正文', tag: 'clip', source: 'bookmarklet', at: '2026-09-09T08:00:00.000Z',
     stored: ['N 图片 1.png'], failed: [{ url: 'https://x/bad.png', error: 'HTTP 403' }],
@@ -99,7 +102,7 @@ test('buildImageNoteTiddler embeds stored + lists failed', () => {
   assert.match(t.text, /https:\/\/x\/bad\.png（HTTP 403）/)
 })
 
-test('buildBinaryTiddler stores base64 + provenance', () => {
+await test('buildBinaryTiddler stores base64 + provenance', () => {
   const t = buildBinaryTiddler({ title: 'A 图片 1.png', mime: 'image/png', buffer: PNG, srcUrl: 'https://cdn/a.png', noteTitle: 'A', tag: 'clip', source: 'bookmarklet', at: '2026-09-09T08:00:00.000Z' })
   assert.equal(t.type, 'image/png')
   assert.equal(t.text, PNG_B64)
@@ -108,7 +111,7 @@ test('buildBinaryTiddler stores base64 + provenance', () => {
   assert.equal(t['clip-note'], 'A')
 })
 
-test('pickImageMime + imageExtensionForMime', () => {
+await test('pickImageMime + imageExtensionForMime', () => {
   assert.equal(pickImageMime('image/jpeg; charset=…', 'https://x/a'), 'image/jpeg')
   assert.equal(pickImageMime('application/octet-stream', 'https://cdn/a.png'), 'image/png')
   assert.equal(pickImageMime('text/html', 'https://x/a.png'), null)
@@ -118,7 +121,7 @@ test('pickImageMime + imageExtensionForMime', () => {
   assert.equal(imageExtensionForMime('image/x-weird'), 'xweird')
 })
 
-test('seed doc bookmarklet is valid JS (new Function)', () => {
+await test('seed doc bookmarklet is valid JS (new Function)', () => {
   const fence = CLIP_BRIDGE_DOC_TEXT.match(/```javascript\n([\s\S]*?)\n```/)
   assert.ok(fence, 'seed doc carries a javascript code fence')
   const code = fence[1].replace(/^javascript:/, '')
@@ -179,7 +182,7 @@ const clip = (title, url, text) => request(`${base}/clip`, {
   body: JSON.stringify({ title, url, text }),
 })
 
-test('GET / health info', async () => {
+await test('GET / health info', async () => {
   const r = await request(`${base}/`)
   assert.equal(r.status, 200)
   assert.equal(r.body.ok, true)
@@ -188,7 +191,7 @@ test('GET / health info', async () => {
   assert.equal(r.body.tokenSet, false)
 })
 
-test('POST /clip writes one markdown tiddler (bookmarklet)', async () => {
+await test('POST /clip writes one markdown tiddler (bookmarklet)', async () => {
   const r = await clip('测试页面', 'https://example.com/a', '选中的文字')
   assert.equal(r.status, 200)
   assert.equal(r.body.ok, true)
@@ -201,7 +204,7 @@ test('POST /clip writes one markdown tiddler (bookmarklet)', async () => {
   assert.match(t.text, /选中的文字/)
 })
 
-test('same title again →（2）, never overwrites', async () => {
+await test('same title again →（2）, never overwrites', async () => {
   const r = await clip('测试页面', 'https://example.com/a', '第二次')
   assert.equal(r.status, 200)
   assert.equal(r.body.title, '测试页面（2）')
@@ -209,7 +212,7 @@ test('same title again →（2）, never overwrites', async () => {
   assert.ok(store.get('测试页面（2）'))
 })
 
-test('extra tags merge with the clip tag', async () => {
+await test('extra tags merge with the clip tag', async () => {
   const r = await request(`${base}/clip`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -219,7 +222,7 @@ test('extra tags merge with the clip tag', async () => {
   assert.deepEqual(store.get('带标签').tags, ['clip', '调研', 'web'])
 })
 
-test('OPTIONS preflight → 204 + CORS/PNA headers', async () => {
+await test('OPTIONS preflight → 204 + CORS/PNA headers', async () => {
   const r = await request(`${base}/clip`, { method: 'OPTIONS' })
   assert.equal(r.status, 204)
   assert.equal(r.headers.get('access-control-allow-origin'), '*')
@@ -227,7 +230,7 @@ test('OPTIONS preflight → 204 + CORS/PNA headers', async () => {
   assert.match(r.headers.get('access-control-allow-headers') ?? '', /x-clip-token/)
 })
 
-test('non-loopback Host header → 403 (DNS rebinding)', async () => {
+await test('non-loopback Host header → 403 (DNS rebinding)', async () => {
   const status = await new Promise((resolve) => {
     const req = http.request({ host: '127.0.0.1', port: bridge.port, path: '/clip', method: 'POST', headers: { host: 'evil.example.com', 'content-type': 'application/json' } }, (res) => {
       res.resume()
@@ -239,14 +242,14 @@ test('non-loopback Host header → 403 (DNS rebinding)', async () => {
   assert.equal(status, 403)
 })
 
-test('bad JSON / missing fields → 400', async () => {
+await test('bad JSON / missing fields → 400', async () => {
   const bad = await request(`${base}/clip`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{oops' })
   assert.equal(bad.status, 400)
   const noTitle = await request(`${base}/clip`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: 'https://x' }) })
   assert.equal(noTitle.status, 400)
 })
 
-test('disabled → 503 with guidance', async () => {
+await test('disabled → 503 with guidance', async () => {
   state.enabled = false
   const r = await clip('x', 'https://x', '')
   assert.equal(r.status, 503)
@@ -254,7 +257,7 @@ test('disabled → 503 with guidance', async () => {
   state.enabled = true
 })
 
-test('token gate: 401 without / with wrong token, 200 with it', async () => {
+await test('token gate: 401 without / with wrong token, 200 with it', async () => {
   state.token = 's3cret'
   const noHeader = await clip('y', 'https://y', '')
   assert.equal(noHeader.status, 401)
@@ -274,7 +277,7 @@ test('token gate: 401 without / with wrong token, 200 with it', async () => {
   state.token = ''
 })
 
-test('wiki not ready → 503 (write throws)', async () => {
+await test('wiki not ready → 503 (write throws)', async () => {
   const { bridge: b2 } = makeDeps()
   b2.deps = { ...b2.deps, write: async () => { throw new Error('wiki down') }, exists: async () => { throw new Error('wiki down') } }
   await b2.start(0)
@@ -287,7 +290,7 @@ test('wiki not ready → 503 (write throws)', async () => {
   await b2.stop()
 })
 
-test('unknown path → 404', async () => {
+await test('unknown path → 404', async () => {
   const r = await request(`${base}/nope`)
   assert.equal(r.status, 404)
 })
@@ -295,11 +298,18 @@ test('unknown path → 404', async () => {
 // ---------------------------------------------------------------------------
 console.log('image flows (stubbed download)')
 // ---------------------------------------------------------------------------
+// The stub host must be a PUBLIC LITERAL IP: the bridge now SSRF-checks every
+// image URL (loopback/LAN rejected) and resolves hostnames through DNS — a
+// fake name like `cdn` would be rejected before the stub could answer.
+const CDN = 'http://93.184.216.34'
+const CDN_OK = `${CDN}/ok.png`
+const CDN_MISLABEL = `${CDN}/cdn.png`
+const CDN_FAIL = `${CDN}/fail.png`
 // download stub: url → bytes; a 'fail' marker URL throws.
 const images = new Map([
-  ['https://cdn/ok.png', { buffer: PNG, type: 'image/png' }],
-  ['https://cdn/cdn.png', { buffer: PNG, type: 'application/octet-stream' }], // CDN mislabel
-  ['https://cdn/fail.png', { buffer: PNG, type: 'image/png' }],
+  [CDN_OK, { buffer: PNG, type: 'image/png' }],
+  [CDN_MISLABEL, { buffer: PNG, type: 'application/octet-stream' }], // CDN mislabel
+  [CDN_FAIL, { buffer: PNG, type: 'image/png' }],
 ])
 const { bridge: bImg } = makeDeps({
   download: async (url) => {
@@ -317,8 +327,8 @@ const clipWithImages = (title, url, text, urls) => request(`${imgBase}/clip`, {
   body: JSON.stringify({ title, url, text, images: urls }),
 })
 
-test('chosen images → binary attachments + wikitext note with [img[...]]', async () => {
-  const r = await clipWithImages('图片页A', 'https://page/a', '配图正文', ['https://cdn/ok.png'])
+await test('chosen images → binary attachments + wikitext note with [img[...]]', async () => {
+  const r = await clipWithImages('图片页A', 'https://page/a', '配图正文', [CDN_OK])
   assert.equal(r.status, 200)
   assert.equal(r.body.ok, true)
   assert.ok(Array.isArray(r.body.images) && r.body.images.length === 1 && r.body.images[0].ok, 'per-image result ok')
@@ -334,12 +344,12 @@ test('chosen images → binary attachments + wikitext note with [img[...]]', asy
   assert.equal(att.type, 'image/png')
   assert.equal(att.text, PNG_B64, 'base64 roundtrips byte-exact')
   assert.deepEqual(att.tags, ['clip'])
-  assert.equal(att['clip-url'], 'https://cdn/ok.png')
+  assert.equal(att['clip-url'], CDN_OK)
   assert.equal(att['clip-note'], '图片页A')
 })
 
-test('partial failure → embed the stored one + degrade the failed one to a URL line', async () => {
-  const r = await clipWithImages('图片页B', 'https://page/b', '', ['https://cdn/ok.png', 'https://cdn/fail.png'])
+await test('partial failure → embed the stored one + degrade the failed one to a URL line', async () => {
+  const r = await clipWithImages('图片页B', 'https://page/b', '', [CDN_OK, CDN_FAIL])
   assert.equal(r.status, 200)
   assert.equal(r.body.images[0].ok, true)
   assert.equal(r.body.images[1].ok, false)
@@ -348,29 +358,69 @@ test('partial failure → embed the stored one + degrade the failed one to a URL
   const note = store.get('图片页B')
   assert.equal(note.type, 'text/vnd.tiddlywiki')
   assert.match(note.text, /\[img\[图片页B 图片 1\.png\]\]/)
-  assert.match(note.text, /https:\/\/cdn\/fail\.png（HTTP 403）/)
+  assert.ok(note.text.includes(`${CDN_FAIL}（HTTP 403）`), 'failed image degrades to a URL line')
   assert.ok(store.get('图片页B 图片 1.png'), 'stored image exists')
 })
 
-test('all images fail → wikitext note still lists the URLs (no silent loss)', async () => {
-  const r = await clipWithImages('图片页C', 'https://page/c', '无图成功', ['https://cdn/fail.png'])
+await test('all images fail → wikitext note still lists the URLs (no silent loss)', async () => {
+  const r = await clipWithImages('图片页C', 'https://page/c', '无图成功', [CDN_FAIL])
   assert.equal(r.status, 200)
   assert.equal(r.body.images[0].ok, false)
   const note = store.get('图片页C')
   assert.equal(note.type, 'text/vnd.tiddlywiki', 'note stays wikitext so failed URLs are visible')
-  assert.match(note.text, /https:\/\/cdn\/fail\.png/)
+  assert.ok(note.text.includes(CDN_FAIL))
   assert.doesNotMatch(note.text, /\[img\[/)
 })
 
-test('CDN octet-stream + .png extension → stored as image/png', async () => {
-  const r = await clipWithImages('图片页D', 'https://page/d', '', ['https://cdn/cdn.png'])
+await test('CDN octet-stream + .png extension → stored as image/png', async () => {
+  const r = await clipWithImages('图片页D', 'https://page/d', '', [CDN_MISLABEL])
   assert.equal(r.status, 200)
   assert.equal(r.body.images[0].ok, true)
   const att = store.get('图片页D 图片 1.png')
   assert.ok(att && att.type === 'image/png', 'octet-stream rescued by extension')
 })
 
-test('text-only clip still writes markdown (regression)', async () => {
+// ---------------------------------------------------------------------------
+console.log('SSRF guard (v0.18.0)')
+// ---------------------------------------------------------------------------
+await test('assertPublicImageUrl rejects loopback/LAN/metadata/odd schemes', async () => {
+  const rejected = [
+    'http://127.0.0.1/a.png',
+    'http://127.1.2.3/a.png',
+    'http://localhost/a.png',
+    'http://169.254.169.254/latest/meta-data/',
+    'http://10.0.0.5/a.png',
+    'http://172.16.9.9/a.png',
+    'http://192.168.1.1/a.png',
+    'file:///etc/passwd',
+    'ftp://example.com/a.png',
+    'http://[::1]/a.png',
+    'http://[fd00::1]/a.png',
+    'http://printer.local/a.png',
+  ]
+  for (const url of rejected) {
+    let threw = false
+    try { await assertPublicImageUrl(url) } catch { threw = true }
+    assert.equal(threw, true, `rejected: ${url}`)
+  }
+  // A public LITERAL ip needs no DNS and must pass.
+  await assertPublicImageUrl('http://93.184.216.34/a.png')
+  assert.equal(isPrivateAddress('127.0.0.1'), true)
+  assert.equal(isPrivateAddress('169.254.169.254'), true)
+  assert.equal(isPrivateAddress('93.184.216.34'), false)
+})
+
+await test('bridge refuses to download a loopback image URL', async () => {
+  const r = await clipWithImages('图片页F', 'https://page/f', '', ['http://127.0.0.1:8618/x.png'])
+  assert.equal(r.status, 200)
+  assert.equal(r.body.images[0].ok, false)
+  assert.match(r.body.images[0].error, /内网/)
+  const note = store.get('图片页F')
+  assert.equal(note.type, 'text/vnd.tiddlywiki')
+  assert.doesNotMatch(note.text, /\[img\[/)
+})
+
+await test('text-only clip still writes markdown (regression)', async () => {
   const r = await request(`${imgBase}/clip`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

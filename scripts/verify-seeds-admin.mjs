@@ -42,7 +42,7 @@ let clientRef = undefined
 const deps = {
   server,
   getClient: () => clientRef,
-  getWikiPath: () => root,
+  getWikiPath: () => join(root, 'main'),
   twRoot: () => root,
   config: new ConfigStore({}),
   seeds: {
@@ -118,7 +118,9 @@ try {
   console.log('force home-index:', JSON.stringify(run.json?.results?.[0]))
   if (run.status !== 200 || run.json?.results?.[0]?.ok !== true || run.json.results[0].wrote !== true) throw new Error('force single seed failed')
   const restored = await clientRef.get('所有标签')
-  if (!restored?.text.includes('agent-tags-pure')) throw new Error('home tiddler not restored by force')
+  if (!restored?.text.includes('agent-tags-pure')) {
+    throw new Error(`home tiddler not restored by force (got: ${restored === undefined ? '<missing>' : JSON.stringify(restored.text)?.slice(0, 200)})`)
+  }
 
   // 4. Non-force single seed is a no-op while present (user content preserved).
   await clientRef.put({ title: '所有标签', text: 'user edit', tags: ['索引'] })
@@ -163,10 +165,14 @@ try {
   const presentIds = finalStatuses.items.filter((i) => i.present).map((i) => i.id).sort()
   if (JSON.stringify(presentIds) !== JSON.stringify([...coreIds].sort())) throw new Error('after remove-all only core seeds remain present')
 
-  await new Promise((resolveP) => mini.close(resolveP))
+  await new Promise((resolveP) => mini.close(() => resolveP()))
   dispose()
   console.log('E2E OK')
 } finally {
+  // Close the mini HTTP server on EVERY path (success and assertion failure):
+  // close() is idempotent — a second close hands the error to the callback,
+  // which we deliberately ignore, so no port is left listening.
+  await new Promise((resolveP) => mini.close(() => resolveP()))
   await server.stop()
   await rm(root, { recursive: true, force: true })
 }

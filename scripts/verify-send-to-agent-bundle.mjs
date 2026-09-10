@@ -2,8 +2,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SEND_TO_AGENT_BUNDLE_VERSION } from './bundle/versions.mjs'
 
-const bundlePath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bundle', 'send-to-agent.bundle.json')
+const scriptsDir = path.dirname(fileURLToPath(import.meta.url))
+const bundlePath = path.join(scriptsDir, 'bundle', 'send-to-agent.bundle.json')
 const bundle = JSON.parse(fs.readFileSync(bundlePath, 'utf8'))
 const T = bundle.tiddlers
 const checks = []
@@ -25,7 +27,11 @@ ok('startup note textarea', s.includes('附加说明（可选，随笔记一起�
 ok('startup permission select', s.includes('权限（权限预设）— 用于新建会话'))
 ok('startup handles permissions from modes', s.includes('parsed2.permissions'))
 const pi = JSON.parse(T['$:/plugins/dsh/send-to-agent/plugin.info'].text)
-ok('plugin version 0.3.4', pi.version === '0.3.4')
+// Single source of truth: scripts/bundle/versions.mjs (imported by
+// build-send-to-agent-bundle.mjs). The inner plugin.info version must equal it.
+ok(`bundle plugin.info version === SEND_TO_AGENT_BUNDLE_VERSION (${SEND_TO_AGENT_BUNDLE_VERSION})`, pi.version === SEND_TO_AGENT_BUNDLE_VERSION)
+ok('bundle plugin.info carries plugin-type', pi['plugin-type'] === 'plugin')
+ok('bundle plugin.info title matches its tiddler', pi.title === '$:/plugins/dsh/send-to-agent')
 const icon = T['$:/plugins/dsh/send-to-agent/ui/icon']
 // Core icons ($:/core/images/*) carry NO type field (defaults to wikitext), so
 // `{{icon}}` wikifies into an inline <svg> with `\parameters` expanded. Setting
@@ -44,6 +50,24 @@ ok('ItemTemplate override shows icon', it && it.text.includes('<$transclude tidd
 ok('ItemTemplate override keeps caption+description', it && it.text.includes('field="caption"') && it.text.includes('field="description"'))
 ok('ItemTemplate override keeps checkbox', it && it.text.includes('<$checkbox'))
 ok('ItemTemplate override body starts with a pragma (no title: header leaked into text)', it && !/^\s*title:/.test(it.text))
+
+// --- source parity gate -----------------------------------------------------
+// The bundle must be a byte-exact assembly of its four editable source parts
+// under scripts/bundle/send-to-agent/ (CRLF-normalized, exactly like
+// build-send-to-agent-bundle.mjs). This catches the classic "edited a source
+// part but forgot to rerun build → gen" drift before it reaches a wiki.
+const norm = (s) => s.replace(/\r\n/g, '\n')
+const SOURCE_PARTS = [
+  ['startup.js', '$:/plugins/dsh/send-to-agent/startup.js'],
+  ['button.tid', '$:/plugins/dsh/send-to-agent/ui/ViewToolbar/SendToAgent'],
+  ['icon.svg', '$:/plugins/dsh/send-to-agent/ui/icon'],
+  ['item-template.tid', '$:/core/ui/ControlPanel/Toolbars/ItemTemplate'],
+]
+for (const [file, title] of SOURCE_PARTS) {
+  const disk = norm(fs.readFileSync(path.join(scriptsDir, 'bundle', 'send-to-agent', file), 'utf8'))
+  const embedded = typeof T[title]?.text === 'string' ? norm(T[title].text) : null
+  ok(`source part ${file} is byte-identical to bundle tiddler ${title}`, embedded !== null && disk === embedded)
+}
 
 let failed = false
 for (const [name, pass] of checks) {

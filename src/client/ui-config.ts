@@ -33,6 +33,15 @@ const FALLBACK: UiConfig = { showQuickNoteDock: true, quickNoteMode: 'native', s
 const CACHE_TTL_MS = 15_000
 let cache: { at: number; value: UiConfig } | undefined
 
+/**
+ * Drop the cached config: the settings page calls this right after a successful
+ * `POST /admin/config` so the next read picks up the saved `ui.*` values
+ * immediately instead of waiting out the TTL (up to 15s).
+ */
+export function invalidateUiConfig(): void {
+  cache = undefined
+}
+
 /** Fetch /status once and read the ui.* fields (backward compatible: a host
  *  that predates a field simply falls back to the default). Cached for
  *  `CACHE_TTL_MS`; callers that need a fresh value (settings just saved) may

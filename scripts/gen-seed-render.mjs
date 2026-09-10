@@ -9,6 +9,11 @@ import path from 'node:path'
 const srcFile = process.argv[2]
 const outFile = process.argv[3]
 
+if (!srcFile || !outFile) {
+  console.error('usage: node gen-seed-render.mjs <bundle.json> <out.ts>')
+  process.exit(2)
+}
+
 const raw = fs.readFileSync(srcFile, 'utf8').replace(/\r\n/g, '\n')
 // sanity: must be a valid {"tiddlers": {...}} bundle
 const parsed = JSON.parse(raw)
@@ -17,6 +22,20 @@ if (!parsed.tiddlers || typeof parsed.tiddlers !== 'object') {
 }
 const titles = Object.keys(parsed.tiddlers)
 console.log('bundle tiddlers:', titles.join(', '))
+
+// The OUTER wiki tiddler's `version` mirrors the bundle's INNER plugin.info —
+// read it from the bundle instead of hardcoding (single source of truth =
+// scripts/bundle/versions.mjs → build-render-bundle.mjs).
+const PLUGIN_INFO_TITLE = '$:/plugins/dsh/render/plugin.info'
+const pluginInfo = parsed.tiddlers[PLUGIN_INFO_TITLE]
+if (pluginInfo === undefined || typeof pluginInfo.text !== 'string') {
+  throw new Error(`bundle is missing ${PLUGIN_INFO_TITLE}`)
+}
+const bundleVersion = JSON.parse(pluginInfo.text).version
+if (typeof bundleVersion !== 'string' || bundleVersion.length === 0) {
+  throw new Error(`${PLUGIN_INFO_TITLE} carries no version`)
+}
+console.log('bundle version:', bundleVersion)
 
 // Embed the exact JSON text as a JS string literal via JSON.stringify (safe
 // escaping, no backticks / ${ issues).
@@ -35,12 +54,20 @@ const out = `/**
  * @module dsh-tiddlywiki/host/seed-render
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** The packaged plugin tiddler title (a TW system tiddler, type application/json). */
 export const RENDER_PLUGIN_TITLE = '$:/plugins/dsh/render'
 
 /** One-time marker: presence means "the route was offered once — hands off". */
 export const RENDER_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-render'
+
+/**
+ * On-disk tiddler filename for RENDER_PLUGIN_TITLE (TW's FileSystemAdaptor
+ * encoding: \`$:\` → \`$__\`, \`/\` → \`_\`). Callers that must restart TW so the
+ * seeded server route loads poll for this file after a seed run.
+ */
+export const RENDER_PLUGIN_FILE = '$__plugins_dsh_render.json'
 
 /** The bundle's JSON text (\`{"tiddlers": {...}}\`), exactly as TW stores it. */
 export const RENDER_BUNDLE_TEXT = ${literal}
@@ -57,10 +84,10 @@ export const RENDER_BUNDLE_TEXT = ${literal}
 export async function seedRenderRoute(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(RENDER_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, RENDER_MARKER_TITLE)
     if (marker !== undefined) return false
   }
-  const existing = await client.get(RENDER_PLUGIN_TITLE).catch(() => undefined)
+  const existing = await readSeedTiddler(client, RENDER_PLUGIN_TITLE)
   let wrote = false
   if (force || existing === undefined) {
     await client.put({
@@ -76,16 +103,14 @@ export async function seedRenderRoute(client: TiddlyWebClient, opts?: { force?: 
       'plugin-type': 'plugin',
       name: 'DSH Wiki Render',
       author: 'dsh-tiddlywiki',
-      version: '0.1.0',
+      version: '${bundleVersion}',
       description: '把 wiki 文本原生渲染成 HTML 片段（POST /render 服务端路由），供 DSH 回复流工具卡与 wiki 链接跳转使用',
     })
     wrote = true
   }
   // Record the offer regardless, so an existing bundle (upgrade from a
   // pre-seed wiki) also becomes user-owned from here on.
-  await client
-    .put({ title: RENDER_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, RENDER_MARKER_TITLE)
   return wrote
 }
 `

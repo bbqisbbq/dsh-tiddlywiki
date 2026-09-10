@@ -128,6 +128,9 @@ export function createSyncController(): SyncController {
   }
 
   const applyStatus = (payload: StatusPayload | null): void => {
+    // 同步进行中：30s 轮询不得把 syncing 覆盖成 dirty/clean（否则状态点在同步
+    // 还没结束时就显示「待提交/已同步」）。同步结束后的 poll() 会正常刷新。
+    if (syncing) return
     const next = buildState(payload, lastSync)
     if (next.state !== state.state || next.tooltip !== state.tooltip) {
       state = next
@@ -141,7 +144,12 @@ export function createSyncController(): SyncController {
   }
 
   const doSync = async (): Promise<SyncStateView> => {
-    if (disposed || syncing) return state
+    if (disposed) return state
+    if (syncing) {
+      // 同步中重复点击不再静默 return：给用户一个明确反馈。
+      toast('同步进行中…')
+      return state
+    }
     syncing = true
     state = { ...state, state: 'syncing', label: '同步中…' }
     emit()
@@ -150,11 +158,12 @@ export function createSyncController(): SyncController {
       const payload = (await res.json().catch(() => null)) as
         | { ok?: boolean; message?: string; error?: string; status?: GitView; conflictFiles?: string[]; push?: string; changed?: boolean; restarted?: boolean; restartError?: string }
         | null
-      lastSync = new Date()
       if (payload === null || payload.ok !== true) {
         const msg = payload?.error ?? payload?.message ?? `HTTP ${res.status}`
         toast(`同步失败：${msg}`)
       } else {
+        // 只在成功时记录「上次同步」，失败时 tooltip 不应显示一个假的成功时间。
+        lastSync = new Date()
         let detail = ''
         if (payload.push && payload.push !== 'nothing to commit') detail = `（${payload.push}）`
         if (payload.changed === true) {
@@ -163,12 +172,12 @@ export function createSyncController(): SyncController {
         }
         toast(`同步完成：${payload.message ?? 'OK'}${detail}`)
       }
-      await poll()
     } catch (err) {
       toast(`同步失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       syncing = false
-      // Re-sync the label (may still be dirty after a failed sync).
+      // Re-sync the label (may still be dirty after a failed sync). This is the
+      // ONLY post-sync poll — a second one used to run inside the try.
       await poll()
     }
     return state

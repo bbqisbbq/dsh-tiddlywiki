@@ -104,6 +104,9 @@ export class WikiServer {
   private restartDelay = 1_000
   private lastStartedAt: number | undefined
   private error: string | undefined
+  /** Set by a successful readiness probe; a crash BEFORE readiness means the
+   *  auto-chosen port may have been taken, so it is re-probed on restart. */
+  private wasReady = false
 
   constructor(private readonly options: WikiServerOptions) {
     this.wikiPath = resolve(options.wikiRoot, options.wiki)
@@ -196,7 +199,14 @@ export class WikiServer {
       this.log(`exit code=${code} signal=${signal ?? ''} stopping=${this.stopping}`)
       this.child = undefined
       this.health = 'stopped'
-      if (!this.stopping) this.scheduleRestart()
+      if (!this.stopping) {
+        // Never became ready → most likely `EADDRINUSE` on the remembered auto
+        // port. Forget it so the restart probes a fresh one instead of looping
+        // on a port this process no longer owns. An explicitly configured port
+        // is always honored as-is.
+        if (this.options.port === 0 && !this.wasReady) this.port = undefined
+        this.scheduleRestart()
+      }
     })
     child.once('error', (err) => {
       this.log(`spawn error: ${err.message}`)
@@ -206,6 +216,7 @@ export class WikiServer {
       if (!this.stopping) this.scheduleRestart()
     })
     this.lastStartedAt = Date.now()
+    this.wasReady = false
     await this.waitReady()
     return this.status()
   }
@@ -213,12 +224,24 @@ export class WikiServer {
   /** Poll /status until 200 or the deadline; throws only on deadline/crash. */
   private async waitReady(): Promise<void> {
     const deadline = Date.now() + READY_TIMEOUT_MS
+    // Locked-down mode (`username` configured) puts /status behind TW's
+    // `readers` list: an anonymous probe gets 401 forever and the wiki would
+    // never be reported ready. Authenticate preemptively, exactly like the
+    // REST client does.
+    const headers = this.options.username !== undefined && this.options.username.length > 0
+      ? { authorization: `Basic ${Buffer.from(`${this.options.username}:${this.options.password ?? ''}`, 'utf8').toString('base64')}` }
+      : undefined
     for (;;) {
       if (this.child === undefined) throw new Error('wiki process exited before ready')
       try {
-        const res = await fetch(`${this.url}/status`, { signal: AbortSignal.timeout(2_000) })
+        const res = await fetch(`${this.url}/status`, {
+          signal: AbortSignal.timeout(2_000),
+          ...(headers !== undefined ? { headers } : {}),
+        })
         if (res.ok) {
           this.health = 'running'
+          this.wasReady = true
+          this.error = undefined
           this.log('ready: /status 200')
           return
         }

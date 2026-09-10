@@ -23,6 +23,7 @@
  */
 import * as React from 'react'
 import { toast } from './toast.ts'
+import { invalidateUiConfig } from './ui-config.ts'
 
 const STATE_ENDPOINT = '/dsh-tiddlywiki/admin/state'
 const INFO_ENDPOINT = '/dsh-tiddlywiki/admin/info'
@@ -294,6 +295,8 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
       }
       try {
         await fetchJson(CONFIG_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+        // ui.* 已落盘：清掉客户端缓存，下一次读取立即拿到新值（否则最长 15s 才生效）。
+        invalidateUiConfig()
         toast('配置已保存')
         void refresh()
       } catch (err) {

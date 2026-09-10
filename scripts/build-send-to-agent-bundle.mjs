@@ -14,6 +14,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SEND_TO_AGENT_BUNDLE_VERSION } from './bundle/versions.mjs'
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url))
 const parts = path.join(scriptsDir, 'bundle', 'send-to-agent')
@@ -29,7 +30,7 @@ const pluginInfo = {
   name: 'Send to Agent',
   description: '把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）',
   author: 'dsh-tiddlywiki',
-  version: '0.3.4',
+  version: SEND_TO_AGENT_BUNDLE_VERSION,
   'plugin-type': 'plugin',
 }
 

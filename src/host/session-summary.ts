@@ -93,10 +93,20 @@ export interface SessionLineageNode {
   descendants: SessionLineageNode[]
 }
 
-/** 递归收集后代树里所有 session id（不含根自身）。 */
+/**
+ * Bounds so one enormous session tree cannot make the「知识库」Tab unresponsive:
+ * the summary reads every listed session's FULL event log and then probes each
+ * touched tiddler over REST.
+ */
+const MAX_SESSIONS = 40
+const MAX_SEARCH_RECORDS = 200
+const MAX_ENRICH_TITLES = 300
+
+/** 递归收集后代树里所有 session id（不含根自身，超过上限即停）。 */
 function collectDescendantIds(nodes: SessionLineageNode[] | undefined, out: string[]): void {
   if (!Array.isArray(nodes)) return
   for (const node of nodes) {
+    if (out.length >= MAX_SESSIONS) return
     const id = node?.session?.header?.id
     if (typeof id === 'string' && id.length > 0) {
       out.push(id)
@@ -205,13 +215,16 @@ function scanSnapshot(snap: SessionLogSnapshot | undefined, subagent: boolean, c
           }
           break
         case 'tiddlywiki_search': {
+          if (collected.searches.length >= MAX_SEARCH_RECORDS) break
           const query = typeof args.query === 'string' ? args.query : ''
           const tags = Array.isArray(args.tags) ? args.tags.filter((x): x is string => typeof x === 'string') : []
           collected.searches.push({ kind: 'search', query, tags, time: t, subagent })
           break
         }
         case 'tiddlywiki_recent':
-          collected.searches.push({ kind: 'recent', query: '', tags: [], time: t, subagent })
+          if (collected.searches.length < MAX_SEARCH_RECORDS) {
+            collected.searches.push({ kind: 'recent', query: '', tags: [], time: t, subagent })
+          }
           break
       }
     } else if (type === 'assistant/message') {
@@ -298,6 +311,12 @@ function buildWikitext(
   const producedCount = producedTitles.length
   const readCount = readTitles.length
   const searchCount = collected.searches.length
+  // Was anything touched ONLY through a descendant subagent? (The old column
+  // said「本会话 + 子代理」whenever anything existed at all.)
+  const anySubagent =
+    [...collected.produced.values()].some((e) => e.subagent) ||
+    [...collected.read.values()].some((e) => e.subagent) ||
+    collected.searches.some((s) => s.subagent)
   if (producedCount + readCount + searchCount === 0) {
     lines.push('> 本会话暂时没有产生、读取或检索过任何知识库笔记。')
     lines.push('>')
@@ -307,7 +326,7 @@ function buildWikitext(
   lines.push(
     '| 产生 📝 | 读取 👀 | 检索 🔍 | 涉及会话 |',
     '| --- | --- | --- | --- |',
-    `| ${producedCount} | ${readCount} | ${searchCount} | ${collected.produced.size + readTitles.length > 0 ? '本会话 + 子代理' : '本会话'} |`,
+    `| ${producedCount} | ${readCount} | ${searchCount} | ${anySubagent ? '本会话 + 子代理' : '本会话'} |`,
   )
   lines.push('')
 
@@ -408,7 +427,9 @@ export async function writeSessionSummary(client: TiddlyWebClient, sq: SessionQu
   collected.searches.sort((a, b) => b.time - a.time)
 
   // 4) 查询当前状态（存在？标签？时间？）→ 组装 wikitext → PUT volatile tiddler。
-  const stateByTitle = await enrichTitles(client, [...new Set([...producedTitles, ...readTitles])])
+  //    探测量有上限：一篇超长会话可能触碰成百上千篇笔记。
+  const allTitles = [...new Set([...producedTitles, ...readTitles])]
+  const stateByTitle = await enrichTitles(client, allTitles.slice(0, MAX_ENRICH_TITLES))
   const text = buildWikitext(sessionId, collected, producedTitles, readTitles, stateByTitle)
   const title = `${SESSION_SUMMARY_PREFIX}${sessionId}`
   await client.put({ title, text, type: 'text/vnd.tiddlywiki', tags: [] })

@@ -57,9 +57,10 @@ interface SeedDef {
 | `all-articles` | `seed-all-articles.ts` → `seedAllArticles` / `unseedAllArticles` | 「所有文章」（tag `索引`）——两列分页总览，每页条数实时读 `ui.allArticles.pageSize`（默认 10） | `$:/plugins/dsh-tiddlywiki/seed-all-articles` | 可选 |
 | `ui-styles` | `seed-ui-styles.ts` → `seedUiStyles` / `unseedUiStyles` | 5 张通用样式表（只带功能 tag `$:/tags/Stylesheet`，剥离 wiki 本地标签与个人数据）：编辑器美化、标题与按钮区分开、侧边栏窄屏自动隐藏、批注弹窗、menubar 顶栏加高 | `$:/plugins/dsh-tiddlywiki/seed-ui-styles` | 可选 |
 | `menubar-theme` | `seed-menubar-theme.ts` → `seedMenubarTheme` / `unseedMenubarTheme` | `$:/plugins/dsh-tiddlywiki/menubar-theme`（tag `$:/tags/Stylesheet`）——覆盖 tiddlywiki/menubar 顶栏：把 `<<colour menubar-background>>` 的「默认色映射蓝色」改为跟随活动 palette 的 `background`/`foreground`，随 DSH 主题切换（`$:/palette` 翻转）自动换色 | `$:/plugins/dsh-tiddlywiki/seed-menubar-theme` | 可选 |
+| `clip-bridge` | `seed-clip-bridge.ts` → `seedClipBridge` / `unseedClipBridge` | 「本地剪藏桥 + 书签小工具」使用说明（Markdown 文档，带书签代码 / 启用步骤 / 安全说明，tag `dsh-docs`）——真功能在 `clip-bridge.ts` 运行时代码里 | `$:/plugins/dsh-tiddlywiki/seed-clip-bridge` | 可选 |
 | `tw-web-host` | `seeds.ts` 内联 | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 无 marker（ensure 型，见 §4） | **核心** |
 
-> ℹ️ `home-index` 的 seed 版首页是**通用版**：生成时用 `--strip-private` 剥离了作者 wiki 里的个人元素（主题页 tabs、书籍书架入口等），并内置「📚 插件文档」tabs 栏（`[tag[dsh-docs]!is[system]]`，默认展开插件说明）。作者自己的 wiki 首页不受影响（seed 是 ONE-SHOT，不会覆盖）。
+> ℹ️ `home-index` 的 seed 版首页是**通用版**：生成脚本**默认**剥离作者 wiki 里的个人元素（主题页 tabs、书籍书架入口等，仅 `--keep-private` 才原样嵌入），并内置「📚 插件文档」tabs 栏（`[tag[dsh-docs]!is[system]]`，默认展开插件说明）。作者自己的 wiki 首页不受影响（seed 是 ONE-SHOT，不会覆盖）。
 
 ### 统一入口（`src/index.ts` 导出）
 
@@ -210,13 +211,22 @@ DSH 设置 →「TiddlyWiki 知识库」→ 最底部「**初始化（一次性�
 seed 的内容以**内嵌常量**形式随插件发布，修改来源后需重新生成：
 
 ```bash
-# 改了 wiki 里的「发送给 Agent」按钮 bundle（$:/plugins/dsh/send-to-agent）：
-node scripts/gen-seed-send-to-agent.mjs '<wiki>/tiddlers/$__plugins_dsh_send-to-agent.json' src/host/seed-send-to-agent.ts
+# 改了「发送给 Agent」按钮的源件（scripts/bundle/send-to-agent/ 下 startup.js / button.tid /
+# icon.svg / item-template.tid）——三段式：build → gen → verify：
+node scripts/build-send-to-agent-bundle.mjs                                                     # 1) build → scripts/bundle/send-to-agent.bundle.json
+node scripts/gen-seed-send-to-agent.mjs scripts/bundle/send-to-agent.bundle.json src/host/seed-send-to-agent.ts   # 2) gen → 内嵌常量（外层 version 从 bundle 内层 plugin.info 读取）
+node scripts/verify-send-to-agent-bundle.mjs                                                    # 3) verify（字段 + 源件逐字一致 + 版本常量）
+
+# 改了原生渲染路由源件（scripts/bundle/render/server-routes/render.js）——同样三段式：
+node scripts/build-render-bundle.mjs                                                            # 1) build → scripts/bundle/render.bundle.json
+node scripts/gen-seed-render.mjs scripts/bundle/render.bundle.json src/host/seed-render.ts      # 2) gen（外层 version 同样从 bundle 内层 plugin.info 读取）
+# 3) verify：无独立 verify 脚本，/render 行为由 selftest 5c2 段覆盖
+#    （两个 bundle 的版本号单一来源：scripts/bundle/versions.mjs）
 
 # 改了 wiki 首页（🏠 主页 / 所有标签 / 标签笔记）：
-#   推荐带 --strip-private：剥离作者私有人口（主题页 tabs / 主题汇总死链 / 书籍书架）
-#   并注入「📚 插件文档」tabs 栏，产出通用版 seed 首页
-node scripts/gen-seed-home.mjs '<wiki>/tiddlers/🏠 主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts --strip-private
+#   默认即剥离作者私有人口（主题页 tabs / 主题汇总死链 / 书籍书架）并注入「📚 插件文档」tabs 栏，
+#   产出通用版 seed 首页；仅作者本机想原样嵌入时才传 --keep-private（绝不用于发布）。
+node scripts/gen-seed-home.mjs '<wiki>/tiddlers/🏠 主页.tid' '<wiki>/tiddlers/所有标签.tid' '<wiki>/tiddlers/标签笔记.tid' src/host/seed-home.ts
 
 # 改了 wiki 里的自定义样式（.css + .meta，tag 只保留 $:/tags/Stylesheet）：
 node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/编辑器美化 CSS.css' '<wiki>/tiddlers/标题与按钮区分开.css' '<wiki>/tiddlers/侧边栏窄屏自动隐藏.css' '<wiki>/tiddlers/批注弹窗样式.css' '<wiki>/tiddlers/menubar 顶栏加高样式.css' src/host/seed-ui-styles.ts
@@ -232,7 +242,7 @@ node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/编辑器美化 CSS.css' '<
 npm run typecheck && npm run build && npm run selftest
 ```
 
-> PowerShell 注意：含 `$` 的路径（如 `$__plugins_dsh_send-to-agent.json`）要用**单引号**包裹，否则 `$` 会被当作变量展开。
+> PowerShell 注意：含空格/中文的 wiki 路径（如 `'<wiki>/tiddlers/menubar 顶栏加高样式.css'`）要用**单引号**包裹，否则会被拆成多个参数。
 
 **文档合集约定（日常新增文档 seed 时）**：任何新的 TW 侧说明/模板/示例类内容，都走 seed（ONE-SHOT + 同名跳过），并给 tiddler 打 **`dsh-docs`** 标签——首页「📚 插件文档」栏自动收录，用户无需配置。doc-note 与 starter-docs 是 `startup: true` 起步项（首次安装默认写入），其余文档类内容按需要可设起步或可选。
 
@@ -249,8 +259,8 @@ npm run typecheck && npm run build && npm run selftest
 ## 8. 验证
 
 - `npm run typecheck` / `npm run build`：编译与打包；
-- `npm run selftest`：5d 段覆盖注册表清单（9 项，含 `core` / `removable` / `startup`）、**启动只 seed 核心 + 起步项（5 项）且不碰可选项**、手动全跑只写缺失、单跑幂等、force 重写、unknown id、tw-web-host 三分支（custom 保留 / force 写回 / legacy 修复）、**反初始化**（单移除 / 核心拒绝 / unknown / 全部移除保留核心）——另含 starter-docs 安全跳过、ui-styles 仅功能 tag、seed 版首页剥离私有人口 + 文档栏等断言；
-- `node scripts/verify-seeds-admin.mjs`：全新 wiki + 真实 HTTP，端到端验证 `GET /admin/seeds` 状态流转（9 项全缺失 → 启动后核心+起步就绪、可选项仍缺失）与 `POST /admin/seeds/run`（force 单跑恢复被改坏的首页、非 force 不覆盖用户内容、force-all 恢复代理基址、unknown id 400）+ `POST /admin/seeds/remove`（移除非核心、核心 400、remove-all 仅剩核心）。
+- `npm run selftest`：5d 段覆盖注册表清单（10 项，含 `core` / `removable` / `startup`）、**启动只 seed 核心 + 起步项（5 项）且不碰可选项**、手动全跑只写缺失、单跑幂等、force 重写、unknown id、tw-web-host 三分支（custom 保留 / force 写回 / legacy 修复）、**反初始化**（单移除 / 核心拒绝 / unknown / 全部移除保留核心）——另含 starter-docs 安全跳过、ui-styles 仅功能 tag、seed 版首页剥离私有人口 + 文档栏等断言；
+- `node scripts/verify-seeds-admin.mjs`：全新 wiki + 真实 HTTP，端到端验证 `GET /admin/seeds` 状态流转（10 项全缺失 → 启动后核心+起步就绪、可选项仍缺失）与 `POST /admin/seeds/run`（force 单跑恢复被改坏的首页、非 force 不覆盖用户内容、force-all 恢复代理基址、unknown id 400）+ `POST /admin/seeds/remove`（移除非核心、核心 400、remove-all 仅剩核心）。
 
 ---
 

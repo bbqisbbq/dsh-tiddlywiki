@@ -23,6 +23,7 @@
  * @module dsh-tiddlywiki/host/seed-menubar-theme
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** One-time marker: presence means "the override was offered once — hands off". */
 export const MENUBAR_THEME_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-menubar-theme'
@@ -92,10 +93,10 @@ nav.tc-menubar li.tc-menubar-item > button:focus-visible {
 export async function seedMenubarTheme(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(MENUBAR_THEME_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, MENUBAR_THEME_MARKER_TITLE)
     if (marker !== undefined) return false
   }
-  const existing = await client.get(MENUBAR_THEME_TIDDLER).catch(() => undefined)
+  const existing = await readSeedTiddler(client, MENUBAR_THEME_TIDDLER)
   let wrote = false
   if (force || existing === undefined) {
     await client.put({
@@ -106,9 +107,7 @@ export async function seedMenubarTheme(client: TiddlyWebClient, opts?: { force?:
     })
     wrote = true
   }
-  await client
-    .put({ title: MENUBAR_THEME_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, MENUBAR_THEME_MARKER_TITLE)
   return wrote
 }
 
@@ -121,7 +120,7 @@ export async function seedMenubarTheme(client: TiddlyWebClient, opts?: { force?:
 export async function unseedMenubarTheme(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []
   for (const title of [MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE]) {
-    const t = await client.get(title).catch(() => undefined)
+    const t = await readSeedTiddler(client, title)
     if (t !== undefined) {
       await client.delete(title)
       removed.push(title)

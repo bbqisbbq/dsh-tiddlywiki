@@ -8,6 +8,7 @@
  * @module dsh-tiddlywiki/host/seed-send-to-agent
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** The packaged plugin tiddler title (a TW system tiddler, type application/json). */
 export const SEND_TO_AGENT_PLUGIN_TITLE = '$:/plugins/dsh/send-to-agent'
@@ -30,10 +31,10 @@ export const SEND_TO_AGENT_BUNDLE_TEXT = "{\n  \"tiddlers\": {\n    \"$:/plugins
 export async function seedSendToAgent(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(SEND_TO_AGENT_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, SEND_TO_AGENT_MARKER_TITLE)
     if (marker !== undefined) return false
   }
-  const existing = await client.get(SEND_TO_AGENT_PLUGIN_TITLE).catch(() => undefined)
+  const existing = await readSeedTiddler(client, SEND_TO_AGENT_PLUGIN_TITLE)
   let wrote = false
   if (force || existing === undefined) {
     await client.put({
@@ -49,15 +50,13 @@ export async function seedSendToAgent(client: TiddlyWebClient, opts?: { force?: 
       'plugin-type': 'plugin',
       name: 'Send to Agent',
       author: 'dsh-tiddlywiki',
-      version: '0.3.2',
+      version: '0.3.4',
       description: '把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）',
     })
     wrote = true
   }
   // Record the offer regardless, so an existing bundle (upgrade from a
   // pre-seed wiki) also becomes user-owned from here on.
-  await client
-    .put({ title: SEND_TO_AGENT_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, SEND_TO_AGENT_MARKER_TITLE)
   return wrote
 }

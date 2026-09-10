@@ -24,7 +24,9 @@ import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { ROUTE_PREFIX, type WebServerFace } from './routes.ts'
 import { CONFIG_TIDDLER, type ConfigStore, type PluginConfigShape } from './config.ts'
-import { readBody, json } from './http.ts'
+import { readBody, json, rejectCrossSiteWrite } from './http.ts'
+import { waitForFileWrite, needsRestartAfterSeeds } from './seeds.ts'
+import { RENDER_PLUGIN_FILE } from './seed-render.ts'
 import { GitFace } from './git.ts'
 
 /** One bundled plugin/theme from the catalog. */
@@ -62,7 +64,8 @@ export function resolveTwRoot(): string {
   return dirname(require.resolve('tiddlywiki/package.json'))
 }
 
-/** Read the wiki's tiddlywiki.info. */
+/** Read the wiki's tiddlywiki.info. Malformed JSON degrades to "no plugins"
+ *  instead of making every admin route 500. */
 export async function readWikiInfo(wikiPath: string): Promise<WikiInfo> {
   let raw: string
   try {
@@ -70,13 +73,22 @@ export async function readWikiInfo(wikiPath: string): Promise<WikiInfo> {
   } catch {
     return { plugins: [], themes: [], languages: [] }
   }
-  const parsed = JSON.parse(raw) as Partial<WikiInfo>
+  let parsed: Partial<WikiInfo>
+  try {
+    parsed = JSON.parse(raw) as Partial<WikiInfo>
+  } catch {
+    console.warn('[dsh-tiddlywiki] tiddlywiki.info is not valid JSON; treating it as empty')
+    return { plugins: [], themes: [], languages: [] }
+  }
   return {
-    description: parsed.description,
-    plugins: parsed.plugins ?? [],
-    themes: parsed.themes ?? [],
-    languages: parsed.languages ?? [],
+    // Spread FIRST, then the normalized fields: the old order let a literal
+    // `"plugins": null` (or a non-array) overwrite the `[]` default and crash
+    // every consumer with `.includes is not a function`.
     ...parsed,
+    description: parsed.description,
+    plugins: Array.isArray(parsed.plugins) ? parsed.plugins : [],
+    themes: Array.isArray(parsed.themes) ? parsed.themes : [],
+    languages: Array.isArray(parsed.languages) ? parsed.languages : [],
   }
 }
 
@@ -262,6 +274,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
 
   const handleInfo = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       const body = JSON.parse(await readBody(req)) as { plugins?: unknown; themes?: unknown; themeActive?: unknown; languages?: unknown }
       const wikiPath = deps.getWikiPath()
       const info = await readWikiInfo(wikiPath)
@@ -359,6 +372,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
 
   const handleConfig = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       const body = JSON.parse(await readBody(req)) as PluginConfigShape
       const client = deps.getClient()
       if (client === undefined) {
@@ -372,8 +386,9 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     }
   }
 
-  const handleRestart = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleRestart = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       await deps.server.restart()
       json(res, { ok: true, status: deps.server.status().status })
     } catch (err) {
@@ -407,6 +422,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
    */
   const handleSeedsRun = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       const body = JSON.parse(await readBody(req)) as { id?: unknown; force?: unknown }
       const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
       const force = body.force === true
@@ -415,9 +431,30 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
       }
+      const seedStartedAt = Date.now()
       const results = await deps.seeds.run(client, id, force)
+      // A seeded SERVER-route plugin (render) only loads at TW BOOT, and TW's
+      // syncer flushes REST writes on a ~250ms timer. Without the flush-wait +
+      // restart the settings page reported「已重新初始化」while /render kept
+      // 404ing (tool cards and wiki-link rendering stayed degraded). Mirrors the
+      // startup path in src/index.ts — and, like there, the restart fires ONLY
+      // for a seed that really rewrote the route (restarting over unflushed
+      // content writes would lose them).
+      let restarted = false
+      let restartError: string | undefined
+      if (needsRestartAfterSeeds(results)) {
+        try {
+          const flushed = await waitForFileWrite(join(deps.getWikiPath(), 'tiddlers', RENDER_PLUGIN_FILE), 8_000, 150, seedStartedAt)
+          if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
+          await deps.server.restart()
+          restarted = true
+        } catch (err) {
+          restartError = err instanceof Error ? err.message : String(err)
+          console.warn('[dsh-tiddlywiki] restart after seeding failed:', restartError)
+        }
+      }
       const ok = results.every((r) => r.ok)
-      json(res, { ok, results }, ok ? 200 : 400)
+      json(res, { ok, results, restarted, ...(restartError !== undefined ? { restartError } : {}) }, ok ? 200 : 400)
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -431,6 +468,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
    */
   const handleSeedsRemove = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       const body = JSON.parse(await readBody(req)) as { id?: unknown }
       const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
       const client = deps.getClient()

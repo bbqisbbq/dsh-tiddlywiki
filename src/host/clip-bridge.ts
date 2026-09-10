@@ -36,6 +36,8 @@
  * @module dsh-tiddlywiki/host/clip-bridge
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
 import type { AddressInfo } from 'node:net'
 import type { Tiddler } from './tw-api.ts'
 import { readBody } from './http.ts'
@@ -118,6 +120,69 @@ export function hostAllowed(host: string | undefined, port: number): boolean {
   const h = host.trim().toLowerCase()
   const ok = (base: string): boolean => h === base || h === `${base}:${port}`
   return ok('127.0.0.1') || ok('localhost') || ok('[::1]') || ok('::1')
+}
+
+/** IPv4 ranges that must never be fetched on behalf of a web page. */
+const PRIVATE_V4_PATTERNS = [
+  /^0\./, // "this network"
+  /^10\./, // private
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./, // CGNAT 100.64/10
+  /^127\./, // loopback
+  /^169\.254\./, // link-local (cloud metadata 169.254.169.254)
+  /^172\.(1[6-9]|2\d|3[01])\./, // private
+  /^192\.0\.0\./, // IETF protocol assignments
+  /^192\.168\./, // private
+  /^198\.1[89]\./, // benchmarking
+]
+
+/** True for loopback / link-local / private / unique-local / CGNAT addresses. */
+export function isPrivateAddress(address: string): boolean {
+  const ip = address.trim().toLowerCase()
+  if (ip === '::1' || ip === '::') return true
+  if (/^f[cd][0-9a-f]{2}:/i.test(ip)) return true // fc00::/7 unique-local
+  if (/^fe80:/i.test(ip)) return true // link-local
+  if (/^::ffff:/.test(ip)) return isPrivateAddress(ip.slice('::ffff:'.length))
+  if (isIP(ip) === 4) return PRIVATE_V4_PATTERNS.some((re) => re.test(ip))
+  return false
+}
+
+/**
+ * SSRF guard for a clip image URL. The bridge downloads on behalf of a page in
+ * the user's browser, so it must never become a proxy into the local network
+ * (or a cloud metadata endpoint). Rejects non-http(s) schemes, loopback/LAN
+ * hostnames, literal private addresses, and public names that RESOLVE to a
+ * private address. Redirects are re-validated per hop by the caller
+ * (`redirect: 'manual'` in index.ts), so a redirect cannot escape the check.
+ */
+export async function assertPublicImageUrl(rawUrl: string): Promise<void> {
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    throw new Error('图片地址不是合法 URL')
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`不支持的图片协议 ${url.protocol}`)
+  }
+  const host = url.hostname.toLowerCase()
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa')) {
+    throw new Error('拒绝下载内网主机名的图片')
+  }
+  const literal = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  if (isIP(literal) !== 0) {
+    if (isPrivateAddress(literal)) throw new Error('拒绝下载内网地址的图片')
+    return
+  }
+  let addresses: Array<{ address: string }>
+  try {
+    addresses = await lookup(host, { all: true })
+  } catch {
+    throw new Error(`图片主机无法解析：${host}`)
+  }
+  if (addresses.length === 0) throw new Error(`图片主机无法解析：${host}`)
+  if (addresses.some((entry) => isPrivateAddress(entry.address))) {
+    throw new Error('拒绝下载解析到内网地址的图片')
+  }
 }
 
 /**
@@ -447,6 +512,9 @@ export class ClipBridge {
       const imageUrl = images[i]
       if (imageUrl === undefined) continue
       try {
+        // SSRF gate (policy lives here, not in the caller's downloader): never
+        // fetch a loopback/LAN/metadata URL on behalf of a web page.
+        await assertPublicImageUrl(imageUrl)
         const { buffer, type } = await this.deps.download(imageUrl, url)
         if (buffer.length > MAX_IMAGE_BYTES) {
           throw new Error('图片超过 15MB 上限')

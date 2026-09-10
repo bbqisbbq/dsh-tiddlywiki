@@ -31,6 +31,7 @@
  * @module dsh-tiddlywiki/host/seeds
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { existsSync, statSync } from 'node:fs'
 import { seedDocNote, unseedDocNote, DOC_NOTE_TITLE } from './seed-notes.ts'
 import { seedStarterDocs, unseedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE } from './seed-starter-docs.ts'
 import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE } from './seed-send-to-agent.ts'
@@ -74,6 +75,44 @@ export interface SeedContext {
   client: TiddlyWebClient
 }
 
+/**
+ * Wait until a file exists on disk (polling), up to `timeoutMs`.
+ *
+ * TW's syncer flushes REST writes to the filesystem on a ~250ms task timer, so
+ * a freshly seeded tiddler is not on disk the moment PUT resolves. A caller
+ * that must restart TW right after (so a seeded SERVER-route plugin loads) has
+ * to wait for the flush first — otherwise the restarted TW boots from a stale
+ * snapshot, loses every in-memory write that had not been flushed yet, and the
+ * seeded route is missing.
+ *
+ * `newerThanMs` makes the wait meaningful when the file ALREADY exists: it must
+ * also have been (re)written after that timestamp, which is what a re-seed
+ * produces. Without it an existing file would satisfy the wait immediately and
+ * the caller would restart TW over in-flight writes (the v0.18.0 regression the
+ * seeds-admin verify test caught).
+ */
+export async function waitForFileWrite(filePath: string, timeoutMs = 8_000, pollMs = 150, newerThanMs?: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      if (existsSync(filePath)) {
+        if (newerThanMs === undefined) return true
+        if (statSync(filePath).mtimeMs >= newerThanMs) return true
+      }
+    } catch { /* transient */ }
+    if (Date.now() >= deadline) return false
+    await new Promise<void>((r) => setTimeout(r, pollMs))
+  }
+}
+
+/** The only seed that carries a TW SERVER route — it needs a TW restart to load. */
+export const RESTART_REQUIRED_SEED_IDS = ['render-route'] as const
+
+/** Did one of the RESTART_REQUIRED seeds actually write something? */
+export function needsRestartAfterSeeds(results: Array<{ id: string; ok: boolean; wrote: boolean }>): boolean {
+  return results.some((r) => r.ok && r.wrote && (RESTART_REQUIRED_SEED_IDS as readonly string[]).includes(r.id))
+}
+
 /** A registered seed: check current state + run (optionally force) + remove. */
 export interface SeedDef {
   id: string
@@ -96,8 +135,14 @@ export interface SeedDef {
   remove?(ctx: SeedContext): Promise<SeedRunResult>
 }
 
+/**
+ * Presence probe for a seed's `check`. A 404 means "missing"; every other
+ * failure PROPAGATES (the caller `checkAllSeeds` turns it into a failed check)
+ * — swallowing it here would report "缺失" for a service that is merely
+ * unavailable and invite an overwrite.
+ */
 const presentOf = (ctx: SeedContext, title: string): Promise<boolean> =>
-  ctx.client.get(title).then((t) => t !== undefined).catch(() => false)
+  ctx.client.get(title).then((t) => t !== undefined)
 
 /** Build the per-item detail from an unseed result. */
 const removedDetail = (id: string, removed: string[]): SeedRunResult => ({
@@ -142,6 +187,14 @@ function defineSeed(meta: SeedMeta, impl: {
 }): SeedDef {
   const { id, title, description, core, startup } = meta
   const removable = !core
+  if (impl.check === undefined && (impl.presentTitle === undefined || impl.presentTitle.length === 0)) {
+    // Fail fast at module load: a seed without a presence probe would query an
+    // EMPTY title, always report "missing", and be re-run on every boot.
+    throw new Error(`seed "${id}" needs either presentTitle or check`)
+  }
+  if (impl.run === undefined && impl.write === undefined) {
+    throw new Error(`seed "${id}" needs either write or run`)
+  }
   const check: SeedDef['check'] = impl.check ?? (async (ctx) => {
     const present = await presentOf(ctx, impl.presentTitle ?? '')
     return { id, title, description, present, removable, detail: present ? '已存在' : '缺失' }
@@ -236,23 +289,28 @@ export const SEED_DEFS: SeedDef[] = [
     { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', core: true },
     {
       check: async (ctx) => {
+        // `run` (below) honors a USER-CHOSEN base: it only writes when the
+        // value is missing or still the legacy default. The check must agree,
+        // otherwise a deliberate custom host is reported as「缺失」and the
+        // settings page's「重新初始化」(force) overwrites it.
         let current: string | undefined
         try {
           current = (await ctx.client.get(TW_WEB_HOST_TIDDLER))?.text?.trim()
         } catch {
           current = undefined
         }
-        const ok = current === TW_PROXY_PATH
-        return { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', present: ok, removable: false, detail: ok ? `已指向 ${TW_PROXY_PATH}` : `当前：${current ?? '（缺失）'}，应为 ${TW_PROXY_PATH}` }
+        const present = typeof current === 'string' && current.length > 0 && current !== TW_WEB_HOST_DEFAULT
+        const detail = present
+          ? (current === TW_PROXY_PATH ? `已指向 ${TW_PROXY_PATH}` : `已指向自定义基址 ${current}（保留，不会覆盖）`)
+          : `当前：${current ?? '（缺失）'}，应为 ${TW_PROXY_PATH}`
+        return { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', present, removable: false, detail }
       },
       run: async (ctx, force) => {
         try {
-          let current: string | undefined
-          try {
-            current = (await ctx.client.get(TW_WEB_HOST_TIDDLER))?.text?.trim()
-          } catch {
-            current = undefined
-          }
+          // Read without swallowing: a transient failure must NOT look like
+          // "missing" (that would overwrite a user's custom base).
+          const tiddler = await ctx.client.get(TW_WEB_HOST_TIDDLER)
+          const current = tiddler?.text?.trim()
           // Non-force keeps the ensure semantics: write only when missing or still
           // the legacy default (a user override pointing elsewhere is honored).
           if (!force && current !== undefined && current !== TW_WEB_HOST_DEFAULT) {

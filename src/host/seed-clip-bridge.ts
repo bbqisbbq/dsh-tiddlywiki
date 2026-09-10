@@ -37,6 +37,7 @@
  * @module dsh-tiddlywiki/host/seed-clip-bridge
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** The instruction tiddler's title (a normal, searchable note). */
 export const CLIP_BRIDGE_DOC_TITLE = '本地剪藏桥（书签小工具）'
@@ -152,10 +153,10 @@ curl -X POST http://127.0.0.1:8618/clip ^
 export async function seedClipBridge(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(CLIP_BRIDGE_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, CLIP_BRIDGE_MARKER_TITLE)
     if (marker !== undefined) return false
   }
-  const existing = await client.get(CLIP_BRIDGE_DOC_TITLE).catch(() => undefined)
+  const existing = await readSeedTiddler(client, CLIP_BRIDGE_DOC_TITLE)
   let wrote = false
   if (force || existing === undefined) {
     await client.put({
@@ -166,9 +167,7 @@ export async function seedClipBridge(client: TiddlyWebClient, opts?: { force?: b
     })
     wrote = true
   }
-  await client
-    .put({ title: CLIP_BRIDGE_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, CLIP_BRIDGE_MARKER_TITLE)
   return wrote
 }
 
@@ -176,7 +175,7 @@ export async function seedClipBridge(client: TiddlyWebClient, opts?: { force?: b
 export async function unseedClipBridge(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []
   for (const title of [CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE]) {
-    const t = await client.get(title).catch(() => undefined)
+    const t = await readSeedTiddler(client, title)
     if (t !== undefined) {
       await client.delete(title)
       removed.push(title)

@@ -12,6 +12,7 @@
  * @module dsh-tiddlywiki/host/seed-ui-styles
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** One-time marker: presence means "the styles were offered once — hands off". */
 export const UI_STYLES_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-ui-styles'
@@ -35,20 +36,18 @@ export const UI_STYLE_ITEMS: UiStyleItem[] = [{"title":"编辑器美化 CSS","ta
 export async function seedUiStyles(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(UI_STYLES_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, UI_STYLES_MARKER_TITLE)
     if (marker !== undefined) return false
   }
   let wrote = false
   for (const item of UI_STYLE_ITEMS) {
-    const existing = await client.get(item.title).catch(() => undefined)
+    const existing = await readSeedTiddler(client, item.title)
     if (force || existing === undefined) {
       await client.put({ title: item.title, text: item.text, type: item.type, tags: item.tags })
       wrote = true
     }
   }
-  await client
-    .put({ title: UI_STYLES_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, UI_STYLES_MARKER_TITLE)
   return wrote
 }
 
@@ -59,13 +58,13 @@ export async function seedUiStyles(client: TiddlyWebClient, opts?: { force?: boo
 export async function unseedUiStyles(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []
   for (const item of UI_STYLE_ITEMS) {
-    const t = await client.get(item.title).catch(() => undefined)
+    const t = await readSeedTiddler(client, item.title)
     if (t !== undefined) {
       await client.delete(item.title)
       removed.push(item.title)
     }
   }
-  const marker = await client.get(UI_STYLES_MARKER_TITLE).catch(() => undefined)
+  const marker = await readSeedTiddler(client, UI_STYLES_MARKER_TITLE)
   if (marker !== undefined) {
     await client.delete(UI_STYLES_MARKER_TITLE)
     removed.push(UI_STYLES_MARKER_TITLE)

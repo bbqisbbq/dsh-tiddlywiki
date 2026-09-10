@@ -132,25 +132,61 @@ export class ConfigStore {
     return deepMerge(this.base, this.overrides) as PluginConfigShape
   }
 
-  /** Reload the override tiddler (no-op when the wiki is unavailable). */
+  /**
+   * Reload the override tiddler (no-op when the wiki is unavailable).
+   *
+   * A MISSING tiddler (404) legitimately means "no overrides" and clears the
+   * cache. A transient FAILURE (wiki restarting, timeout, 5xx) must NOT: wiping
+   * the cache on error silently reverted every user setting for the rest of the
+   * session, and the next `set()` then persisted a config tiddler without the
+   * user's other overrides.
+   */
   async load(client: TiddlyWebClient | undefined): Promise<void> {
-    this.overrides = {}
-    if (client === undefined) return
+    if (client === undefined) {
+      this.overrides = {}
+      return
+    }
+    let tiddler
+    try {
+      tiddler = await client.get(CONFIG_TIDDLER)
+    } catch (err) {
+      // Keep whatever we already have (usually the previous overrides).
+      console.warn('[dsh-tiddlywiki] config tiddler unreadable, keeping cached overrides:', err instanceof Error ? err.message : err)
+      return
+    }
+    if (tiddler === undefined) {
+      this.overrides = {}
+      return
+    }
+    try {
+      const parsed = JSON.parse(typeof tiddler.text === 'string' ? tiddler.text : '') as unknown
+      this.overrides = isPlainObject(parsed) ? (parsed as PluginConfigShape) : {}
+    } catch {
+      // Malformed JSON in the config tiddler: keep the cache rather than
+      // silently reverting to the cordis base.
+      console.warn('[dsh-tiddlywiki] config tiddler is not valid JSON, keeping cached overrides')
+    }
+  }
+
+  /**
+   * Merge a patch into the overrides and persist the tiddler.
+   *
+   * The patch is merged onto the STORED overrides (re-read here), not just the
+   * in-memory cache: if the startup `load()` failed transiently, saving one
+   * setting must not drop every other override the user had stored.
+   */
+  async set(client: TiddlyWebClient, patch: PluginConfigShape): Promise<PluginConfigShape> {
+    let stored: PluginConfigShape = this.overrides
     try {
       const tiddler = await client.get(CONFIG_TIDDLER)
       if (tiddler !== undefined && typeof tiddler.text === 'string') {
         const parsed = JSON.parse(tiddler.text) as unknown
-        if (isPlainObject(parsed)) this.overrides = parsed as PluginConfigShape
+        if (isPlainObject(parsed)) stored = parsed as PluginConfigShape
       }
     } catch {
-      // Wiki not ready or config tiddler unreadable → keep empty overrides.
-      this.overrides = {}
+      // Unreadable config tiddler → merge onto the in-memory cache.
     }
-  }
-
-  /** Merge a patch into the overrides and persist the tiddler. */
-  async set(client: TiddlyWebClient, patch: PluginConfigShape): Promise<PluginConfigShape> {
-    this.overrides = deepMerge(this.overrides, patch) as PluginConfigShape
+    this.overrides = deepMerge(stored, patch) as PluginConfigShape
     await client.put({
       title: CONFIG_TIDDLER,
       text: JSON.stringify(this.overrides, null, 2),

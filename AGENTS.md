@@ -18,9 +18,9 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.17.0`（npm latest = 0.16.28；git tag `v0.17.0`） | `package.json` `version` |
-| **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
-| **渲染路由 bundle 版本** | `0.1.0` | `scripts/build-render-bundle.mjs` |
+| **插件版本** | `0.18.0`（npm latest = 0.17.0；git tag `v0.18.0`） | `package.json` `version` |
+| **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
+| **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` |
 | **Agent 工具集（10 个）** | `search` `get` `put` `batch_put` `rename` `delete` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`） |
 | **Seed 注册表（10 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（首次安装默认写、可移除）：`doc-note`、`starter-docs`；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge`（剪藏桥使用说明，真功能在 `clip-bridge.ts` 运行时代码里）。文档类内容统一打 `dsh-docs` 标签（进首页「📚 插件文档」栏） | `src/host/seeds.ts` 的 `SEED_DEFS` |
 | **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单 / 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **内容类型约定**（默认 markdown，`fields.type` 是内容类型保留字段勿放业务分类）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ **二进制附件说明**（v0.16.20：`search`/`recent` 不含二进制，`get` 只回元数据）/ 可点击链接格式 | `src/index.ts` |
@@ -39,12 +39,13 @@ src/
 │   ├── tw-api.ts       # TiddlyWeb REST 客户端（/recipes/default/tiddlers/...，回环）
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
 │   ├── routes.ts       # 全部 DSH 路由（见 §1 路由表）+ agent-send/create/modes/sessions + session/summary
-│   ├── http.ts         # 共用 HTTP 助手：readBody/readBodyBuffer（带大小上限）+ json() 响应（routes/admin 共用）
-│   ├── clip-bridge.ts  # 本地剪藏桥（v0.16.25）：只监听 127.0.0.1 的 HTTP 桥，POST /clip 把书签剪藏写进 wiki；v0.16.25 起支持「浮层选图」——桥下载所选图片字节存为二进制附件 tiddler（type image/* + base64，笔记 [img[标题]] 内嵌，失败降级链接）；Host 校验防 DNS rebinding + 可选 token + CORS/PNA preflight；端口启动时绑定一次，enabled/token/tag 每请求读 effective config
-│   ├── session-summary.ts # 会话「知识库」Tab 后端：sessionQuery 读日志+后代 → 产生/读取/检索 → $:/temp 汇总 wikitext
-│   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/* 路由（seeds run/remove）
-│   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层（tiddler 优先）
-│   ├── seeds.ts        # 统一 seed 注册表 SEED_DEFS（check/run(force)/remove，三层：核心/起步/可选）
+│   ├── http.ts         # 共用 HTTP 助手：readBody/readBodyBuffer（带大小上限）+ json() 响应 + rejectCrossSiteWrite（写路由的同源/CSRF 守卫）
+│   ├── clip-bridge.ts  # 本地剪藏桥（v0.16.25 图片 / v0.18.0 SSRF 守卫）：只监听 127.0.0.1 的 HTTP 桥，POST /clip 把书签剪藏写进 wiki；「浮层选图」——桥下载所选图片字节存为二进制附件 tiddler（type image/* + base64，笔记 [img[标题]] 内嵌，失败降级链接）；Host 校验防 DNS rebinding + 可选 token + CORS/PNA preflight；端口按 **effective config** 绑定一次（改端口需重启 dsh web），enabled/token/tag 每请求读 effective config；`assertPublicImageUrl` 只放行公网 http(s)（逐跳校验重定向）
+│   ├── session-summary.ts # 会话「知识库」Tab 后端：sessionQuery 读日志+后代 → 产生/读取/检索 → $:/temp 汇总 wikitext（后代/条目/检索记录都有上限）
+│   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/* 路由（seeds run/remove；seed 写了 render-route 才等 flush 并重启 TW）
+│   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层（tiddler 优先；读失败保留缓存、set 先读回再合并）
+│   ├── seeds.ts        # 统一 seed 注册表 SEED_DEFS（check/run(force)/remove，三层：核心/起步/可选）+ waitForFileWrite / needsRestartAfterSeeds
+│   ├── seed-util.ts    # seed 共用助手：readSeedTiddler（**只有 404 才算缺失**）/ writeSeedMarker（失败只 warn）
 │   ├── tools.ts        # 10 个 tiddlywiki_* 工具（列表式注册）
 │   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量由脚本生成，勿手改；starter-docs/menubar-theme/clip-bridge 为手工维护的净化常量）
 ├── client/             # 浏览器半部：panel/theme-sync/note-widget/knowledge-fab/tool-views/settings-page…
@@ -53,10 +54,10 @@ src/
 │   ├── rightbar-tab.ts # 右侧栏 TW tab（v0.16.21）：type 注册 + guide 入口 + React body（TW iframe）/互斥
 │   ├── tw-frame.ts     # 共享 TW iframe 机制（v0.16.23）：lazy-load/status 轮询/主题同步/hash 导航/互斥 + live-frame 链接路由注册表
 │   ├── session-summary.ts # 会话「知识库」Tab（conversation.view 槽位）：POST 生成 → /tw/render 原生片段注入（不走 story view，见 §1 客户端 Slot）
-scripts/                # 构建/校验/再生成脚本（见 §4）
+scripts/                # 构建/校验/再生成脚本（见 §4）；bundle/versions.mjs = bundle 版本唯一来源
 docs/seed-initialization.md  # seed 机制详解（权威）
 cordis.patch.yml        # 插件行插入 web profile（dsh.bundle.patch）
-lib/                    # 预构建产物（发布含 lib/**，提交入库；零 @deepseek-ai 运行时 import）
+lib/                    # 预构建产物（发布只含 lib/index.js + lib/index.js.map + lib/client.js；零 @deepseek-ai 运行时 import）
 ```
 
 ## 3. 构建 / 校验 / 自测
@@ -66,12 +67,13 @@ npm run typecheck     # tsc --noEmit
 npm run build         # clean-lib → build:host(tsdown→lib/index.js, esm) → build:client(tsdown→lib/client.bundle.js cjs+minify → wrap-client.mjs→lib/client.js)
 npm run build:host    # 只重建 host（改 src/index.ts / src/host/** 时用）
 npm run build:client  # 只重建 client（改 src/client/** 时用）
-npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收（改核心路径后跑）
-node scripts/verify-send-to-agent-bundle.mjs  # bundle 字段/内容校验
-node scripts/verify-clip-bridge.mjs            # 剪藏桥 headless 验收（build 后跑：绑定/CORS/Host 校验/token/去重/503/400）
+npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收（改核心路径后跑；失败也会 stop 子进程）
+npm run smoke:client  # client bundle 的 module-loader 形状冒烟（wrap-client 之外的第二道）
+node scripts/verify-send-to-agent-bundle.mjs  # bundle 字段/内容 + 源件与 bundle 逐字一致
+node scripts/verify-clip-bridge.mjs            # 剪藏桥 headless 验收（build 后跑：绑定/CORS/Host 校验/token/去重/503/400 + 图片流 + SSRF 守卫）
 node scripts/verify-clip-bridge-browser.mjs    # 浏览器 E2E（v0.16.27，真实 TW+无头 Chrome）：seed 文档「拖拽书签」锚点 href 原样保留/解码一致/真浏览器执行弹浮层；缺 Chrome/puppeteer 时 SKIP
 node scripts/verify-seed-send-to-agent.mjs    # E2E：全新 wiki 上验证按钮 seed
-node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
+node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run（含 force 后 home 内容不被重启冲掉）
 ```
 
 **构建约束（踩过的坑）**：host 端 `tiddlywiki` **不打包**（运行时 `createRequire().resolve('tiddlywiki/tiddlywiki.js')`）；client 端 `react` **不打包**（web app 运行时解析）；client 必须 **minify**（否则 >1MB，被 dsh.pub 等注册表校验拒绝）。发布前验证 `grep -r "@deepseek-ai" lib/` 为空。
@@ -87,9 +89,9 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
   node scripts/verify-send-to-agent-bundle.mjs
   npm run build
   ```
-  版本号在 `build-send-to-agent-bundle.mjs`（改了行为要 bump），`verify-*.mjs` 里同步检查。
-- **渲染路由**：改 `scripts/bundle/render/server-routes/render.js` → `node scripts/build-render-bundle.mjs` → `node scripts/gen-seed-render.mjs scripts/bundle/render.bundle.json src/host/seed-render.ts` → `npm run build`。
-- **首页**：改 wiki 里的 `🏠 主页.tid`/`所有标签.tid`/`标签笔记.tid` → `node scripts/gen-seed-home.mjs <wiki>/tiddlers/🏠 主页.tid <wiki>/tiddlers/所有标签.tid <wiki>/tiddlers/标签笔记.tid src/host/seed-home.ts --strip-private` → `npm run build`。⚠️ **必须带 `--strip-private`**：产出**通用版**首页（剥离作者私有人口：主题页 tabs / 主题汇总死链 / 书籍书架；注入「📚 插件文档」tabs 栏）。不再用「跟随 wiki 现状」原样同步——会把作者私有元素带进新 wiki。
+  版本号只在 `scripts/bundle/versions.mjs` 定义（`SEND_TO_AGENT_BUNDLE_VERSION`；改了行为要 bump），build/verify 都引用它，`gen-seed-send-to-agent.mjs` 则**从 bundle 的 plugin.info 读**并写进外层 tiddler（别再手写第二处）。
+- **渲染路由**：改 `scripts/bundle/render/server-routes/render.js` → `node scripts/build-render-bundle.mjs` → `node scripts/gen-seed-render.mjs scripts/bundle/render.bundle.json src/host/seed-render.ts` → `npm run build`。版本取 `scripts/bundle/versions.mjs` 的 `RENDER_BUNDLE_VERSION`。⚠️ `/render` 必须按 **tiddler 自己的 `type`** 渲染（`$tw.utils.getParser` 对未知类型会自动回退 wikitext）：插件默认把笔记写成 `text/markdown`，硬编码 wikitext 会把 Markdown 渲染成源码（v0.18.0 修复）。
+- **首页**：改 wiki 里的 `🏠 主页.tid`/`所有标签.tid`/`标签笔记.tid` → `node scripts/gen-seed-home.mjs <wiki>/tiddlers/🏠 主页.tid <wiki>/tiddlers/所有标签.tid <wiki>/tiddlers/标签笔记.tid src/host/seed-home.ts` → `npm run build`。⚠️ 脚本**默认就剥离作者私有人口**（主题页 tabs / 主题汇总死链 / 书籍书架）并注入「📚 插件文档」tabs 栏；只有明确想保留私有内容才加 `--keep-private`（`--strip-private` 作兼容 no-op 保留）。
 - **自定义样式**：改 wiki 里的样式 `.css`（+ `.meta`）→ `node scripts/gen-seed-ui-styles.mjs <wiki>/tiddlers/<样式.css> … src/host/seed-ui-styles.ts` → `npm run build`（脚本会把 tag 收窄为只留 `$:/tags/Stylesheet`）。
 - **示例与文档**（starter-docs）/ **menubar 顶栏主题** / **剪藏桥说明**（seed-clip-bridge）：内容维护在 `src/host/seed-starter-docs.ts` / `seed-menubar-theme.ts` / `seed-clip-bridge.ts`（**手工维护的净化常量**，无 gen 脚本）。
 
@@ -100,7 +102,7 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 ### 运行时装配（host/client、生效时机）
 
 - host 半部跑在 DSH Node 进程（从 `lib/index.js` 加载，`dsh plugin --profile web add link:<repo>` 挂载）；改 host 源码 → **`npm run build:host` + 重启 dsh web** 才对新会话生效（提示词、工具集都是启动时装配）。
-- **本地剪藏桥**（v0.16.24+/v0.16.25 图片）：监听端口在启动时绑定一次（改 `bridge.port` 需重启 dsh web）；`enabled`/`token`/`tag` **每请求**读 effective config，设置页保存即生效。桥只绑定 127.0.0.1 + Host 头白名单（防 DNS rebinding）+ 可选 `x-clip-token` 校验；CORS 预检放行（含 `Access-Control-Allow-Private-Network`）以便 https 页面书签可用。图片下载走 `deps.download`（服务端 fetch，带 referer/UA 对付防盗链；上限 15MB/张、10 张/次），二进制附件 = `type: image/*` + base64 `text`（TW 5.4.1 REST 无原生二进制上传，此即官方形态，proven：selftest BigImage.jpg 段 + verify-clip-bridge 图片测试）；带图笔记自动改 wikitext。写入走 tw-api 唯一通道。
+- **本地剪藏桥**（v0.16.24+/v0.16.25 图片 / v0.18.0 SSRF）：监听端口按 **effective config**（设置页覆盖层优先）在启动时绑定一次（改 `bridge.port` 需重启 dsh web）；`enabled`/`token`/`tag` **每请求**读 effective config，设置页保存即生效。桥只绑定 127.0.0.1 + Host 头白名单（防 DNS rebinding）+ 可选 `x-clip-token` 校验；CORS 预检放行（含 `Access-Control-Allow-Private-Network`）以便 https 页面书签可用——**因此 token 为空时，用户浏览器里访问的任意网站都能向桥写入**，文档与设置页都强烈建议设 token。图片下载走 `deps.download`（服务端 fetch，带 referer/UA 对付防盗链；上限 15MB/张、10 张/次），**每个 URL 与每一跳重定向都要过 `assertPublicImageUrl`**（仅公网 http(s)；拒绝回环/内网/链路本地/云元数据/`.local` 等，DNS 先解析再放行；`redirect: 'manual'` 手动跟跳）；二进制附件 = `type: image/*` + base64 `text`（TW 5.4.1 REST 无原生二进制上传，此即官方形态，proven：selftest BigImage.jpg 段 + verify-clip-bridge 图片测试）；带图笔记自动改 wikitext。写入走 tw-api 唯一通道。
 - client 半部是浏览器 JS（`/plugins/dsh-tiddlywiki/client.js`）；改 client → `npm run build:client` + **刷新页面**（若 DSH checkout 里同时跑着 `pnpm run dev:web`，client 改动才自动热更，否则必须重建）。
 - 插件生命周期：所有 side effect（路由/工具/定时器/监听）用 `ctx.effect`/`disposer` 注册，保证热更新不泄漏。
 
@@ -109,6 +111,7 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 10 个 `tiddlywiki_*` 工具，列表式注册。输出有 `render` 契约：模型看到的只是 render 后的文本，必须携带完整事实（标题/标签/摘要/git 状态），别写"UI 摘要"。
 
 - **内容类型默认**（v0.16.15）：`put`/`batch_put` 对未指定 `type` 的条目自动补 `text/markdown`（`$:/` 系统条目除外；显式 `fields.type` 优先）；`fields.type` 是 TW 内容类型**保留字段**，工具描述/提示词都明确警告勿放业务分类值。
+- **读取错误策略**（v0.18.0）：`put`/`batch_put` 判「是否新条目」的 `wiki.get()` **不得吞错**——只有 404 才算新条目，否则网络故障会把人类笔记误判为新建并补打 `agent-written`。`fields` 也不能覆盖 `title`/`text`/`tags`/`created`/`modified`（`type` 例外，那是改内容类型的正规入口）；`batch_put` 逐条 try/catch，单条失败不影响其余，结果含 `failed` 与逐条 `error`。
 - **检索/最近跳过二进制附件**（v0.16.20）：`search`/`recent` 的列表在**服务端**用外部 filter 只取文本 tiddler（无 `type` 或 `text/*`，见 `tw-api.ts` 的 `TEXT_LIST_FILTER`），图片等二进制 tiddler（base64 正文）完全不参与检索/不出现在结果（含标题命中，防同名书页图刷屏）；`get` 对二进制 tiddler 只回元数据（`binary=true`/`binaryType`/`binaryChars` + 链接）。403 时自动 PUT `$:/config/Server/ExternalFilters/<filter>`="yes" 自愈重试，仍 403 降级瘦身列表。**filter 串必须保持短**（白名单 tiddler 文件名 = 整个 filter，见 §8）。
 
 ### 提示词注入（src/index.ts `PROMPT_TEXT`）
@@ -119,8 +122,15 @@ node scripts/verify-seeds-admin.mjs           # E2E：/admin/seeds 状态与 run
 
 - **三层**：核心（启动自动写、不可反初始化）：`send-to-agent`、`render-route`、`tw-web-host`；**起步**（首次安装默认写、可反初始化，`startup: true`）：`doc-note`、`starter-docs`；可选（默认不写、可反初始化）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge`（剪藏桥使用说明文档 seed，ONE-SHOT + marker；真功能在 `clip-bridge.ts`）。
 - **文档合集约定**：所有说明/教程/模板/示例类 seed 内容打 **`dsh-docs`** 标签——seed 版首页「📚 插件文档」tabs 栏（`[tag[dsh-docs]!is[system]]`）自动收录。以后新增 TW 侧说明/配置文档一律走 seed（ONE-SHOT + 同名跳过，绝不覆盖用户数据）。
-- 语义：非 force = ONE-SHOT（只写缺失、**同名 tiddler 已存在即安全跳过**、绝不覆盖用户改动）；force = 设置页「重新初始化」；`remove` = 反初始化（非核心 seed）。带 server route 的 seed（render）写完后要**重启 TW** 才生效（`waitForFileWrite` 先等磁盘 flush 再重启）。
+- 语义：非 force = ONE-SHOT（只写缺失、**同名 tiddler 已存在即安全跳过**、绝不覆盖用户改动）；force = 设置页「重新初始化」；`remove` = 反初始化（非核心 seed）。
+- **错误策略（v0.18.0）**：seed 读取一律走 `readSeedTiddler`（= `client.get`，**只有 404 才当缺失**）；**禁止**再写 `.catch(() => undefined)`——它会把瞬时故障当「条目不存在」，于是非 force 的启动 seed 也会覆盖用户数据。读取抛错 → 该 seed 返回 `ok:false` 并安全跳过；marker 写失败只 warn（`writeSeedMarker`），不再静默。
+- **重启规则（v0.18.0）**：只有 `render-route` 真的写了才重启 TW（`needsRestartAfterSeeds`），并且要用 `waitForFileWrite(file, 8s, 150ms, seedStartedAt)` 等 **mtime 前进**（文件早就存在时，只看「存在」会立刻返回并让重启冲掉尚未落盘的其它写入）。
 - 详细见 `docs/seed-initialization.md`。
+
+### 写路由的同源守卫与 auth（v0.18.0）
+
+- HTTP 写方法（POST/PUT/DELETE）在 `routes.ts`/`admin.ts` 的每个 handler 入口调 `rejectCrossSiteWrite(req, res)`：`Sec-Fetch-Site: cross-site` 或 `Origin` 与 `Host` 不同源即 403。**GET/HEAD/OPTIONS 一律放行**（跨站导航要能打开 `/tw/`，跨站 GET 读不到响应体），无这两个头的调用方（curl/服务端）也放行——这是 CSRF 硬化，不是鉴权边界（网络暴露由宿主认证负责）。
+- `auth.username/password` 非空时：TW 子进程带 `readers`/`writers` 启动，因此**内置 `TiddlyWebClient` 与 `WikiServer.waitReady()` 都必须带 preemptive Basic 头**（否则全站 401、启动 20s 后 failed）；`/tw` 代理由此还要转发 `WWW-Authenticate`，浏览器才会弹登录框。
 
 ### 配置双层
 
@@ -202,7 +212,10 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **client 必须 minify**，否则 >1MB 会被插件目录注册表（dsh.pub）校验拒绝。
 - **`lib/` 零 `@deepseek-ai` 运行时 import**（`sdk.ts` 自实现），否则 npm 镜像的 dsh-tools 会遮蔽 CLI 内置实现、搞坏 agent 循环。
 - **`react` / `tiddlywiki` 不打包**：react 由 web app 运行时解析；tiddlywiki 由 host 运行时 resolve 安装包入口。
-- **seed 带 server route 的（render-route）**：写入后要等磁盘 flush（`waitForFileWrite`）再重启 TW，否则重启从旧快照 boot、路由缺失。
+- **别把「读取失败」当「条目不存在」（v0.18.0 教训）**：`tw-api` 的 `get()` 只有 404 返回 `undefined`，其余抛错。任何 `.catch(() => undefined)` 都会把超时/重启/5xx 变成「用户没有这条」，于是 seed 覆盖用户内容、工具给人类笔记补打 `agent-written`。统一用 `seed-util.ts` 的 `readSeedTiddler`，工具里直接 `await wiki.get(...)`。
+- **重启 TW 前必须确认写入已落盘（v0.18.0 教训）**：`waitForFileWrite` 只判「文件存在」时，文件早就存在会立即返回，重启随即杀掉还没 flush 的 REST 写入（verify-seeds-admin 抓到过：force 重新初始化首页后内容消失）。要传 `newerThanMs`（seed 开始的时刻）等 mtime 前进，而且只有 `render-route` 这类带 server route 的 seed 才需要重启。
+- **`/render` 必须按 tiddler 的 `type` 渲染**：插件默认写 `text/markdown`，硬编码 `text/vnd.tiddlywiki` 会把 `## x` 渲成 wikitext 列表（实测 `## 现象` → `<ol><li>…`）。`$tw.utils.getParser` 对未注册类型会自动回退 wikitext，所以直接传 tiddler 的 type 是安全的。
+- **剪藏桥的图片 URL 必须过 SSRF 守卫**：桥是「浏览器的代理」，无验证时可被用来打内网/云元数据。`assertPublicImageUrl` 只放行公网 http(s) 并在 fetch 前解析 DNS；下载用 `redirect: 'manual'` 逐跳复检。写 verify 时注意：stub 图片地址要用**公网字面 IP**（如 `http://93.184.216.34/x.png`），伪造主机名（`https://cdn/...`）会被守卫直接拒。
 - **提示词/工具改动只影响重启 dsh web 后的新会话**；现有会话（含自己）不会变。
 - **`$:/temp` 条目在 iframe 的 story view 里永远无法正常显示**（「汇总显示成源码」的完整机理，v0.16.11–19 的教训）：① 浏览器端 TW 同步天生排除 `$:/temp`——服务端 recipe 列表默认 `[all[tiddlers]!is[system]]`（`get-tiddlers-json.js`）排除一切 `$:/` 条目，tiddlyweb adaptor 的请求过滤器又显式 `-[prefix[$:/temp/]]`（`tiddlywebadaptor.js getSkinnyTiddlers`），lazyLoad 只补「已知 skinny」不拉「完全缺失」——所以 iframe 里的 TW 拿不到 volatile 条目，`#<标题>` hash 直达必然渲染「佚失条目」；② 即便客户端把条目注入 iframe store（v0.16.14–18 的 `addTiddler` 注入 + 原生 hash 导航），TW 5.4.1 核心的视图模板级联（`$:/config/ViewTemplateBodyFilters/system` 的 system 规则）仍把所有 `$:/temp/` 前缀 tiddler 一律按**代码块**渲染（`$:/core/ui/ViewTemplate/body/code` → `<pre><code>`，headless $tw 实测），整页 wikitext 源码、像包在代码标签里——与 tiddler 的 `type` 字段无关。**因此 v0.16.19 起汇总 Tab 完全不用 iframe / story view**，改走与回复流工具卡同一条 `/tw/render` 原生片段管线（服务端 renderText 块解析 wikitext → HTML 片段，链接重写为 `/dsh-tiddlywiki/tw/#标题`）。排查「汇总显示源码」：先在 headless $tw 里渲染 `$:/core/ui/ViewTemplate/body`（currentTiddler=该标题）看是不是 `<pre><code>`；再查 TW 日志有没有「…的草稿」save 任务（v0.16.16 的 ✏️ 误编辑路径，现已被 v0.16.19 的片段渲染整体消除）。服务端直连 REST（tw-api）不受影响——单条 GET 一直能读到 `$:/temp`。
 - **bundle 是 ONE-SHOT、用户自有**：改了 bundle 源件后旧 wiki 不会自动更新，要手动覆盖 wiki tiddler + 用户重载 TW 面板。

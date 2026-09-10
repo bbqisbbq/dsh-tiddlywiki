@@ -11,12 +11,22 @@
  * @module dsh-tiddlywiki/client/editor-popup
  */
 import { attachThemeSync } from './theme-sync.ts'
+import { ACTIVATE_EVENT } from './tw-frame.ts'
+
+/**
+ * This popup's identity in the `dsh-panel-activate` protocol: opening it
+ * closes the center panel / rightbar TW tab, and any other surface activating
+ * closes this popup (one TW client at a time — several TW editors writing the
+ * same draft would last-write-wins each other).
+ */
+const EDITOR_POPUP_PANEL_NAME = 'dsh-tiddlywiki/editor-popup'
 
 let root: HTMLDivElement | undefined
 let frame: HTMLIFrameElement | undefined
 let titleEl: HTMLSpanElement | undefined
 let themeSyncDispose: (() => void) | undefined
 let onKeyDown: ((event: KeyboardEvent) => void) | undefined
+let onActivate: ((event: Event) => void) | undefined
 
 /** Open (create on first use) the popup and load `url` (twUrl#draftTitle). */
 export function openEditorPopup(url: string, label: string): void {
@@ -24,9 +34,16 @@ export function openEditorPopup(url: string, label: string): void {
   if (root === undefined || frame === undefined) return
   if (titleEl !== undefined) titleEl.textContent = `TiddlyWiki 编辑器 · ${label}`
   root.style.display = ''
-  // Same-base fragment navigation reloads nothing; a changed base (restart on a
-  // new port) reloads the app and TW still opens the draft from the hash.
-  frame.src = url
+  // 与中央面板/右栏 Tab 互斥：打开即广播本弹窗的身份，让其它 TW 客户端自行关闭。
+  document.dispatchEvent(new CustomEvent(ACTIVATE_EVENT, { detail: EDITOR_POPUP_PANEL_NAME }))
+  // Only set the src when the url actually changed: the host reuses the draft
+  // tiddler for a title, so re-opening the same draft yields the SAME url — and
+  // assigning an identical src reloads the whole iframe (TW re-boots, losing
+  // the draft/scroll/undo state). A same-base hash change is enough for TW.
+  if (frame.dataset.loaded !== url) {
+    frame.dataset.loaded = url
+    frame.src = url
+  }
 }
 
 /** Whether the popup is currently visible. */
@@ -46,6 +63,10 @@ export function disposeEditorPopup(): void {
   if (onKeyDown !== undefined) {
     document.removeEventListener('keydown', onKeyDown)
     onKeyDown = undefined
+  }
+  if (onActivate !== undefined) {
+    document.removeEventListener(ACTIVATE_EVENT, onActivate)
+    onActivate = undefined
   }
   root?.remove()
   root = undefined
@@ -94,6 +115,13 @@ function ensurePopup(): void {
     if (event.key === 'Escape' && isEditorPopupOpen()) closeEditorPopup()
   }
   document.addEventListener('keydown', onKeyDown)
+
+  // 互斥协议的另一半：中央面板 / 右栏 Tab 打开时（detail 是别人的名字）把自己关掉。
+  onActivate = (event: Event): void => {
+    const detail = (event as CustomEvent).detail
+    if (detail !== EDITOR_POPUP_PANEL_NAME && isEditorPopupOpen()) closeEditorPopup()
+  }
+  document.addEventListener(ACTIVATE_EVENT, onActivate)
 
   // Drag by the title bar (un-center by setting explicit left/top + margin 0).
   // Pointer Events + setPointerCapture: the pointer is captured by the bar, so

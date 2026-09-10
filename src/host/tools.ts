@@ -85,6 +85,26 @@ function cleanTiddler(t: Tiddler): Tiddler {
 }
 
 /**
+ * Fields a caller may NOT set through the `fields` argument: they are the
+ * tiddler's identity/content (and TW owns the timestamps). `fields.title`
+ * would desync the PUT URL from the body, `fields.text` would silently replace
+ * the `text` argument. `type` is deliberately ALLOWED — passing
+ * `{"type":"text/vnd.tiddlywiki"}` is the documented way to opt out of the
+ * Markdown default.
+ */
+const RESERVED_TIDDLER_FIELDS = new Set(['title', 'text', 'tags', 'created', 'modified'])
+
+/** Merge caller-supplied custom fields, skipping the reserved identity fields. */
+function applyCustomFields(tiddler: Tiddler, fields: Record<string, unknown> | undefined): void {
+  if (fields === undefined || fields === null || typeof fields !== 'object') return
+  for (const [key, value] of Object.entries(fields)) {
+    if (RESERVED_TIDDLER_FIELDS.has(key)) continue
+    if (value === undefined) continue
+    tiddler[key] = value
+  }
+}
+
+/**
  * Rewrite TiddlyWiki references to a title inside wiki text: `[[Title]]`,
  * `[[display|Title]]`, `{{Title}}` → the new title. Best-effort link/text
  * migration for tiddlywiki_rename; returns the rewritten text + hit count.
@@ -327,11 +347,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     },
     execute: async (args: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }): Promise<PutResult> => {
       const wiki = requireWiki()
-      const existing = await wiki.get(args.title).catch(() => undefined)
+      if (args.title.trim().length === 0) throw new Error('tiddlywiki_put: title 不能为空')
+      // Read WITHOUT swallowing errors: only a 404 means "new tiddler". A
+      // transient failure treated as "new" would silently tag an existing
+      // human note as agent-written.
+      const existing = await wiki.get(args.title)
       const tags = finalTagsForWrite(args.title, existing, Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
       const tiddler: Tiddler = { title: args.title, text: args.text }
       if (tags.length > 0) tiddler.tags = tags
-      if (args.fields !== undefined && typeof args.fields === 'object' && args.fields !== null) Object.assign(tiddler, args.fields)
+      applyCustomFields(tiddler, args.fields)
       const { defaulted } = finalTypeForWrite(args.title, tiddler)
       await wiki.put(tiddler)
       deps.autoCommit()
@@ -342,7 +366,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_batch_put ─────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_batch_put',
-    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果。写入后触发自动 commit。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。未指定内容类型（fields.type）的条目自动默认 text/markdown（$:/ 系统条目除外）。',
+    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果（单条失败不影响其余条目，失败原因逐条列出）。写入后触发自动 commit。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。未指定内容类型（fields.type）的条目自动默认 text/markdown（$:/ 系统条目除外）。',
     parameters: {
       items: {
         type: 'array',
@@ -363,9 +387,9 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     output: {
       schema: { type: 'json' },
       render: (_args, value: BatchResult) => {
-        const lines = [`批量写入完成：成功 ${value.written}，跳过 ${value.skipped}，共 ${value.items.length} 条。`]
+        const lines = [`批量写入完成：成功 ${value.written}，跳过 ${value.skipped}，失败 ${value.failed}，共 ${value.items.length} 条。`]
         for (const r of value.items) {
-          lines.push(`- ${r.title}：${r.written ? '已写入' : '已跳过（存在）'}`)
+          lines.push(`- ${r.title}：${r.written ? '已写入' : r.skipped ? '已跳过（存在）' : `失败（${r.error ?? '未知错误'}）`}`)
         }
         return [{ type: 'text', text: lines.join('\n') }]
       },
@@ -373,31 +397,41 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     execute: async (args: { items: Array<{ title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }>; overwrite?: boolean }): Promise<BatchResult> => {
       const wiki = requireWiki()
       const list = Array.isArray(args.items) ? args.items : []
-      if (list.length === 0) return { ok: true, written: 0, skipped: 0, items: [] }
+      if (list.length === 0) return { ok: true, written: 0, skipped: 0, failed: 0, items: [] }
       const overwrite = args.overwrite !== false
-      const results: Array<{ title: string; written: boolean; skipped: boolean }> = []
+      const results: BatchItemResult[] = []
       let written = 0
       let skipped = 0
+      let failed = 0
+      // One item failing (validation, network, a rejected title) must not lose
+      // the report of the items that DID land — the model needs per-item truth.
       for (const item of list) {
-        if (typeof item.title !== 'string' || item.title.length === 0) throw new Error('batch_put: 每条 items 都需要非空 title')
-        if (typeof item.text !== 'string') throw new Error(`batch_put: items「${item.title}」缺少 text`)
-        const existing = await wiki.get(item.title).catch(() => undefined)
-        if (!overwrite && existing !== undefined) {
-          skipped++
-          results.push({ title: item.title, written: false, skipped: true })
-          continue
+        const title = typeof item?.title === 'string' ? item.title : ''
+        try {
+          if (title.length === 0) throw new Error('缺少非空 title')
+          if (typeof item.text !== 'string') throw new Error('缺少 text')
+          // Read WITHOUT swallowing errors: only a 404 means "new tiddler".
+          const existing = await wiki.get(title)
+          if (!overwrite && existing !== undefined) {
+            skipped++
+            results.push({ title, written: false, skipped: true, failed: false })
+            continue
+          }
+          const tags = finalTagsForWrite(title, existing, Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
+          const tiddler: Tiddler = { title, text: item.text }
+          if (tags.length > 0) tiddler.tags = tags
+          applyCustomFields(tiddler, item.fields)
+          finalTypeForWrite(title, tiddler)
+          await wiki.put(tiddler)
+          written++
+          results.push({ title, written: true, skipped: false, failed: false })
+        } catch (err) {
+          failed++
+          results.push({ title: title.length > 0 ? title : '(无标题)', written: false, skipped: false, failed: true, error: err instanceof Error ? err.message : String(err) })
         }
-        const tags = finalTagsForWrite(item.title, existing, Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
-        const tiddler: Tiddler = { title: item.title, text: item.text }
-        if (tags.length > 0) tiddler.tags = tags
-        if (item.fields !== undefined && typeof item.fields === 'object' && item.fields !== null) Object.assign(tiddler, item.fields)
-        finalTypeForWrite(item.title, tiddler)
-        await wiki.put(tiddler)
-        written++
-        results.push({ title: item.title, written: true, skipped: false })
       }
       deps.autoCommit()
-      return { ok: true, written, skipped, items: results }
+      return { ok: failed === 0, written, skipped, failed, items: results }
     },
   }))
 
@@ -614,7 +648,8 @@ interface GetResult {
   binaryChars?: number
 }
 interface PutResult { ok: boolean; title: string; tags: string[]; type: string | null; typeDefaulted?: boolean; fields: Record<string, unknown> | null }
-interface BatchResult { ok: boolean; written: number; skipped: number; items: Array<{ title: string; written: boolean; skipped: boolean }> }
+interface BatchItemResult { title: string; written: boolean; skipped: boolean; failed: boolean; error?: string }
+interface BatchResult { ok: boolean; written: number; skipped: number; failed: number; items: BatchItemResult[] }
 interface RenameResult { ok: boolean; from: string; to: string; refsUpdated: number; refsTiddlers: number; warning?: string }
 interface DeleteResult { ok: boolean; title: string }
 interface SyncResult {

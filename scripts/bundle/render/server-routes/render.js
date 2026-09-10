@@ -6,9 +6,9 @@ module-type: route
 POST /render — native TiddlyWiki → HTML fragment for the DSH reply stream
 
 Body (JSON in state.data):
-  { title }                       render an existing tiddler's wikified body
-  { text, contextTitle?, parseAsInline? }
-                                  render arbitrary wiki text as a fragment
+  { title }                       render an existing tiddler's body with ITS type
+  { text, type?, contextTitle?, parseAsInline? }
+                                  render arbitrary content as a fragment
 \*/
 "use strict";
 
@@ -50,15 +50,23 @@ exports.handler = function(request,response,state) {
 			"tv-wikilink-template": WIKILINK_TEMPLATE
 		};
 		if(typeof body.title === "string" && body.title.length > 0) {
-			// Render an existing tiddler's wikified body (block parse, so
-			// headings / tables / lists render natively).
+			// Render an existing tiddler's body with ITS OWN content type (block
+			// parse, so headings / tables / lists render natively). The type must
+			// be honored: dsh-tiddlywiki writes agent notes as `text/markdown`
+			// (tiddlywiki/markdown is enabled), and hardcoding wikitext rendered
+			// every markdown note as source (`## x` became a wikitext list).
+			// $tw.utils.getParser() falls back to text/vnd.tiddlywiki when no
+			// parser is registered for the type, so passing the raw type is safe.
 			var tiddler = state.wiki.getTiddler(body.title);
 			if(!tiddler) {
 				sendJson(response,404,{ok:false,notFound:true,title:body.title});
 				return;
 			}
 			variables.currentTiddler = body.title;
-			var html = state.wiki.renderText("text/html","text/vnd.tiddlywiki",tiddler.fields.text,{
+			var tiddlerType = typeof tiddler.fields.type === "string" && tiddler.fields.type.length > 0
+				? tiddler.fields.type
+				: "text/vnd.tiddlywiki";
+			var html = state.wiki.renderText("text/html",tiddlerType,tiddler.fields.text,{
 				parseAsInline: false,
 				variables: variables
 			});
@@ -68,12 +76,15 @@ exports.handler = function(request,response,state) {
 		}
 		if(typeof body.text === "string") {
 			// Render arbitrary wiki text (contextTitle gives currentTiddler so
-			// links/transclusions resolve in that tiddler's context).
+			// links/transclusions resolve in that tiddler's context). `type`
+			// optionally selects the parser (e.g. text/markdown); the default is
+			// wikitext, and unknown types fall back to it inside TW.
 			if(typeof body.contextTitle === "string" && body.contextTitle.length > 0) {
 				variables.currentTiddler = body.contextTitle;
 			}
 			var inline = body.parseAsInline === true;
-			var textHtml = state.wiki.renderText("text/html","text/vnd.tiddlywiki",body.text,{
+			var bodyType = typeof body.type === "string" && body.type.length > 0 ? body.type : "text/vnd.tiddlywiki";
+			var textHtml = state.wiki.renderText("text/html",bodyType,body.text,{
 				parseAsInline: inline,
 				variables: variables
 			});

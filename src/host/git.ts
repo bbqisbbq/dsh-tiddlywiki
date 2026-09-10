@@ -65,6 +65,21 @@ function parseCount(line: string, re: RegExp): number | undefined {
 }
 
 export class GitFace {
+  /**
+   * FIFO mutex for the index-touching operations (`commit` and `pull
+   * --rebase`). The debounced AutoCommitter can fire while an explicit
+   * `tiddlywiki_git_sync` is rebasing; both would fight over
+   * `.git/index.lock` and intermittently fail. Per-instance, so a second
+   * GitFace (e.g. the settings page's status probe) is unaffected.
+   */
+  private lock: Promise<unknown> = Promise.resolve()
+
+  private withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.lock.then(fn, fn)
+    this.lock = run.then(() => undefined, () => undefined)
+    return run
+  }
+
   constructor(private readonly exec: ExecFn = defaultExec) {}
 
   async isRepo(dir: string): Promise<boolean> {
@@ -87,9 +102,13 @@ export class GitFace {
   /**
    * Stage everything and commit; a local identity is always provided so the
    * plugin never depends on the machine's global git config. Returns whether
-   * a commit actually happened.
+   * a commit actually happened. Serialized against `pull()` (index.lock).
    */
-  async commit(dir: string, message: string): Promise<{ committed: boolean; message: string }> {
+  commit(dir: string, message: string): Promise<{ committed: boolean; message: string }> {
+    return this.withLock(() => this.commitUnlocked(dir, message))
+  }
+
+  private async commitUnlocked(dir: string, message: string): Promise<{ committed: boolean; message: string }> {
     await this.exec(['add', '-A'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
     const staged = await this.exec(['diff', '--cached', '--quiet'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
     // `diff --cached --quiet` exits 0 when nothing is staged → nothing to commit.
@@ -121,8 +140,13 @@ export class GitFace {
   /** `git pull --rebase --autostash`; on conflict: abort + report files.
    *  On success, `changed: true` means HEAD actually moved (files came in /
    *  commits were replayed) — callers use it to decide whether a running TW
-   *  child needs a restart to drop its stale in-memory snapshot. */
-  async pull(dir: string): Promise<GitActionResult & { changed?: boolean }> {
+   *  child needs a restart to drop its stale in-memory snapshot.
+   *  Serialized against `commit()` (index.lock). */
+  pull(dir: string): Promise<GitActionResult & { changed?: boolean }> {
+    return this.withLock(() => this.pullUnlocked(dir))
+  }
+
+  private async pullUnlocked(dir: string): Promise<GitActionResult & { changed?: boolean }> {
     const before = await this.exec(['rev-parse', 'HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
     const beforeHead = before.ok ? before.stdout.trim() : ''
     const r = await this.exec(['pull', '--rebase', '--autostash'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })

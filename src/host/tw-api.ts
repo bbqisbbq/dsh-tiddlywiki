@@ -119,11 +119,27 @@ function normalizeTiddler(raw: Record<string, unknown>): Tiddler {
 }
 
 export class TiddlyWebClient {
-  constructor(private readonly baseUrl: string) {}
+  /** Preemptive Basic credentials, when the wiki runs in locked-down mode. */
+  private readonly authHeader: string | undefined
+
+  constructor(private readonly baseUrl: string, auth?: { username?: string; password?: string }) {
+    const username = typeof auth?.username === 'string' ? auth.username : ''
+    if (username.length > 0) {
+      const password = typeof auth?.password === 'string' ? auth.password : ''
+      this.authHeader = `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`
+    }
+  }
 
   private async request(path: string, init?: RequestInit): Promise<Response> {
+    const headers: Record<string, string> = { ...((init?.headers as Record<string, string> | undefined) ?? {}) }
+    // The plugin spawns TW with `readers`/`writers` whenever auth.username is
+    // configured, so EVERY request (reads included) needs the credentials —
+    // otherwise the whole client 401s. TW's BasicAuthenticator accepts a
+    // preemptive Authorization header (no challenge round-trip needed).
+    if (this.authHeader !== undefined) headers.authorization = this.authHeader
     return fetch(`${this.baseUrl}${path}`, {
       ...init,
+      headers,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
   }

@@ -18,16 +18,17 @@
  *
  * @module dsh-tiddlywiki
  */
-import { existsSync, watch, type FSWatcher } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { watch, type FSWatcher } from 'node:fs'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
-import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
+import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
+import { RENDER_PLUGIN_FILE } from './host/seed-render.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
-import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, resolveClipTitle, MAX_IMAGE_BYTES, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
+import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, resolveClipTitle, assertPublicImageUrl, MAX_IMAGE_BYTES, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
@@ -48,15 +49,15 @@ export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundle
 export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
 export { seedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE, DSH_DOCS_TAG } from './host/seed-starter-docs.ts'
 export { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
-export { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT } from './host/seed-render.ts'
+export { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_PLUGIN_FILE, RENDER_BUNDLE_TEXT } from './host/seed-render.ts'
 export { seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, HOME_DEFAULT_TIDDLERS } from './host/seed-home.ts'
 export { seedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE, ALL_ARTICLES_TEXT } from './host/seed-all-articles.ts'
 export { seedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } from './host/seed-ui-styles.ts'
 export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './host/seed-menubar-theme.ts'
 export { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET, CLIP_BRIDGE_DRAG_HREF } from './host/seed-clip-bridge.ts'
-export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
+export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools } from './host/tools.ts'
-export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
+export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, isPrivateAddress, assertPublicImageUrl, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
 export type { Tiddler } from './host/tw-api.ts'
@@ -105,6 +106,9 @@ interface ResolvedConfig {
 /** 剪藏桥默认端口（与 seed 文档书签代码里的地址保持一致）。 */
 export const CLIP_BRIDGE_DEFAULT_PORT = 8618
 
+/** How many redirects a clip image download may follow (each hop is SSRF-checked). */
+const MAX_IMAGE_REDIRECTS = 3
+
 const DEFAULTS: ResolvedConfig = {
   wikiRoot: '',
   wiki: 'main',
@@ -130,12 +134,9 @@ export { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './host/config.ts'
  */
 export async function ensureTwWebHost(client: TiddlyWebClient | undefined): Promise<void> {
   if (client === undefined) return
-  let current: string | undefined
-  try {
-    current = (await client.get(TW_WEB_HOST_TIDDLER))?.text
-  } catch {
-    current = undefined
-  }
+  // Read WITHOUT swallowing: only a 404 means "missing". A transient failure
+  // must not look like "absent" and overwrite a user's custom host value.
+  const current = (await client.get(TW_WEB_HOST_TIDDLER))?.text
   if (current !== undefined && current.trim() !== TW_WEB_HOST_DEFAULT) return
   await client.put({ title: TW_WEB_HOST_TIDDLER, text: TW_PROXY_PATH, type: 'text/plain', tags: [] })
 }
@@ -156,17 +157,40 @@ function resolveWikiRoot(config: TiddlywikiConfig): string {
   return dshHomePath('tiddlywiki')
 }
 
-/** Write the .gitignore for TW transient artifacts (idempotent). */
+/**
+ * Ensure the wiki's `.gitignore` covers TW's transient artifacts, WITHOUT
+ * clobbering rules the user added.
+ *
+ * This used to rewrite the whole file on every start, silently deleting any
+ * custom ignore rules the user had put in `wiki/.gitignore`. Now the file is
+ * only touched when one of the managed lines is missing, and the user's own
+ * content is preserved verbatim.
+ */
+const MANAGED_GITIGNORE_LINES = [
+  'tiddlers/$__temp_*',
+  'tiddlers/$__StoryList*',
+  'tiddlers/$__HistoryList*',
+  '*.meta.tmp',
+]
+
 async function writeGitignore(wikiPath: string): Promise<void> {
-  const lines = [
+  const file = join(wikiPath, '.gitignore')
+  let current = ''
+  try {
+    current = await readFile(file, 'utf8')
+  } catch {
+    /* absent → first run, write the default block */
+  }
+  const existing = current.split(/\r?\n/).map((line) => line.trim())
+  const missing = MANAGED_GITIGNORE_LINES.filter((line) => !existing.includes(line))
+  if (missing.length === 0) return
+  const block = [
     '# TiddlyWiki transient artifacts (auto-managed by dsh-tiddlywiki)',
-    'tiddlers/$__temp_*',
-    'tiddlers/$__StoryList*',
-    'tiddlers/$__HistoryList*',
-    '*.meta.tmp',
+    ...missing,
     '',
-  ]
-  await writeFile(join(wikiPath, '.gitignore'), lines.join('\n'), 'utf8')
+  ].join('\n')
+  const prefix = current.length === 0 ? '' : current.endsWith('\n') ? `${current}\n` : `${current}\n\n`
+  await writeFile(file, `${prefix}${block}`, 'utf8')
 }
 
 /** Watch the wiki folders and touch the auto-committer on changes. */
@@ -194,17 +218,10 @@ function watchWiki(wikiPath: string, onChange: () => void): () => void {
  * restart TW right after (so a seeded server route loads) has to wait for the
  * flush first, or the restarted TW would boot from a stale snapshot and the
  * seeded module would be missing.
+ *
+ * The implementation lives in host/seeds.ts (shared with the settings page's
+ * seed-run route), which is where `waitForFileWrite` is imported from.
  */
-async function waitForFileWrite(filePath: string, timeoutMs = 8_000, pollMs = 150): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    try {
-      if (existsSync(filePath)) return true
-    } catch { /* transient */ }
-    if (Date.now() >= deadline) return false
-    await new Promise<void>((r) => setTimeout(r, pollMs))
-  }
-}
 
 /** System-prompt section text (design doc §11 D8). */
 const PROMPT_SECTION_NAME = 'dsh-tiddlywiki'
@@ -323,12 +340,20 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     password: config.auth.password,
   })
 
-  // Lazy TW client (rebuilt when the port is bound).
+  // Lazy TW client. Rebuilt whenever the bound PORT changes (the wiki re-probes
+  // a free port when a crash happened before readiness, so a cached client must
+  // not stay pinned to a dead port). Credentials are attached preemptively: when
+  // auth.username is configured the TW child runs behind `readers`/`writers`, so
+  // EVERY request (reads included) needs Basic auth.
   let clientCache: TiddlyWebClient | undefined
+  let clientPort: number | undefined
   const client = (): TiddlyWebClient | undefined => {
     const port = server.currentPort
     if (port === undefined) return undefined
-    clientCache ??= new TiddlyWebClient(`http://127.0.0.1:${port}`)
+    if (clientCache === undefined || clientPort !== port) {
+      clientCache = new TiddlyWebClient(`http://127.0.0.1:${port}`, { username: config.auth.username, password: config.auth.password })
+      clientPort = port
+    }
     return clientCache
   }
 
@@ -349,22 +374,35 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       return (await c.get(title)) !== undefined
     },
     // Server-side image download: no browser CORS; a browser-ish UA + the clip
-    // source page as Referer get past most hotlink-protected CDNs.
+    // source page as Referer get past most hotlink-protected CDNs. Every hop is
+    // SSRF-checked (public http(s) only) because redirects are followed
+    // MANUALLY — `redirect: 'follow'` would happily jump to 169.254.169.254.
     download: async (imageUrl, referer): Promise<ClipImageDownload> => {
-      const res = await fetch(imageUrl, {
-        headers: {
-          'user-agent': 'Mozilla/5.0 (compatible; dsh-tiddlywiki clip bridge)',
-          referer,
-          accept: 'image/*,*/*;q=0.8',
-        },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(20_000),
-      })
-      if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`)
-      const buffer = Buffer.from(await res.arrayBuffer())
-      if (buffer.length === 0) throw new Error('下载内容为空')
-      if (buffer.length > MAX_IMAGE_BYTES) throw new Error('图片超过 15MB 上限')
-      return { buffer, type: res.headers.get('content-type') }
+      let current = imageUrl
+      for (let hop = 0; hop < MAX_IMAGE_REDIRECTS; hop++) {
+        await assertPublicImageUrl(current)
+        const res = await fetch(current, {
+          headers: {
+            'user-agent': 'Mozilla/5.0 (compatible; dsh-tiddlywiki clip bridge)',
+            referer,
+            accept: 'image/*,*/*;q=0.8',
+          },
+          redirect: 'manual',
+          signal: AbortSignal.timeout(20_000),
+        })
+        if (res.status >= 300 && res.status < 400) {
+          const location = res.headers.get('location')
+          if (location === null || location.length === 0) throw new Error(`重定向缺少 Location（HTTP ${res.status}）`)
+          current = new URL(location, current).href
+          continue
+        }
+        if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`)
+        const buffer = Buffer.from(await res.arrayBuffer())
+        if (buffer.length === 0) throw new Error('下载内容为空')
+        if (buffer.length > MAX_IMAGE_BYTES) throw new Error('图片超过 15MB 上限')
+        return { buffer, type: res.headers.get('content-type') }
+      }
+      throw new Error(`图片重定向次数超过 ${MAX_IMAGE_REDIRECTS} 次`)
     },
     log: (m) => console.info('[dsh-tiddlywiki] clip bridge:', m),
   })
@@ -437,7 +475,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // disabled — every request re-checks the effective enabled flag, so the
       // settings-page toggle applies without a dsh web restart).
       try {
-        await clipBridge.start(config.bridge.port)
+        await clipBridge.start(effectiveBridge().port)
         console.info(`[dsh-tiddlywiki] clip bridge listening on 127.0.0.1:${clipBridge.port} (enabled=${effectiveBridge().enabled})`)
       } catch (err) {
         console.warn('[dsh-tiddlywiki] clip bridge start:', err)
@@ -457,19 +495,18 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       try {
         const seedClient = client()
         if (seedClient !== undefined) {
+          const seedStartedAt = Date.now()
           const results = await runAllSeeds({ client: seedClient })
           for (const r of results) {
             if (!r.ok) console.warn(`[dsh-tiddlywiki] seed ${r.id} failed:`, r.error ?? r.detail)
           }
-          // Seeding wrote something (e.g. the render-route plugin on this
-          // upgrade). A seeded SERVER route only loads at TW boot, so restart
-          // once to pick it up. Wait for the bundle file to actually reach the
-          // disk first — TW's syncer flushes REST writes on a ~250ms task
-          // timer, and restarting from a stale snapshot would boot WITHOUT the
-          // just-seeded module.
-          if (results.some((r) => r.ok && r.wrote)) {
-            const renderFile = join(wikiPath, 'tiddlers', '$__plugins_dsh_render.json')
-            const flushed = await waitForFileWrite(renderFile)
+          // ONLY the render-route seed needs a TW restart: it carries a SERVER
+          // route, which TW loads at boot. Restarting for plain-content seeds
+          // (docs / home / styles) would kill the child over REST writes the
+          // syncer had not flushed to disk yet, silently losing them.
+          if (needsRestartAfterSeeds(results)) {
+            const renderFile = join(wikiPath, 'tiddlers', RENDER_PLUGIN_FILE)
+            const flushed = await waitForFileWrite(renderFile, 8_000, 150, seedStartedAt)
             if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
             await server.restart()
           }
@@ -495,10 +532,17 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
           console.warn('[dsh-tiddlywiki] applying uiLanguage:', err)
         }
       }
+    } catch (err) {
+      console.warn('[dsh-tiddlywiki] startup issue (self-healing is armed):', err)
+    }
+    // Git bootstrap + the auto-committer do not depend on the TW child, so run
+    // them even when the wiki failed to start: every write is still versioned
+    // (and a retry/restart later finds a ready repository).
+    try {
       await bootstrapGit()
       setupCommitter()
     } catch (err) {
-      console.warn('[dsh-tiddlywiki] startup issue (self-healing is armed):', err)
+      console.warn('[dsh-tiddlywiki] git bootstrap failed:', err)
     }
   })()
 

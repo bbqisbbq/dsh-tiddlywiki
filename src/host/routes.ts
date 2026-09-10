@@ -27,7 +27,7 @@ import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
-import { readBody, readBodyBuffer, json, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
+import { readBody, readBodyBuffer, json, rejectCrossSiteWrite, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './session-summary.ts'
@@ -268,10 +268,12 @@ export async function openInTwEditor(
     const existing = await client.get(title)
     draftText = existing?.text ?? ''
   }
-  // Reuse an existing draft for this title (mirrors wiki.findDraft).
+  // Draft lookup + creation. The skinny listing (no `text` payloads) carries
+  // the custom fields, so there is no need to ship the whole wiki's text just
+  // to find a draft.
   let draftTitle: string | undefined
   try {
-    const items = await client.list(undefined, true)
+    const items = await client.list(undefined, false)
     for (const item of items) {
       if (item['draft.of'] === title && typeof item.title === 'string') {
         draftTitle = item.title
@@ -281,7 +283,19 @@ export async function openInTwEditor(
   } catch {
     /* fall back to a fresh draft */
   }
-  if (draftTitle === undefined) draftTitle = `Draft of "${title}" ${Date.now()}`
+  if (draftTitle === undefined) {
+    // Prefer TW's CANONICAL draft name so the embedded editor's own "save
+    // draft" bookkeeping lines up; fall back to a timestamped name when it is
+    // taken (or the probe failed) so an existing draft is never clobbered.
+    const canonical = `Draft of "${title}"`
+    let free = false
+    try {
+      free = (await client.get(canonical)) === undefined
+    } catch {
+      free = false
+    }
+    draftTitle = free ? canonical : `${canonical} ${Date.now()}`
+  }
   await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: NOTE_TYPE })
   return { title, draftTitle }
 }
@@ -303,14 +317,30 @@ function resolveTags(
 }
 
 export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDeps): () => void {
+  /**
+   * `/status` is polled by the GUI (30s), every mounted TW frame and the FAB,
+   * and each call shells out to up to five `git` processes — so the git summary
+   * is cached for a couple of seconds. Any route that mutates the repo
+   * invalidates it so a sync/upload is reflected immediately.
+   */
+  const GIT_STATUS_TTL_MS = 2_000
+  let gitStatusCache: { at: number; value: GitStatusViewPublic | null } | undefined
+  const invalidateGitStatus = (): void => { gitStatusCache = undefined }
+  const cachedGitStatus = async (): Promise<GitStatusViewPublic | null> => {
+    if (gitStatusCache !== undefined && Date.now() - gitStatusCache.at < GIT_STATUS_TTL_MS) return gitStatusCache.value
+    let value: GitStatusViewPublic | null = null
+    try {
+      value = await deps.git.status(deps.getWikiPath())
+    } catch {
+      value = null
+    }
+    gitStatusCache = { at: Date.now(), value }
+    return value
+  }
+
   const handleStatus = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const view = deps.server.status()
-    let gitSummary: GitStatusViewPublic | null = null
-    try {
-      gitSummary = await deps.git.status(deps.getWikiPath())
-    } catch {
-      gitSummary = null
-    }
+    const gitSummary = await cachedGitStatus()
     json(res, { ok: true, ...view, twProxy: TW_PROXY_PATH, git: gitSummary, note: { tag: deps.noteDefaults().tag }, ui: deps.uiDefaults() })
   }
 
@@ -323,6 +353,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleSessionSummary = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       let body: { session?: unknown } = {}
       try {
         body = JSON.parse(await readBody(req)) as { session?: unknown }
@@ -477,6 +508,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleAgentSend = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       if (!guardSendToAgent(req, res)) return
       const body = JSON.parse(await readBody(req)) as { sessionId?: unknown; text?: unknown }
       const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? body.sessionId.trim() : ''
@@ -491,10 +523,15 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         return
       }
       const requestId = `tw-send-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-      await sc.prompt(
+      const accepted = await sc.prompt(
         { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text }] },
         AbortSignal.timeout(20_000),
       )
+      // A refusal (session gone / busy) must not be reported as success.
+      if (accepted !== undefined && accepted.accepted === false) {
+        json(res, { ok: false, error: '会话未接受该消息（可能已结束或正忙）', requestId, sessionId }, 409)
+        return
+      }
       json(res, { ok: true, requestId, sessionId })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
@@ -523,6 +560,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleAgentCreate = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       if (!guardSendToAgent(req, res)) return
       const body = JSON.parse(await readBody(req)) as { cwd?: unknown; mode?: unknown; permission?: unknown }
       const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : ''
@@ -592,6 +630,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   const handleNote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown }
       const text = typeof body.text === 'string' && body.text.trim().length > 0 ? body.text.trim() : null
       if (text === null) {
@@ -607,6 +646,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const tags = resolveTags(body, deps.noteDefaults().tag)
       await client.put({ title, text, tags, type: NOTE_TYPE })
       deps.autoCommit()
+      invalidateGitStatus()
       json(res, { ok: true, title, tag: tags.join(' '), tags, text, type: NOTE_TYPE })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
@@ -615,6 +655,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   const handleEdit = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown }
       const client = deps.getClient()
       if (client === undefined) {
@@ -626,6 +667,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const text = typeof body.text === 'string' ? body.text : ''
       const result = await openInTwEditor(client, title, text, tags)
       deps.autoCommit()
+      invalidateGitStatus()
       json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
@@ -769,8 +811,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
   }
 
-  const handleRestart = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleRestart = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       await deps.server.restart()
       json(res, { ok: true, status: deps.server.status().status })
     } catch (err) {
@@ -784,7 +827,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    *  When the pull actually changed the working tree, the running TW child
    *  still holds the old in-memory snapshot — restart it (same port) so the
    *  UI reflects the pulled files instead of looking stale. */
-  const handleSync = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleSync = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (rejectCrossSiteWrite(req, res)) return
+    invalidateGitStatus()
     const dir = deps.getWikiPath()
     const status = async (): Promise<GitStatusViewPublic | null> => {
       try { return await deps.git.status(dir) } catch { return null }
@@ -840,6 +885,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleUpload = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectCrossSiteWrite(req, res)) return
       const buf = await readBodyBuffer(req)
       // Name comes from ?name= (URL-encoded) or the X-Filename header.
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -866,6 +912,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       await writeFile(join(filesDir, candidate), buf)
       deps.autoCommit()
+      invalidateGitStatus()
       json(res, {
         ok: true,
         name: candidate,
@@ -883,6 +930,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   /** Passthrough /dsh-tiddlywiki/api/<rest> → TW root /<rest>. */
   const handleApiProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (rejectCrossSiteWrite(req, res)) return
     const client = deps.getClient()
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -921,6 +969,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * (arrayBuffer) — unlike the /api JSON proxy, this route must never .text().
    */
   const handleTwProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (rejectCrossSiteWrite(req, res)) return
     const client = deps.getClient()
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -945,6 +994,11 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         const value = upstream.headers.get(name)
         if (value !== null) responseHeaders[name] = value
       }
+      // Locked-down mode (auth.username configured) puts the TW frontend behind
+      // HTTP Basic auth: without the challenge header the browser never prompts
+      // and the embedded editor would just show a bare 401.
+      const challenge = upstream.headers.get('www-authenticate')
+      if (challenge !== null) responseHeaders['www-authenticate'] = challenge
       res.writeHead(upstream.status, responseHeaders)
       res.end(data)
     } catch (err) {

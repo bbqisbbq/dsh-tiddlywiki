@@ -1,10 +1,18 @@
-// One-shot generator: turn the wiki's $__plugins_dsh_send-to-agent.json bundle
-// into a TS source file with the bundle embedded as a JSON string constant.
+// One-shot generator: turn the built send-to-agent bundle
+// (scripts/bundle/send-to-agent.bundle.json, produced by
+// build-send-to-agent-bundle.mjs) into a TS source file with the bundle
+// embedded as a JSON string constant.
 import fs from 'node:fs'
 import path from 'node:path'
 
+// Usage: node gen-seed-send-to-agent.mjs <bundle.json> <out.ts>
 const srcFile = process.argv[2]
 const outFile = process.argv[3]
+
+if (!srcFile || !outFile) {
+  console.error('usage: node gen-seed-send-to-agent.mjs <bundle.json> <out.ts>')
+  process.exit(2)
+}
 
 const raw = fs.readFileSync(srcFile, 'utf8').replace(/\r\n/g, '\n')
 // sanity: must be a valid {"tiddlers": {...}} bundle
@@ -14,6 +22,20 @@ if (!parsed.tiddlers || typeof parsed.tiddlers !== 'object') {
 }
 const titles = Object.keys(parsed.tiddlers)
 console.log('bundle tiddlers:', titles.join(', '))
+
+// The OUTER wiki tiddler's `version` must mirror the bundle's INNER
+// plugin.info — read it from the bundle instead of hardcoding it here (the old
+// literal 0.3.2 had already drifted from the bundle's 0.3.4).
+const PLUGIN_INFO_TITLE = '$:/plugins/dsh/send-to-agent/plugin.info'
+const pluginInfo = parsed.tiddlers[PLUGIN_INFO_TITLE]
+if (pluginInfo === undefined || typeof pluginInfo.text !== 'string') {
+  throw new Error(`bundle is missing ${PLUGIN_INFO_TITLE}`)
+}
+const bundleVersion = JSON.parse(pluginInfo.text).version
+if (typeof bundleVersion !== 'string' || bundleVersion.length === 0) {
+  throw new Error(`${PLUGIN_INFO_TITLE} carries no version`)
+}
+console.log('bundle version:', bundleVersion)
 
 // Embed the exact JSON text as a JS string literal via JSON.stringify (safe
 // escaping, no backticks / ${ issues).
@@ -29,6 +51,7 @@ const out = `/**
  * @module dsh-tiddlywiki/host/seed-send-to-agent
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** The packaged plugin tiddler title (a TW system tiddler, type application/json). */
 export const SEND_TO_AGENT_PLUGIN_TITLE = '$:/plugins/dsh/send-to-agent'
@@ -51,10 +74,10 @@ export const SEND_TO_AGENT_BUNDLE_TEXT = ${literal}
 export async function seedSendToAgent(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(SEND_TO_AGENT_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, SEND_TO_AGENT_MARKER_TITLE)
     if (marker !== undefined) return false
   }
-  const existing = await client.get(SEND_TO_AGENT_PLUGIN_TITLE).catch(() => undefined)
+  const existing = await readSeedTiddler(client, SEND_TO_AGENT_PLUGIN_TITLE)
   let wrote = false
   if (force || existing === undefined) {
     await client.put({
@@ -70,16 +93,14 @@ export async function seedSendToAgent(client: TiddlyWebClient, opts?: { force?: 
       'plugin-type': 'plugin',
       name: 'Send to Agent',
       author: 'dsh-tiddlywiki',
-      version: '0.3.2',
+      version: '${bundleVersion}',
       description: '把当前笔记一键发送给 DSH Agent（TiddlyWiki → DSH 会话注入）',
     })
     wrote = true
   }
   // Record the offer regardless, so an existing bundle (upgrade from a
   // pre-seed wiki) also becomes user-owned from here on.
-  await client
-    .put({ title: SEND_TO_AGENT_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, SEND_TO_AGENT_MARKER_TITLE)
   return wrote
 }
 `

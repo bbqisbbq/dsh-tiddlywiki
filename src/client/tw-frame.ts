@@ -87,10 +87,21 @@ export function TwTabIcon({ size = 16, className }: { size?: number; className?:
 export interface TwFrameController {
   /** Reflect the surface's visibility; loads lazily on the first show. */
   setVisible(visible: boolean): void
-  isVisible(): boolean
   /** Open a tiddler by title; false when this controller cannot serve it. */
   openTiddler(title: string): boolean
   dispose(): void
+}
+
+/**
+ * Controller for an ALREADY-aborted signal: no DOM is ever built, so there is
+ * nothing to show and nothing to reap (the abort listener would never fire).
+ */
+function disposedController(): TwFrameController {
+  return {
+    setVisible(): void {},
+    openTiddler(): boolean { return false },
+    dispose(): void {},
+  }
 }
 
 /** Live visible-capable TW frames; a controller joins on creation, leaves on dispose. */
@@ -127,6 +138,11 @@ export function warmTabLabel(): void {
  * leaves it on dispose.
  */
 export function createTwFrameController(host: HTMLElement, signal: AbortSignal): TwFrameController {
+  // Already aborted (the tab was closed before this body mounted): 'abort' will
+  // never fire again, so registering here would strand the iframe in
+  // liveFrames forever. Hand back a no-op controller and build nothing.
+  if (signal.aborted) return disposedController()
+
   let visible = false
   let started = false
   let disposed = false
@@ -303,9 +319,10 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
       }
       frame.hidden = !next
       view.dataset.visible = next ? '1' : '0'
-    },
-    isVisible(): boolean {
-      return visible
+      // 每次重新显示都重探一次状态：启动轮询是有界的（30×1.5s），首次打开时
+      // 服务没起来就会把错误界面永久固定（切走再切回也不恢复）。doRefresh 自己
+      // 会清旧 timer，不会重复轮询。
+      if (next) void doRefresh()
     },
     openTiddler(title: string): boolean {
       if (disposed || !visible) return false

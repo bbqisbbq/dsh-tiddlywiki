@@ -11,6 +11,7 @@
  * @module dsh-tiddlywiki/host/seed-notes
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 
 /** Note tiddler title (a normal, searchable note — not a system tiddler). */
 export const DOC_NOTE_TITLE = 'dsh-tiddlywiki 插件说明'
@@ -71,10 +72,10 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
 export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
-    const marker = await client.get(SEED_MARKER_TITLE).catch(() => undefined)
+    const marker = await readSeedTiddler(client, SEED_MARKER_TITLE)
     if (marker !== undefined) return false
   }
-  const existing = await client.get(DOC_NOTE_TITLE).catch(() => undefined)
+  const existing = await readSeedTiddler(client, DOC_NOTE_TITLE)
   let wrote = false
   if (force || existing === undefined) {
     await client.put({
@@ -87,9 +88,7 @@ export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: bool
   }
   // Record the offer regardless, so an existing note (upgrade from an older
   // create-if-missing version) also becomes user-owned from here on.
-  await client
-    .put({ title: SEED_MARKER_TITLE, text: 'seeded-once', type: 'text/plain', tags: [] })
-    .catch(() => undefined)
+  await writeSeedMarker(client, SEED_MARKER_TITLE)
   return wrote
 }
 
@@ -101,7 +100,7 @@ export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: bool
 export async function unseedDocNote(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []
   for (const title of [DOC_NOTE_TITLE, SEED_MARKER_TITLE]) {
-    const t = await client.get(title).catch(() => undefined)
+    const t = await readSeedTiddler(client, title)
     if (t !== undefined) {
       await client.delete(title)
       removed.push(title)

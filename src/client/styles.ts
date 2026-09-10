@@ -554,7 +554,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); font-size: 12px;
 }
 .dsh-tw-toolcard-empty, .dsh-tw-toolcard-error { font-size: 12px; }
-.dsh-tw-toolcard-error { color: var(--dsw-alias-danger-1, #c0392b); }
+.dsh-tw-toolcard-error { color: var(--dsw-alias-state-error-primary, #c0392b); }
 .dsh-tw-toolcard-fallback {
   margin: 0; padding: 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word;
   font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
@@ -583,7 +583,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-toolcard-native pre code { background: transparent; padding: 0; }
 .dsh-tw-toolcard-native blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--dsw-alias-border-l2, rgba(0,0,0,.25)); color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 70%, transparent); }
 .dsh-tw-toolcard-native img { max-width: 100%; height: auto; border-radius: 6px; }
-.dsh-tw-toolcard-native .tc-error { color: var(--dsw-alias-danger-1, #c0392b); }
+.dsh-tw-toolcard-native .tc-error { color: var(--dsw-alias-state-error-primary, #c0392b); }
 /* List rows (search / recent / batch). */
 .dsh-tw-toolcard-list { display: flex; flex-direction: column; gap: 2px; }
 .dsh-tw-toolcard-row {
@@ -647,13 +647,23 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-summary-state-detail { max-width: 420px; word-break: break-all; font-size: 12px; }
 `
 
-export function injectStyles(): void {
-  if (typeof document === 'undefined') return
+/**
+ * Inject the plugin stylesheet and return a disposer removing it.
+ * A style tag that already exists is REUSED, but its content is refreshed when
+ * it differs (HMR / re-apply after a CSS change) — the old version returned
+ * early and left stale CSS in place.
+ */
+export function injectStyles(): () => void {
+  if (typeof document === 'undefined') return () => {}
   let el = document.getElementById(STYLE_ID)
-  if (el !== null) return
-  el = document.createElement('style')
-  el.id = STYLE_ID
-  el.dataset.plugin = 'dsh-tiddlywiki'
-  el.textContent = CSS_TEXT
-  document.head.append(el)
+  if (el === null) {
+    el = document.createElement('style')
+    el.id = STYLE_ID
+    el.dataset.plugin = 'dsh-tiddlywiki'
+    el.textContent = CSS_TEXT
+    document.head.append(el)
+  } else if (el.textContent !== CSS_TEXT) {
+    el.textContent = CSS_TEXT
+  }
+  return () => { el?.remove() }
 }

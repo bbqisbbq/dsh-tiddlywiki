@@ -331,7 +331,6 @@ export interface NoteWidgetHandle {
    */
   openNative(): Promise<void>
   close(): void
-  toggle(): Promise<void>
   isOpen(): boolean
   dispose(): void
 }
@@ -500,10 +499,26 @@ export function createNoteWidget(): NoteWidgetHandle {
     void (async () => {
       try {
         const res = await fetch(`${RECENT_ENDPOINT}?limit=15`, { signal: AbortSignal.timeout(10_000) })
-        const payload = (await res.json().catch(() => null)) as { ok?: boolean; items?: RecentItem[]; error?: string } | null
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean; items?: unknown[]; error?: string } | null
         if (!recentOpen || ui === undefined) return
         ui.recentWrap.replaceChildren()
-        const items = payload?.ok === true ? (payload.items ?? []) : []
+        // 服务端字段可能缺失（旧 host / 异常项）：逐项归一化，绝不因为
+        // item.tags 未定义就抛 TypeError 被兜底成「加载失败」（同 tool-views 写法）。
+        const items: RecentItem[] = []
+        if (payload?.ok === true) {
+          for (const raw of payload.items ?? []) {
+            if (raw === null || typeof raw !== 'object') continue
+            const rec = raw as Record<string, unknown>
+            const itemTitle = typeof rec.title === 'string' ? rec.title : ''
+            if (itemTitle.length === 0) continue
+            items.push({
+              title: itemTitle,
+              tags: Array.isArray(rec.tags) ? rec.tags.filter((t): t is string => typeof t === 'string') : [],
+              modified: typeof rec.modified === 'string' ? rec.modified : null,
+              snippet: typeof rec.snippet === 'string' ? rec.snippet : '',
+            })
+          }
+        }
         if (items.length === 0) {
           const empty = document.createElement('div')
           empty.className = 'dsh-tw-note-recent-muted'
@@ -835,10 +850,6 @@ export function createNoteWidget(): NoteWidgetHandle {
       ui.root.hidden = true
       closeRecent()
       emitState(false)
-    },
-    async toggle() {
-      if (opened) this.close()
-      else await this.open()
     },
     async openNative() {
       // 直达 TW 原生编辑页（quickNoteMode=native 时点击「快速笔记」走这里）：

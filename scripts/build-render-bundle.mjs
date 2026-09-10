@@ -15,6 +15,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { RENDER_BUNDLE_VERSION } from './bundle/versions.mjs'
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url))
 const parts = path.join(scriptsDir, 'bundle', 'render')
@@ -27,7 +28,7 @@ const pluginInfo = {
   name: 'DSH Wiki Render',
   description: '把 wiki 文本原生渲染成 HTML 片段（POST /render 服务端路由），供 DSH 回复流工具卡与 wiki 链接跳转使用',
   author: 'dsh-tiddlywiki',
-  version: '0.1.0',
+  version: RENDER_BUNDLE_VERSION,
   'plugin-type': 'plugin',
 }
 

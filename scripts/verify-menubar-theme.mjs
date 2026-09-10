@@ -1,12 +1,19 @@
 // Browser E2E: verify the menubar-theme override makes nav.tc-menubar follow
 // the ACTIVE palette (light → light bar, dark → dark bar). Loads the LIVE wiki
-// server, reads the computed menubar background under the stored palette
-// (Blanca light), then flips $:/palette in-memory (exactly like theme-sync)
-// and re-checks. Dev tool: requires puppeteer-core + Chrome; else SKIP.
+// server, reads the computed menubar background under the wiki's stored light
+// palette, then flips $:/palette in-memory (exactly like theme-sync) and
+// re-checks. Dev tool: requires puppeteer-core + Chrome; else SKIP.
 import { createRequire } from 'node:module'
 import { existsSync } from 'node:fs'
 
-const TW_URL = process.env.TW_URL || 'http://127.0.0.1:55373'
+// TW_URL is REQUIRED — no default. This script drives a REAL, live wiki in a
+// browser, so a baked-in author URL could silently mutate someone else's wiki.
+const TW_URL = process.env.TW_URL
+if (!TW_URL) {
+  console.error('usage: TW_URL=http://127.0.0.1:<port> node scripts/verify-menubar-theme.mjs')
+  console.error('TW_URL is required (no default): point it at the TW server to drive.')
+  process.exit(2)
+}
 const require = createRequire(import.meta.url)
 let puppeteer
 try {
@@ -98,11 +105,18 @@ try {
   }
   ok(errors.length === 0, `no page errors (${errors.slice(0, 3).join(' | ') || 'none'})`)
 
-  // Restore the wiki's stored palette (leave no memory state behind).
-  await page.evaluate(() => {
+  // Restore the wiki's originally stored palette (leave no memory state
+  // behind) and re-align the syncer's changeCount AFTER the write — the same
+  // suppression trick as the flip above (src/client/theme-sync.ts
+  // suppressPaletteSync) so the forced restore is never PUT back to the server.
+  await page.evaluate((palette) => {
     const $tw = window.$tw
-    $tw.wiki.setText('$:/palette', 'text', undefined, '$:/palettes/Blanca')
-  })
+    $tw.wiki.setText('$:/palette', 'text', undefined, palette)
+    const cc = $tw.wiki.getChangeCount('$:/palette')
+    const info = $tw.syncer?.tiddlerInfo?.['$:/palette']
+    if (info !== undefined) info.changeCount = cc
+    else if ($tw.syncer !== undefined) $tw.syncer.tiddlerInfo['$:/palette'] = { changeCount: cc }
+  }, light.palette)
   await new Promise((r) => setTimeout(r, 500))
 } finally {
   await browser?.close().catch(() => {})
