@@ -35,12 +35,13 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
 
 !! 它能做什么
 
-* **10 个 agent 工具**：\`tiddlywiki_search\`（检索，支持 tags/since/type/limit 过滤）/ \`tiddlywiki_get\`（读）/ \`tiddlywiki_put\`（写）/ \`tiddlywiki_batch_put\`（批量写）/ \`tiddlywiki_rename\`（重命名+同步引用）/ \`tiddlywiki_delete\`（删）/ \`tiddlywiki_recent\`（最近修改）/ \`tiddlywiki_list_tags\`（标签清单）/ \`tiddlywiki_git_sync\`（git 同步）/ \`tiddlywiki_git_resolve\`（冲突按 tiddler 二选一）。
+* **15 个 agent 工具**：\`tiddlywiki_search\`（检索，支持 tags/since/type/field+value/limit 过滤，按相关度排序）/ \`tiddlywiki_get\`（读，含二进制附件元数据）/ \`tiddlywiki_put\`（写/覆盖，支持乐观并发）/ \`tiddlywiki_batch_put\`（批量写）/ \`tiddlywiki_append\`（增量追加，写日志批注不必读全文）/ \`tiddlywiki_rename\`（重命名+同步引用）/ \`tiddlywiki_delete\`（默认软删除进回收站）/ \`tiddlywiki_trash\`（回收站 list/restore/empty）/ \`tiddlywiki_backlinks\`（反向链接与标签归属）/ \`tiddlywiki_attach\`（本机文件/公网 URL → 二进制附件）/ \`tiddlywiki_lint\`（知识库体检）/ \`tiddlywiki_recent\`（最近修改）/ \`tiddlywiki_list_tags\`（标签清单）/ \`tiddlywiki_git_sync\`（git 同步）/ \`tiddlywiki_git_resolve\`（冲突按 tiddler 二选一）。
 * **TW 编辑器面板**：侧边栏「TiddlyWiki」按钮 → 在界面中央打开完整版 TW 编辑器。
 * **快速笔记**：点击聊天输入框上方或右下角「知识库」菜单里的「📝 快速笔记」——默认**直达 TW 原生编辑页**（独立小窗，草稿自动续写）；也可在设置页切回 Markdown 卡片（语法高亮、文件上传、多选 tag、草稿自动保存、Ctrl+Enter 保存）。「✏️ 在 TW 中编辑」会弹出独立小窗用 TW 原生编辑器编辑。
 * **一键同步**：「知识库」按钮 → 「🔁 同步」一键 pull → commit → push，按钮上的状态点实时反映 git 状态。
 * **git 同步**：写入自动防抖 commit（默认 60 秒）；手动 \`tiddlywiki_git_sync action=sync\` 做 pull → commit → push。
 * **设置页**：DSH 设置 → 「TiddlyWiki 知识库」管理插件/主题/语言与运行配置（含「知识库」按钮相关显示开关）。
+* **注入给 Agent 的提示词可配置**（设置页「系统提示词」区块）：默认**精简版**只约定同步纪律/标签/链接格式（工具参数由工具 schema 提供，不重复）；可切完整版（附参数索引）、追加自定义规范（\`extra\`）、整段替换（\`override\`）或整体停用。保存即生效，无需重启 dsh web；点「查看当前注入文本」可预览下一步实际注入的全文。
 
 !! 知识库纪律（四条）
 

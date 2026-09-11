@@ -33,6 +33,31 @@ import {
 
 export { AGENT_WRITTEN_TAG, DEFAULT_NOTE_TYPE, HUMAN_EDITED_TAG } from './write-policy.ts'
 
+import type { PromptToolSummary } from './prompt.ts'
+
+/**
+ * Summaries of the tools registered by the LAST `registerTiddlywikiTools()`
+ * pass — the single source for the `full` prompt catalogue and for
+ * `scripts/verify-prompt.mjs` (v0.21.0).
+ *
+ * History: the prompt carried a HAND-WRITTEN parameter catalogue that was last
+ * updated in v0.19.0 and silently drifted 6 signatures behind the tools by
+ * v0.20.1. Collecting them here from the same definitions that reach the model
+ * makes that class of drift impossible.
+ */
+const REGISTERED_TOOL_SUMMARY: PromptToolSummary[] = []
+
+/** Tool summaries of the last registration pass (empty before one has run). */
+export function tiddlywikiToolSummary(): readonly PromptToolSummary[] {
+  return REGISTERED_TOOL_SUMMARY
+}
+
+/** Structural shape the collector needs from a registry-ready tool. */
+interface RegistrableTool {
+  readonly name: string
+  readonly parameters: Record<string, unknown>
+}
+
 
 /** Structural tool-registry face (subset of the dsh tools service). */
 export interface ToolsCtx {
@@ -275,7 +300,18 @@ function insertIntoSection(base: string, heading: string, addition: string): str
 
 export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<() => void> {
   const disposers: Array<() => void> = []
-  const register = (tool: unknown): void => { disposers.push(ctx.tools.register(tool)) }
+  // Re-collect on every pass: a hot reload re-registers the whole toolset, and
+  // a stale entry must never linger in the prompt catalogue.
+  REGISTERED_TOOL_SUMMARY.length = 0
+  const register = (tool: RegistrableTool): void => {
+    const properties = (tool.parameters.properties ?? {}) as Record<string, unknown>
+    const required = Array.isArray(tool.parameters.required) ? (tool.parameters.required as string[]) : []
+    REGISTERED_TOOL_SUMMARY.push({
+      name: tool.name,
+      params: Object.keys(properties).map((name) => ({ name, required: required.includes(name) })),
+    })
+    disposers.push(ctx.tools.register(tool))
+  }
 
   /** Every read/write tool needs a live TW client — shared guard for the 8
    *  wiki-facing tools (git tools operate on the repo path instead). */

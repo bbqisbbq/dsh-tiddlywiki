@@ -29,7 +29,8 @@ import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWri
 import { RENDER_PLUGIN_FILE } from './host/seed-render.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
-import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
+import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps } from './host/tools.ts'
+import { buildPromptText, normalizePromptMode, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig } from './host/prompt.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
 
@@ -70,6 +71,20 @@ export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, ME
 export { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET, CLIP_BRIDGE_DRAG_HREF } from './host/seed-clip-bridge.ts'
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUnavailableError } from './host/tools.ts'
+export { tiddlywikiToolSummary } from './host/tools.ts'
+export {
+  buildPromptText,
+  escapePromptBraces,
+  normalizePromptMode,
+  PROMPT_GOVERNANCE_BLOCKS,
+  PROMPT_MODES,
+  PROMPT_SECTION_NAME,
+  PROMPT_SECTION_ORDER,
+  DEFAULT_PROMPT_MODE,
+  type PromptConfig,
+  type PromptMode,
+  type PromptToolSummary,
+} from './host/prompt.ts'
 export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, downloadClipImage, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, isPrivateAddress, assertPublicImageUrl, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
@@ -87,6 +102,8 @@ export interface TiddlywikiConfig {
   note?: { tag?: string }
   /** 本地剪藏桥（书签小工具）：见 host/clip-bridge.ts 与 seed-clip-bridge.ts 文档。 */
   bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
+  /** 注入给每个会话的系统提示词（v0.21.0，见 host/prompt.ts）。 */
+  prompt?: { enabled?: boolean; mode?: 'slim' | 'full'; extra?: string; override?: string }
   ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
   /** 启动时自动启用的 TW 语言代码（如 "zh-Hans"），也受配置 tiddler 覆盖。 */
   uiLanguage?: string
@@ -244,38 +261,6 @@ function watchWiki(wikiPath: string, onChange: () => void): () => void {
  * seed-run route), which is where `waitForFileWrite` is imported from.
  */
 
-/** System-prompt section text (design doc §11 D8). */
-const PROMPT_SECTION_NAME = 'dsh-tiddlywiki'
-const PROMPT_SECTION_ORDER = 100
-const PROMPT_TEXT = `## TiddlyWiki 持久知识库
-
-本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。你可以用工具读写 tiddler：
-
-- \`tiddlywiki_search\`（query 必填；可选 tags[]/tag、since 修改时间、type、field+value、limit）检索，结果**按相关度排序**、片段取自命中处（图片等二进制附件不参与检索）；\`tiddlywiki_get\`（title）读全文（二进制附件只返回元数据，不含 base64 正文）；\`tiddlywiki_put\`（title, text, tags?, fields?, expectedModified?/expectedRevision?, force?）写/覆盖；\`tiddlywiki_batch_put\`（items[]）批量写；\`tiddlywiki_append\`（title, text, mode?, heading?）增量追加（写日志/批注的首选，不必读全文）；\`tiddlywiki_rename\`（oldTitle, newTitle, updateRefs?）重命名并尽量同步引用；\`tiddlywiki_delete\`（title, permanent?）删除（默认软删除进回收站）；\`tiddlywiki_trash\`（action=list|restore|empty）回收站。
-- 其它：\`tiddlywiki_backlinks\`（title）查反向链接与标签归属；\`tiddlywiki_attach\`（title, path|url, noteTitle?）把本机文件或公网地址存成二进制附件并可选嵌入笔记；\`tiddlywiki_lint\` 知识库体检（垃圾标签 / 死链 / 空笔记 / 缺内容类型）。
-- \`tiddlywiki_recent\`（limit?, since?）看最近修改的笔记（不含图片等二进制附件）；\`tiddlywiki_list_tags\` 看现有 tag 及计数。
-- \`tiddlywiki_git_sync\`（pull|push|sync）做 git 同步；\`tiddlywiki_git_resolve\`（files, strategy=keep-local|keep-remote|list）在 pull 冲突后按 tiddler 二选一解决。
-
-**不要覆盖人类正在编辑的笔记**：覆盖一篇已有笔记前先 \`tiddlywiki_get\`，把读到的 \`revision\`（或 \`modified\`）作为 \`expectedRevision\`（或 \`expectedModified\`）传入写回；若期间有人（在 TW 编辑器里）改过，写入会被拒绝并告诉你当前值——此时重新读一遍再决定，不要用 \`force\` 硬覆盖。纯增量内容优先用 \`tiddlywiki_append\`。覆盖已有条目时**不传 tags 就保留原有标签、自定义字段与内容类型**（只改正文），显式传 tags 才整体替换标签；要改内容类型用 \`fields.type\`。\`tiddlywiki_append\` 与 \`tiddlywiki_put\` 共用同一套写策略（同样保留原类型/tags/字段，也支持 \`fields\`）。
-
-知识库同步纪律（三条）：
-1. 开工先 pull：\`tiddlywiki_git_sync action=pull\`（rebase + autostash；真冲突会自动 abort 并报冲突文件）。
-2. 收工 commit + push：\`tiddlywiki_git_sync action=sync\`（pull → commit → push）。
-3. 插件会自动防抖 commit（默认 60s），手动同步用上面的工具。
-
-pull 冲突后：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep-local\`（保留本地）或 \`strategy=keep-remote\`（改用远端版本），再重新 pull/sync 整合其余改动。
-
-把 wiki 当作长期记忆与知识沉淀的地方：会议纪要、决策记录、调研笔记、随手的想法都可存成独立 tiddler（tag 建议用 inbox/meeting/decision 等便于检索）。
-
-**把有价值但不在当前执行范围内的想法沉淀进 wiki**：遇到「未来可能有用 / 值得做」的想法、或不在当前任务范围内但有实现价值的事项时，用 \`tiddlywiki_put\` 写成独立 tiddler，打上 \`todo\` + \`agent-written\` 标签（并附当前工作区名），正文简要说明来源（会话 / 工作区 / 项目背景），方便日后回溯，由用户决定是否继续。
-
-用本插件自动创建笔记时，除了业务性 tag 外，请把「当前工作区（项目）的名字」也作为标签之一加上去（例如 \`tiddlywiki_put\` 的 tags 里带上当前 workspace 名），这样笔记能按项目归集、检索。
-
-**Agent 笔记标签约定**：\`tiddlywiki_put\` / \`tiddlywiki_batch_put\` 新建笔记时，插件会自动补打 \`agent-written\` 标签（标记「由 Agent 撰写」），无需手动添加，也不要手动移除它（除非用户明确要求）。首页会把 Agent 笔记单独列在「Agent 区块」，主标签列表只统计人类笔记。若某篇 Agent 笔记后续被人类编辑过，请在该笔记上补打 \`human-edited\` 标签，首页会把它归入「Agent + 人工」档。覆盖写入已有的（人类）笔记时不会自动加 agent-written，请保持笔记原本的归属。
-
-**内容类型约定**：agent 笔记正文默认用 **Markdown** 写；**只有新建**条目且未指定内容类型时工具才自动按 \`text/markdown\` 写入（\`$:/\` 系统条目除外）——**覆盖或追加既有条目时保留它原有的 \`type\`**（\`text/css\`、\`text/vnd.tiddlywiki\`、JS 等都不会被改掉；类型真的变了回执会明说）。要改内容类型就显式传 \`fields: {"type": "text/vnd.tiddlywiki"}\`。⚠️ \`fields.type\` 是 TW 的**内容类型**保留字段——不要把业务分类值（如 \`"meeting"\`）写进去（会破坏渲染），业务分类请放 \`tags\`。
-
-**引用 wiki 笔记用可点击链接**：在回复流中引用某篇笔记时，用格式 \`[标题](/dsh-tiddlywiki/tw/#标题)\` 输出（标题含空格/特殊字符时做 URL 编码，如 \`A%20B\`；中文标题可直接写）。这类链接会被界面自动接管：点击后打开中央 TW 面板并跳转到该笔记的原生页面。回复里也优先用这个链接格式代替纯文本标题，让用户能一键跳到 wiki。`
 
 /**
  * Mount the host half.
@@ -353,9 +338,45 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     for (const dispose of disposers.splice(0)) dispose()
   }
 
-  // System prompt section (independent of the wiki service).
-  const disposeSection = ctx.systemPrompt.section({ name: PROMPT_SECTION_NAME, order: PROMPT_SECTION_ORDER, text: PROMPT_TEXT })
-  ctx.effect(() => disposeSection, 'dsh-tiddlywiki: prompt section')
+  // ── System prompt section (v0.21.0: configurable + live) ──────────────────
+  // The section text is built from the EFFECTIVE config (cordis base + config
+  // tiddler overlay), so the settings page controls it. DSH emits
+  // `system-prompt/change` on registration/disposal and re-renders the section
+  // in history, so a settings save applies to the CURRENT session from its next
+  // model step — no dsh web restart, no new session (the pre-v0.21 behaviour).
+  //
+  // `applyPrompt()` is called (a) after the wiki is up and the config tiddler
+  // has been loaded, and (b) after every settings-page save (admin route →
+  // `onConfigChanged`). Re-registration is skipped when the built text is
+  // unchanged, so saving an unrelated setting never churns the prompt.
+  let disposePromptSection: (() => void) | undefined
+  let currentPromptText: string | undefined
+  /** Built text for the current effective config (also the preview endpoint). */
+  const promptText = (): string => {
+    const p = (eff().prompt ?? {}) as PromptConfig
+    return buildPromptText({
+      enabled: p.enabled !== false,
+      mode: normalizePromptMode(p.mode),
+      extra: typeof p.extra === 'string' ? p.extra : '',
+      override: typeof p.override === 'string' ? p.override : '',
+      // Signature catalogue for `full` mode comes from the live tool registry,
+      // never from hand-written prose (v0.21.0 — the old copy had drifted).
+      tools: tiddlywikiToolSummary(),
+    })
+  }
+  const applyPrompt = (): void => {
+    const next = promptText()
+    if (next === currentPromptText) return
+    currentPromptText = next
+    disposePromptSection?.()
+    disposePromptSection = undefined
+    if (next.length === 0) return
+    disposePromptSection = ctx.systemPrompt.section({ name: PROMPT_SECTION_NAME, order: PROMPT_SECTION_ORDER, text: next })
+  }
+  disposers.push(() => {
+    disposePromptSection?.()
+    disposePromptSection = undefined
+  })
 
   // TW child server.
   const server = new WikiServer({
@@ -469,6 +490,9 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     restartWiki: async () => { await server.restart() },
   }
   disposers.push(...registerTiddlywikiTools(ctx, toolsDeps))
+  // Register the prompt section only AFTER the tools: `full` mode's signature
+  // catalogue is generated from the registry filled by that call (v0.21.0).
+  applyPrompt()
 
   // Bring the wiki up, load the override config, then bootstrap git + committer.
   //
@@ -487,6 +511,9 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         return
       }
       await configStore.load(client())
+      // The config tiddler may carry prompt.* overrides: rebuild the already
+      // registered section so a saved preference applies without a restart.
+      applyPrompt()
       if (disposed) {
         await server.stop().catch(() => undefined)
         return
@@ -650,6 +677,14 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       getWikiPath: () => wikiPath,
       twRoot: resolveTwRoot,
       config: configStore,
+      // A settings-page save may change prompt.*: re-register the section (no
+      // dsh web restart) and expose the built text for the preview panel.
+      onConfigChanged: () => applyPrompt(),
+      getPrompt: () => ({
+        enabled: eff().prompt?.enabled !== false,
+        mode: normalizePromptMode(eff().prompt?.mode),
+        text: promptText(),
+      }),
       seeds: {
         checkAll: async (c) => checkAllSeeds({ client: c }),
         run: async (c, id, force) => runSeedById({ client: c }, id, force),

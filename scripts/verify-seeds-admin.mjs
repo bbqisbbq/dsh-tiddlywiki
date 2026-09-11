@@ -14,11 +14,14 @@ import {
   TiddlyWebClient,
   ConfigStore,
   TW_PROXY_PATH,
+  buildPromptText,
   registerAdminRoutes,
+  registerTiddlywikiTools,
   runAllSeeds,
   checkAllSeeds,
   runSeedById,
   removeSeedById,
+  tiddlywikiToolSummary,
 } from '../lib/index.js'
 
 const ROUTE_PREFIX = '/dsh-tiddlywiki'
@@ -39,12 +42,37 @@ const webServer = {
 }
 
 let clientRef = undefined
+// Fill the tool registry exactly like the plugin's startup does, so the prompt
+// preview below is built from the REAL tool summaries (v0.21.0).
+registerTiddlywikiTools(
+  { tools: { register: () => () => {} } },
+  { wiki: () => clientRef, git: {}, wikiPath: () => join(root, 'main'), autoCommit: () => {} },
+)
+let configChanged = 0
 const deps = {
   server,
   getClient: () => clientRef,
   getWikiPath: () => join(root, 'main'),
   twRoot: () => root,
   config: new ConfigStore({}),
+  // v0.21.0: the settings page save must notify the plugin so it can
+  // re-register its prompt section without a dsh web restart.
+  onConfigChanged: () => { configChanged += 1 },
+  getPrompt: () => {
+    const p = deps.config.get().prompt ?? {}
+    const enabled = p.enabled !== false
+    return {
+      enabled,
+      mode: p.mode === 'full' ? 'full' : 'slim',
+      text: buildPromptText({
+        enabled,
+        mode: p.mode,
+        extra: typeof p.extra === 'string' ? p.extra : '',
+        override: typeof p.override === 'string' ? p.override : '',
+        tools: tiddlywikiToolSummary(),
+      }),
+    }
+  },
   seeds: {
     checkAll: async (c) => checkAllSeeds({ client: c }),
     run: async (c, id, force) => runSeedById({ client: c }, id, force),
@@ -148,6 +176,38 @@ try {
   console.log('final statuses:', finalStatuses.items?.map((i) => `${i.id}:${i.present}`).join(' '))
   const presentIds = finalStatuses.items.filter((i) => i.present).map((i) => i.id).sort()
   if (JSON.stringify(presentIds) !== JSON.stringify([...coreIds].sort())) throw new Error('after remove-all only core seeds remain present')
+
+  // 8. v0.21.0 — 注入提示词的预览与「改配置即生效」接线。
+  //    GET /admin/prompt 必须回 host 实时拼出的文本；POST /admin/config 必须
+  //    触发 onConfigChanged（插件据此重新注册 prompt section，无需重启 dsh web）。
+  let promptRes = await fetch(`${base}${ROUTE_PREFIX}/admin/prompt`)
+  let promptData = await promptRes.json()
+  console.log('prompt (default):', promptRes.status, promptData.mode, promptData.length)
+  if (promptRes.status !== 200 || promptData.ok !== true) throw new Error('GET /admin/prompt must answer 200 ok')
+  if (promptData.mode !== 'slim') throw new Error('default prompt mode must be slim')
+  if (!promptData.text.includes('同步纪律')) throw new Error('prompt text must carry the sync discipline')
+  if (/tiddlywiki_[a-z_]+`（[a-z?]/u.test(promptData.text)) throw new Error('slim prompt must not carry a parameter catalogue')
+
+  configChanged = 0
+  let saved = await post(`${base}${ROUTE_PREFIX}/admin/config`, { prompt: { mode: 'full', extra: '团队规范：动手前先看 wiki。' } })
+  if (saved.status !== 200 || saved.json?.ok !== true) throw new Error(`saving prompt config failed: ${JSON.stringify(saved.json)}`)
+  if (configChanged !== 1) throw new Error(`onConfigChanged must fire exactly once per save (got ${configChanged})`)
+  promptData = await (await fetch(`${base}${ROUTE_PREFIX}/admin/prompt`)).json()
+  console.log('prompt (full+extra):', promptData.mode, promptData.length)
+  if (promptData.mode !== 'full') throw new Error('saved mode must reach the preview')
+  if (!promptData.text.includes('tiddlywiki_search')) throw new Error('full prompt must list the tool catalogue')
+  if (!promptData.text.endsWith('团队规范：动手前先看 wiki。')) throw new Error('extra must be appended at the end')
+
+  saved = await post(`${base}${ROUTE_PREFIX}/admin/config`, { prompt: { enabled: false } })
+  if (saved.status !== 200) throw new Error('disabling the prompt must save')
+  promptData = await (await fetch(`${base}${ROUTE_PREFIX}/admin/prompt`)).json()
+  console.log('prompt (disabled):', promptData.enabled, JSON.stringify(promptData.length))
+  if (promptData.enabled !== false || promptData.text !== '') throw new Error('disabled prompt must render empty text')
+
+  // The preview is a READ route: a POST must be rejected by method check.
+  const promptPost = await post(`${base}${ROUTE_PREFIX}/admin/prompt`, {})
+  console.log('POST /admin/prompt:', promptPost.status)
+  if (promptPost.status !== 405) throw new Error(`POST /admin/prompt must be 405, got ${promptPost.status}`)
 
   await new Promise((resolveP) => mini.close(() => resolveP()))
   dispose()

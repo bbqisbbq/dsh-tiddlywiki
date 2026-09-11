@@ -27,6 +27,7 @@ import { invalidateUiConfig } from './ui-config.ts'
 import {
   ADMIN_CONFIG_ENDPOINT as CONFIG_ENDPOINT,
   ADMIN_INFO_ENDPOINT as INFO_ENDPOINT,
+  ADMIN_PROMPT_ENDPOINT as PROMPT_ENDPOINT,
   ADMIN_RESTART_ENDPOINT as RESTART_ENDPOINT,
   ADMIN_SEEDS_ENDPOINT as SEEDS_ENDPOINT,
   ADMIN_SEEDS_REMOVE_ENDPOINT as SEEDS_REMOVE_ENDPOINT,
@@ -82,7 +83,7 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 /** Form controls registry for the config section (changed-only patch). */
 interface ConfigField {
   key: string
-  input: HTMLInputElement | HTMLSelectElement
+  input: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
   initial: string | boolean | number
   read: () => string | boolean | number
   changed: () => boolean
@@ -248,6 +249,22 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     fields.push({ key, input: select, initial, read: () => select.value, changed: () => select.value !== initial })
     section.append(wrap)
   }
+  /**
+   * Multi-line free text (v0.21.0: `prompt.extra` / `prompt.override`).
+   * The DOM value keeps the user's newlines; only the OUTER whitespace is
+   * trimmed by `read()` (that is what the host stores), so "unchanged" stays
+   * stable across a refresh that re-renders from the server round-trip.
+   */
+  const areaField = (key: string, label: string, initial: string, rows: number): HTMLTextAreaElement => {
+    const input = make('textarea', 'dsh-tw-settings-input dsh-tw-settings-area')
+    input.rows = rows
+    input.value = initial
+    const wrap = make('label', 'dsh-tw-settings-field dsh-tw-settings-field-area')
+    wrap.append(make('span', 'dsh-tw-settings-label', label), input)
+    fields.push({ key, input, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
+    section.append(wrap)
+    return input
+  }
 
   textField('note.tag', '快速笔记默认 tag', typeof note.tag === 'string' ? note.tag : 'inbox')
   checkField('git.autoCommit', '自动 commit（防抖）', git.autoCommit !== false)
@@ -274,6 +291,47 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   textField('ui.sendToAgent.token', '共享 token（非空时路由校验 x-send-to-agent-token 头；已设置时显示为 ********，原样保存=不改，清空=删除）', typeof sendToAgent.token === 'string' ? sendToAgent.token : '')
   const allArticles = (ui.allArticles ?? {}) as Record<string, unknown>
   numField('ui.allArticles.pageSize', '「所有文章」每页条数', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10)
+
+  // ── 系统提示词（v0.21.0）────────────────────────────────────────────────
+  const prompt = (config.prompt ?? {}) as Record<string, unknown>
+  section.append(make('h3', 'dsh-tw-settings-h', '系统提示词（注入每个会话）'))
+  section.append(make('div', 'dsh-tw-settings-muted', '插件把自己的约定（同步纪律 / 标签约定 / 链接格式等）注入每个会话的系统提示词。保存后**无需重启 dsh web**：section 会即时重新注册，当前会话从下一步起就使用新文本。'))
+  checkField('prompt.enabled', '注入 TiddlyWiki 提示词（关闭后本插件不再注入任何文本）', prompt.enabled !== false)
+  selectField('prompt.mode', '内置文本形态', prompt.mode === 'full' ? 'full' : 'slim', [
+    { value: 'slim', label: '精简（默认）：只保留工具 schema 表达不了的约定' },
+    { value: 'full', label: '完整：额外附一份由工具注册表实时生成的参数索引' },
+  ])
+  areaField('prompt.extra', '附加说明（永远追加在末尾，可放团队/个人规范）', typeof prompt.extra === 'string' ? prompt.extra : '', 5)
+  areaField('prompt.override', '整段替换（非空时取代上面的内置文本，附加说明仍会追加）', typeof prompt.override === 'string' ? prompt.override : '', 8)
+  const preview = make('button', 'dsh-tw-settings-btn', '查看当前注入文本')
+  preview.type = 'button'
+  preview.title = '读取 host 端实时生成的提示词全文（保存后即为下一步注入的内容）'
+  const previewOut = make('pre', 'dsh-tw-settings-prompt-preview')
+  previewOut.hidden = true
+  preview.addEventListener('click', () => {
+    if (!previewOut.hidden) {
+      previewOut.hidden = true
+      previewOut.textContent = ''
+      return
+    }
+    preview.disabled = true
+    void (async () => {
+      try {
+        const data = await fetchJson<{ ok?: boolean; enabled?: boolean; mode?: string; length?: number; text?: string; error?: string }>(PROMPT_ENDPOINT)
+        if (data.ok !== true) throw new Error(data.error ?? '获取失败')
+        previewOut.textContent = data.enabled === false
+          ? '（已关闭：不会注入任何提示词）'
+          : `# 形态 ${data.mode ?? ''} · ${data.length ?? 0} 字符\n\n${data.text ?? ''}`
+        previewOut.hidden = false
+      } catch (err) {
+        toast(`读取提示词失败：${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        preview.disabled = false
+      }
+    })()
+  })
+  section.append(preview, previewOut)
+
   const bridge = (config.bridge ?? {}) as Record<string, unknown>
   checkField('bridge.enabled', '启用「本地剪藏桥」（书签小工具后端监听 127.0.0.1 端口，保存后立即生效）', bridge.enabled === true)
   numField('bridge.port', '剪藏桥端口（改端口需重启 dsh web 生效）', typeof bridge.port === 'number' && bridge.port > 0 ? bridge.port : 8618)

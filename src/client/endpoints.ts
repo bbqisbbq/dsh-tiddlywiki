@@ -35,6 +35,8 @@ export const RESTART_ENDPOINT = `${ROUTE_PREFIX}/restart`
 export const SESSION_SUMMARY_ENDPOINT = `${ROUTE_PREFIX}/session/summary`
 
 export const ADMIN_STATE_ENDPOINT = `${ROUTE_PREFIX}/admin/state`
+/** Built system-prompt text preview (v0.21.0). */
+export const ADMIN_PROMPT_ENDPOINT = `${ROUTE_PREFIX}/admin/prompt`
 export const ADMIN_INFO_ENDPOINT = `${ROUTE_PREFIX}/admin/info`
 export const ADMIN_CONFIG_ENDPOINT = `${ROUTE_PREFIX}/admin/config`
 export const ADMIN_RESTART_ENDPOINT = `${ROUTE_PREFIX}/admin/restart`

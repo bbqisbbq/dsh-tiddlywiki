@@ -312,6 +312,21 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   outline: none; border-color: var(--dsw-alias-brand-primary, #3e63dd);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 22%, transparent);
 }
+/* 多行自由文本（v0.21.0 系统提示词 extra/override）：占满整行、等宽、可纵向拉伸。 */
+.dsh-tw-settings-field-area { flex-direction: column; align-items: stretch; gap: 4px; }
+.dsh-tw-settings-field-area .dsh-tw-settings-label { flex: 0 0 auto; padding-top: 0; }
+.dsh-tw-settings-area {
+  flex: 1 1 auto; max-width: 100%; min-height: 64px; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.5;
+}
+/* 提示词预览：只读、等宽、限高滚动（长提示词数千字符）。 */
+.dsh-tw-settings-prompt-preview {
+  margin: 0; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.5;
+  padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
+  background: var(--dsw-alias-bg-input, rgba(128,128,128,.06)); color: var(--dsw-alias-label-primary, #222);
+}
 .dsh-tw-settings-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow: auto; }
 .dsh-tw-settings-plugin { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 12px; }
 .dsh-tw-settings-plugin:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.08)); }

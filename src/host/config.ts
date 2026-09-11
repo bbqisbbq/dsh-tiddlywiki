@@ -38,6 +38,14 @@ export interface PluginConfigShape {
    */
   bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
   note?: { tag?: string }
+  /**
+   * 注入给每个会话的系统提示词（v0.21.0）。默认 `slim`：只保留工具 schema
+   * 表达不了的治理约定（同步纪律 / 标签 / 链接格式），不再手抄工具参数；
+   * `full` 额外附一份**由工具注册表实时生成**的参数索引（永不过期）。
+   * `override` 整段替换内置正文，`extra` 永远追加在最后。
+   * 设置页保存后无需重启 dsh web：section 会重新注册，当前会话下一步即生效。
+   */
+  prompt?: { enabled?: boolean; mode?: 'slim' | 'full'; extra?: string; override?: string }
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
   ui?: {
     /** 是否在界面右下角显示「快速笔记」悬浮按钮（默认 true）。 */

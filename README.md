@@ -25,6 +25,7 @@
 |---|---|
 | 🏠 **文档中心起步包** | 首次安装自动 seed：插件说明 + 「示例与文档」（主题汇总模板 / 教程 / 三个示例主题页），首页「📚 插件文档」栏一键查阅；**同名 tiddler 已存在一律安全跳过，绝不覆盖你的数据**（v0.16.22） |
 | 🎨 **自定义样式** | 「自定义样式」seed：编辑器美化 / 窄屏侧栏隐藏 / menubar 加高 / 批注弹窗等 5 张通用样式表，新 wiki 也能一键初始化（可选，v0.16.22） |
+| 📝 **可配置的注入提示词** | 插件注入每个会话的「TiddlyWiki 持久知识库」提示词可在设置页配置：**默认精简版**（~1.7KB，只保留工具 schema 表达不了的约定——同步纪律 / 标签约定 / 链接格式），可选**完整版**（额外附一份**由工具注册表实时生成**的参数索引，不会再过期）；`extra` 追加自定义规范、`override` 整段接管、可整体停用；**保存后无需重启 dsh web**（section 即时重注册，当前会话下一步即生效），设置页可**预览**即将注入的全文（v0.21.0） |
 | 🤖 **Agent 工具** | 15 个 `tiddlywiki_*` 工具：检索（**相关度排序 + 命中处片段 + 字段过滤**）、读写、**增量追加**、批量、重命名、**软删除/回收站**、**反向链接**、**附件入库**、**知识库体检**、git 同步与冲突解决（v0.19.0；检索/最近仍在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
 | 🛡️ **不会被覆盖的写入** | 所有写入路径（agent 工具 **与** 快速笔记/编辑器路由）都**先读后写**：不传 tags 就保留原有标签、自定义字段与**内容类型**（`text/css`/wikitext 等不会被重置成 Markdown，v0.20.1）；`tiddlywiki_put(..., expectedModified/expectedRevision)` 与 `tiddlywiki_delete(..., expectedModified/expectedRevision)` 乐观并发——读取后若有人（在 TW 编辑器里）改过，写入/删除被拒绝（HTTP 409）而不是静默覆盖或丢进回收站；`tiddlywiki_attach` 的同名标题**默认拒绝**（要覆盖必须 `force: true`）；`tiddlywiki_delete` 默认**软删除进回收站**，`tiddlywiki_trash` 可恢复（v0.19.0 / v0.19.1 / v0.19.5） |
 | 🧼 **渲染片段净化** | 回复流卡片与会话汇总注入的 TW 片段先经 **host 白名单净化**（丢 `iframe`/`script`/`svg`/`on*`/`javascript:`/`data:text/html` 等）——TW 自己的解析器只剥 `on*`，`<iframe src="javascript:…">` 会原样通过并在 DSH 页面里执行（v0.19.1 修复的存储型 XSS） |
@@ -108,6 +109,21 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 > ⚠️ `fields.type` 是 TW 的**内容类型保留字段**（`text/markdown` 等），业务分类请放 `tags`，别写进 `fields.type`。
 
+### 🧠 注入的系统提示词（可配置）
+
+插件会往每个会话的系统提示词里注入一段「TiddlyWiki 持久知识库」约定（**设置页 → 系统提示词**）：
+
+| 配置 | 作用 |
+|---|---|
+| `prompt.enabled` | 关掉后本插件不注入任何文本 |
+| `prompt.mode` | `slim`（**默认**）：只保留工具 schema 表达不了的约定（写入/并发纪律、同步纪律、标签约定、可点击链接格式）；`full`：额外附一份**参数索引**，由工具注册表在运行时生成，因此永远不会与真实工具脱节 |
+| `prompt.extra` | 追加在末尾的自定义规范（团队 / 个人偏好），始终生效 |
+| `prompt.override` | 非空时整段取代内置文本（`extra` 仍会追加）——想完全自写提示词时用 |
+
+保存后**不用重启 dsh web**：host 会即时重新注册 prompt section，当前会话从**下一步**起就使用新文本（DSH 的 `system-prompt/change` 会更新历史里的系统消息）。设置页的「查看当前注入文本」按钮会读取 host 实时拼好的全文，所见即下一步实际注入的内容。
+
+> 为什么默认精简：v0.20.1 之前这段提示词里手抄了一份**工具参数清单**，最后一次同步停在 v0.19.0，而 v0.19.4 / v0.19.5 / v0.20.1 都改过工具参数——模型因此看到 6 处过期签名（`delete` 缺并发令牌、`append` 缺 `fields`、`attach` 缺覆盖保护、`batch_put` 缺 `overwrite`、`trash` 缺 `title`/`limit`、`list_tags` 缺 `limit`）。v0.21.0 起：默认形态不再复述参数（工具 description 才是唯一事实），`full` 形态的目录改为**运行时生成**，并新增 `scripts/verify-prompt.mjs` 守门（slim 不得出现参数清单 / full 的每个工具与每个参数都必须在场 / 两种形态都必须保留治理约定块）。
+
 ### 🧑‍💻 界面操作
 
 - **📤 发送给 Agent**：TW 工具栏按钮（首次启动自动写入 wiki，ONE-SHOT）。弹层可选**附加说明**（位于消息末尾）、**工作模式**（Agent 预设）、**权限**（权限预设），按工作区分组选会话或新建。消息自带待办说明。
@@ -162,6 +178,11 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       branch: "main"
     note:
       tag: "inbox"                     # 快速笔记默认 tag
+    prompt:
+      enabled: true                    # false = 本插件不注入任何提示词
+      mode: "slim"                     # slim（默认：只留约定）/ full（+ 由工具注册表实时生成的参数索引）
+      extra: ""                        # 追加在提示词末尾的自定义规范（团队/个人偏好）
+      override: ""                     # 非空时整段取代内置文本（extra 仍会追加）
     bridge:
       enabled: false                   # 本地剪藏桥（书签小工具）；保存后立即生效
       port: 8618                       # 监听端口（127.0.0.1；改后需重启 dsh web 才绑定新端口）
@@ -186,7 +207,7 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       password: ""                     # 非空时插件内置客户端/就绪探测/浏览器代理都带 Basic 认证（v0.18.0 起真正可用）
 ```
 
-> **运行时配置**：设置页写入的 `$:/plugins/dsh-tiddlywiki/config` tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki git 同步），改 note tag / git / ui 开关**以及剪藏桥端口**都无需动 cordis（端口改动仍需重启 dsh web 重新绑定监听）。
+> **运行时配置**：设置页写入的 `$:/plugins/dsh-tiddlywiki/config` tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki git 同步），改 note tag / git / ui 开关 / **注入提示词（`prompt.*`）** 都无需动 cordis；**提示词改动保存后立即生效**（section 即时重注册，当前会话下一步生效），剪藏桥端口改动仍需重启 dsh web 重新绑定监听。
 
 ---
 
@@ -212,6 +233,7 @@ node scripts/verify-send-to-agent-bundle.mjs  # bundle 字段 + 源件逐字一�
 node scripts/verify-seed-send-to-agent.mjs    # 全新 wiki 上的 seed E2E
 node scripts/verify-clip-bridge.mjs   # 剪藏桥 headless 验收（含 SSRF 守卫）
 node scripts/verify-seeds-admin.mjs   # /admin/seeds 状态与 run 的 E2E
+node scripts/verify-prompt.mjs        # 注入提示词守门（slim 无参数清单 / full 与工具注册表逐项一致 / 治理约定不丢）
 ```
 
 > 📦 从 **npm 包**安装的用户只有 `lib/` + `src/` + `docs/`（`scripts/` 不在发布包里，避免把构建脚本塞进依赖树）——想跑上面的验收脚本请用 git 仓库：`git clone https://github.com/bbqisbbq/dsh-tiddlywiki && npm install`。
@@ -255,6 +277,7 @@ node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/<样式.css>' … src/host/
 | `/dsh-tiddlywiki/api/*` | any | 透传 TW 服务（JSON） |
 | `/dsh-tiddlywiki/tw/*` | any | 同源 TW 代理（远程访问核心） |
 | `/dsh-tiddlywiki/admin/seeds` `/run` `/remove` | GET/POST | seed 状态 / 运行 / 反初始化 |
+| `/dsh-tiddlywiki/admin/prompt` | GET | 当前注入提示词全文（设置页预览用，v0.21.0） |
 
 ### 项目结构
 
@@ -273,6 +296,7 @@ src/
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/*
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层
 │   ├── seeds.ts        # 统一 seed 注册表（10 项，三层：核心/起步/可选）
+│   ├── prompt.ts       # 系统提示词（v0.21.0）：slim/full 两种形态 + extra/override，full 的目录由工具注册表实时生成
 │   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量脚本生成；starter-docs/menubar/clip-bridge 手工维护）
 │   └── tools.ts        # 15 个 tiddlywiki_* 工具（列表式注册）
 └── client/             # 浏览器半部
@@ -297,6 +321,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.21.0**（2026-09-11）：**注入提示词改为「默认精简 + 可配置 + 不再过期」**。旧提示词手抄了一份工具参数清单，最后一次同步停在 v0.19.0，此后 v0.19.4（`list_tags limit`）、v0.19.5（`delete`/`attach`/`batch_put` 并发令牌与 `attach` 默认拒绝同名覆盖）、v0.20.1（`append` 的 `fields`）都改过工具层——模型实际看到 **6 处过期签名**。现在：① 新增 `prompt.{enabled,mode,extra,override}` 配置（设置页「系统提示词」区块）：默认 `slim`（~1.7KB，只保留工具 schema 表达不了的约定：写入/并发纪律、同步纪律、标签约定、可点击链接格式），`full` 形态额外附参数索引但**由 `tiddlywikiToolSummary()` 从注册表实时生成**，不可能再脱节；② **保存后无需重启 dsh web**——section 即时重新注册，当前会话从下一步起生效（DSH `system-prompt/change` 会更新历史里的系统消息），设置页还能一键**预览**即将注入的全文（`GET /admin/prompt`）；③ 用户文本里的 `{{…}}` 会被转义（DSH 对未知变量直接抛错，会炸掉整个系统提示词装配）；④ 守门：新增 `scripts/verify-prompt.mjs`（slim 不得出现参数清单 / full 的每个工具与每个参数都必须在场 / 两种形态都必须保留治理约定块 / 转义与 extra-override 语义），已进 `verify:unit`。
 
 - **v0.20.1**（2026-09-11）：**修复「覆盖已有条目时内容类型被静默重置」**（数据正确性）。`tiddlywiki_put` / `tiddlywiki_append` / `tiddlywiki_batch_put` 覆盖既有条目时会丢掉它的 `type`：`cleanTiddler()` 把 `type` 当成「构造 PUT body 时跳过的字段」，于是 `finalTypeForWrite()` 再补默认值——`put` 把 `text/css` 的样式条目改成 `text/markdown`（整篇 CSS 被当 Markdown 渲染、样式静默失效）、把 wikitext 笔记改成 Markdown；`append` 更彻底：它自己手写 PUT body，连 `type` 都不写，TW 于是回落 `text/vnd.tiddlywiki`（磁盘上 `.md` + `.meta` 变成 `.tid`，`##`/`**粗体**`/表格全按 wikitext 解析）。现在：**覆盖路径一律保留原 `type`**，Markdown 默认值只给**新建**条目（`$:/` 系统条目除外）；`tiddlywiki_append` 与 `put` 共用同一套写策略（`buildWriteTiddler`），并补上了此前缺失的 `fields` 参数；`rename` 与回收站恢复同样不再丢类型。回执也补了诚实提示：新建默认时写「新建且未指定，已默认 markdown」，覆盖时若类型真的变了会写「⚠️ 内容类型已从 X 改为 Y」。守门：新增 `scripts/verify-write-policy.mjs`（7 条纯函数单测，已进 `verify:unit`）与 `verify-audit-fixes.mjs` 的 6 条 E2E（css 保持 css / wikitext 保持 wikitext / markdown 追加不变 / 新建仍默认 markdown / `fields.type` 是唯一改类型入口 / rename+回收站恢复保类型）。
 

@@ -295,6 +295,17 @@ export interface AdminDeps {
   getWikiPath: () => string
   twRoot: () => string
   config: ConfigStore
+  /**
+   * Called after a successful settings-page save (v0.21.0). The plugin rebuilds
+   * its system-prompt section here, so a prompt.* edit applies to the running
+   * session from its next model step — without restarting dsh web.
+   */
+  onConfigChanged?: () => void
+  /**
+   * The system-prompt text that WOULD be injected right now, for the settings
+   * page preview (v0.21.0). Read-only; absent in headless contexts.
+   */
+  getPrompt?: () => { enabled: boolean; mode: string; text: string }
   /** Seed registry for the settings-page "初始化" section. */
   seeds: {
     checkAll: (client: TiddlyWebClient) => Promise<Array<{ id: string; title: string; description: string; present: boolean; removable: boolean; detail?: string }>>
@@ -566,6 +577,9 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       // Never persist the masked placeholders the page read back from /state
       // (v0.19.3): saving an untouched form must not clobber a real token.
       await deps.config.set(client, stripMaskedSecrets(body as Record<string, unknown>, deps.config.get()) as PluginConfigShape)
+      // prompt.* may have changed: let the plugin re-register its prompt
+      // section now (a no-op when the built text is unchanged).
+      deps.onConfigChanged?.()
       json(res, { ok: true, config: maskConfigSecrets(deps.config.get()) })
     } catch (err) {
       // Not a blanket 400 (v0.19.5): a refused/dead wiki client surfaces as a
@@ -679,9 +693,30 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     }
   }
 
+  /**
+   * GET /dsh-tiddlywiki/admin/prompt — the system-prompt text that would be
+   * injected right now, with the effective mode/enabled flag (v0.21.0). The
+   * settings page renders it verbatim so a prompt edit is never a black box.
+   * Read-only + CSRF-hardened like every other admin read.
+   */
+  const handlePrompt = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectNonRead(req, res)) return
+      const prompt = deps.getPrompt?.()
+      if (prompt === undefined) {
+        json(res, { ok: false, error: 'prompt preview is not available' }, 503)
+        return
+      }
+      json(res, { ok: true, enabled: prompt.enabled, mode: prompt.mode, length: prompt.text.length, text: prompt.text })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
   // Same rejection safety net as routes.ts (v0.19.3).
   const disposers = [
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/state`, handler: guardHandler(handleState) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/prompt`, handler: guardHandler(handlePrompt) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/info`, handler: guardHandler(handleInfo) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/config`, handler: guardHandler(handleConfig) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/restart`, handler: guardHandler(handleRestart) }),
