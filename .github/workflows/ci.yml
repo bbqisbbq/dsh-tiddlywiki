@@ -1,0 +1,155 @@
+# dsh-tiddlywiki CI
+#
+# 分层：先快后慢。`static`（秒~分钟级：类型检查 / 构建 / 静态一致性守门）先跑，
+# 其余三个作业都 `needs: static` —— 构建或静态守门一挂，就不再浪费后面 spawn 真实
+# TW 的几十分钟。
+#
+# fail-fast：所有 step 都不加 `continue-on-error`，任何一步失败即中止该 job
+# （GitHub Actions 的默认行为）。
+#
+# 故意**不进 CI** 的脚本（都依赖本机环境；各自文件头部也注明了原因，缺依赖时它们
+# 会 SKIP 或要求 TW_URL，在 CI 上只会给出无意义的「未验证」）：
+#   - scripts/verify-clip-bridge-browser.mjs  真实 TW + 无头 Chrome/Edge
+#   - scripts/verify-menubar-theme.mjs        需要 TW_URL 指向在线 wiki + Chrome/Edge
+#   - scripts/verify-theme-browser.mjs        需要本机 Chrome/Edge + puppeteer-core
+#
+# 这些脚本请在有桌面 Chrome/puppeteer 的开发机上手动运行。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 快：纯静态守门（不 spawn TW） ──────────────────────────────────────────
+  static:
+    name: static（类型 / 构建 / 静态守门）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 22（带 npm 缓存）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: 类型检查（tsc --noEmit）
+        run: npm run typecheck
+      - name: 构建 lib/
+        run: npm run build
+      - name: lib/ 必须与 src/ 同步（改了 src 忘了 npm run build）
+        run: |
+          set -euo pipefail
+          git diff --exit-code --stat -- lib/
+          if [ -n "$(git status --porcelain -- lib/)" ]; then
+            echo "::error::lib/ 存在未提交/未跟踪的构建产物 —— 改了 src 请跑 npm run build 并把 lib/ 一并提交"
+            git status --porcelain -- lib/
+            exit 1
+          fi
+          echo "ok: lib/ 与 src/ 同步"
+      - name: lib/*.js 不得含真实的 @deepseek-ai 运行时 import
+        run: |
+          set -euo pipefail
+          # 只看真实的 import/require 语句；仓库里有 2 处**注释**提到 @deepseek-ai，
+          # 简单字符串 grep 会误报，所以这里用带 `from`/`require(` 前缀的正则。
+          if grep -nE "(from|require\()\s*['\"]@deepseek-ai" lib/*.js; then
+            echo "::error::lib/ 里出现真实的 @deepseek-ai 运行时 import —— npm 镜像的 dsh-tools 会遮蔽 CLI 内置实现、搞坏 agent 循环"
+            exit 1
+          fi
+          echo "ok: lib/ 无 @deepseek-ai 运行时 import"
+      - name: verify-send-to-agent-bundle（源件 ↔ bundle 逐字节一致）
+        run: node scripts/verify-send-to-agent-bundle.mjs
+      - name: verify-render-bundle（bundle ↔ seed-render.ts 逐字节一致）
+        run: node scripts/verify-render-bundle.mjs
+      - name: verify-package-contents（npm pack 必需/禁止路径）
+        run: node scripts/verify-package-contents.mjs
+      - name: verify-version-consistency（package.json / AGENTS §1 / README 版本记录）
+        run: node scripts/verify-version-consistency.mjs
+
+  # ── 慢：headless 核心路径 + client 冒烟 ───────────────────────────────────
+  selftest:
+    name: selftest（headless 核心路径 + client 冒烟）
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 22（带 npm 缓存）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: 构建 lib/
+        run: npm run build
+      - name: selftest（spawn TW → REST 读写 → git → 退出回收）
+        run: npm run selftest
+      - name: smoke:client（client bundle module-loader 形状）
+        run: npm run smoke:client
+
+  # ── 慢：单元/组件级 verify（不依赖完整 e2e 会话） ─────────────────────────
+  verify-unit:
+    name: verify-unit（剪藏桥 + seed 错误策略）
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 22（带 npm 缓存）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: 构建 lib/
+        run: npm run build
+      - name: verify-clip-bridge（剪藏桥 headless 验收）
+        run: node scripts/verify-clip-bridge.mjs
+      - name: verify-seed-error-policy（读取失败 ≠ 条目不存在）
+        run: node scripts/verify-seed-error-policy.mjs
+
+  # ── 慢：端到端（都要 spawn 真实 TW / 真实 git，逐条单列 step 便于定位） ──
+  verify-e2e:
+    name: verify-e2e（auth / tools / git / 自愈 / 大 wiki / seed）
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node 22（带 npm 缓存）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: npm ci
+        run: npm ci
+      - name: 构建 lib/
+        run: npm run build
+      - name: verify-auth（auth 模式端到端 + 口令不进日志）
+        run: node scripts/verify-auth.mjs
+      - name: verify-tools（10 个 tiddlywiki_* 工具层断言）
+        run: node scripts/verify-tools.mjs
+      - name: verify-git-resolve（真冲突 keep-local / keep-remote）
+        run: node scripts/verify-git-resolve.mjs
+      - name: verify-resilience（SIGKILL 自愈 + 并发写入）
+        run: node scripts/verify-resilience.mjs
+      - name: verify-large-wiki（3000 文本 + 100 二进制，3 分钟预算）
+        run: node scripts/verify-large-wiki.mjs
+      - name: verify-seed-send-to-agent（全新 wiki 上的按钮 seed）
+        run: node scripts/verify-seed-send-to-agent.mjs
+      - name: verify-seeds-admin（/admin/seeds 状态与 run）
+        run: node scripts/verify-seeds-admin.mjs

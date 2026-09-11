@@ -3,6 +3,9 @@
 // server, reads the computed menubar background under the wiki's stored light
 // palette, then flips $:/palette in-memory (exactly like theme-sync) and
 // re-checks. Dev tool: requires puppeteer-core + Chrome; else SKIP.
+// NOT part of CI (.github/workflows/ci.yml): needs a LIVE wiki (TW_URL, no
+// default — a baked-in URL could mutate someone else's wiki) plus a local
+// Chrome/Edge. Run it manually against your own running wiki.
 import { createRequire } from 'node:module'
 import { existsSync } from 'node:fs'
 

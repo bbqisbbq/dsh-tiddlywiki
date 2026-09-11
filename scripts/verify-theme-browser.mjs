@@ -8,6 +8,8 @@
 //   3. restore to light works and re-renders, 4. no page errors.
 // OPTIONAL dev tool: requires a headless Chrome/Edge AND the puppeteer-core
 // package. When either is missing the script prints SKIP and exits 0.
+// NOT part of CI (.github/workflows/ci.yml): GitHub runners lack that local
+// browser/puppeteer setup, so it would only ever print SKIP. Run it manually.
 import { createRequire } from 'node:module'
 import { mkdtemp, rm, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'

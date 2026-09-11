@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensurePlugin, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -149,6 +149,168 @@ try {
   const textGetResult = await getTool.execute({ title: '第二篇' }, undefined)
   assert(textGetResult.binary !== true && (textGetResult.text ?? '').includes('一篇中文笔记'), 'get tool still returns full text for a normal note')
   await api.delete('BigImageTool.jpg')
+
+  // 2a3. v0.19.0 tool-layer safety rails + new tools — all through the REAL
+  // registry: optimistic concurrency, incremental append, backlinks,
+  // soft-delete + trash/restore, attachment storage, lint, ranked search.
+  const putTool = toolsByName.get('tiddlywiki_put')
+  const appendTool = toolsByName.get('tiddlywiki_append')
+  const backlinksTool = toolsByName.get('tiddlywiki_backlinks')
+  const trashTool = toolsByName.get('tiddlywiki_trash')
+  const deleteTool = toolsByName.get('tiddlywiki_delete')
+  const lintTool = toolsByName.get('tiddlywiki_lint')
+  const attachTool = toolsByName.get('tiddlywiki_attach')
+  const searchTool = toolsByName.get('tiddlywiki_search')
+  assert([putTool, appendTool, backlinksTool, trashTool, deleteTool, lintTool, attachTool, searchTool].every((t) => t !== undefined), 'v0.19.0 tool set registers (put/append/backlinks/trash/delete/lint/attach/search)')
+
+  // put: fields must not hijack identity fields, and a NEW tiddler is stamped.
+  const putRes = await putTool.execute({ title: 'FieldGuard', text: 'body', fields: { title: 'Hijacked', created: '1999', type: 'text/markdown' } }, undefined)
+  const fieldGuard = await api.get('FieldGuard')
+  assert(fieldGuard?.title === 'FieldGuard', 'put: fields cannot override the title')
+  assert(fieldGuard?.created !== '1999', 'put: fields cannot override created')
+  assert(fieldGuard?.type === 'text/markdown', 'put: fields.type is the legitimate content-type override')
+  assert(putRes.tags.includes('agent-written'), 'put: a NEW tiddler is stamped agent-written')
+  await api.put({ title: 'HumanNote', text: 'by human' })
+  await putTool.execute({ title: 'HumanNote', text: 'edited by agent' }, undefined)
+  assert(!((await api.get('HumanNote'))?.tags ?? []).includes('agent-written'), 'put: overwriting a human note does NOT stamp agent-written')
+
+  // put: a text-only update must NOT drop the note's tags/custom fields
+  // (v0.19.0 data-loss fix — PUT replaces the whole tiddler, so the tool now
+  // bases the write on the existing one when `tags` is omitted).
+  await api.put({ title: 'PreserveProbe', text: 'v1', tags: ['keep-me', 'inbox'], mine: 'custom-value' })
+  await putTool.execute({ title: 'PreserveProbe', text: 'v2' }, undefined)
+  const preserved = await api.get('PreserveProbe')
+  assert((preserved?.tags ?? []).includes('keep-me'), `put without tags preserves existing tags (${JSON.stringify(preserved?.tags)})`)
+  assert(preserved?.mine === 'custom-value' || preserved?.fields?.mine === 'custom-value', 'put without fields preserves existing custom fields')
+  await putTool.execute({ title: 'PreserveProbe', text: 'v3', tags: ['new-tag'] }, undefined)
+  const replaced = await api.get('PreserveProbe')
+  assert((replaced?.tags ?? []).join(',') === 'new-tag', `explicit tags replace the whole tag set (${JSON.stringify(replaced?.tags)})`)
+
+  // put: optimistic concurrency (revision token — a freshly written tiddler has
+  // no `modified` until the syncer writes + reloads it).
+  await api.put({ title: 'ConcurrencyProbe', text: 'v1' })
+  const stale = await api.get('ConcurrencyProbe')
+  assert(typeof stale.revision === 'number', `get exposes the revision token (${JSON.stringify(stale.revision)})`)
+  await putTool.execute({ title: 'ConcurrencyProbe', text: 'agent write' }, undefined)
+  let conflictThrew = false
+  try {
+    await putTool.execute({ title: 'ConcurrencyProbe', text: 'stale write', expectedRevision: stale.revision }, undefined)
+  } catch { conflictThrew = true }
+  assert(conflictThrew, 'put: expectedRevision mismatch refuses the write (no silent lost update)')
+  assert((await api.get('ConcurrencyProbe'))?.text === 'agent write', 'put: the refused write left the note untouched')
+  const fresh = await api.get('ConcurrencyProbe')
+  await putTool.execute({ title: 'ConcurrencyProbe', text: 'matching write', expectedRevision: fresh.revision }, undefined)
+  assert((await api.get('ConcurrencyProbe'))?.text === 'matching write', 'put: a matching revision is accepted')
+  await putTool.execute({ title: 'ConcurrencyProbe', text: 'forced', expectedRevision: stale.revision, force: true }, undefined)
+  assert((await api.get('ConcurrencyProbe'))?.text === 'forced', 'put: force=true bypasses the concurrency guard')
+
+  // append: incremental write, no full-document read, section targeting.
+  await appendTool.execute({ title: 'AppendProbe', text: 'first line' }, undefined)
+  await appendTool.execute({ title: 'AppendProbe', text: 'second line' }, undefined)
+  const appended = await api.get('AppendProbe')
+  assert(appended?.text === 'first line\n\nsecond line', `append adds at the end (${JSON.stringify(appended?.text)})`)
+  assert((appended?.tags ?? []).includes('agent-written'), 'append on a missing tiddler creates it with agent-written')
+  await appendTool.execute({ title: 'AppendProbe', text: '## Section A\nA body' }, undefined)
+  await appendTool.execute({ title: 'AppendProbe', text: 'A tail', heading: 'Section A' }, undefined)
+  const sectioned = (await api.get('AppendProbe'))?.text ?? ''
+  assert(sectioned.includes('A body\n\nA tail'), `append heading= inserts inside the section (${JSON.stringify(sectioned)})`)
+  await appendTool.execute({ title: 'AppendProbe', text: 'TOP', mode: 'prepend' }, undefined)
+  assert(((await api.get('AppendProbe'))?.text ?? '').startsWith('TOP'), 'append mode=prepend inserts at the top')
+  let missingThrew = false
+  try { await appendTool.execute({ title: 'NoSuchNote', text: 'x', createIfMissing: false }, undefined) } catch { missingThrew = true }
+  assert(missingThrew, 'append createIfMissing=false refuses a missing tiddler')
+
+  // backlinks: links + tag membership.
+  await api.put({ title: 'LinkTarget', text: 'target' })
+  await api.put({ title: 'LinkSource', text: 'see [[LinkTarget]] and {{LinkTarget}}' })
+  await api.put({ title: 'TaggedWithTarget', text: 'x', tags: ['LinkTarget'] })
+  const bl = await backlinksTool.execute({ title: 'LinkTarget' }, undefined)
+  assert(bl.items.some((i) => i.title === 'LinkSource' && i.refs >= 2 && i.via === 'link'), `backlinks finds the referencing note (${JSON.stringify(bl.items)})`)
+  assert(bl.items.some((i) => i.title === 'TaggedWithTarget' && i.via === 'tag'), 'backlinks counts tag membership')
+  assert(bl.tagCount >= 1 && bl.linkCount >= 1, 'backlinks reports per-kind counts')
+
+  // delete → trash → restore → permanent.
+  await api.put({ title: 'TrashProbe', text: 'recover me', tags: ['inbox'] })
+  const softDeleted = await deleteTool.execute({ title: 'TrashProbe' }, undefined)
+  assert(softDeleted.trashed === true && softDeleted.trashTitle?.startsWith('$:/dsh-tiddlywiki/trash/'), `delete is a SOFT delete by default (${JSON.stringify(softDeleted)})`)
+  assert((await api.get('TrashProbe')) === undefined, 'soft delete removes the original title')
+  assert((await api.get(softDeleted.trashTitle))?.text === 'recover me', 'soft delete keeps the content in the trash')
+  const trashList = await trashTool.execute({ action: 'list' }, undefined)
+  assert((trashList.items ?? []).some((i) => i.of === 'TrashProbe'), `trash list shows the deleted note (${JSON.stringify(trashList.items)})`)
+  const searchAfterDelete = await searchTool.execute({ query: 'recover me' }, undefined)
+  assert(!searchAfterDelete.results.some((r) => r.title === 'TrashProbe'), 'a trashed note no longer appears in search')
+  const restoreResult = await trashTool.execute({ action: 'restore', title: 'TrashProbe' }, undefined)
+  assert(restoreResult.action === 'restore', 'trash restore reports success')
+  const restoredTid = await api.get('TrashProbe')
+  assert(restoredTid?.text === 'recover me' && (restoredTid.tags ?? []).includes('inbox'), 'restore brings back content AND tags')
+  await deleteTool.execute({ title: 'TrashProbe', permanent: true }, undefined)
+  assert((await api.get('TrashProbe')) === undefined, 'permanent=true deletes for good')
+  const trashEmpty = await trashTool.execute({ action: 'empty' }, undefined)
+  assert(trashEmpty.action === 'empty', 'trash empty reports success')
+
+  // lint: finds the class of damage the live wiki actually carries.
+  await api.put({ title: 'JunkTagProbe', text: 'x', tags: ['筛选器错误:', 'Missing', 'in'] })
+  await api.put({ title: 'BrokenLinkProbe', text: 'see [[NoSuchTiddlerAnywhere]]' })
+  const lint = await lintTool.execute({}, undefined)
+  assert(lint.issues.some((i) => i.kind === 'junk-tags' && i.count >= 1), `lint reports junk tags (${JSON.stringify(lint.issues.map((i) => i.kind))})`)
+  assert(lint.issues.some((i) => i.kind === 'broken-links' && i.samples.some((s) => s.includes('NoSuchTiddlerAnywhere'))), 'lint reports broken links')
+  await api.delete('JunkTagProbe')
+  await api.delete('BrokenLinkProbe')
+
+  // attach: a local file becomes a binary attachment tiddler, embedded in a note.
+  const attachSrc = join(tmpdir(), `dsh-tw-attach-${Date.now()}.png`)
+  await writeFile(attachSrc, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+  const attached = await attachTool.execute({ title: 'AttachProbe.png', path: attachSrc, noteTitle: 'AttachNote' }, undefined)
+  assert(attached.mime === 'image/png' && attached.bytes === 8, `attach stores the file with its mime (${attached.mime}/${attached.bytes})`)
+  const attachTid = await api.get('AttachProbe.png')
+  assert(attachTid?.type === 'image/png' && (attachTid.text ?? '').length > 0, 'attachment tiddler carries the base64 body')
+  assert(isBinaryType(attachTid?.type) === true, 'attachment registers as a binary type (excluded from search)')
+  assert(((await api.get('AttachNote'))?.text ?? '').includes('[img[AttachProbe.png]]'), 'attach embeds the image into the target note')
+  let attachBothThrew = false
+  try { await attachTool.execute({ title: 'Bad', path: attachSrc, url: 'https://example.com/x.png' }, undefined) } catch { attachBothThrew = true }
+  assert(attachBothThrew, 'attach requires exactly one of path/url')
+  let attachRelativeThrew = false
+  try { await attachTool.execute({ title: 'Bad2', path: 'relative.png' }, undefined) } catch { attachRelativeThrew = true }
+  assert(attachRelativeThrew, 'attach refuses a relative local path')
+  let attachSsrfThrew = false
+  try { await attachTool.execute({ title: 'Bad3', url: 'http://127.0.0.1:1/x.png' }, undefined) } catch { attachSsrfThrew = true }
+  assert(attachSsrfThrew, 'attach routes remote URLs through the SSRF guard (loopback refused)')
+  await rm(attachSrc, { force: true })
+
+  // search: snippet is taken AROUND the hit, and results are ranked.
+  const longPrefix = '填充文字'.repeat(200)
+  await api.put({ title: 'DeepHit', text: `${longPrefix} 深层关键词 ${longPrefix}` })
+  await api.put({ title: 'RankProbe-标题命中', text: 'nothing else' })
+  await api.put({ title: 'BodyOnlyProbe', text: 'the body merely mentions RankProbe somewhere' })
+  const deepSearch = await searchTool.execute({ query: '深层关键词' }, undefined)
+  const deepHit = deepSearch.results.find((r) => r.title === 'DeepHit')
+  assert(deepHit !== undefined && deepHit.snippet.includes('深层关键词'), `search snippet contains the match (${JSON.stringify(deepHit?.snippet?.slice(0, 40))})`)
+  const ranked = await searchTool.execute({ query: 'RankProbe' }, undefined)
+  assert(ranked.results[0]?.title === 'RankProbe-标题命中', `search ranks a title hit above a body-only hit (${JSON.stringify(ranked.results.slice(0, 2).map((r) => r.title))})`)
+  await api.delete('DeepHit')
+  await api.delete('RankProbe-标题命中')
+  await api.delete('BodyOnlyProbe')
+
+  // search: custom-field filter.
+  await api.put({ title: 'FieldSearchProbe', text: 'no keyword here', tags: ['inbox'], q: 'q1' })
+  const fieldSearch = await searchTool.execute({ query: 'FieldSearchProbe', field: 'q', value: 'q1' }, undefined)
+  assert(fieldSearch.results.some((r) => r.title === 'FieldSearchProbe'), 'search can filter on a custom field + value')
+  const fieldMiss = await searchTool.execute({ query: 'FieldSearchProbe', field: 'q', value: 'nope' }, undefined)
+  assert(fieldMiss.total === 0, 'search field filter rejects a non-matching value')
+  const limitClamp = await searchTool.execute({ query: 'a', limit: 99999 }, undefined)
+  assert(limitClamp.results.length <= 200, 'search clamps an abusive limit to 200')
+  await api.delete('FieldSearchProbe')
+
+  await api.delete('FieldGuard')
+  await api.delete('HumanNote')
+  await api.delete('PreserveProbe')
+  await api.delete('ConcurrencyProbe')
+  await api.delete('AppendProbe')
+  await api.delete('LinkTarget')
+  await api.delete('LinkSource')
+  await api.delete('TaggedWithTarget')
+  await api.delete('AttachProbe.png')
+  await api.delete('AttachNote')
 
   // 3. Git face over the wiki folder (the whitelist tiddler written by 2b2 is
   // on disk here, so this also guards the "Filename too long" regression that
@@ -304,10 +466,31 @@ try {
     queueMicrotask(() => { if (body !== undefined) req.emit('data', body); req.emit('end') })
     return req
   }
+  // Minimal ServerResponse double. It must model a real Writable because the
+  // /tw proxy now STREAMS the upstream body (`Readable.fromWeb(...).pipe(res)`)
+  // instead of buffering it — so `write`/`on`/`emit` and Buffer accumulation
+  // are part of the contract this double has to honour (v0.19.0).
   const makeRes = () => {
-    const res = { _status: 200, _payload: null }
-    res.writeHead = (code) => { res._status = code }
-    res.end = (body) => { res._payload = body }
+    const res = new EventEmitter()
+    res._status = 200
+    res._payload = null
+    res._chunks = []
+    res.headersSent = false
+    res.writeHead = (code) => { res._status = code; res.headersSent = true }
+    res.write = (chunk) => {
+      res._chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+      return true
+    }
+    res.end = (body) => {
+      if (body !== undefined && body !== null && body !== '') {
+        res._chunks.push(Buffer.isBuffer(body) ? body : Buffer.from(body))
+      }
+      res._payload = Buffer.concat(res._chunks)
+      queueMicrotask(() => {
+        res.emit('finish')
+        res.emit('close')
+      })
+    }
     return res
   }
   const disposeRoutes = registerRoutes(mockCtx, {
@@ -342,37 +525,59 @@ try {
 
   // /upload: raw bytes land under <wiki>/files/ with a /files/<name> URL;
   // a name collision gets a -1 suffix instead of overwriting.
+  // NOTE (v0.19.0): every WRITE route now enforces its HTTP method — the test
+  // must POST (the handler used to run for any method, which is exactly the
+  // CSRF hole that was fixed).
   const up = await callRoute(
     routeHandlers.get('/dsh-tiddlywiki/upload'),
-    makeReq('/dsh-tiddlywiki/upload?name=hello%20notes.txt', Buffer.from('file content here')),
+    makeReq('/dsh-tiddlywiki/upload?name=hello%20notes.txt', Buffer.from('file content here'), 'POST'),
     makeRes(),
   )
   assert(up.ok === true && up.name === 'hello notes.txt' && up.url === `${TW_PROXY_PATH}files/hello%20notes.txt`, `upload returns name+proxy url (${JSON.stringify(up)})`)
   assert(await readFile(join(wikiDir, 'files', 'hello notes.txt'), 'utf8') === 'file content here', 'uploaded bytes saved under wiki files/')
   const up2 = await callRoute(
     routeHandlers.get('/dsh-tiddlywiki/upload'),
-    makeReq('/dsh-tiddlywiki/upload?name=hello%20notes.txt', Buffer.from('second')),
+    makeReq('/dsh-tiddlywiki/upload?name=hello%20notes.txt', Buffer.from('second'), 'POST'),
     makeRes(),
   )
   assert(up2.ok === true && up2.name === 'hello notes-1.txt', `upload collision gets -1 suffix (${JSON.stringify(up2)})`)
   const upBad = await callRoute(
     routeHandlers.get('/dsh-tiddlywiki/upload'),
-    makeReq('/dsh-tiddlywiki/upload?name=..%2F..%2Fevil.txt', Buffer.from('x')),
+    makeReq('/dsh-tiddlywiki/upload?name=..%2F..%2Fevil.txt', Buffer.from('x'), 'POST'),
     makeRes(),
   )
   assert(upBad.ok === true && upBad.name === 'evil.txt', `path-traversal name sanitized to a bare name (${JSON.stringify(upBad.name)})`)
   const upDotdot = await callRoute(
     routeHandlers.get('/dsh-tiddlywiki/upload'),
-    makeReq('/dsh-tiddlywiki/upload?name=..', Buffer.from('x')),
+    makeReq('/dsh-tiddlywiki/upload?name=..', Buffer.from('x'), 'POST'),
     makeRes(),
   )
   assert(upDotdot.ok === false, 'bare ".." filename rejected')
+
+  // SECURITY REGRESSION (v0.19.0): a GET must never reach a write handler.
+  // `http.ts` used to skip the CSRF check for GET and the host webserver
+  // dispatches by pathname only, so `<img src=".../sync">` used to pull,
+  // commit and push, and `.../restart` restarted the TW child.
+  const upGetRes = makeRes()
+  await callRaw(routeHandlers.get('/dsh-tiddlywiki/upload'), makeReq('/dsh-tiddlywiki/upload?name=get-should-not-write.txt', Buffer.from('x')), upGetRes)
+  assert(upGetRes._status === 405, `GET on a write route is 405 (got ${upGetRes._status})`)
+  const uploadAfterGet = await readFile(join(wikiDir, 'files', 'get-should-not-write.txt'), 'utf8').catch(() => null)
+  assert(uploadAfterGet === null, 'a rejected GET /upload wrote nothing')
+  for (const path of ['/dsh-tiddlywiki/sync', '/dsh-tiddlywiki/restart', '/dsh-tiddlywiki/note', '/dsh-tiddlywiki/edit']) {
+    const res = makeRes()
+    await callRaw(routeHandlers.get(path), makeReq(path), res)
+    assert(res._status === 405, `GET ${path} is 405 (got ${res._status})`)
+  }
+  // A POST to a READ route is refused too (no accidental state change).
+  const statusPost = makeRes()
+  await callRaw(routeHandlers.get('/dsh-tiddlywiki/status'), makeReq('/dsh-tiddlywiki/status', Buffer.from('{}'), 'POST'), statusPost)
+  assert(statusPost._status === 405, `POST /status is 405 (got ${statusPost._status})`)
 
   // /note: quick-note tiddlers are saved as Markdown so uploaded images/links
   // actually render in TW (a type-less tiddler would show raw `![..]`).
   const note = await callRoute(
     routeHandlers.get('/dsh-tiddlywiki/note'),
-    makeReq('/dsh-tiddlywiki/note', Buffer.from(JSON.stringify({ title: 'NoteTypeTest', tags: ['inbox'], text: '![img](/files/a.png)' }))),
+    makeReq('/dsh-tiddlywiki/note', Buffer.from(JSON.stringify({ title: 'NoteTypeTest', tags: ['inbox'], text: '![img](/files/a.png)' })), 'POST'),
     makeRes(),
   )
   assert(note.ok === true && note.type === 'text/markdown', `note response carries the markdown type (${JSON.stringify(note)})`)
@@ -394,13 +599,13 @@ try {
   await writeFile(join(clonePath, 'tiddlers', 'SyncTest.tid'), 'from clone\n')
   await gclone.commit(clonePath, 'sync-test remote change')
   assert((await gclone.push(clonePath)).ok, 'clone pushes change for sync test')
-  const sync = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync'), makeRes())
+  const sync = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync', undefined, 'POST'), makeRes())
   assert(sync.ok === true && sync.pull === 'ok' && sync.status?.branch === 'main', `sync pulls+commits+pushes (${JSON.stringify(sync.message ?? sync.error)})`)
   assert(sync.changed === true && sync.restarted === true, `changed pull restarts TW (changed=${sync.changed} restarted=${sync.restarted})`)
   const syncText = (await readFile(join(wikiDir, 'tiddlers', 'SyncTest.tid'), 'utf8')).replace(/\r/g, '')
   assert(syncText === 'from clone\n', 'sync pulled the remote change into the wiki')
   // A no-op sync (nothing new on origin) must NOT restart TW.
-  const sync2 = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync'), makeRes())
+  const sync2 = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync', undefined, 'POST'), makeRes())
   assert(sync2.ok === true && sync2.changed !== true && sync2.restarted !== true, `no-op sync does not restart (changed=${sync2.changed} restarted=${sync2.restarted})`)
 
   // /recent + /get: the quick-note "最近" picker backend. Raw files written by
@@ -1090,6 +1295,34 @@ try {
   assert(infoAfter.plugins.includes('tiddlywiki/katex'), 'tiddlywiki.info round-trip preserves new plugin')
   assert(JSON.stringify(infoAfter.themes) === JSON.stringify(infoBefore.themes), 'tiddlywiki.info preserves themes untouched')
   await writeWikiInfo(wikiDir, infoBefore)
+
+  // ensurePlugin (v0.19.0): `--init server` ships NO markdown plugin, yet every
+  // note this plugin writes is text/markdown — without the bootstrap a fresh
+  // install renders all of them as raw source.
+  assert(!infoBefore.plugins.includes('tiddlywiki/markdown'), `fresh wiki has no markdown plugin (${infoBefore.plugins.join(',')})`)
+  const markdownAdded = await ensurePlugin(wikiDir, twRoot, 'tiddlywiki/markdown')
+  assert(markdownAdded === true, 'ensurePlugin adds tiddlywiki/markdown to a fresh wiki')
+  assert((await readWikiInfo(wikiDir)).plugins.includes('tiddlywiki/markdown'), 'markdown plugin persisted to tiddlywiki.info')
+  assert((await ensurePlugin(wikiDir, twRoot, 'tiddlywiki/markdown')) === false, 'ensurePlugin is idempotent')
+  let unknownPluginThrew = false
+  try { await ensurePlugin(wikiDir, twRoot, 'tiddlywiki/definitely-not-bundled') } catch { unknownPluginThrew = true }
+  assert(unknownPluginThrew, 'ensurePlugin refuses a plugin that is not in the bundled catalog')
+  await writeWikiInfo(wikiDir, infoBefore)
+
+  // readWikiInfo error policy (v0.19.0): ONLY a missing file means "no config".
+  // A malformed file must THROW — reporting an empty config there let a
+  // settings-page save rewrite tiddlywiki.info without the real plugins.
+  const brokenDir = await mkdtemp(join(tmpdir(), 'dsh-tw-broken-'))
+  await writeFile(join(brokenDir, 'tiddlywiki.info'), '{ this is not json', 'utf8')
+  let brokenThrew = false
+  try { await readWikiInfo(brokenDir) } catch { brokenThrew = true }
+  assert(brokenThrew, 'malformed tiddlywiki.info throws instead of reporting an empty config')
+  const missingInfo = await readWikiInfo(join(brokenDir, 'no-such-wiki'))
+  assert(Array.isArray(missingInfo.plugins) && missingInfo.plugins.length === 0, 'missing tiddlywiki.info still degrades to an empty config (first run)')
+  // writeWikiInfo keeps a .bak and never leaves a truncated file behind.
+  await writeWikiInfo(brokenDir, { plugins: ['tiddlywiki/markdown'], themes: [] })
+  assert((await readFile(join(brokenDir, 'tiddlywiki.info.bak'), 'utf8')).startsWith('{ this is not json'), 'writeWikiInfo backs up the previous file')
+  assert((await readWikiInfo(brokenDir)).plugins.includes('tiddlywiki/markdown'), 'writeWikiInfo wrote valid JSON over the broken file')
 
   assert(deepMerge({ a: 1, git: { x: 1 } }, { git: { y: 2 } }).git?.y === 2, 'deepMerge merges nested git object')
   const store = new ConfigStore({ note: { tag: 'inbox' }, git: { autoCommit: true, debounceMs: 60000 } })

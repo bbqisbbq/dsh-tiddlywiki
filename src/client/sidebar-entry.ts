@@ -124,6 +124,24 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
   }
   let root: HTMLElement | undefined
   let placed = false
+  /** 兜底轮询定时器：只在「尚未放置」或「shell 重建了 root」时运行。 */
+  let retry: ReturnType<typeof setInterval> | undefined
+  /** 本轮兜底轮询的剩余次数（有界，避免 shell 始终没有侧边栏时永久轮询）。 */
+  let retryTicks = 0
+  const stopRetry = (): void => {
+    if (retry === undefined) return
+    clearInterval(retry)
+    retry = undefined
+  }
+  const startRetry = (): void => {
+    if (retry !== undefined) return
+    retryTicks = 15
+    retry = setInterval(() => {
+      tryPlace()
+      retryTicks--
+      if (placed || retryTicks <= 0) stopRetry()
+    }, 2_000)
+  }
 
   const tryPlace = (): void => {
     debug.attempts++
@@ -131,19 +149,26 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
       rootObserver.disconnect()
       root = undefined
       placed = false
+      // shell 把 sidebar root 整体重建了：恢复兜底轮询，等新 root 出现。
+      startRetry()
     }
     if (placed) {
       if (document.body.contains(entry)) return
       rootObserver.disconnect()
       root = undefined
       placed = false
+      startRetry()
     }
     root ??= sidebarRoot()
     if (root === undefined) return
     debug.found = newSessionButton(root) !== undefined
     placed = placeEntry(root, entry)
     debug.placed = placed
-    if (placed) rootObserver.observe(root, { childList: true, subtree: true })
+    if (placed) {
+      // 放置成功即停掉兜底轮询：后续自愈由 rootObserver/waitObserver 负责。
+      stopRetry()
+      rootObserver.observe(root, { childList: true, subtree: true })
+    }
   }
 
   // Body-level watcher as the whole-rebuild fallback.
@@ -154,6 +179,7 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
   const rootObserver = new MutationObserver(() => {
     if (root === undefined || !root.isConnected) {
       placed = false
+      startRetry()
       tryPlace()
       return
     }
@@ -161,7 +187,8 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
   })
 
   // Belt-and-braces: a late shell mount with no further mutations still heals.
-  const retry = setInterval(() => { tryPlace() }, 2_000)
+  // placed 成功后由 tryPlace 立即 clearInterval（见上）；仅在 root 重建时重启。
+  startRetry()
 
   const syncActive = (): void => {
     if (state.isOpen()) entry.dataset.active = 'true'

@@ -3,9 +3,9 @@
  * point: `registerTiddlywikiTools(ctx, deps)` registers tools list-style, so a
  * new tool is just one more `defineTool` in the array — index.ts never changes.
  *
- * Toolset (v0.5):
- *   search / get / put / batch_put / rename / delete / recent / list_tags /
- *   git_sync / git_resolve
+ * Toolset (v0.19):
+ *   search / get / put / batch_put / append / rename / delete / trash /
+ *   backlinks / attach / lint / recent / list_tags / git_sync / git_resolve
  *
  * RENDER CONTRACT (design doc §4.3): the registry feeds `output.render(args,
  * value)` into the loop — the model sees ONLY the rendered text, never the raw
@@ -15,9 +15,12 @@
  * @module dsh-tiddlywiki/host/tools
  */
 import { defineTool } from '../sdk.ts'
-import { isBinaryType } from './tw-api.ts'
+import { readFile, stat } from 'node:fs/promises'
+import { basename, extname, isAbsolute } from 'node:path'
+import { isBinaryType, parseTiddlerDate, toIsoDateString } from './tw-api.ts'
 import type { TiddlyWebClient, Tiddler } from './tw-api.ts'
 import type { GitFace } from './git.ts'
+import { downloadClipImage } from './clip-bridge.ts'
 
 /**
  * 约定标签：标记「由 Agent 撰写」的笔记。
@@ -63,6 +66,117 @@ function snippetOf(text: string, max = 160): string {
   return flat.length <= max ? flat : `${flat.slice(0, max)}…`
 }
 
+/**
+ * Snippet centred on the FIRST match of `query` (v0.19.0). The old snippet was
+ * always the first 160 characters of the note, so a hit deep inside a long note
+ * showed the model text that did not contain the term it searched for.
+ */
+function snippetAround(text: string, query: string, max = 160): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  if (flat.length <= max) return flat
+  const needle = query.trim().toLowerCase()
+  if (needle.length === 0) return `${flat.slice(0, max)}…`
+  const at = flat.toLowerCase().indexOf(needle)
+  if (at < 0) return `${flat.slice(0, max)}…`
+  const half = Math.max(0, Math.floor((max - needle.length) / 2))
+  const start = Math.max(0, at - half)
+  const end = Math.min(flat.length, start + max)
+  const prefix = start > 0 ? '…' : ''
+  const suffix = end < flat.length ? '…' : ''
+  return `${prefix}${flat.slice(start, end)}${suffix}`
+}
+
+/** Trash namespace for soft-deleted tiddlers (system titles: never listed by
+ *  the default recipe filter, so deleted notes stop appearing in search/recent
+ *  while staying recoverable). */
+export const TRASH_PREFIX = '$:/dsh-tiddlywiki/trash/'
+
+/**
+ * Trash INDEX tiddler. A `$:/`-titled tiddler cannot be ENUMERATED through the
+ * recipe listing at all: a fresh wiki has `$:/config/SyncSystemTiddlersFromServer
+ * = "no"`, and `get-tiddlers-json.js` then appends `+[!is[system]]` to every
+ * filter (verified). The trash therefore keeps its own index and reads it with a
+ * plain GET (which works for system titles). (v0.19.0)
+ */
+export const TRASH_INDEX_TITLE = '$:/dsh-tiddlywiki/trash-index'
+
+interface TrashIndexEntry { trash: string; of: string; at: string }
+
+/** Build the trash title that holds one soft-deleted tiddler. */
+function trashTitleFor(title: string, at = new Date()): string {
+  const stamp = at.toISOString().replace(/[:.]/g, '-')
+  return `${TRASH_PREFIX}${stamp}/${title}`
+}
+
+/** Read the trash index (missing/invalid → empty list). */
+async function readTrashIndex(wiki: TiddlyWebClient): Promise<TrashIndexEntry[]> {
+  const tiddler = await wiki.get(TRASH_INDEX_TITLE)
+  if (tiddler === undefined || typeof tiddler.text !== 'string') return []
+  try {
+    const parsed = JSON.parse(tiddler.text) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((entry): entry is TrashIndexEntry => {
+      if (typeof entry !== 'object' || entry === null) return false
+      const e = entry as Record<string, unknown>
+      return typeof e.trash === 'string' && typeof e.of === 'string'
+    }).map((e) => ({ trash: e.trash, of: e.of, at: typeof e.at === 'string' ? e.at : '' }))
+  } catch {
+    return []
+  }
+}
+
+/** Persist the trash index. */
+async function writeTrashIndex(wiki: TiddlyWebClient, entries: TrashIndexEntry[]): Promise<void> {
+  await wiki.put({ title: TRASH_INDEX_TITLE, text: JSON.stringify(entries, null, 2), type: 'application/json', tags: [] })
+}
+
+/** Mime types offered by `tiddlywiki_attach` for local files. */
+const ATTACH_MIME_BY_EXT: Record<string, string> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif', bmp: 'image/bmp',
+  ico: 'image/x-icon', pdf: 'application/pdf', zip: 'application/zip',
+  txt: 'text/plain', md: 'text/markdown', json: 'application/json', csv: 'text/csv',
+  mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', mp4: 'video/mp4',
+  epub: 'application/epub+zip',
+}
+
+/** Size cap for one attachment (mirrors the clip bridge's image cap). */
+export const MAX_ATTACH_BYTES = 15 * 1024 * 1024
+
+/**
+ * Count references to `target` inside wiki text: `[[target]]`,
+ * `[[display|target]]`, `[[target|display]]` is NOT a reference to target as a
+ * link target in TW (the first part is the text, the second the target), so
+ * only the second position counts, plus `{{target}}` transclusions.
+ */
+function countRefsTo(text: string, target: string): number {
+  if (target.length === 0) return 0
+  const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const patterns = [
+    new RegExp(`\\[\\[${escaped}\\]\\]`, 'g'),
+    new RegExp(`\\[\\[[^\\]|]*\\|${escaped}\\]\\]`, 'g'),
+    new RegExp(`\\{\\{${escaped}\\}\\}`, 'g'),
+  ]
+  let count = 0
+  for (const re of patterns) count += (text.match(re) ?? []).length
+  return count
+}
+
+/**
+ * Junk tags produced by tooling mistakes rather than by a human. The live wiki
+ * still carries `筛选器错误: Missing [ in filter expression` from the v0.16.22
+ * filter bug — a lint must be able to find that class of damage again.
+ */
+function isJunkTag(tag: string): boolean {
+  if (tag.length === 0) return false
+  if (/筛选器错误|Missing \[|in filter expression/i.test(tag)) return true
+  if (/[[\]{}|<>]/.test(tag)) return true
+  if (/^(in|filter|expression|Missing|tags:)$/i.test(tag)) return true
+  if (/^[A-Za-z]:\\/.test(tag)) return true
+  if (tag.trim() !== tag) return true
+  return false
+}
+
 /** Strip dsh-tiddlywiki internal fields from a tiddler for the model. */
 function pickFields(t: Tiddler): Record<string, unknown> {
   const out: Record<string, unknown> = {}
@@ -73,13 +187,31 @@ function pickFields(t: Tiddler): Record<string, unknown> {
   return out
 }
 
-/** A put-ready copy of a tiddler (no created/modified, tags as array). */
+/** Fields that belong to the tiddler's identity / TW-owned bookkeeping. */
+const CLEAN_SKIP_FIELDS = new Set(['title', 'text', 'tags', 'type', 'created', 'modified', 'fields'])
+
+/**
+ * A put-ready copy of a tiddler (no created/modified, tags as array).
+ *
+ * CUSTOM-FIELD FLATTENING (v0.19.0, data-loss fix): a single-tiddler GET nests
+ * every non-known field under `fields` (core-server get-tiddler.js), while PUT
+ * accepts them flat. The old version copied top-level entries only and skipped
+ * the `fields` key, so every write that bases itself on an existing tiddler —
+ * put / append / rename / trash — silently DROPPED custom fields such as `q`,
+ * `due`, `clip-url` or `draft.of`.
+ */
 function cleanTiddler(t: Tiddler): Tiddler {
   const out: Tiddler = { title: t.title, text: t.text ?? '', tags: t.tags ?? [] }
-  if (typeof t.type === 'string') out.type = t.type
   for (const [k, v] of Object.entries(t)) {
-    if (k === 'title' || k === 'text' || k === 'tags' || k === 'type' || k === 'created' || k === 'modified' || k === 'fields') continue
+    if (CLEAN_SKIP_FIELDS.has(k)) continue
     out[k] = v
+  }
+  const nested = t.fields
+  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
+    for (const [k, v] of Object.entries(nested)) {
+      if (CLEAN_SKIP_FIELDS.has(k) || v === undefined) continue
+      out[k] = v
+    }
   }
   return out
 }
@@ -122,6 +254,117 @@ function rewriteRefs(text: string, oldTitle: string, newTitle: string): { text: 
     return `${prefix}${newTitle}${suffix}`
   })
   return { text: out, count }
+}
+
+/**
+ * Insert `addition` at the end of the section introduced by `heading` (Markdown
+ * `#`/`##`… or wikitext `!`/`!!`…). Falls back to appending at the end of the
+ * document when the heading is not found. Used by tiddlywiki_append so an agent
+ * can add to one section of a long note without rewriting the whole file.
+ */
+function insertIntoSection(base: string, heading: string, addition: string): string {
+  const lines = base.split('\n')
+  const headingText = (line: string): string | null => {
+    const md = /^#{1,6}\s+(.*)$/.exec(line)
+    if (md !== null) return (md[1] ?? '').trim()
+    const tw = /^!{1,6}\s*(.*)$/.exec(line)
+    if (tw !== null) return (tw[1] ?? '').trim()
+    return null
+  }
+  const start = lines.findIndex((line) => headingText(line) === heading)
+  if (start < 0) {
+    return base.trim().length === 0 ? addition : `${base.replace(/\s+$/, '')}\n\n${addition}`
+  }
+  let end = lines.length
+  for (let i = start + 1; i < lines.length; i++) {
+    if (headingText(lines[i] ?? '') !== null) {
+      end = i
+      break
+    }
+  }
+  const before = lines.slice(0, end).join('\n').replace(/\s+$/, '')
+  const after = lines.slice(end).join('\n')
+  const head = `${before}\n\n${addition}`
+  return after.trim().length === 0 ? head : `${head}\n\n${after.replace(/^\s+/, '')}`
+}
+
+/**
+ * Build the tiddler to PUT for one write.
+ *
+ * FIELD PRESERVATION (v0.19.0, data-loss fix): a PUT replaces the whole tiddler,
+ * so the old code — which sent only `{title, text}` plus the caller's fields —
+ * silently DROPPED every existing tag and custom field whenever the caller
+ * omitted `tags` (e.g. an agent fixing a typo in a note). Now:
+ *   - an existing tiddler is used as the base (tags, custom fields and the
+ *     content type survive);
+ *   - `tags` is only REPLACED when the caller actually passes it;
+ *   - `fields` still wins field-by-field on top;
+ *   - a brand-new tiddler gets the agent-written tag and the markdown default.
+ * `cleanTiddler` drops TW-owned timestamps/revision so they are regenerated.
+ */
+function buildWriteTiddler(
+  title: string,
+  text: string,
+  existing: Tiddler | undefined,
+  tags: string[] | undefined,
+  fields: Record<string, unknown> | undefined,
+): { tiddler: Tiddler; typeDefaulted: boolean } {
+  const tiddler: Tiddler = existing !== undefined
+    ? { ...cleanTiddler(existing), title, text }
+    : { title, text }
+  if (tags !== undefined) {
+    const finalTags = finalTagsForWrite(title, existing, tags)
+    if (finalTags.length > 0) tiddler.tags = finalTags
+    else delete tiddler.tags
+  } else if (existing === undefined) {
+    const finalTags = finalTagsForWrite(title, undefined, [])
+    if (finalTags.length > 0) tiddler.tags = finalTags
+  }
+  applyCustomFields(tiddler, fields)
+  const { defaulted } = finalTypeForWrite(title, tiddler)
+  return { tiddler, typeDefaulted: defaulted }
+}
+
+/** Normalize the tool's optional `tags` argument. */
+function normalizeTagArg(tags: unknown): string[] | undefined {
+  if (!Array.isArray(tags)) return undefined
+  return tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
+}
+
+/**
+ * Optimistic-concurrency guard for writes (v0.19.0).
+ *
+ * The wiki is shared with the human: they edit notes in the embedded TW editor
+ * while an agent may hold a stale copy. `put` used to overwrite blindly, so a
+ * concurrent human edit was lost without a trace. Callers can pass the
+ * `modified` value they read (`tiddlywiki_get` returns it); a mismatch refuses
+ * the write and tells the agent to re-read (or to pass force).
+ */
+function assertNoConflict(
+  title: string,
+  existing: Tiddler | undefined,
+  expected: { expectedModified?: string; expectedRevision?: string | number; force?: boolean },
+): void {
+  if (expected.force === true || existing === undefined) return
+  const wantsToken = expected.expectedModified !== undefined || expected.expectedRevision !== undefined
+  if (!wantsToken) return
+  // Accept BOTH date forms: `tiddlywiki_get` hands the model an ISO string while
+  // the REST layer stores TW's compact form — a raw string compare would report
+  // a bogus conflict on every write.
+  const expectedMs = parseTiddlerDate(expected.expectedModified)
+  const currentMs = parseTiddlerDate(existing.modified)
+  if (expectedMs !== undefined && currentMs !== undefined && expectedMs === currentMs) return
+  // `revision` is TW's per-tiddler change counter from the GET response; it is
+  // the only token that always exists (a freshly PUT tiddler has no `modified`
+  // until the filesystem syncer writes and reloads it).
+  const currentRevision = existing.revision
+  if (expected.expectedRevision !== undefined && currentRevision !== undefined
+    && String(currentRevision) === String(expected.expectedRevision)) return
+  throw new Error(
+    `写入冲突：tiddler「${title}」在你读取之后已被改动（当前 revision=${currentRevision ?? '?'} modified=${toIsoDateString(existing.modified) ?? '?'}；`
+    + `期望 revision=${expected.expectedRevision ?? '?'} modified=${expected.expectedModified ?? '?'}）。`
+    + '请重新 tiddlywiki_get 获取最新内容后重试；确认要用你的版本覆盖时可传 force: true。',
+  )
 }
 
 /**
@@ -169,13 +412,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_search ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_search',
-    description: '检索 TiddlyWiki 持久知识库：按关键词（可选 tags 数组 / since 修改时间 / type / limit）搜索非系统 tiddler，返回标题、标签、修改时间与摘要片段。二进制 tiddler（图片等附件，正文为 base64）不参与检索。',
+    description: '检索 TiddlyWiki 持久知识库：按关键词（可选 tags 数组 / since 修改时间 / type / field+value / limit）搜索非系统 tiddler，按相关度排序返回标题、标签、修改时间与命中处上下文片段。二进制 tiddler（图片等附件，正文为 base64）不参与检索。',
     parameters: {
-      query: { type: 'string', description: '搜索关键词（大小写不敏感，子串匹配）', required: true },
+      query: { type: 'string', description: '搜索关键词（大小写不敏感，子串匹配；命中标题/标签/正文，标题命中权重最高）', required: true },
       tags: { type: 'array', items: { type: 'string' }, description: '可选：要求同时包含的标签（AND）' },
       tag: { type: 'string', description: '可选：单个精确标签（与 tags 同为 AND）' },
       since: { type: 'string', description: '可选：ISO 时间（如 2026-09-01 或 2026-09-01T00:00:00Z），只返回修改时间不早于它的 tiddler' },
-      type: { type: 'string', description: '可选：精确 tiddler 类型（默认 text/vnd.tiddlywiki）' },
+      type: { type: 'string', description: '可选：精确 tiddler 类型。⚠️ 不传则不限类型（推荐）；插件默认把笔记写成 text/markdown，传 "text/vnd.tiddlywiki" 会把 Markdown 笔记全部排除' },
+      field: { type: 'string', description: '可选：按自定义字段过滤（如 "q"、"clip-url"、"workspace"）' },
+      value: { type: 'string', description: '可选：field 必须等于该值（不传则只要求该字段存在）' },
       limit: { type: 'integer', description: '可选：返回条数上限（默认 30，最大 200）' },
     },
     output: {
@@ -185,7 +430,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         if (value.tags.length > 0) filters.push(`tags=${value.tags.join(',')}`)
         if (value.since !== null) filters.push(`since=${value.since}`)
         if (value.type !== null) filters.push(`type=${value.type}`)
-        const head = `TiddlyWiki 搜索「${value.query}」${filters.length > 0 ? ` (${filters.join(' · ')})` : ''}：命中 ${value.total} 条。`
+        if (value.field !== null) filters.push(`field=${value.field}${value.value !== null ? `=${value.value}` : ''}`)
+        const head = `TiddlyWiki 搜索「${value.query}」${filters.length > 0 ? ` (${filters.join(' · ')})` : ''}：命中 ${value.total} 条（按相关度排序）。`
         const lines = [head]
         if (value.results.length === 0) lines.push('没有匹配的 tiddler。')
         for (const r of value.results) {
@@ -198,13 +444,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { query: string; tags?: string[]; tag?: string; since?: string; type?: string; limit?: number }): Promise<SearchResult> => {
+    execute: async (args: { query: string; tags?: string[]; tag?: string; since?: string; type?: string; field?: string; value?: string; limit?: number }): Promise<SearchResult> => {
       const wiki = requireWiki()
       const { items, total } = await wiki.search(args.query, {
         tags: args.tags,
         tag: args.tag,
         since: args.since,
         type: args.type,
+        field: args.field,
+        value: args.value,
         limit: args.limit,
       })
       return {
@@ -212,8 +460,10 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         tags: args.tags ?? [],
         since: args.since ?? null,
         type: args.type ?? null,
+        field: args.field ?? null,
+        value: args.value ?? null,
         total,
-        results: items.map((t) => ({ title: t.title, tags: t.tags ?? [], modified: typeof t.modified === 'string' ? t.modified : null, snippet: snippetOf(t.text ?? '') })),
+        results: items.map((t) => ({ title: t.title, tags: t.tags ?? [], modified: toIsoDateString(t.modified), snippet: snippetAround(t.text ?? '', args.query) })),
       }
     },
   }))
@@ -244,7 +494,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const items = await wiki.recent(args.limit ?? 15, args.since)
       return {
         since: args.since ?? null,
-        results: items.map((t) => ({ title: t.title, tags: t.tags ?? [], modified: typeof t.modified === 'string' ? t.modified : null, snippet: snippetOf(t.text ?? '') })),
+        results: items.map((t) => ({ title: t.title, tags: t.tags ?? [], modified: toIsoDateString(t.modified), snippet: snippetOf(t.text ?? '') })),
       }
     },
   }))
@@ -311,7 +561,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         text: binary ? '' : (t.text ?? ''),
         tags: t.tags ?? [],
         fields: pickFields(t),
-        modified: typeof t.modified === 'string' ? t.modified : null,
+        modified: toIsoDateString(t.modified),
       }
       if (binary) {
         result.binary = true
@@ -325,12 +575,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_put ───────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_put',
-    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；tags 为标签数组，fields 为附加自定义字段（json 对象，会写入 tiddler 字段）。写入后触发自动 commit。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。未指定内容类型时自动默认 text/markdown（$:/ 系统条目除外）；要写原生 wikitext 需显式在 fields 传 {"type":"text/vnd.tiddlywiki"}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
+    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；**覆盖已有条目时，未传的 tags / 自定义字段会原样保留**（不会静默丢掉笔记原有的标签与字段），显式传 tags 才整体替换标签。写入后触发自动 commit。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。未指定内容类型时自动默认 text/markdown（$:/ 系统条目除外）；要写原生 wikitext 需显式在 fields 传 {"type":"text/vnd.tiddlywiki"}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配，覆盖同名）', required: true },
       text: { type: 'string', description: 'tiddler 全文（默认按 Markdown 解析）', required: true },
       tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）' },
       fields: { type: 'json', description: '附加自定义字段，如 {"date":"2026-09-02"}（可选）。注意：fields.type 是 TW 内容类型（保留字段，默认已自动补 text/markdown），不要写业务分类值' },
+      expectedModified: { type: 'string', description: '可选：乐观并发保护。传 tiddlywiki_get 读到的 modified 值，若该条目已被他人改动则拒绝写入（避免覆盖人类在 TW 编辑器里的修改）' },
+      expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——传 tiddlywiki_get 返回字段里的 revision（刚写入、还没落盘的条目没有 modified，此时用 revision）' },
+      force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制覆盖（默认 false）' },
     },
     output: {
       schema: { type: 'json' },
@@ -345,21 +598,23 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }): Promise<PutResult> => {
+    execute: async (args: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown>; expectedModified?: string; expectedRevision?: number; force?: boolean }): Promise<PutResult> => {
       const wiki = requireWiki()
       if (args.title.trim().length === 0) throw new Error('tiddlywiki_put: title 不能为空')
       // Read WITHOUT swallowing errors: only a 404 means "new tiddler". A
       // transient failure treated as "new" would silently tag an existing
       // human note as agent-written.
       const existing = await wiki.get(args.title)
-      const tags = finalTagsForWrite(args.title, existing, Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
-      const tiddler: Tiddler = { title: args.title, text: args.text }
-      if (tags.length > 0) tiddler.tags = tags
-      applyCustomFields(tiddler, args.fields)
-      const { defaulted } = finalTypeForWrite(args.title, tiddler)
+      assertNoConflict(args.title, existing, {
+        expectedModified: args.expectedModified,
+        expectedRevision: args.expectedRevision,
+        force: args.force,
+      })
+      const tags = normalizeTagArg(args.tags)
+      const { tiddler, typeDefaulted } = buildWriteTiddler(args.title, args.text, existing, tags, args.fields)
       await wiki.put(tiddler)
       deps.autoCommit()
-      return { ok: true, title: args.title, tags, type: typeof tiddler.type === 'string' ? tiddler.type : null, ...(defaulted ? { typeDefaulted: true } : {}), fields: args.fields ?? null }
+      return { ok: true, title: args.title, tags: tiddler.tags ?? [], type: typeof tiddler.type === 'string' ? tiddler.type : null, ...(typeDefaulted ? { typeDefaulted: true } : {}), fields: args.fields ?? null }
     },
   }))
 
@@ -375,8 +630,13 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           additionalProperties: true,
           description: '要写入的 tiddler 数组',
           properties: {
-            title: { type: 'string', description: '标题（精确匹配，覆盖同名）', required: true },
-            text: { type: 'string', description: '全文（默认按 Markdown 解析）', required: true },
+            // NOTHING is `required` here on purpose (v0.19.0): argument
+            // pre-validation runs BEFORE the per-item try/catch, so a declared
+            // requirement made one malformed item abort the WHOLE batch and the
+            // documented "one failure does not lose the others" contract was
+            // unreachable. The implementation validates per item instead.
+            title: { type: 'string', description: '标题（精确匹配，覆盖同名）' },
+            text: { type: 'string', description: '全文（默认按 Markdown 解析）' },
             tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）' },
             fields: { type: 'json', description: '附加自定义字段（可选）。注意：fields.type 是 TW 内容类型（保留字段，默认已自动补 text/markdown），不要写业务分类值' },
           },
@@ -417,11 +677,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
             results.push({ title, written: false, skipped: true, failed: false })
             continue
           }
-          const tags = finalTagsForWrite(title, existing, Array.isArray(item.tags) ? item.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
-          const tiddler: Tiddler = { title, text: item.text }
-          if (tags.length > 0) tiddler.tags = tags
-          applyCustomFields(tiddler, item.fields)
-          finalTypeForWrite(title, tiddler)
+          const { tiddler } = buildWriteTiddler(title, item.text, existing, normalizeTagArg(item.tags), item.fields)
           await wiki.put(tiddler)
           written++
           results.push({ title, written: true, skipped: false, failed: false })
@@ -492,19 +748,367 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_delete ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_delete',
-    description: '删除一个 TiddlyWiki tiddler（不存在时是幂等空操作）。删除后触发自动 commit。',
+    description: '删除一个 TiddlyWiki tiddler（不存在时是幂等空操作）。默认是**软删除**：内容移入回收站（$:/dsh-tiddlywiki/trash/…，不再出现在检索/最近列表里）后删除原条目，可用 tiddlywiki_trash 恢复；permanent=true 才真正永久删除。删除后触发自动 commit。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配）', required: true },
+      permanent: { type: 'boolean', description: '可选：true = 永久删除（回收站也拿不回来，仅剩 git 历史）；默认 false = 移入回收站' },
     },
     output: {
       schema: { type: 'json' },
-      render: (_args, value: DeleteResult) => [{ type: 'text', text: `已删除 tiddler「${value.title}」。` }],
+      render: (_args, value: DeleteResult) => [{
+        type: 'text',
+        text: value.trashed === true
+          ? `已把 tiddler「${value.title}」移入回收站（$:/dsh-tiddlywiki/trash/，可用 tiddlywiki_trash action=restore 恢复）。`
+          : `已永久删除 tiddler「${value.title}」。`,
+      }],
     },
-    execute: async (args: { title: string }): Promise<DeleteResult> => {
+    execute: async (args: { title: string; permanent?: boolean }): Promise<DeleteResult> => {
       const wiki = requireWiki()
+      const existing = await wiki.get(args.title)
+      // Trash entries themselves and system tiddlers are never nested.
+      const canTrash = existing !== undefined && args.permanent !== true && !args.title.startsWith(TRASH_PREFIX)
+      if (!canTrash) {
+        await wiki.delete(args.title)
+        deps.autoCommit()
+        return { ok: true, title: args.title, trashed: false }
+      }
+      const trashTitle = trashTitleFor(args.title)
+      const at = new Date().toISOString()
+      await wiki.put({ ...cleanTiddler(existing), title: trashTitle, 'trash-of': args.title, 'trash-at': at })
       await wiki.delete(args.title)
+      const index = await readTrashIndex(wiki)
+      index.push({ trash: trashTitle, of: args.title, at })
+      await writeTrashIndex(wiki, index)
       deps.autoCommit()
-      return { ok: true, title: args.title }
+      return { ok: true, title: args.title, trashed: true, trashTitle }
+    },
+  }))
+
+  // ── tiddlywiki_trash ─────────────────────────────────────────────────────
+  register(defineTool({
+    name: 'tiddlywiki_trash',
+    description: '回收站（软删除的笔记）：action=list 列出、action=restore 恢复某条、action=empty 清空。配合 tiddlywiki_delete（默认软删除）使用。',
+    parameters: {
+      action: { type: 'string', enum: ['list', 'restore', 'empty'], description: 'list=列出回收站；restore=恢复（需 title）；empty=永久清空', required: true },
+      title: { type: 'string', description: 'action=restore 时的原标题（也接受回收站标题）' },
+      limit: { type: 'integer', description: 'action=list 的返回上限（默认 30，最大 200）' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value: TrashResult) => {
+        const lines = [`回收站 ${value.action}：${value.message}`]
+        for (const item of value.items ?? []) lines.push(`- ${item.title}（删除于 ${item.at ?? '?'}${item.of !== undefined ? `，原名「${item.of}」` : ''}）`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    execute: async (args: { action: 'list' | 'restore' | 'empty'; title?: string; limit?: number }): Promise<TrashResult> => {
+      const wiki = requireWiki()
+      const indexed = await readTrashIndex(wiki)
+      if (args.action === 'list') {
+        const limit = Math.max(1, Math.min(args.limit ?? 30, 200))
+        return {
+          action: 'list',
+          message: `共 ${indexed.length} 条`,
+          items: indexed.slice(-limit).reverse().map((entry) => ({ title: entry.trash, at: entry.at, of: entry.of })),
+        }
+      }
+      if (args.action === 'empty') {
+        for (const entry of indexed) await wiki.delete(entry.trash)
+        await writeTrashIndex(wiki, [])
+        deps.autoCommit()
+        return { action: 'empty', message: `已清空 ${indexed.length} 条` }
+      }
+      const wanted = typeof args.title === 'string' ? args.title.trim() : ''
+      if (wanted.length === 0) throw new Error('tiddlywiki_trash: action=restore 需要 title')
+      const match = indexed.slice().reverse().find((entry) => entry.of === wanted || entry.trash === wanted)
+      if (match === undefined) throw new Error(`回收站里没有「${wanted}」`)
+      const stored = await wiki.get(match.trash)
+      if (stored === undefined) {
+        // Stale index entry (the tiddler was removed by hand): prune and report.
+        await writeTrashIndex(wiki, indexed.filter((entry) => entry.trash !== match.trash))
+        throw new Error(`回收站条目「${match.trash}」已不存在（索引已清理）`)
+      }
+      if ((await wiki.get(match.of)) !== undefined) {
+        throw new Error(`无法恢复：标题「${match.of}」已被占用，请先处理现有条目`)
+      }
+      const restored = cleanTiddler(stored)
+      delete restored['trash-of']
+      delete restored['trash-at']
+      await wiki.put({ ...restored, title: match.of })
+      await wiki.delete(match.trash)
+      await writeTrashIndex(wiki, indexed.filter((entry) => entry.trash !== match.trash))
+      deps.autoCommit()
+      return { action: 'restore', message: `已恢复「${match.of}」`, items: [] }
+    },
+  }))
+
+  // ── tiddlywiki_append ────────────────────────────────────────────────────
+  register(defineTool({
+    name: 'tiddlywiki_append',
+    description: '向已有 tiddler 追加/前插文本，或写入指定标题段落的末尾（无需先读全文、不会整篇覆盖）——适合日志、批注、清单的增量写入。条目不存在时默认新建（createIfMissing=false 则报错）。',
+    parameters: {
+      title: { type: 'string', description: 'tiddler 标题', required: true },
+      text: { type: 'string', description: '要追加/前插的文本（Markdown）', required: true },
+      mode: { type: 'string', enum: ['append', 'prepend'], description: '可选：append（默认，追加到末尾）/ prepend（插到开头）' },
+      heading: { type: 'string', description: '可选：append 时改为插入到该标题（Markdown # 或 wikitext ! 标题，按标题文本匹配）对应段落的末尾' },
+      createIfMissing: { type: 'boolean', description: '可选：条目不存在时是否新建（默认 true）' },
+      tags: { type: 'array', items: { type: 'string' }, description: '可选：仅新建时使用的标签' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value: AppendResult) => [{
+        type: 'text',
+        text: `${value.created ? '已新建并写入' : '已增量写入'} tiddler「${value.title}」（${value.mode}${value.heading !== null ? ` · 段落「${value.heading}」` : ''}）：新增 ${value.added} 字符，现共 ${value.total} 字符。`,
+      }],
+    },
+    execute: async (args: { title: string; text: string; mode?: 'append' | 'prepend'; heading?: string; createIfMissing?: boolean; tags?: string[] }): Promise<AppendResult> => {
+      const wiki = requireWiki()
+      const title = args.title.trim()
+      if (title.length === 0) throw new Error('tiddlywiki_append: title 不能为空')
+      const existing = await wiki.get(title)
+      if (existing === undefined && args.createIfMissing === false) {
+        throw new Error(`tiddler「${title}」不存在（createIfMissing=false）`)
+      }
+      const mode = args.mode === 'prepend' ? 'prepend' : 'append'
+      const base = existing?.text ?? ''
+      const addition = args.text
+      let next: string
+      if (mode === 'append' && typeof args.heading === 'string' && args.heading.trim().length > 0) {
+        next = insertIntoSection(base, args.heading.trim(), addition)
+      } else if (mode === 'prepend') {
+        next = base.trim().length === 0 ? addition : `${addition}\n\n${base}`
+      } else {
+        next = base.trim().length === 0 ? addition : `${base.replace(/\s+$/, '')}\n\n${addition}`
+      }
+      if (existing !== undefined) {
+        await wiki.put({ ...cleanTiddler(existing), text: next })
+      } else {
+        const tags = finalTagsForWrite(title, undefined, Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
+        const tiddler: Tiddler = { title, text: next }
+        if (tags.length > 0) tiddler.tags = tags
+        finalTypeForWrite(title, tiddler)
+        await wiki.put(tiddler)
+      }
+      deps.autoCommit()
+      return { ok: true, title, mode, heading: typeof args.heading === 'string' && args.heading.trim().length > 0 ? args.heading.trim() : null, created: existing === undefined, added: addition.length, total: next.length }
+    },
+  }))
+
+  // ── tiddlywiki_backlinks ─────────────────────────────────────────────────
+  register(defineTool({
+    name: 'tiddlywiki_backlinks',
+    description: '查反向链接：哪些笔记引用了目标 tiddler（[[标题]] / [[显示|标题]] / {{标题}}），以及哪些笔记把它当作标签。用于知识图谱导航、改动前评估影响面。',
+    parameters: {
+      title: { type: 'string', description: '目标 tiddler 标题', required: true },
+      includeTags: { type: 'boolean', description: '可选：是否把「以该标题为标签」的笔记也算作反向链接（默认 true）' },
+      limit: { type: 'integer', description: '可选：最多返回多少条（默认 30，最大 200）' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value: BacklinkResult) => {
+        const lines = [`「${value.title}」的反向链接：${value.total} 条（引用 ${value.linkCount} · 标签 ${value.tagCount}）`]
+        if (value.items.length === 0) lines.push('没有任何笔记引用它。')
+        for (const item of value.items) {
+          lines.push(`- ${item.title}（${item.via === 'tag' ? '标签' : `${item.refs} 处引用`}）`)
+        }
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    execute: async (args: { title: string; includeTags?: boolean; limit?: number }): Promise<BacklinkResult> => {
+      const wiki = requireWiki()
+      const target = args.title.trim()
+      if (target.length === 0) throw new Error('tiddlywiki_backlinks: title 不能为空')
+      const includeTags = args.includeTags !== false
+      const limit = Math.max(1, Math.min(args.limit ?? 30, 200))
+      const items = await wiki.list(undefined, true)
+      const hits: Array<{ title: string; refs: number; via: 'link' | 'tag'; modified: string | null }> = []
+      let linkCount = 0
+      let tagCount = 0
+      for (const t of items) {
+        if (t.title === target || t.title.startsWith('$:/')) continue
+        const refs = countRefsTo(t.text ?? '', target)
+        const tagged = includeTags && (t.tags ?? []).includes(target)
+        if (refs === 0 && !tagged) continue
+        if (refs > 0) linkCount++
+        if (tagged) tagCount++
+        hits.push({ title: t.title, refs, via: refs > 0 ? 'link' : 'tag', modified: toIsoDateString(t.modified) })
+      }
+      hits.sort((a, b) => b.refs - a.refs || a.title.localeCompare(b.title, 'zh'))
+      return { title: target, total: hits.length, linkCount, tagCount, items: hits.slice(0, limit) }
+    },
+  }))
+
+  // ── tiddlywiki_attach ────────────────────────────────────────────────────
+  register(defineTool({
+    name: 'tiddlywiki_attach',
+    description: '把一个本机文件或公网 http(s) 地址存成 wiki 的二进制附件 tiddler（图片 / PDF / 压缩包等，type + base64 正文，随 wiki 进 git）。可选把附件嵌入/链接进某篇笔记。这是 agent 唯一能写入二进制附件的途径。',
+    parameters: {
+      title: { type: 'string', description: '附件 tiddler 标题（同时决定其在 wiki 里的名字）', required: true },
+      path: { type: 'string', description: '本机绝对路径（与 url 二选一）' },
+      url: { type: 'string', description: '公网 http(s) 地址（与 path 二选一；含 SSRF 守卫，拒绝内网/回环地址）' },
+      tags: { type: 'array', items: { type: 'string' }, description: '可选：附件标签' },
+      noteTitle: { type: 'string', description: '可选：把该附件嵌入到这篇笔记末尾（图片用 [img[标题]]，其它用 [[标题]] 链接）' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value: AttachResult) => {
+        const lines = [`已保存附件「${value.title}」（${value.mime}，${value.bytes} 字节，base64 约 ${value.chars} 字符）`]
+        if (value.source !== null) lines.push(`来源: ${value.source}`)
+        if (value.embedInto !== null) lines.push(`已嵌入笔记「${value.embedInto}」`)
+        lines.push(`打开: [${value.title}](/dsh-tiddlywiki/tw/#${encodeURIComponent(value.title)})`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    execute: async (args: { title: string; path?: string; url?: string; tags?: string[]; noteTitle?: string }): Promise<AttachResult> => {
+      const wiki = requireWiki()
+      const title = args.title.trim()
+      if (title.length === 0) throw new Error('tiddlywiki_attach: title 不能为空')
+      const hasPath = typeof args.path === 'string' && args.path.trim().length > 0
+      const hasUrl = typeof args.url === 'string' && args.url.trim().length > 0
+      if (hasPath === hasUrl) throw new Error('tiddlywiki_attach: path 与 url 必须且只能提供一个')
+      let buffer: Buffer
+      let mime: string
+      let source: string
+      if (hasPath) {
+        const filePath = (args.path as string).trim()
+        // Absolute only: a relative path would resolve against the DSH process
+        // cwd, which is not something the model can reason about.
+        if (!isAbsolute(filePath)) throw new Error('tiddlywiki_attach: path 必须是绝对路径')
+        const info = await stat(filePath)
+        if (!info.isFile()) throw new Error(`tiddlywiki_attach: ${basename(filePath)} 不是普通文件`)
+        if (info.size > MAX_ATTACH_BYTES) throw new Error(`tiddlywiki_attach: 文件超过 ${Math.floor(MAX_ATTACH_BYTES / 1024 / 1024)}MB 上限`)
+        buffer = await readFile(filePath)
+        const ext = extname(filePath).slice(1).toLowerCase()
+        mime = ATTACH_MIME_BY_EXT[ext] ?? 'application/octet-stream'
+        source = filePath
+      } else {
+        const imageUrl = (args.url as string).trim()
+        const downloaded = await downloadClipImage(imageUrl, '')
+        buffer = downloaded.buffer
+        const ext = extname(new URL(imageUrl).pathname).slice(1).toLowerCase()
+        mime = downloaded.type?.split(';')[0]?.trim() || ATTACH_MIME_BY_EXT[ext] || 'application/octet-stream'
+        source = imageUrl
+      }
+      if (buffer.length === 0) throw new Error('tiddlywiki_attach: 内容为空')
+      if (buffer.length > MAX_ATTACH_BYTES) throw new Error(`tiddlywiki_attach: 内容超过 ${Math.floor(MAX_ATTACH_BYTES / 1024 / 1024)}MB 上限`)
+      const tags = Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : []
+      await wiki.put({
+        title,
+        type: mime,
+        text: buffer.toString('base64'),
+        ...(tags.length > 0 ? { tags } : {}),
+        'attach-source': source,
+        'attach-at': new Date().toISOString(),
+      })
+      let embedInto: string | null = null
+      if (typeof args.noteTitle === 'string' && args.noteTitle.trim().length > 0) {
+        embedInto = args.noteTitle.trim()
+        const note = await wiki.get(embedInto)
+        const embed = mime.startsWith('image/') ? `[img[${title}]]` : `[[${title}]]`
+        const text = note === undefined ? embed : `${(note.text ?? '').replace(/\s+$/, '')}\n\n${embed}`
+        if (note === undefined) {
+          await wiki.put({ title: embedInto, text, type: DEFAULT_NOTE_TYPE, tags: [] })
+        } else {
+          await wiki.put({ ...cleanTiddler(note), text })
+        }
+      }
+      deps.autoCommit()
+      return { ok: true, title, mime, bytes: buffer.length, chars: buffer.toString('base64').length, source, embedInto }
+    },
+  }))
+
+  // ── tiddlywiki_lint ──────────────────────────────────────────────────────
+  register(defineTool({
+    name: 'tiddlywiki_lint',
+    description: '知识库体检（只读）：找出垃圾/异常标签、指向不存在条目的死链、空笔记、疑似 Markdown 却缺 type 的笔记，以及超大二进制附件。返回按类别分组的问题清单与修复建议。',
+    parameters: {
+      limit: { type: 'integer', description: '可选：每类最多返回多少条示例（默认 10，最大 100）' },
+      checks: { type: 'array', items: { type: 'string' }, description: '可选：只跑指定检查（junk-tags / broken-links / empty-notes / missing-type / large-binary）' },
+    },
+    output: {
+      schema: { type: 'json' },
+      render: (_args, value: LintResult) => {
+        const lines = [`知识库体检：扫描 ${value.scanned} 条文本笔记，发现 ${value.issues.reduce((sum, i) => sum + i.count, 0)} 个问题。`]
+        if (value.issues.length === 0) lines.push('没有发现问题。')
+        for (const issue of value.issues) {
+          lines.push(`- ${issue.kind}：${issue.count} 处 — ${issue.hint}`)
+          for (const sample of issue.samples) lines.push(`    · ${sample}`)
+        }
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
+    },
+    execute: async (args: { limit?: number; checks?: string[] }): Promise<LintResult> => {
+      const wiki = requireWiki()
+      const limit = Math.max(1, Math.min(args.limit ?? 10, 100))
+      const wanted = Array.isArray(args.checks) && args.checks.length > 0 ? new Set(args.checks) : undefined
+      const want = (kind: string): boolean => wanted === undefined || wanted.has(kind)
+      const items = await wiki.list(undefined, true)
+      const titles = new Set(items.map((t) => t.title))
+      const issues: LintIssue[] = []
+
+      if (want('junk-tags')) {
+        const samples: string[] = []
+        let count = 0
+        for (const t of items) {
+          for (const tag of t.tags ?? []) {
+            if (!isJunkTag(tag)) continue
+            count++
+            if (samples.length < limit) samples.push(`「${t.title}」的标签「${tag}」`)
+          }
+        }
+        if (count > 0) issues.push({ kind: 'junk-tags', count, hint: '明显是写入事故产生的标签（如筛选器错误文本）；用 tiddlywiki_put 重写该条目的 tags 清理', samples })
+      }
+
+      if (want('broken-links')) {
+        const samples: string[] = []
+        let count = 0
+        const linkRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|\{\{([^}]+)\}\}/g
+        for (const t of items) {
+          const text = t.text ?? ''
+          let match: RegExpExecArray | null
+          while ((match = linkRe.exec(text)) !== null) {
+            const target = (match[3] ?? match[2] ?? match[1] ?? '').trim()
+            if (target.length === 0 || target.startsWith('$:/') || /^(https?|mailto|file):/.test(target)) continue
+            if (target.includes('$') || target.includes('<')) continue // variable/macro, not a tiddler link
+            if (titles.has(target)) continue
+            count++
+            if (samples.length < limit) samples.push(`「${t.title}」→「${target}」`)
+          }
+        }
+        if (count > 0) issues.push({ kind: 'broken-links', count, hint: '被引用条目标题不存在；确认是笔误还是应新建该条目', samples })
+      }
+
+      if (want('empty-notes')) {
+        const samples: string[] = []
+        let count = 0
+        for (const t of items) {
+          if (t.title.startsWith('$:/')) continue
+          if (isBinaryType(typeof t.type === 'string' ? t.type : undefined)) continue
+          if ((t.text ?? '').trim().length === 0) {
+            count++
+            if (samples.length < limit) samples.push(`「${t.title}」`)
+          }
+        }
+        if (count > 0) issues.push({ kind: 'empty-notes', count, hint: '正文为空的笔记；补内容或删除', samples })
+      }
+
+      if (want('missing-type')) {
+        const samples: string[] = []
+        let count = 0
+        for (const t of items) {
+          if (t.title.startsWith('$:/')) continue
+          const type = typeof t.type === 'string' ? t.type : ''
+          if (type === DEFAULT_NOTE_TYPE || type === 'text/vnd.tiddlywiki') continue
+          const text = t.text ?? ''
+          if (/^#{1,6}\s|\n#{1,6}\s|^\s*[-*]\s|\*\*[^*]+\*\*/m.test(text)) {
+            count++
+            if (samples.length < limit) samples.push(`「${t.title}」（type=${type || '（无）'}）`)
+          }
+        }
+        if (count > 0) issues.push({ kind: 'missing-type', count, hint: '正文像 Markdown 但 type 不是 text/markdown，TW 会按 wikitext 渲染；用 fields.type 明确内容类型', samples })
+      }
+
+      return { scanned: items.length, issues }
     },
   }))
 
@@ -632,7 +1236,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
 // ── tool result shapes + renders ───────────────────────────────────────────
 
 interface SearchHit { title: string; tags: string[]; modified: string | null; snippet: string }
-interface SearchResult { query: string; tags: string[]; since: string | null; type: string | null; total: number; results: SearchHit[] }
+interface SearchResult { query: string; tags: string[]; since: string | null; type: string | null; field: string | null; value: string | null; total: number; results: SearchHit[] }
 interface RecentResult { since: string | null; results: SearchHit[] }
 interface TagListResult { count: number; tags: Array<{ tag: string; count: number }> }
 interface GetResult {
@@ -651,7 +1255,15 @@ interface PutResult { ok: boolean; title: string; tags: string[]; type: string |
 interface BatchItemResult { title: string; written: boolean; skipped: boolean; failed: boolean; error?: string }
 interface BatchResult { ok: boolean; written: number; skipped: number; failed: number; items: BatchItemResult[] }
 interface RenameResult { ok: boolean; from: string; to: string; refsUpdated: number; refsTiddlers: number; warning?: string }
-interface DeleteResult { ok: boolean; title: string }
+interface DeleteResult { ok: boolean; title: string; /** true = moved to the trash (recoverable). */ trashed?: boolean; trashTitle?: string }
+interface TrashItem { title: string; at?: string; of?: string }
+interface TrashResult { action: string; message: string; items?: TrashItem[] }
+interface AppendResult { ok: boolean; title: string; mode: 'append' | 'prepend'; heading: string | null; created: boolean; added: number; total: number }
+interface BacklinkHit { title: string; refs: number; via: 'link' | 'tag'; modified: string | null }
+interface BacklinkResult { title: string; total: number; linkCount: number; tagCount: number; items: BacklinkHit[] }
+interface AttachResult { ok: boolean; title: string; mime: string; bytes: number; chars: number; source: string | null; embedInto: string | null }
+interface LintIssue { kind: string; count: number; hint: string; samples: string[] }
+interface LintResult { scanned: number; issues: LintIssue[] }
 interface SyncResult {
   action: string
   ok: boolean

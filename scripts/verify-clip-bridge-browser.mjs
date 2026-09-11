@@ -13,6 +13,10 @@
  * OPTIONAL dev tool: requires a headless Chrome/Edge AND puppeteer-core (same
  * convention as verify-theme-browser.mjs). When either is missing → SKIP.
  *
+ * NOT part of CI (.github/workflows/ci.yml): GitHub runners have no Chrome/Edge
+ * + puppeteer-core here, so this script would only ever print SKIP — a useless
+ * green. Run it manually on a desktop dev machine.
+ *
  *   node scripts/verify-clip-bridge-browser.mjs
  *
  * @module dsh-tiddlywiki/scripts/verify-clip-bridge-browser

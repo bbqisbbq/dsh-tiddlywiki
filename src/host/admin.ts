@@ -17,15 +17,15 @@
  * @module dsh-tiddlywiki/host/admin
  */
 import { createRequire } from 'node:module'
-import { readFile, writeFile, readdir } from 'node:fs/promises'
+import { readFile, writeFile, readdir, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
-import { ROUTE_PREFIX, type WebServerFace } from './routes.ts'
+import { ROUTE_PREFIX, redactLogLines, redactRemoteUrl, type WebServerFace } from './routes.ts'
 import { CONFIG_TIDDLER, type ConfigStore, type PluginConfigShape } from './config.ts'
-import { readBody, json, rejectCrossSiteWrite } from './http.ts'
-import { waitForFileWrite, needsRestartAfterSeeds } from './seeds.ts'
+import { readBody, json, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
+import { waitForFileWrite, needsRestartAfterSeeds, flushPendingWrites } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
 import { GitFace } from './git.ts'
 
@@ -64,21 +64,32 @@ export function resolveTwRoot(): string {
   return dirname(require.resolve('tiddlywiki/package.json'))
 }
 
-/** Read the wiki's tiddlywiki.info. Malformed JSON degrades to "no plugins"
- *  instead of making every admin route 500. */
+/**
+ * Read the wiki's tiddlywiki.info.
+ *
+ * ONLY a missing file (ENOENT) means "no configuration yet" (first run). Every
+ * other failure — EACCES/EBUSY, a truncated write, malformed JSON — PROPAGATES:
+ * the settings page used to receive an empty config object, rewrite the file
+ * from it and thereby DELETE the existing plugins/themes/`build`/hand-written
+ * fields (v0.19.0 — the AGENTS §8 "don't treat a read failure as absence" rule,
+ * applied to this path at last).
+ */
 export async function readWikiInfo(wikiPath: string): Promise<WikiInfo> {
+  const file = join(wikiPath, 'tiddlywiki.info')
   let raw: string
   try {
-    raw = await readFile(join(wikiPath, 'tiddlywiki.info'), 'utf8')
-  } catch {
-    return { plugins: [], themes: [], languages: [] }
+    raw = await readFile(file, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { plugins: [], themes: [], languages: [] }
+    }
+    throw new Error(`读取 tiddlywiki.info 失败：${err instanceof Error ? err.message : String(err)}`)
   }
   let parsed: Partial<WikiInfo>
   try {
     parsed = JSON.parse(raw) as Partial<WikiInfo>
   } catch {
-    console.warn('[dsh-tiddlywiki] tiddlywiki.info is not valid JSON; treating it as empty')
-    return { plugins: [], themes: [], languages: [] }
+    throw new Error('tiddlywiki.info 不是合法 JSON；请先修复该文件再保存设置（已保留原文件）')
   }
   return {
     // Spread FIRST, then the normalized fields: the old order let a literal
@@ -92,9 +103,47 @@ export async function readWikiInfo(wikiPath: string): Promise<WikiInfo> {
   }
 }
 
-/** Write the wiki's tiddlywiki.info (pretty-printed, ordering preserved). */
+/**
+ * Write the wiki's tiddlywiki.info (pretty-printed, ordering preserved).
+ * Keeps a `.bak` of the previous content and swaps the new content in via a
+ * temp file + rename, so a crash or a full disk cannot leave a truncated file
+ * behind (readWikiInfo now refuses to guess at one).
+ */
 export async function writeWikiInfo(wikiPath: string, info: WikiInfo): Promise<void> {
-  await writeFile(join(wikiPath, 'tiddlywiki.info'), `${JSON.stringify(info, null, 4)}\n`, 'utf8')
+  const file = join(wikiPath, 'tiddlywiki.info')
+  try {
+    await writeFile(`${file}.bak`, await readFile(file, 'utf8'), 'utf8')
+  } catch {
+    /* first write — nothing to back up */
+  }
+  const tmp = `${file}.tmp`
+  await writeFile(tmp, `${JSON.stringify(info, null, 4)}\n`, 'utf8')
+  await rename(tmp, file)
+}
+
+/**
+ * Ensure one bundled official plugin is listed in tiddlywiki.info `plugins`
+ * (idempotent). Returns whether the file changed — the caller restarts TW.
+ *
+ * WHY (v0.19.0): `WikiServer.ensureWiki()` scaffolds a fresh wiki with
+ * `--init server`, and that edition ships ONLY tiddlyweb/filesystem/highlight.
+ * The plugin nevertheless writes every agent note, quick-note, draft and clip
+ * as `text/markdown`, and the `text/markdown` parser is provided exclusively by
+ * the `tiddlywiki/markdown` plugin — without it a brand-new install renders
+ * every Markdown note as raw wikitext/source. The author's own wiki already had
+ * the plugin (added by an earlier import workflow), which is why this went
+ * unnoticed.
+ */
+export async function ensurePlugin(wikiPath: string, twRoot: string, name: string): Promise<boolean> {
+  const info = await readWikiInfo(wikiPath)
+  if (info.plugins.includes(name)) return false
+  const catalog = await bundledCatalog(twRoot)
+  if (!catalog.plugins.some((p) => p.name === name)) {
+    throw new Error(`unknown bundled plugin: ${name}`)
+  }
+  info.plugins = [...info.plugins, name]
+  await writeWikiInfo(wikiPath, info)
+  return true
 }
 
 /** Enumerate bundled official plugins + themes + languages of tiddlywiki. */
@@ -249,19 +298,23 @@ export interface AdminDeps {
 }
 
 export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: AdminDeps): () => void {
-  const handleState = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleState = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectNonRead(req, res)) return
       const wikiPath = deps.getWikiPath()
       const [info, catalog] = await Promise.all([readWikiInfo(wikiPath), bundledCatalog(deps.twRoot())])
       let git: unknown = null
       try {
-        git = await new GitFace().status(wikiPath)
+        const status = await new GitFace().status(wikiPath)
+        git = { ...status, remote: redactRemoteUrl(status.remote ?? '') }
       } catch {
         git = null
       }
+      const view = deps.server.status()
       json(res, {
         ok: true,
-        server: deps.server.status(),
+        // Same redaction as GET /status: this route is unauthenticated too.
+        server: { ...view, logs: redactLogLines(view.logs) },
         info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [] },
         catalog,
         config: deps.config.get(),
@@ -274,10 +327,19 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
 
   const handleInfo = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as { plugins?: unknown; themes?: unknown; themeActive?: unknown; languages?: unknown }
       const wikiPath = deps.getWikiPath()
-      const info = await readWikiInfo(wikiPath)
+      // A read failure must NEVER be turned into "the wiki has no plugins":
+      // saving would then rewrite the file without them. Fail with 500 and
+      // leave the file untouched.
+      let info: WikiInfo
+      try {
+        info = await readWikiInfo(wikiPath)
+      } catch (err) {
+        json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+        return
+      }
       const catalog = await bundledCatalog(deps.twRoot())
       const known = new Set([...catalog.plugins, ...catalog.themes].map((c) => c.name))
       const knownLangs = new Set(catalog.languages.map((c) => c.name))
@@ -372,7 +434,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
 
   const handleConfig = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as PluginConfigShape
       const client = deps.getClient()
       if (client === undefined) {
@@ -388,7 +450,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
 
   const handleRestart = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       await deps.server.restart()
       json(res, { ok: true, status: deps.server.status().status })
     } catch (err) {
@@ -401,8 +463,9 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
    * (doc-note / send-to-agent / home-index / tw-web-host) for the settings
    * page's 初始化 section.
    */
-  const handleSeeds = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleSeeds = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectNonRead(req, res)) return
       const client = deps.getClient()
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -422,7 +485,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
    */
   const handleSeedsRun = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as { id?: unknown; force?: unknown }
       const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
       const force = body.force === true
@@ -446,6 +509,11 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         try {
           const flushed = await waitForFileWrite(join(deps.getWikiPath(), 'tiddlers', RENDER_PLUGIN_FILE), 8_000, 150, seedStartedAt)
           if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
+          // Drain the rest of the syncer queue too: force-all writes every seed,
+          // and a restart that boots from a stale snapshot silently loses the
+          // ones still queued (v0.19.0 — repeatedly lost tw-web-host here).
+          const drained = await flushPendingWrites(client, join(deps.getWikiPath(), 'tiddlers'))
+          if (!drained) console.warn('[dsh-tiddlywiki] seed writes may not have been flushed before restart')
           await deps.server.restart()
           restarted = true
         } catch (err) {
@@ -468,7 +536,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
    */
   const handleSeedsRemove = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as { id?: unknown }
       const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
       const client = deps.getClient()

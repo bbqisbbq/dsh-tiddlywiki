@@ -32,6 +32,7 @@
  */
 import type { TiddlyWebClient } from './tw-api.ts'
 import { existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { seedDocNote, unseedDocNote, DOC_NOTE_TITLE } from './seed-notes.ts'
 import { seedStarterDocs, unseedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE } from './seed-starter-docs.ts'
 import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE } from './seed-send-to-agent.ts'
@@ -107,6 +108,30 @@ export async function waitForFileWrite(filePath: string, timeoutMs = 8_000, poll
 
 /** The only seed that carries a TW SERVER route — it needs a TW restart to load. */
 export const RESTART_REQUIRED_SEED_IDS = ['render-route'] as const
+
+/**
+ * Flush sentinel (v0.19.0). TW's REST layer answers 204 as soon as the tiddler
+ * is in the in-memory store; the filesystem syncer writes it on a ~250ms timer.
+ * A restart in that window boots from the OLD snapshot and silently loses every
+ * write still queued — the v0.18.0 review caught it for the render plugin file,
+ * but any seed write could be lost (force-all repeatedly lost `tw-web-host`
+ * when the disk was busy). Writing this sentinel LAST and waiting for its file
+ * proves the queue has drained, because the syncer drains its save tasks in
+ * order.
+ */
+export const FLUSH_PROBE_TITLE = '$:/plugins/dsh-tiddlywiki/flush-probe'
+export const FLUSH_PROBE_FILE = '$__plugins_dsh_tiddlywiki_flush-probe.tid'
+
+/** Write the flush sentinel and wait for its file; true when the queue drained. */
+export async function flushPendingWrites(client: TiddlyWebClient, tiddlersDir: string, timeoutMs = 8_000): Promise<boolean> {
+  const startedAt = Date.now()
+  try {
+    await client.put({ title: FLUSH_PROBE_TITLE, text: new Date().toISOString(), type: 'text/plain', tags: [] })
+  } catch {
+    return false
+  }
+  return waitForFileWrite(join(tiddlersDir, FLUSH_PROBE_FILE), timeoutMs, 150, startedAt)
+}
 
 /** Did one of the RESTART_REQUIRED seeds actually write something? */
 export function needsRestartAfterSeeds(results: Array<{ id: string; ok: boolean; wrote: boolean }>): boolean {
@@ -291,14 +316,14 @@ export const SEED_DEFS: SeedDef[] = [
       check: async (ctx) => {
         // `run` (below) honors a USER-CHOSEN base: it only writes when the
         // value is missing or still the legacy default. The check must agree,
-        // otherwise a deliberate custom host is reported as「缺失」and the
-        // settings page's「重新初始化」(force) overwrites it.
-        let current: string | undefined
-        try {
-          current = (await ctx.client.get(TW_WEB_HOST_TIDDLER))?.text?.trim()
-        } catch {
-          current = undefined
-        }
+        // otherwise a deliberate custom host is reported as「缺失」.
+        //
+        // Read WITHOUT swallowing (v0.19.0): the old bare `catch` turned any
+        // transient failure into `present: false` — i.e. it reported the user's
+        // deliberately customised base as「缺失」and invited the settings page's
+        // 「重新初始化」to overwrite it. A failure propagates to checkAllSeeds,
+        // which reports「检查失败」instead of a bogus missing state.
+        const current = (await ctx.client.get(TW_WEB_HOST_TIDDLER))?.text?.trim()
         const present = typeof current === 'string' && current.length > 0 && current !== TW_WEB_HOST_DEFAULT
         const detail = present
           ? (current === TW_PROXY_PATH ? `已指向 ${TW_PROXY_PATH}` : `已指向自定义基址 ${current}（保留，不会覆盖）`)

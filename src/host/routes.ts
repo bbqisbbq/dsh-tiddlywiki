@@ -20,14 +20,17 @@
  * @module dsh-tiddlywiki/host/routes
  */
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http'
-import { mkdir, writeFile, access } from 'node:fs/promises'
-import { basename, extname, join } from 'node:path'
+import { createHash, timingSafeEqual } from 'node:crypto'
+import { mkdir, writeFile, access, stat } from 'node:fs/promises'
+import { basename, extname, isAbsolute, join } from 'node:path'
+import { Readable } from 'node:stream'
 import type { TiddlyWebClient } from './tw-api.ts'
+import { TEXT_LIST_FILTER, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
-import { readBody, readBodyBuffer, json, rejectCrossSiteWrite, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
+import { readBody, readBodyBuffer, json, rejectCrossSiteWrite, rejectNonRead, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './session-summary.ts'
@@ -213,19 +216,68 @@ function forwardHeaders(headers: IncomingHttpHeaders): Record<string, string> {
 }
 
 /**
+ * Extensions that the browser would execute ON THE DSH ORIGIN: `/upload`
+ * writes into `wiki/files/`, which TW's core server serves back through the
+ * same-origin `/tw` proxy with an extension-derived Content-Type. An uploaded
+ * `.html`/`.svg` would therefore be same-origin script (able to read
+ * `/admin/state` and write the wiki), i.e. self-XSS with a persistence layer.
+ * Documents/images/archives stay allowed; only the executable-by-browser set is
+ * refused (v0.19.0).
+ */
+const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
+  '.html', '.htm', '.xhtml', '.shtml', '.hta', '.svg', '.xml', '.xsl', '.xslt',
+  '.js', '.mjs', '.cjs', '.swf', '.htc',
+])
+
+/** Windows device names: `NUL.txt` cannot be created and makes the route 500. */
+const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
+
+/**
  * Sanitize an uploaded filename into a safe bare name (no path separators,
  * no `..`, no control characters). Returns '' when nothing usable remains.
  */
 function sanitizeUploadName(input: unknown): string {
   if (typeof input !== 'string') return ''
-  const name = basename(input.trim().replace(/[\\/]+/g, '/'))
+  let name = basename(input.trim().replace(/[\\/]+/g, '/'))
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/[<>:"|?*]/g, '_')
     .replace(/^\.+/, '')
     .trim()
   if (name.length === 0 || name === '.' || name === '..') return ''
-  if (name.length > 160) return name.slice(0, 160)
+  // `CON`, `NUL`, `COM1…` are not creatable on Windows — prefix instead of 500.
+  if (WINDOWS_RESERVED_NAMES.test(name)) name = `_${name}`
+  if (name.length > 160) name = name.slice(0, 160)
   return name
+}
+
+/**
+ * Strip credentials embedded in a git remote URL (`https://user:token@host/x`)
+ * before it reaches an unauthenticated HTTP response (v0.19.0). The token in a
+ * remote URL is a real secret and `/status` is reachable without credentials.
+ */
+export function redactRemoteUrl(remote: string): string {
+  return remote.replace(/\/\/[^/@\s]+@/g, '//***@')
+}
+
+/**
+ * Redact secrets that can appear in the TW child's captured stdout/stderr log
+ * (the spawn line carries `password=…`). Belt-and-braces on top of the
+ * redaction in wiki.ts, because `/status` is unauthenticated.
+ */
+export function redactLogLines(logs: readonly string[]): string[] {
+  return logs.map((line) => line
+    .replace(/(password=)\S+/gi, '$1***')
+    .replace(/(authorization:\s*basic\s+)[A-Za-z0-9+/=]+/gi, '$1***'))
+}
+
+/**
+ * Constant-time string comparison: both sides are hashed first, so neither the
+ * content nor the LENGTH of the expected token leaks through timing.
+ */
+function safeTokenEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a, 'utf8').digest()
+  const hb = createHash('sha256').update(b, 'utf8').digest()
+  return timingSafeEqual(ha, hb)
 }
 
 function pad(n: number): string {
@@ -324,24 +376,56 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * invalidates it so a sync/upload is reflected immediately.
    */
   const GIT_STATUS_TTL_MS = 2_000
-  let gitStatusCache: { at: number; value: GitStatusViewPublic | null } | undefined
+  /** Cached git-status PROMISE (not value): a burst of concurrent /status polls
+   *  then shares ONE probe instead of each spawning up to five git processes
+   *  (v0.19.0 — value-caching still let every concurrent miss run its own). */
+  let gitStatusCache: { at: number; value: Promise<GitStatusViewPublic | null> } | undefined
   const invalidateGitStatus = (): void => { gitStatusCache = undefined }
-  const cachedGitStatus = async (): Promise<GitStatusViewPublic | null> => {
+  const cachedGitStatus = (): Promise<GitStatusViewPublic | null> => {
     if (gitStatusCache !== undefined && Date.now() - gitStatusCache.at < GIT_STATUS_TTL_MS) return gitStatusCache.value
-    let value: GitStatusViewPublic | null = null
-    try {
-      value = await deps.git.status(deps.getWikiPath())
-    } catch {
-      value = null
-    }
-    gitStatusCache = { at: Date.now(), value }
-    return value
+    const pending = (async (): Promise<GitStatusViewPublic | null> => {
+      try {
+        const view = await deps.git.status(deps.getWikiPath())
+        // The remote URL can carry a PAT (`https://user:token@…`) and /status is
+        // unauthenticated — never hand the credential to the browser.
+        return { ...view, remote: redactRemoteUrl(typeof view.remote === 'string' ? view.remote : '') }
+      } catch {
+        return null
+      }
+    })()
+    gitStatusCache = { at: Date.now(), value: pending }
+    return pending
   }
 
-  const handleStatus = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  /**
+   * Serialize the heavyweight mutating routes (restart / sync). A burst of
+   * concurrent calls used to stack pull/restart operations on top of each
+   * other (and a restart racing a restart is what left orphan TW children).
+   * A second concurrent caller gets 429 instead of piling on (v0.19.0).
+   */
+  let mutationInFlight: string | undefined
+  const beginMutation = (label: string): boolean => {
+    if (mutationInFlight !== undefined) return false
+    mutationInFlight = label
+    return true
+  }
+  const endMutation = (): void => { mutationInFlight = undefined }
+
+  const handleStatus = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (rejectNonRead(req, res)) return
     const view = deps.server.status()
     const gitSummary = await cachedGitStatus()
-    json(res, { ok: true, ...view, twProxy: TW_PROXY_PATH, git: gitSummary, note: { tag: deps.noteDefaults().tag }, ui: deps.uiDefaults() })
+    json(res, {
+      ok: true,
+      ...view,
+      // Child-process logs are served to an unauthenticated caller: never leak
+      // the spawn line's `password=…` (or a forwarded Authorization header).
+      logs: redactLogLines(view.logs),
+      twProxy: TW_PROXY_PATH,
+      git: gitSummary,
+      note: { tag: deps.noteDefaults().tag },
+      ui: deps.uiDefaults(),
+    })
   }
 
   /**
@@ -353,7 +437,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleSessionSummary = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       let body: { session?: unknown } = {}
       try {
         body = JSON.parse(await readBody(req)) as { session?: unknown }
@@ -389,8 +473,13 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * picker can badge existing sessions — read from the lightweight persistence
    * header list, never a full log parse.
    */
-  const handleAgentSessions = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleAgentSessions = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectNonRead(req, res)) return
+      // Same guard as the sibling /agent/* routes: a deployment that protects
+      // send-to-agent with a token must not leak the session roster to an
+      // unauthenticated caller (v0.19.0 — this route used to be the odd one out).
+      if (!guardSendToAgent(req, res)) return
       const sc = deps.getSessionController()
       if (sc === undefined) {
         json(res, { ok: false, error: 'session service unavailable' }, 503)
@@ -442,7 +531,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     if (token.length === 0) return true
     const got = req.headers['x-send-to-agent-token']
     const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
-    if (value === token) return true
+    // Constant-time comparison (hash-then-compare): `===` leaks the token's
+    // length and matched-prefix timing to a caller who can probe the route.
+    if (safeTokenEqual(value, token)) return true
     json(res, { ok: false, error: 'unauthorized' }, 401)
     return false
   }
@@ -454,6 +545,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleAgentModes = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      if (rejectNonRead(req, res)) return
       if (!guardSendToAgent(req, res)) return
       const ap = deps.getAgentPresets()
       if (ap === undefined) {
@@ -508,7 +600,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleAgentSend = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       if (!guardSendToAgent(req, res)) return
       const body = JSON.parse(await readBody(req)) as { sessionId?: unknown; text?: unknown }
       const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? body.sessionId.trim() : ''
@@ -560,7 +652,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleAgentCreate = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       if (!guardSendToAgent(req, res)) return
       const body = JSON.parse(await readBody(req)) as { cwd?: unknown; mode?: unknown; permission?: unknown }
       const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : ''
@@ -586,7 +678,21 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       const ws = deps.getWorkspaceRegistry()
       if (cwd.length > 0) {
-        await mkdir(cwd, { recursive: true })
+        // Only absolute paths, and never clobber an existing non-directory:
+        // `mkdir -p` on a file path throws ENOTDIR and used to surface as a 500.
+        if (!isAbsolute(cwd)) {
+          json(res, { ok: false, error: 'cwd must be an absolute path' }, 400)
+          return
+        }
+        try {
+          const info = await stat(cwd)
+          if (!info.isDirectory()) {
+            json(res, { ok: false, error: 'cwd exists but is not a directory' }, 400)
+            return
+          }
+        } catch {
+          await mkdir(cwd, { recursive: true })
+        }
       }
       let created: { sessionId: string }
       let workspaceId: string | undefined
@@ -630,7 +736,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   const handleNote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown }
       const text = typeof body.text === 'string' && body.text.trim().length > 0 ? body.text.trim() : null
       if (text === null) {
@@ -643,6 +749,13 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         return
       }
       const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
+      // System tiddlers ($:/…) are TW internals (theme, config, plugins): the
+      // quick-note route is a user path and must not let a request overwrite
+      // them. Use the editor / admin surface for that (v0.19.0).
+      if (title.startsWith('$:/')) {
+        json(res, { ok: false, error: 'title must not be a system tiddler ($:/…)' }, 400)
+        return
+      }
       const tags = resolveTags(body, deps.noteDefaults().tag)
       await client.put({ title, text, tags, type: NOTE_TYPE })
       deps.autoCommit()
@@ -655,7 +768,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   const handleEdit = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown }
       const client = deps.getClient()
       if (client === undefined) {
@@ -663,6 +776,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         return
       }
       const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
+      if (title.startsWith('$:/')) {
+        json(res, { ok: false, error: 'title must not be a system tiddler ($:/…)' }, 400)
+        return
+      }
       const tags = resolveTags(body, deps.noteDefaults().tag)
       const text = typeof body.text === 'string' ? body.text : ''
       const result = await openInTwEditor(client, title, text, tags)
@@ -678,14 +795,17 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    *  `tags` array feeds note-widget's chip autocomplete; the parallel `items`
    *  (tag → tiddler count) feeds the reply-stream `tiddlywiki_list_tags` tool
    *  card, so both consumers share one endpoint. */
-  const handleTags = async (_req: IncomingMessage, res: ServerResponse): Promise<void> => {
+  const handleTags = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (rejectNonRead(req, res)) return
     const client = deps.getClient()
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
     }
     try {
-      const items = await client.list(undefined, false)
+      // Text-bearing tiddlers only (server-side filter): tags that exist solely
+      // on binary attachments must not show up in the autocomplete / tool card.
+      const items = await client.list(TEXT_LIST_FILTER, false)
       const counts = new Map<string, number>()
       for (const item of items) {
         for (const tag of item.tags ?? []) {
@@ -705,6 +825,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   /** Recent non-system tiddlers for the quick-note "最近" picker (newest first). */
   const handleRecent = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (rejectNonRead(req, res)) return
     const client = deps.getClient()
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -721,7 +842,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         items: items.map((t) => ({
           title: t.title,
           tags: t.tags ?? [],
-          modified: typeof t.modified === 'string' ? t.modified : null,
+          modified: toIsoDateString(t.modified),
           snippet: snippetOf(t.text ?? ''),
         })),
       })
@@ -732,6 +853,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   /** Full tiddler for the quick-note "最近" picker (load into the editor). */
   const handleGet = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (rejectNonRead(req, res)) return
     const client = deps.getClient()
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -742,6 +864,13 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const title = url.searchParams.get('title') ?? ''
       if (title.length === 0) {
         json(res, { ok: false, error: 'missing title' }, 400)
+        return
+      }
+      // The plugin's own config tiddler can carry shared tokens (bridge.token /
+      // sendToAgent.token) and this route is unauthenticated: serve the note
+      // picker but never the plugin's secret-bearing config (v0.19.0).
+      if (title.startsWith('$:/plugins/dsh-tiddlywiki/')) {
+        json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
         return
       }
       const t = await client.get(title)
@@ -760,7 +889,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         text: t.text ?? '',
         tags: t.tags ?? [],
         type: t.type ?? 'text/vnd.tiddlywiki',
-        modified: typeof t.modified === 'string' ? t.modified : null,
+        modified: toIsoDateString(t.modified),
         fields,
       })
     } catch (err) {
@@ -775,6 +904,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * snippets so the card can list clickable wiki links.
    */
   const handleSearch = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (rejectNonRead(req, res)) return
     const client = deps.getClient()
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -802,7 +932,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         items: items.map((t) => ({
           title: t.title,
           tags: t.tags ?? [],
-          modified: typeof t.modified === 'string' ? t.modified : null,
+          modified: toIsoDateString(t.modified),
           snippet: snippetOf(t.text ?? ''),
         })),
       })
@@ -813,8 +943,16 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   const handleRestart = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
-      await deps.server.restart()
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      if (!beginMutation('restart')) {
+        json(res, { ok: false, error: '另一个重启/同步正在进行中，请稍候' }, 429)
+        return
+      }
+      try {
+        await deps.server.restart()
+      } finally {
+        endMutation()
+      }
       json(res, { ok: true, status: deps.server.status().status })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
@@ -828,7 +966,11 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    *  still holds the old in-memory snapshot — restart it (same port) so the
    *  UI reflects the pulled files instead of looking stale. */
   const handleSync = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    if (rejectCrossSiteWrite(req, res)) return
+    if (rejectCrossSiteWrite(req, res, ['POST'])) return
+    if (!beginMutation('sync')) {
+      json(res, { ok: false, error: '另一个重启/同步正在进行中，请稍候' }, 429)
+      return
+    }
     invalidateGitStatus()
     const dir = deps.getWikiPath()
     const status = async (): Promise<GitStatusViewPublic | null> => {
@@ -874,6 +1016,8 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }, pushed.ok ? 200 : 502)
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    } finally {
+      endMutation()
     }
   }
 
@@ -885,7 +1029,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleUpload = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
-      if (rejectCrossSiteWrite(req, res)) return
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const buf = await readBodyBuffer(req)
       // Name comes from ?name= (URL-encoded) or the X-Filename header.
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
@@ -900,13 +1044,22 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'missing or invalid filename' }, 400)
         return
       }
+      // Refuse files the browser would EXECUTE on the DSH origin: `/files/*` is
+      // served back through the same-origin `/tw` proxy, so an uploaded .html /
+      // .svg would be same-origin script with access to the admin routes.
+      const extension = extname(name).toLowerCase()
+      if (DANGEROUS_UPLOAD_EXTENSIONS.has(extension)) {
+        json(res, { ok: false, error: `不允许上传可执行/可脚本化的文件类型：${extension}` }, 400)
+        return
+      }
       const filesDir = join(deps.getWikiPath(), 'files')
       await mkdir(filesDir, { recursive: true })
       const ext = extname(name)
       const stem = ext.length > 0 ? name.slice(0, -ext.length) : name
-      // Collision avoidance: files/some.txt, files/some-1.txt, …
+      // Collision avoidance: files/some.txt, files/some-1.txt, … (bounded, so a
+      // pathological directory cannot spin this loop forever).
       let candidate = name
-      for (let i = 1; ; i++) {
+      for (let i = 1; i <= 10_000; i++) {
         try { await access(join(filesDir, candidate)) } catch { break }
         candidate = `${stem}-${i}${ext}`
       }
@@ -939,9 +1092,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const rest = url.pathname.replace(/^\/dsh-tiddlywiki\/api/, '') || '/'
     try {
-      const headers: Record<string, string> = {}
-      const ct = req.headers['content-type']
-      if (typeof ct === 'string') headers['content-type'] = ct
+      // Share the /tw proxy's header forwarding so `authorization`/`cookie`
+      // reach the TW child: in locked-down mode (auth.username configured) the
+      // /api passthrough used to 401 on every call because it dropped them.
+      const headers: Record<string, string> = forwardHeaders(req.headers)
       const method = (req.method ?? 'GET').toUpperCase()
       // TW's CSRF gate requires X-Requested-With on writes; forward it through.
       if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
@@ -985,12 +1139,11 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const init: RequestInit = { method, headers, signal: AbortSignal.timeout(30_000) }
       if (method === 'PUT' || method === 'POST') init.body = await readBodyBuffer(req, MAX_UPLOAD_BYTES)
       const upstream = await fetch(`${deps.server.url}${rest}${url.search}`, init)
-      const data = Buffer.from(await upstream.arrayBuffer())
       const responseHeaders: Record<string, string> = {
         'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
         'cache-control': upstream.headers.get('cache-control') ?? 'no-store',
       }
-      for (const name of ['etag', 'last-modified', 'content-disposition']) {
+      for (const name of ['etag', 'last-modified', 'content-disposition', 'accept-ranges']) {
         const value = upstream.headers.get(name)
         if (value !== null) responseHeaders[name] = value
       }
@@ -1000,7 +1153,22 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const challenge = upstream.headers.get('www-authenticate')
       if (challenge !== null) responseHeaders['www-authenticate'] = challenge
       res.writeHead(upstream.status, responseHeaders)
-      res.end(data)
+      if (upstream.body === null) {
+        res.end()
+        return
+      }
+      // STREAM the body (not `arrayBuffer()`): fetching a large attachment
+      // through /tw/files/… used to buffer the whole file in the DSH process
+      // (v0.19.0). `content-length` is deliberately NOT forwarded — undici
+      // decodes compressed responses, so the upstream length can be stale.
+      const body = Readable.fromWeb(upstream.body as unknown as import('node:stream/web').ReadableStream)
+      await new Promise<void>((resolveP, rejectP) => {
+        body.on('error', rejectP)
+        res.on('error', rejectP)
+        res.on('close', () => resolveP())
+        res.on('finish', () => resolveP())
+        body.pipe(res)
+      })
     } catch (err) {
       if (res.headersSent) {
         res.end()

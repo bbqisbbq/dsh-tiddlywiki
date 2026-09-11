@@ -27,7 +27,7 @@
  * @module dsh-tiddlywiki/client/note-widget
  */
 import { toast } from './toast.ts'
-import { openEditorPopup } from './editor-popup.ts'
+import { openEditorPopup, isEditorPopupOpen } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
 
 const NOTE_ENDPOINT = '/dsh-tiddlywiki/note'
@@ -45,17 +45,48 @@ const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
  */
 export const NOTE_STATE_EVENT = 'dsh-tw-note-state'
 
-/** localStorage key for the autosaved quick-note draft. */
-const DRAFT_KEY = 'dsh-tw-note-draft-v1'
+/**
+ * 旧版全局草稿 key（v0.18.0 及以前）。多标签页会互相覆盖，现在只作为一次性
+ * 迁移来源读取：读到且本窗口还没有草稿 → 迁移到本窗口的 key 并删除它。
+ */
+const LEGACY_DRAFT_KEY = 'dsh-tw-note-draft-v1'
+/** 本窗口草稿 key 前缀（`<前缀><窗口 id>`），窗口之间互不覆盖。 */
+const DRAFT_KEY_PREFIX = 'dsh-tw-note-draft-v1:'
+/** sessionStorage 里保存本标签页窗口 id 的 key（刷新后仍是同一个窗口）。 */
+const DRAFT_WINDOW_ID_KEY = 'dsh-tw-note-window-id'
 /** Draft auto-save debounce. */
 const DRAFT_DEBOUNCE_MS = 500
 
-interface Draft { text: string; title: string; tags: string[]; savedAt: number }
-
-function loadDraft(): Draft | null {
+/**
+ * 本窗口的草稿命名空间 id：优先取 sessionStorage 里的随机 id（同一标签页刷新后
+ * 仍是同一个窗口 → 自己的草稿静默恢复）；sessionStorage 不可用时退化为「本次
+ * 加载一个随机 id」（刷新后会被当成「其它窗口的草稿」，恢复时给出提示而不是
+ * 静默覆盖）。
+ */
+const DRAFT_WINDOW_ID: string = (() => {
   try {
-    const raw = localStorage.getItem(DRAFT_KEY)
-    if (raw === null) return null
+    const existing = sessionStorage.getItem(DRAFT_WINDOW_ID_KEY)
+    if (existing !== null && existing.length > 0) return existing
+    const created = Math.random().toString(36).slice(2, 10)
+    sessionStorage.setItem(DRAFT_WINDOW_ID_KEY, created)
+    return created
+  } catch {
+    return Math.random().toString(36).slice(2, 10)
+  }
+})()
+
+interface Draft { text: string; title: string; tags: string[]; savedAt: number; windowId?: string }
+
+/** 读取结果：draft = 草稿本体；foreign = 不是本窗口写的（迁移/跨窗口）。 */
+interface DraftHit { draft: Draft; foreign: boolean }
+
+function draftKey(): string {
+  return `${DRAFT_KEY_PREFIX}${DRAFT_WINDOW_ID}`
+}
+
+function parseDraft(raw: string | null): Draft | null {
+  if (raw === null) return null
+  try {
     const parsed = JSON.parse(raw) as Partial<Draft>
     if (typeof parsed.text !== 'string' || typeof parsed.title !== 'string') return null
     return {
@@ -63,18 +94,51 @@ function loadDraft(): Draft | null {
       title: parsed.title,
       tags: Array.isArray(parsed.tags) ? parsed.tags.filter((t): t is string => typeof t === 'string') : [],
       savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : 0,
+      windowId: typeof parsed.windowId === 'string' ? parsed.windowId : undefined,
     }
   } catch {
     return null
   }
 }
 
+function readDraftFrom(key: string): Draft | null {
+  try {
+    return parseDraft(localStorage.getItem(key))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 读取本窗口草稿。本窗口 key 为空时尝试迁移旧全局 key（一次性：迁移后删除旧
+ * key）。返回 null = 没有任何草稿；foreign=true = 草稿来源不是本窗口（旧 key
+ * 迁移过来，或 sessionStorage 不可用时窗口 id 变了），调用方需要给出可见提示。
+ */
+function loadDraft(): DraftHit | null {
+  const own = readDraftFrom(draftKey())
+  if (own !== null) {
+    return { draft: own, foreign: own.windowId !== undefined && own.windowId !== DRAFT_WINDOW_ID }
+  }
+  const legacy = readDraftFrom(LEGACY_DRAFT_KEY)
+  if (legacy === null) return null
+  // 旧 key 一次性迁移：补上本窗口标记写进本窗口 key，然后删除旧 key。
+  const migrated: Draft = { ...legacy, windowId: DRAFT_WINDOW_ID }
+  persistDraft(migrated)
+  try { localStorage.removeItem(LEGACY_DRAFT_KEY) } catch { /* ignore */ }
+  return { draft: migrated, foreign: true }
+}
+
+/** 采纳草稿（标记为本窗口所有），避免每次打开都重复提示「来自其它窗口」。 */
+function adoptDraft(draft: Draft): void {
+  persistDraft({ ...draft, windowId: DRAFT_WINDOW_ID })
+}
+
 function persistDraft(draft: Draft): void {
-  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(draft)) } catch { /* storage unavailable */ }
+  try { localStorage.setItem(draftKey(), JSON.stringify({ ...draft, windowId: DRAFT_WINDOW_ID })) } catch { /* storage unavailable */ }
 }
 
 function clearDraft(): void {
-  try { localStorage.removeItem(DRAFT_KEY) } catch { /* ignore */ }
+  try { localStorage.removeItem(draftKey()) } catch { /* ignore */ }
 }
 
 function pad(n: number): string {
@@ -207,9 +271,19 @@ function buildTagEditor(opts: { onChange?: () => void } = {}): {
       const item = document.createElement('div')
       item.className = 'dsh-tw-note-tagsuggest-item'
       item.textContent = tag
+      // 键盘可达：div + mousedown 对键盘用户不可用，补 role/tabIndex/Enter·Space。
+      item.setAttribute('role', 'button')
+      item.tabIndex = 0
+      item.setAttribute('aria-label', `添加标签「${tag}」`)
       item.addEventListener('mousedown', (event) => {
         event.preventDefault()
         addTag(tag)
+      })
+      item.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          addTag(tag)
+        }
       })
       suggest.append(item)
     }
@@ -278,6 +352,8 @@ interface BuiltUi {
   saveBtn: HTMLButtonElement
   editBtn: HTMLButtonElement
   draftBanner: HTMLDivElement
+  /** 草稿横幅文案（恢复「其它窗口草稿」时改写为带来源的提示）。 */
+  bannerText: HTMLSpanElement
   recentBtn: HTMLButtonElement
   recentWrap: HTMLDivElement
 }
@@ -345,6 +421,10 @@ export function createNoteWidget(): NoteWidgetHandle {
   let ui: BuiltUi | undefined
   let disposed = false
   let opened = false
+  /** native 路径（openNative）的在途互斥标志：防连点重复 POST /edit。 */
+  let nativeOpening = false
+  /** build() 时注册的 pagehide 落盘回调（dispose 需回收）。 */
+  let onPageHide: (() => void) | undefined
   let defaultTag = 'inbox'
   let draftTimer: number | undefined
   let recentOpen = false
@@ -397,20 +477,28 @@ export function createNoteWidget(): NoteWidgetHandle {
     if (ui !== undefined) ui.titleInput.value = timestampTitle()
   }
 
+  /**
+   * 同步落盘一次当前草稿（防抖定时器的回调体，也是 dispose 时的收尾动作）。
+   * 内容为空 = 把本窗口的草稿清掉（同旧行为）。
+   */
+  const flushDraft = (): void => {
+    if (ui === undefined) return
+    const text = ui.editor.getValue()
+    const title = ui.titleInput.value.trim()
+    if (text.trim().length === 0 && title.length === 0) {
+      clearDraft()
+      return
+    }
+    persistDraft({ text, title, tags: ui.tagEditor.getTags(), savedAt: Date.now() })
+  }
+
   /** Debounced draft auto-save (500ms after the last change). */
   const scheduleDraft = (): void => {
     if (disposed || !opened || ui === undefined) return
     if (draftTimer !== undefined) { clearTimeout(draftTimer); draftTimer = undefined }
     draftTimer = window.setTimeout(() => {
       draftTimer = undefined
-      if (ui === undefined) return
-      const text = ui.editor.getValue()
-      const title = ui.titleInput.value.trim()
-      if (text.trim().length === 0 && title.length === 0) {
-        clearDraft()
-        return
-      }
-      persistDraft({ text, title, tags: ui.tagEditor.getTags(), savedAt: Date.now() })
+      flushDraft()
     }, DRAFT_DEBOUNCE_MS)
   }
 
@@ -530,6 +618,10 @@ export function createNoteWidget(): NoteWidgetHandle {
           const row = document.createElement('div')
           row.className = 'dsh-tw-note-recent-item'
           row.title = item.snippet || item.title
+          // 键盘可达：div + click 对键盘用户不可用，补 role/tabIndex/Enter·Space。
+          row.setAttribute('role', 'button')
+          row.tabIndex = 0
+          row.setAttribute('aria-label', `载入笔记「${item.title}」`)
           const name = document.createElement('span')
           name.className = 'dsh-tw-note-recent-name'
           name.textContent = item.title
@@ -540,6 +632,12 @@ export function createNoteWidget(): NoteWidgetHandle {
           meta.textContent = bits.join(' · ')
           row.append(name, meta)
           row.addEventListener('click', () => { void loadNote(item.title) })
+          row.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              void loadNote(item.title)
+            }
+          })
           ui.recentWrap.append(row)
         }
       } catch (err) {
@@ -594,6 +692,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     const titleInput = document.createElement('input')
     titleInput.className = 'dsh-tw-note-title'
     titleInput.placeholder = '标题（默认时间戳）'
+    titleInput.setAttribute('aria-label', '笔记标题（默认时间戳）')
     const tagEditor = buildTagEditor({ onChange: scheduleDraft })
     fields.append(titleInput, tagEditor.el)
     titleInput.addEventListener('input', scheduleDraft)
@@ -681,7 +780,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     root.append(card, recentWrap)
     document.body.append(root)
 
-    const handle: BuiltUi = { root, card, editor, titleInput, tagEditor, saveBtn, editBtn, draftBanner, recentBtn, recentWrap }
+    const handle: BuiltUi = { root, card, editor, titleInput, tagEditor, saveBtn, editBtn, draftBanner, bannerText, recentBtn, recentWrap }
     ui = handle
 
     const close = (): void => {
@@ -812,6 +911,11 @@ export function createNoteWidget(): NoteWidgetHandle {
       tagEditor.setTags([])
       toast('已丢弃草稿')
     })
+
+    // 刷新 / 关闭标签页（pagehide）也同步落盘一次：dispose() 只在插件卸载路径
+    // 被调用，浏览器刷新不保证走到那里，但 500ms 防抖窗口内的输入同样不能丢。
+    onPageHide = (): void => { flushDraft() }
+    window.addEventListener('pagehide', onPageHide)
   }
 
   // ── public handle ────────────────────────────────────────────────────────
@@ -826,13 +930,21 @@ export function createNoteWidget(): NoteWidgetHandle {
       // without one it sits in the default bottom-right corner.
       positionCard(anchor)
       emitState(true)
-      const draft = loadDraft()
+      const hit = loadDraft()
+      const draft = hit?.draft ?? null
       if (draft !== null && (draft.text.trim().length > 0 || draft.title.trim().length > 0)) {
         // Restore the autosaved draft (survives reload / accidental close).
         ui.editor.setValue(draft.text)
         ui.titleInput.value = draft.title
         ui.tagEditor.setTags(draft.tags)
+        ui.bannerText.textContent = hit?.foreign === true ? '已恢复未保存草稿（来自其它窗口）' : '已恢复未保存草稿'
         ui.draftBanner.hidden = false
+        if (hit?.foreign === true) {
+          // 不是本窗口写的草稿（旧全局 key 迁移 / 窗口 id 变化）：可见提示而不是
+          // 静默覆盖，并采纳为本窗口所有，后续打开不再重复提示。
+          toast('已恢复其它窗口的未保存草稿')
+          adoptDraft(draft)
+        }
       } else {
         resetTitle()
         defaultTag = (await fetchUiOptions()).defaultTag
@@ -854,27 +966,48 @@ export function createNoteWidget(): NoteWidgetHandle {
     async openNative() {
       // 直达 TW 原生编辑页（quickNoteMode=native 时点击「快速笔记」走这里）：
       // 有未保存草稿就继续编辑它，否则新建「时间戳标题 + 默认 tag」的空草稿。
-      if (disposed) return
-      const draft = loadDraft()
-      const hasDraft = draft !== null && (draft.text.trim().length > 0 || draft.title.trim().length > 0)
-      const title = hasDraft && draft.title.trim().length > 0 ? draft.title.trim() : timestampTitle()
-      const text = hasDraft ? draft.text : ''
-      let tags: string[] = []
-      if (hasDraft) {
-        tags = draft.tags
-      } else {
-        defaultTag = (await fetchUiOptions()).defaultTag
-        if (disposed) return
-        tags = [defaultTag]
+      // 互斥守卫（与 open() 的 opened 守卫等价）：dock 的点击回调要等
+      // fetchUiConfig() 才分派，用户连点两次会各自走到这里 → 两个 POST /edit、
+      // 两个草稿 tiddler。用「在途」标志 + 弹窗已打开判断挡住重复请求。
+      if (disposed || nativeOpening || isEditorPopupOpen()) return
+      nativeOpening = true
+      try {
+        const hit = loadDraft()
+        const hasDraft = hit !== null && (hit.draft.text.trim().length > 0 || hit.draft.title.trim().length > 0)
+        const title = hasDraft && hit.draft.title.trim().length > 0 ? hit.draft.title.trim() : timestampTitle()
+        const text = hasDraft ? hit.draft.text : ''
+        let tags: string[] = []
+        if (hasDraft) {
+          tags = hit.draft.tags
+        } else {
+          defaultTag = (await fetchUiOptions()).defaultTag
+          if (disposed) return
+          tags = [defaultTag]
+        }
+        if (hit !== null && hit.foreign && (hit.draft.text.trim().length > 0 || hit.draft.title.trim().length > 0)) {
+          // 非本窗口的草稿：恢复进原生编辑器前给出可见提示，并采纳为本窗口所有。
+          toast('已恢复其它窗口的未保存草稿')
+          adoptDraft(hit.draft)
+        }
+        // 必须 await：否则 finally 会在 POST 在途时就放开守卫，第二次点击仍会重复提交。
+        await postEditAndOpen(title, text, tags)
+      } finally {
+        nativeOpening = false
       }
-      void postEditAndOpen(title, text, tags)
     },
     isOpen() {
       return opened
     },
     dispose() {
       disposed = true
+      if (onPageHide !== undefined) {
+        window.removeEventListener('pagehide', onPageHide)
+        onPageHide = undefined
+      }
+      // 先同步落盘一次待写草稿，再清定时器：500ms 防抖窗口内点关闭/刷新（pagehide
+      // 会走到这里）不丢最后输入。flushDraft 自带「内容为空则清草稿」的语义。
       if (draftTimer !== undefined) { clearTimeout(draftTimer); draftTimer = undefined }
+      flushDraft()
       ui?.tagEditor.dispose()
       ui?.editor.view.destroy()
       ui?.root.remove()

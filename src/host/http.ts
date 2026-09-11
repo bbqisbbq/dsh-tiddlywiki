@@ -114,11 +114,43 @@ export function isCrossSiteWrite(req: IncomingMessage): boolean {
 }
 
 /**
- * CSRF guard for a mutating route handler: writes the 403 and returns true when
- * the caller must stop. Usage: `if (rejectCrossSiteWrite(req, res)) return`.
+ * Guard for a route handler: enforces the expected HTTP method(s), then the
+ * CSRF check for writes. Returns true after writing the error response — the
+ * caller just does `if (rejectCrossSiteWrite(req, res, ['POST'])) return`.
+ *
+ * WHY the method check is mandatory (v0.19.0): the host webserver dispatches
+ * routes by PATHNAME ONLY (dsh-host-webserver matches `rawPath` and calls the
+ * handler, no method filter), and `isCrossSiteWrite` deliberately IGNORES
+ * read methods. Together that meant `GET /dsh-tiddlywiki/sync` ran a
+ * pull+commit+push, `GET /restart` restarted the TW child and `GET /upload`
+ * wrote a file — all reachable from any web page with a bare
+ * `<img src="http://127.0.0.1:3080/dsh-tiddlywiki/sync">`, since browsers send
+ * no Origin/Sec-Fetch-Site that we would reject on a GET. Declaring the method
+ * per route closes that class: a cross-site GET now gets 405 and no effect.
+ *
+ * @param allowedMethods when given, any other method → 405 (no side effect).
  */
-export function rejectCrossSiteWrite(req: IncomingMessage, res: ServerResponse): boolean {
+export function rejectCrossSiteWrite(
+  req: IncomingMessage,
+  res: ServerResponse,
+  allowedMethods?: readonly string[],
+): boolean {
+  const method = (req.method ?? 'GET').toUpperCase()
+  if (allowedMethods !== undefined && !allowedMethods.includes(method)) {
+    res.writeHead(405, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      allow: [...allowedMethods, 'OPTIONS'].join(', '),
+    })
+    res.end(JSON.stringify({ ok: false, error: `method not allowed: ${method}` }))
+    return true
+  }
   if (!isCrossSiteWrite(req)) return false
   json(res, { ok: false, error: 'cross-site request rejected' }, 403)
   return true
+}
+
+/** Read-only route guard: GET/HEAD only, no side effects on any other method. */
+export function rejectNonRead(req: IncomingMessage, res: ServerResponse): boolean {
+  return rejectCrossSiteWrite(req, res, ['GET', 'HEAD'])
 }

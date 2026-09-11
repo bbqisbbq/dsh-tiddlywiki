@@ -24,11 +24,11 @@ import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, deepMerge, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
-import { registerAdminRoutes, ensureLanguage, resolveTwRoot, type AdminDeps } from './host/admin.ts'
-import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
+import { registerAdminRoutes, ensureLanguage, ensurePlugin, resolveTwRoot, type AdminDeps } from './host/admin.ts'
+import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 import { RENDER_PLUGIN_FILE } from './host/seed-render.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
-import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, resolveClipTitle, assertPublicImageUrl, MAX_IMAGE_BYTES, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
+import { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, downloadClipImage, hostAllowed, parseClipPayload, pickImageMime, resolveClipTitle, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
 import { registerTiddlywikiTools, type ToolsDeps } from './host/tools.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, type WikiServerOptions } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
@@ -45,7 +45,7 @@ export { ConfigStore, deepMerge } from './host/config.ts'
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './host/routes.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './host/routes.ts'
-export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
+export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, ensurePlugin, bundledCatalog, ensureLanguage, normalizeThemes } from './host/admin.ts'
 export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
 export { seedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE, DSH_DOCS_TAG } from './host/seed-starter-docs.ts'
 export { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
@@ -57,7 +57,7 @@ export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, ME
 export { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET, CLIP_BRIDGE_DRAG_HREF } from './host/seed-clip-bridge.ts'
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools } from './host/tools.ts'
-export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, isPrivateAddress, assertPublicImageUrl, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
+export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, downloadClipImage, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, isPrivateAddress, assertPublicImageUrl, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
 export type { Tiddler } from './host/tw-api.ts'
@@ -106,8 +106,11 @@ interface ResolvedConfig {
 /** 剪藏桥默认端口（与 seed 文档书签代码里的地址保持一致）。 */
 export const CLIP_BRIDGE_DEFAULT_PORT = 8618
 
-/** How many redirects a clip image download may follow (each hop is SSRF-checked). */
-const MAX_IMAGE_REDIRECTS = 3
+/**
+ * Official plugin whose parser every note this plugin writes depends on
+ * (`text/markdown`). `--init server` does NOT include it — see ensurePlugin().
+ */
+export const MARKDOWN_PLUGIN = 'tiddlywiki/markdown'
 
 const DEFAULTS: ResolvedConfig = {
   wikiRoot: '',
@@ -230,9 +233,12 @@ const PROMPT_TEXT = `## TiddlyWiki 持久知识库
 
 本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。你可以用工具读写 tiddler：
 
-- \`tiddlywiki_search\`（query 必填；可选 tags[]/tag、since 修改时间、type、limit）检索（图片等二进制附件不参与检索）；\`tiddlywiki_get\`（title）读全文（二进制附件只返回元数据，不含 base64 正文）；\`tiddlywiki_put\`（title, text, tags?, fields?）写/覆盖；\`tiddlywiki_batch_put\`（items[]）批量写；\`tiddlywiki_rename\`（oldTitle, newTitle, updateRefs?）重命名并尽量同步引用；\`tiddlywiki_delete\`（title）删除。
+- \`tiddlywiki_search\`（query 必填；可选 tags[]/tag、since 修改时间、type、field+value、limit）检索，结果**按相关度排序**、片段取自命中处（图片等二进制附件不参与检索）；\`tiddlywiki_get\`（title）读全文（二进制附件只返回元数据，不含 base64 正文）；\`tiddlywiki_put\`（title, text, tags?, fields?, expectedModified?/expectedRevision?, force?）写/覆盖；\`tiddlywiki_batch_put\`（items[]）批量写；\`tiddlywiki_append\`（title, text, mode?, heading?）增量追加（写日志/批注的首选，不必读全文）；\`tiddlywiki_rename\`（oldTitle, newTitle, updateRefs?）重命名并尽量同步引用；\`tiddlywiki_delete\`（title, permanent?）删除（默认软删除进回收站）；\`tiddlywiki_trash\`（action=list|restore|empty）回收站。
+- 其它：\`tiddlywiki_backlinks\`（title）查反向链接与标签归属；\`tiddlywiki_attach\`（title, path|url, noteTitle?）把本机文件或公网地址存成二进制附件并可选嵌入笔记；\`tiddlywiki_lint\` 知识库体检（垃圾标签 / 死链 / 空笔记 / 缺内容类型）。
 - \`tiddlywiki_recent\`（limit?, since?）看最近修改的笔记（不含图片等二进制附件）；\`tiddlywiki_list_tags\` 看现有 tag 及计数。
 - \`tiddlywiki_git_sync\`（pull|push|sync）做 git 同步；\`tiddlywiki_git_resolve\`（files, strategy=keep-local|keep-remote|list）在 pull 冲突后按 tiddler 二选一解决。
+
+**不要覆盖人类正在编辑的笔记**：覆盖一篇已有笔记前先 \`tiddlywiki_get\`，把读到的 \`revision\`（或 \`modified\`）作为 \`expectedRevision\`（或 \`expectedModified\`）传入写回；若期间有人（在 TW 编辑器里）改过，写入会被拒绝并告诉你当前值——此时重新读一遍再决定，不要用 \`force\` 硬覆盖。纯增量内容优先用 \`tiddlywiki_append\`。覆盖已有条目时**不传 tags 就保留原有标签与自定义字段**（只改正文），显式传 tags 才整体替换标签。
 
 知识库同步纪律（三条）：
 1. 开工先 pull：\`tiddlywiki_git_sync action=pull\`（rebase + autostash；真冲突会自动 abort 并报冲突文件）。
@@ -374,35 +380,14 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       return (await c.get(title)) !== undefined
     },
     // Server-side image download: no browser CORS; a browser-ish UA + the clip
-    // source page as Referer get past most hotlink-protected CDNs. Every hop is
-    // SSRF-checked (public http(s) only) because redirects are followed
-    // MANUALLY — `redirect: 'follow'` would happily jump to 169.254.169.254.
+    // source page as Referer get past most hotlink-protected CDNs. The whole
+    // SSRF posture (public http(s) only, per-hop validation with the resolved
+    // address PINNED so DNS cannot rebind between check and connect, manual
+    // redirects, streaming 15MB cap, no transparent decompression) lives in
+    // downloadClipImage (v0.19.0).
     download: async (imageUrl, referer): Promise<ClipImageDownload> => {
-      let current = imageUrl
-      for (let hop = 0; hop < MAX_IMAGE_REDIRECTS; hop++) {
-        await assertPublicImageUrl(current)
-        const res = await fetch(current, {
-          headers: {
-            'user-agent': 'Mozilla/5.0 (compatible; dsh-tiddlywiki clip bridge)',
-            referer,
-            accept: 'image/*,*/*;q=0.8',
-          },
-          redirect: 'manual',
-          signal: AbortSignal.timeout(20_000),
-        })
-        if (res.status >= 300 && res.status < 400) {
-          const location = res.headers.get('location')
-          if (location === null || location.length === 0) throw new Error(`重定向缺少 Location（HTTP ${res.status}）`)
-          current = new URL(location, current).href
-          continue
-        }
-        if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`)
-        const buffer = Buffer.from(await res.arrayBuffer())
-        if (buffer.length === 0) throw new Error('下载内容为空')
-        if (buffer.length > MAX_IMAGE_BYTES) throw new Error('图片超过 15MB 上限')
-        return { buffer, type: res.headers.get('content-type') }
-      }
-      throw new Error(`图片重定向次数超过 ${MAX_IMAGE_REDIRECTS} 次`)
+      const result = await downloadClipImage(imageUrl, referer)
+      return { buffer: result.buffer, type: result.type ?? null }
     },
     log: (m) => console.info('[dsh-tiddlywiki] clip bridge:', m),
   })
@@ -495,6 +480,18 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       try {
         const seedClient = client()
         if (seedClient !== undefined) {
+          // Markdown parser bootstrap (v0.19.0): `--init server` scaffolds a
+          // wiki WITHOUT tiddlywiki/markdown, but every note this plugin writes
+          // (agent put/batch_put, quick note, drafts, clips) defaults to
+          // `text/markdown`. Without the plugin a fresh install renders all of
+          // them as raw source. Idempotent; one restart when it actually changed.
+          let pluginAdded = false
+          try {
+            pluginAdded = await ensurePlugin(wikiPath, resolveTwRoot(), MARKDOWN_PLUGIN)
+            if (pluginAdded) console.info(`[dsh-tiddlywiki] enabled ${MARKDOWN_PLUGIN} for this wiki`)
+          } catch (err) {
+            console.warn(`[dsh-tiddlywiki] enabling ${MARKDOWN_PLUGIN}:`, err)
+          }
           const seedStartedAt = Date.now()
           const results = await runAllSeeds({ client: seedClient })
           for (const r of results) {
@@ -508,6 +505,14 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
             const renderFile = join(wikiPath, 'tiddlers', RENDER_PLUGIN_FILE)
             const flushed = await waitForFileWrite(renderFile, 8_000, 150, seedStartedAt)
             if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
+            // Drain the rest of the syncer queue as well: a restart that boots
+            // from a stale snapshot loses every write still queued (v0.19.0).
+            const drained = await flushPendingWrites(seedClient, join(wikiPath, 'tiddlers'))
+            if (!drained) console.warn('[dsh-tiddlywiki] seed writes may not have been flushed before restart')
+            await server.restart()
+          } else if (pluginAdded) {
+            // tiddlywiki.info is written directly by us (no TW flush to wait
+            // for), but TW only loads the plugin at boot.
             await server.restart()
           }
         }

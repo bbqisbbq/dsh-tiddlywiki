@@ -79,12 +79,14 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
         }
         return card
       }
-      const align = (): void => {
+      /** 测量一次对齐；返回 true = 找到了 composer 输入卡片（测量有效）。 */
+      const align = (): boolean => {
         const wrapRect = wrap.getBoundingClientRect()
         const card = findCard()
         const right = card !== null ? card.getBoundingClientRect().right : wrapRect.right
         const pad = Math.max(0, wrapRect.right - right)
         if (wrap.style.paddingRight !== `${pad}px`) wrap.style.paddingRight = `${pad}px`
+        return card !== null
       }
       align()
       // 侧边栏开/关会改变对话列宽度 → composer 输入卡片（居中、有 max-width）的
@@ -102,7 +104,20 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
       document.addEventListener('visibilitychange', align)
       // 自愈兜底：任何未观测到的布局变化（侧边栏切换、插件重渲染等）也会在
       // 1.5s 内被纠正；每帧只是几次 getBoundingClientRect 读取，开销可忽略。
-      const guard = window.setInterval(align, 1500)
+      // 但常驻定时器没有必要：连续 3 次测量成功（找到 composer 输入卡片）即认为
+      // 布局已稳定，清掉 interval；即使一直测不到（异常 shell），也在 20 次后
+      // 强制收手，之后由 ResizeObserver + resize + visibilitychange 覆盖。
+      let guardHits = 0
+      let guardTicks = 0
+      const guard = window.setInterval(() => {
+        guardTicks++
+        if (!align()) {
+          if (guardTicks >= 20) window.clearInterval(guard)
+          return
+        }
+        guardHits++
+        if (guardHits >= 3) window.clearInterval(guard)
+      }, 1500)
       // The composer card may mount slightly later; re-measure a couple of times.
       const t1 = window.setTimeout(align, 120)
       const t2 = window.setTimeout(align, 600)

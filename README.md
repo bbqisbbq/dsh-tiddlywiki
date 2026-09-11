@@ -25,7 +25,9 @@
 |---|---|
 | 🏠 **文档中心起步包** | 首次安装自动 seed：插件说明 + 「示例与文档」（主题汇总模板 / 教程 / 三个示例主题页），首页「📚 插件文档」栏一键查阅；**同名 tiddler 已存在一律安全跳过，绝不覆盖你的数据**（v0.16.22） |
 | 🎨 **自定义样式** | 「自定义样式」seed：编辑器美化 / 窄屏侧栏隐藏 / menubar 加高 / 批注弹窗等 5 张通用样式表，新 wiki 也能一键初始化（可选，v0.16.22） |
-| 🤖 **Agent 工具** | 10 个 `tiddlywiki_*` 工具：检索、读写、批量、重命名、删除、git 同步与冲突解决（v0.16.20 起检索/最近在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
+| 🤖 **Agent 工具** | 15 个 `tiddlywiki_*` 工具：检索（**相关度排序 + 命中处片段 + 字段过滤**）、读写、**增量追加**、批量、重命名、**软删除/回收站**、**反向链接**、**附件入库**、**知识库体检**、git 同步与冲突解决（v0.19.0；检索/最近仍在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
+| 🛡️ **不会被覆盖的写入** | `tiddlywiki_put(..., expectedModified)` 乐观并发：读取后若有人（在 TW 编辑器里）改过，写入被拒绝而不是静默覆盖；`tiddlywiki_delete` 默认**软删除进回收站**，`tiddlywiki_trash` 可恢复（v0.19.0） |
+| 🔒 **写路由方法校验** | 每个写路由只接受自己的 HTTP 方法：跨站 `GET /sync`、`GET /restart`、`GET /upload` 一律 405 且无副作用（v0.19.0 修复了「任意网页一张 `<img>` 即可触发 pull/commit/push」的 CSRF 面） |
 | 📊 **回复流卡片** | 工具结果显示原生 TW 卡片（**按笔记自己的内容类型渲染**：Markdown 笔记就是 Markdown，v0.18.0）；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
@@ -73,18 +75,23 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 ## 📖 使用指南
 
-### 🤖 Agent 工具（10 个）
+### 🤖 Agent 工具（15 个）
 
 | 工具 | 说明 |
 |---|---|
-| `tiddlywiki_search` | 检索（`query` + 可选 `tags[]/tag/since/type/limit`），返回标题/标签/修改时间/摘要 |
+| `tiddlywiki_search` | 检索（`query` + 可选 `tags[]/tag/since/type/field/value/limit`），**按相关度排序**（标题命中 > 标签 > 正文命中次数），摘要取自**命中处上下文**而不是正文开头 |
 | `tiddlywiki_recent` | 最近修改的笔记（倒序），开工快速了解动态 |
-| `tiddlywiki_list_tags` | 现有非系统 tag 及计数 |
-| `tiddlywiki_get` | 读单个 tiddler 全文 |
-| `tiddlywiki_put` | 写/覆盖；未指定类型时自动默认 `text/markdown`（`$:/` 系统条目除外） |
-| `tiddlywiki_batch_put` | 批量写入（`overwrite=false` 跳过已存在） |
+| `tiddlywiki_list_tags` | 现有非系统 tag 及计数（已排除只挂在二进制附件上的 tag） |
+| `tiddlywiki_get` | 读单个 tiddler 全文（`modified` 以 ISO 返回，可直接用作 `expectedModified`） |
+| `tiddlywiki_put` | 写/覆盖；未指定类型时自动默认 `text/markdown`（`$:/` 系统条目除外）；`expectedModified` + `force` 提供乐观并发保护 |
+| `tiddlywiki_batch_put` | 批量写入（`overwrite=false` 跳过已存在；单条失败不影响其余，逐条报错） |
+| `tiddlywiki_append` | **增量追加**：`mode=append\|prepend`、`heading=某标题` 定位段落，写日志/批注无需读全文 |
 | `tiddlywiki_rename` | 重命名 + 尽量同步其他条目里的引用 |
-| `tiddlywiki_delete` | 删除（幂等） |
+| `tiddlywiki_delete` | 删除（幂等）。默认**软删除**进 `$:/dsh-tiddlywiki/trash/`，`permanent=true` 才真删 |
+| `tiddlywiki_trash` | 回收站：`action=list\|restore\|empty` |
+| `tiddlywiki_backlinks` | 反向链接：谁用 `[[标题]]`/`{{标题}}` 引用了它、谁把它当标签 |
+| `tiddlywiki_attach` | 把**本机文件或公网 http(s) 地址**存成二进制附件（图片/PDF/…），可嵌入某篇笔记；URL 走 SSRF 守卫 |
+| `tiddlywiki_lint` | 知识库体检：垃圾标签 / 死链 / 空笔记 / 缺内容类型的类 Markdown 笔记 |
 | `tiddlywiki_git_sync` | `action: pull\|push\|sync` |
 | `tiddlywiki_git_resolve` | pull 冲突后按 tiddler 二选一（`keep-local\|keep-remote`） |
 
@@ -282,6 +289,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.19.0**（2026-09-11）：**按代码审计结论做的全量修复 + 一批新能力**（安全 / 数据安全 / 工具层 / 客户端 / 工程）。**安全**：① 每个路由现在**校验 HTTP 方法**（此前 `http.ts` 主动放行 GET、宿主按 pathname 分发，于是 `GET /dsh-tiddlywiki/sync` 会 pull+commit+**push**、`GET /restart` 重启 TW、`GET /upload` 落文件——任意网页一张 `<img>` 即可触发；实测复现，现已一律 405 且无副作用）；② 剪藏桥 SSRF 守卫的 IPv6 判定改为**按字节解析**（此前 `::ffff:7f00:1`、`0:0:0:0:0:0:0:1`、`::0:1` 等回环写法全部放行——实测复现）；图片下载改为**逐跳 pin 住已校验的 IP**（堵 DNS rebinding TOCTOU）、**流式限长**（不再先全量缓冲再判 15MB）、禁用透明解压；③ TW 子进程的 spawn 日志**不再写明文口令**（该日志经无需认证的 `GET /status` 返回），`/status` 还会脱敏 git remote 里的 token、剪藏桥健康接口不再回显 port/tag/tokenSet、`/get` 不再暴露插件配置 tiddler、`/agent/sessions` 补上 token 守卫、token 比较改常数时间、`/tw` 代理改为**流式转发**（大附件不再整包进内存）、上传拒绝 html/svg 等可在同源执行的文件、`/note`/`/edit` 拒绝 `$:/` 标题。**数据安全**：④ 新增 `tiddlywiki/markdown` **插件自举**——全新 wiki 是用 `--init server` 建的，不含 markdown 插件，而插件默认把每篇笔记写成 `text/markdown`，此前新用户开箱即见 Markdown 源码；⑤ `tiddlywiki_put` 覆盖已有笔记时**不再丢掉原有的标签与自定义字段**（PUT 是整体替换，旧实现只发 title+text；单条 GET 的自定义字段还嵌套在 `fields` 里，一并修掉）；⑥ 新增**乐观并发**：`expectedRevision`/`expectedModified` + `force`，人类在 TW 编辑器里的改动不再被静默覆盖；⑦ `tiddlywiki_delete` 默认**软删除进回收站**（`tiddlywiki_trash` 可 list/restore/empty）；⑧ `readWikiInfo` 只把 ENOENT 当「没有配置」（此前读失败=空配置，设置页保存会整文件覆盖 `tiddlywiki.info`），写入改为备份 + 原子替换；seed 的 `tw-web-host` check 不再吞错；重启 TW 前用**flush 哨兵**排出 syncer 队列（force 重新初始化曾随机丢掉 `tw-web-host`）。**工具层（10 → 15 个）**：新增 `tiddlywiki_append`（增量追加 / 段落定位）、`tiddlywiki_backlinks`、`tiddlywiki_attach`（本机文件或公网 URL → 二进制附件）、`tiddlywiki_lint`（垃圾标签 / 死链 / 空笔记 / 缺内容类型）、`tiddlywiki_trash`；`search` 改为**相关度排序 + 命中处上下文片段 + 字段过滤 + limit 上限 + TW 紧凑日期解析**（此前 `since` 过滤恒为空）、`list_tags` 不再统计只挂在二进制附件上的标签、`batch_put` 的单条失败不再被参数预校验整批打断、列表加短 TTL 缓存。**客户端**：草稿卸载/刷新前落盘、草稿按窗口分键（不再跨标签页互相覆盖）、`session-summary` 自愈循环与卸载后 setState 修复、中央面板 `hidden` 状态修正、三个常驻定时器加上停止条件、wiki 链接不再吞掉 Ctrl/中键、编辑器弹窗补 `role=dialog` 与焦点、列表项键盘可达、21 处 `:focus-visible`、移动端 `touch-action`、`numField` 的 `0` 不再被吞。**工程**：新增 **GitHub Actions CI**（静态检查 + 自测 + 单元 + E2E 四档，含 `git diff --exit-code -- lib/` 抓「改了 src 忘了 build」）、9 个新验收脚本（auth 模式此前零覆盖、工具层、seed 读失败反例、git 冲突、崩溃自愈、大 wiki、render bundle 逐字节、发布包内容、版本一致性）、`npm run verify:*` 方便本地一键跑、`lib/client.bundle.js` 不再入库、AGENTS 的 `grep @deepseek-ai` 检查修正为「真实 import」。**升级提示**：重启 dsh web 后新会话生效；客户端改动需刷新页面。
 - **v0.18.0**（2026-09-10）：**一轮全量代码审计后的修复版**（数据安全 / 安全面 / 前端稳定性 / 工程卫生，共 40+ 项）。**数据不再静默丢失**：① seed 只在**真的 404** 时才认为条目缺失（此前任何读取错误都被当「不存在」，瞬时故障会让非 force 的启动 seed 覆盖你改过的同名笔记、`$:/DefaultTiddlers`、send-to-agent / render bundle）；② `wiki/.gitignore` 不再每次启动被整份重写（用户自定规则改前会被冲掉）；③ 配置 tiddler 读失败不再清空内存覆盖层（随后在设置页保存一项配置会丢掉其余全部覆盖）；④ 只有 **render-route 真的重写后**才重启 TW，且要等它落盘（否则重启会丢掉未 flush 的写入——这条是本版新引入又被测试抓出的回归）。**正确性**：`/render` 现在按 tiddler 自己的 `type` 渲染——**Markdown 笔记在回复流卡片/汇总里终于按 Markdown 渲染**（此前硬编码 wikitext，`## 现象` 会被当成 wikitext 列表，实测复现）。**安全**：所有写路由（`/admin/*`、`/note`、`/edit`、`/upload`、`/sync`、`/restart`、`/api`、`/tw` 的写方法）加**同源/CSRF 守卫**（跨站写请求 403，跨站 GET 不受影响）；剪藏桥图片下载加 **SSRF 守卫**（仅公网 http(s)，逐跳校验重定向，拒绝回环/内网/云元数据地址）；`bridge.port` 设置页改动现在**真的生效**（此前只读 cordis 基座）；`auth.username/password` 从此**可用**（内置 REST 客户端与就绪探测带 Basic 认证，代理转发 `WWW-Authenticate` 让浏览器弹登录框，此前配置了用户名会让插件 20s 后启动失败）。**前端**：编辑器弹窗不再因同草稿重开而整机重载、并纳入面板互斥；中央面板自愈列元素重建；右栏 Tab 重新可见会重新探测状态；侧边栏入口插入不再抛 `NotFoundError` 连带拖垮 FAB/面板；同步中不再被 30s 轮询覆盖状态；`injectStyles` 可卸载（热重载拿到新样式）；每处 mount 独立 try/catch；面板的 DOM 观察/滚动测量合并到 requestAnimationFrame（流式输出时不再每帧强制样式重算）。**工具与仓库**：`put`/`batch_put` 不再把读取失败当新条目而误打 `agent-written`，`fields` 不能覆盖 `title/text/tags`，`batch_put` 逐条报告失败；git 的 commit 与 pull 串行化（不再争 `.git/index.lock`）；`/status` 的 git 摘要加 2s 缓存（每次调用少跑 5 个 git 进程）；请求中途断开不再挂住路由；自动端口被占时会重新探测；`tiddlywiki.info` 损坏不再让后台 500；会话汇总对后代会话/条目数设上限。**工程卫生**：bundle 版本单一来源（`scripts/bundle/versions.mjs`，渲染路由 0.2.0）、生成器从 bundle 读版本（外层 0.3.2 漂移修正为 0.3.4）、发布包不再带 `client.bundle.js` 中间产物、`verify-*` 假阳性修复（未 await 的用例、被当成断言的 console.log）、selftest 失败也会回收 TW 子进程、`gen-seed-home` 默认剥离私有人口、`verify-menubar-theme` 不再默认打作者本机端口。
 - **v0.17.0**（2026-09-10）：**移除：DSH Better Sidebar（dsh-better-sidebar）Tab 集成**。旧版通过 `ctx.betterSidebar.registerTab({id:'dsh-tiddlywiki'})` 注册的 tab kind 会与其它注册方冲突，浏览器控制台报 `sidebarRight: tab kind "dsh-tiddlywiki" is already registered (extension)`；本版**整体删除**该注册路径（删除 `better-sidebar-tab.ts`、client 入口的挂载块，以及 `ui.showBetterSidebarTab` 配置项/设置页开关），插件不再引用 `ctx.betterSidebar` 服务。与 dsh-better-sidebar 的**界面共存**（中央面板 z-index 让位于其侧边栏按钮）保留；右侧边栏入口请用 DSH 原生 rightbar（`ui.showRightbarTab`）。**更新后刷新页面**生效；旧版可临时用 `ui.showBetterSidebarTab=false` 规避冲突。
 - **v0.16.28**（2026-09-10）：**修：拖拽版剪藏书签在知乎等真实页面报 `SyntaxError: Unexpected token ';'`**。根因（真实 Chrome 实验证实）：0.16.27 把书签 href 做 **HTML 实体转义**（`&quot;`/`&amp;`/`&lt;`），但浏览器的 `a.href` **不做实体还原**——拖拽成书签后存的就是实体文本，执行时即解析失败。修复：href 改为 **percent-encoding**（`CLIP_BRIDGE_DRAG_HREF`，属性里只剩 `%XX`，天然无需任何属性转义）；Chrome 执行 `javascript:` URL 前会 percent 解码（实测通过）。浏览器 E2E 升级为**直接以编码 href 走 `location.href` 执行**（完全等价拖拽书签的执行路径）并断言浮层弹出；静态验收改为 `decodeURIComponent(href) === 代码常量` 一致性校验。行为不变——**已拖过旧版书签的用户需重新初始化 seed 后重新拖一次**（旧书签仍然坏的，因为里面的代码是实体文本）。

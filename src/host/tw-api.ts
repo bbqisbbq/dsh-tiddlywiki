@@ -99,6 +99,32 @@ export function isBinaryType(type: string | undefined): boolean {
   return BINARY_TYPE_PREFIXES.some((p) => type.startsWith(p)) || BINARY_TYPE_EXACT.has(type)
 }
 
+/**
+ * Parse a tiddler date field. TW's REST listing returns dates in the COMPACT
+ * form (`20260101000000000` = YYYYMMDDhhmmssSSS, UTC), NOT ISO — the old code
+ * fed that to `new Date()`, got Invalid Date, and therefore made every
+ * `since`-filtered search/recent return nothing (v0.19.0). Both forms are
+ * accepted here; undefined = absent/unparseable.
+ */
+export function parseTiddlerDate(value: unknown): number | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined
+  const compact = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{3})$/.exec(value.trim())
+  if (compact !== null) {
+    return Date.UTC(
+      Number(compact[1]), Number(compact[2]) - 1, Number(compact[3]),
+      Number(compact[4]), Number(compact[5]), Number(compact[6]), Number(compact[7]),
+    )
+  }
+  const ms = new Date(value.trim()).getTime()
+  return Number.isNaN(ms) ? undefined : ms
+}
+
+/** Normalize a tiddler date field to ISO-8601 (for display), or null. */
+export function toIsoDateString(value: unknown): string | null {
+  const ms = parseTiddlerDate(value)
+  return ms === undefined ? null : new Date(ms).toISOString()
+}
+
 /** Split TW's whitespace-joined tags string into an array. */
 function normalizeTags(tags: unknown): string[] | undefined {
   if (tags === undefined) return undefined
@@ -121,6 +147,21 @@ function normalizeTiddler(raw: Record<string, unknown>): Tiddler {
 export class TiddlyWebClient {
   /** Preemptive Basic credentials, when the wiki runs in locked-down mode. */
   private readonly authHeader: string | undefined
+
+  /**
+   * Short-TTL cache for the TEXT-bearing listing. `search` / `recent` /
+   * `listTags`-style calls each pull the whole listing (≈6MB on a 5k-tiddler
+   * wiki); a burst of tool calls re-downloaded and re-parsed it every time.
+   * Cached as a PROMISE so concurrent callers share one request, invalidated by
+   * every write this client performs (v0.19.0).
+   */
+  private textListing: { at: number; value: Promise<Tiddler[]> } | undefined
+  private static readonly TEXT_LISTING_TTL_MS = 2_000
+
+  /** Drop the listing cache — called after any write so reads never go stale. */
+  private invalidateListing(): void {
+    this.textListing = undefined
+  }
 
   constructor(private readonly baseUrl: string, auth?: { username?: string; password?: string }) {
     const username = typeof auth?.username === 'string' ? auth.username : ''
@@ -167,6 +208,7 @@ export class TiddlyWebClient {
       headers: { 'content-type': 'application/json', ...CSRF_HEADER },
       body: JSON.stringify(tiddler),
     })
+    this.invalidateListing()
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
       throw new Error(`TiddlyWeb PUT /recipes/default/tiddlers/${title} HTTP ${res.status}: ${detail.slice(0, 300)}`)
@@ -180,6 +222,7 @@ export class TiddlyWebClient {
       method: 'DELETE',
       headers: CSRF_HEADER,
     })
+    this.invalidateListing()
     if (res.status === 404) return
     if (!res.ok) throw new Error(`TiddlyWeb DELETE /bags/default/tiddlers/${title} HTTP ${res.status}`)
   }
@@ -199,13 +242,36 @@ export class TiddlyWebClient {
   async list(filter?: string, includeText = false): Promise<Tiddler[]> {
     if (!includeText) return this.fetchListing(filter)
     const explicit = filter !== undefined && filter.length > 0
-    const target = explicit ? (filter as string) : TEXT_LIST_FILTER
-    let res = await this.requestListWithText(target)
+    // Explicit filter: the caller asked for a SPECIFIC set — never silently
+    // answer with a different one (the old code fell back to TEXT_LIST_FILTER,
+    // i.e. it returned set B for a request of set A).
+    if (explicit) return this.fetchTextListing(filter as string, false)
+    const cached = this.textListing
+    if (cached !== undefined && Date.now() - cached.at < TiddlyWebClient.TEXT_LISTING_TTL_MS) return cached.value
+    const pending = this.fetchTextListing(TEXT_LIST_FILTER, true)
+    this.textListing = { at: Date.now(), value: pending }
+    // Never cache a rejection: the next call must retry the network.
+    pending.catch(() => { if (this.textListing?.value === pending) this.textListing = undefined })
+    return pending
+  }
+
+  /**
+   * Fetch a text-bearing listing for `filter`, self-healing the external-filter
+   * whitelist on 403. `allowSkinnyFallback` is true only for the plugin's OWN
+   * default filter (TEXT_LIST_FILTER), where degrading to the skinny listing is
+   * a documented last resort on a read-only wiki; an explicit caller filter
+   * propagates the 403 instead.
+   */
+  private async fetchTextListing(filter: string, allowSkinnyFallback: boolean): Promise<Tiddler[]> {
+    let res = await this.requestListWithText(filter)
     if (res.status === 403) {
-      await this.ensureExternalFilterWhitelist(TEXT_LIST_FILTER).catch(() => undefined)
-      res = await this.requestListWithText(TEXT_LIST_FILTER)
+      await this.ensureExternalFilterWhitelist(filter).catch(() => undefined)
+      res = await this.requestListWithText(filter)
     }
-    if (res.status === 403) return this.fetchListing(undefined)
+    if (res.status === 403) {
+      if (allowSkinnyFallback) return this.fetchListing(undefined)
+      throw new Error(`TiddlyWeb 拒绝该 filter（未在 $:/config/Server/ExternalFilters 白名单中）：${filter.slice(0, 100)}`)
+    }
     if (!res.ok) throw new Error(`TiddlyWeb recipe list HTTP ${res.status}`)
     return this.parseList(res)
   }
@@ -217,8 +283,14 @@ export class TiddlyWebClient {
     const query = params.toString()
     let res = await this.request(`/recipes/default/tiddlers.json${query.length > 0 ? `?${query}` : ''}`)
     if (!res.ok && res.status === 403 && filter !== undefined && filter.length > 0) {
-      // Filter not whitelisted → refetch with the default (whitelisted) filter.
-      res = await this.request('/recipes/default/tiddlers.json')
+      // Not whitelisted: write the whitelist tiddler once and retry the SAME
+      // filter. (The old code silently refetched the DEFAULT listing — the
+      // caller asked for set A and got set B.)
+      await this.ensureExternalFilterWhitelist(filter).catch(() => undefined)
+      res = await this.request(`/recipes/default/tiddlers.json?${query}`)
+      if (!res.ok && res.status === 403) {
+        throw new Error(`TiddlyWeb 拒绝该 filter（未在 $:/config/Server/ExternalFilters 白名单中）：${filter.slice(0, 100)}`)
+      }
     }
     if (!res.ok) throw new Error(`TiddlyWeb recipe list HTTP ${res.status}`)
     return this.parseList(res)
@@ -248,27 +320,61 @@ export class TiddlyWebClient {
    * self-healed). Binary tiddlers (images/audio/…) are NOT in the listing, so
    * they can never match — a deliberate flood guard on big wikis.
    */
+  /**
+   * Search text-bearing tiddlers: one request (text-bearing listing with text,
+   * short-TTL cached) plus local case-insensitive substring matching on title,
+   * tags and text, optional exact tags (AND), a `since` modified-time floor, an
+   * exact `type`, an exact custom `field`+`value` pair, and a `limit`.
+   *
+   * Results are RANKED (title hit > tag hit > body hit count, then newest
+   * first) rather than returned in listing order, and `limit` is clamped to
+   * 1…200 like the HTTP route always did (v0.19.0). Binary tiddlers are not in
+   * the listing at all, so they can never flood the results.
+   */
   async search(query: string, options: SearchOptions = {}): Promise<{ items: Tiddler[]; total: number }> {
     const items = await this.list(undefined, true)
     const needle = query.toLowerCase()
     const sinceTime = parseSince(options.since)
     const wantedTags = [...(options.tags ?? []), options.tag].filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
-    const limit = options.limit ?? 30
-    const matched = items.filter((t) => {
-      if (t.title.startsWith('$:/')) return false
-      if (!t.title.toLowerCase().includes(needle) && !(t.text ?? '').toLowerCase().includes(needle)) return false
+    const limit = clampLimit(options.limit, 30)
+    const fieldName = typeof options.field === 'string' && options.field.length > 0 ? options.field : undefined
+    const fieldValue = typeof options.value === 'string' ? options.value : undefined
+    const matched: Array<{ t: Tiddler; score: number }> = []
+    for (const t of items) {
+      if (t.title.startsWith('$:/')) continue
+      const titleHit = needle.length > 0 && t.title.toLowerCase().includes(needle)
+      const text = t.text ?? ''
+      const textHit = needle.length > 0 && text.toLowerCase().includes(needle)
+      const tagHit = needle.length > 0 && (t.tags ?? []).some((tag) => tag.toLowerCase().includes(needle))
+      if (!titleHit && !textHit && !tagHit) continue
       if (sinceTime !== undefined) {
-        const modified = typeof t.modified === 'string' ? new Date(t.modified).getTime() : NaN
-        if (Number.isNaN(modified) || modified < sinceTime) return false
+        const modified = parseTiddlerDate(t.modified)
+        if (modified === undefined || modified < sinceTime) continue
       }
-      if (options.type !== undefined && options.type.length > 0 && (t.type ?? 'text/vnd.tiddlywiki') !== options.type) return false
+      if (options.type !== undefined && options.type.length > 0 && (t.type ?? 'text/vnd.tiddlywiki') !== options.type) continue
       if (wantedTags.length > 0) {
         const tags = (t.tags ?? []).map((tag) => tag.toLowerCase())
-        if (!wantedTags.every((w) => tags.includes(w.toLowerCase()))) return false
+        if (!wantedTags.every((w) => tags.includes(w.toLowerCase()))) continue
       }
-      return true
+      // Custom-field match: exact value comparison on any field (note metadata
+      // such as `q`, `due`, `clip-url` is not part of title/text, so it used to
+      // be unsearchable).
+      if (fieldName !== undefined) {
+        const actual = t[fieldName]
+        if (typeof actual !== 'string') continue
+        if (fieldValue !== undefined && actual !== fieldValue) continue
+      }
+      let score = 0
+      if (titleHit) score += 6
+      if (tagHit) score += 3
+      if (needle.length > 0) score += Math.min(countOccurrences(text.toLowerCase(), needle), 5)
+      matched.push({ t, score })
+    }
+    matched.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      return modifiedAt(b.t) - modifiedAt(a.t)
     })
-    return { items: matched.slice(0, limit), total: matched.length }
+    return { items: matched.slice(0, limit).map((entry) => entry.t), total: matched.length }
   }
 
   /**
@@ -284,16 +390,12 @@ export class TiddlyWebClient {
     const filtered = items.filter((t) => {
       if (t.title.startsWith('$:/')) return false
       if (sinceTime !== undefined) {
-        const modified = typeof t.modified === 'string' ? new Date(t.modified).getTime() : NaN
-        if (Number.isNaN(modified) || modified < sinceTime) return false
+        const modified = parseTiddlerDate(t.modified)
+        if (modified === undefined || modified < sinceTime) return false
       }
       return true
     })
-    filtered.sort((a, b) => {
-      const am = typeof a.modified === 'string' ? new Date(a.modified).getTime() : 0
-      const bm = typeof b.modified === 'string' ? new Date(b.modified).getTime() : 0
-      return bm - am
-    })
+    filtered.sort((a, b) => modifiedAt(b) - modifiedAt(a))
     return filtered.slice(0, Math.max(1, Math.min(limit, 200)))
   }
 
@@ -302,7 +404,10 @@ export class TiddlyWebClient {
    * zh-locale. One skinny listing request (no text payloads).
    */
   async listTags(): Promise<Array<{ tag: string; count: number }>> {
-    const items = await this.list(undefined, false)
+    // TEXT_LIST_FILTER (server-side, whitelist self-healed) so a tag that only
+    // hangs off binary attachments is not counted as a knowledge-base tag
+    // (v0.19.0 — the unfiltered skinny listing included image/book-page tags).
+    const items = await this.list(TEXT_LIST_FILTER, false)
     const map = new Map<string, number>()
     for (const t of items) {
       if (t.title.startsWith('$:/')) continue
@@ -327,8 +432,35 @@ export interface SearchOptions {
   since?: string
   /** Exact tiddler type (default type is "text/vnd.tiddlywiki"). */
   type?: string
-  /** Max results (search default 30, capped 200). */
+  /** Custom field name to filter on (exact match on the field's string value). */
+  field?: string
+  /** Required value for `field` (omit to require only that the field exists). */
+  value?: string
+  /** Max results (default 30, capped 200). */
   limit?: number
+}
+
+/** Clamp a caller-supplied limit into 1…200 (default when absent/invalid). */
+export function clampLimit(limit: unknown, fallback: number): number {
+  const value = typeof limit === 'number' && Number.isFinite(limit) ? Math.floor(limit) : fallback
+  return Math.max(1, Math.min(value, 200))
+}
+
+/** Count non-overlapping occurrences of `needle` in `haystack`. */
+function countOccurrences(haystack: string, needle: string): number {
+  if (needle.length === 0) return 0
+  let count = 0
+  let index = haystack.indexOf(needle)
+  while (index !== -1) {
+    count++
+    index = haystack.indexOf(needle, index + needle.length)
+  }
+  return count
+}
+
+/** `modified` as epoch ms (0 when absent/unparseable) — for result ranking. */
+function modifiedAt(tiddler: Tiddler): number {
+  return parseTiddlerDate(tiddler.modified) ?? 0
 }
 
 /** Parse a `since` value into an epoch ms, or undefined when absent/invalid. */

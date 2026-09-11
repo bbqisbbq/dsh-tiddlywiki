@@ -44,11 +44,25 @@ export function openEditorPopup(url: string, label: string): void {
     frame.dataset.loaded = url
     frame.src = url
   }
+  // 打开后把焦点移入弹窗（首个可聚焦元素 = 标题栏的关闭按钮）。
+  focusFirstInPopup()
 }
 
 /** Whether the popup is currently visible. */
 export function isEditorPopupOpen(): boolean {
   return root !== undefined && root.style.display !== 'none'
+}
+
+/**
+ * 把焦点移入弹窗的首个可聚焦元素（无障碍：键盘用户打开后能直接操作弹窗；
+ * 刻意不做焦点陷阱，Esc / ✕ / Tab 顺序保持原生行为）。
+ */
+function focusFirstInPopup(): void {
+  if (root === undefined) return
+  const first = root.querySelector<HTMLElement>(
+    'button, [href], input, select, textarea, iframe, [tabindex]:not([tabindex="-1"])',
+  )
+  first?.focus()
 }
 
 /** Hide the popup (the ✕ button and the input-dock toggle call this). */
@@ -80,6 +94,10 @@ function ensurePopup(): void {
   root = document.createElement('div')
   root.className = 'dsh-tw-editor-popup'
   root.style.display = 'none'
+  // 无障碍语义：浮层是一个模态对话框（不做焦点陷阱，只声明语义 + 打开时移焦）。
+  root.setAttribute('role', 'dialog')
+  root.setAttribute('aria-modal', 'true')
+  root.setAttribute('aria-label', 'TiddlyWiki 编辑器')
 
   const bar = document.createElement('div')
   bar.className = 'dsh-tw-editor-bar'

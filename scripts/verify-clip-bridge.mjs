@@ -182,13 +182,16 @@ const clip = (title, url, text) => request(`${base}/clip`, {
   body: JSON.stringify({ title, url, text }),
 })
 
-await test('GET / health info', async () => {
+await test('GET / health info (minimal — no port/tag/tokenSet fingerprint)', async () => {
   const r = await request(`${base}/`)
   assert.equal(r.status, 200)
   assert.equal(r.body.ok, true)
   assert.equal(r.body.enabled, true)
-  assert.equal(r.body.port, bridge.port)
-  assert.equal(r.body.tokenSet, false)
+  // v0.19.0: this endpoint answers with `Access-Control-Allow-Origin: *`, so any
+  // web page can read it. It must not reveal the bridge's config fingerprint.
+  assert.equal(r.body.port, undefined, 'health must not echo the bound port')
+  assert.equal(r.body.tag, undefined, 'health must not echo the default tag')
+  assert.equal(r.body.tokenSet, undefined, 'health must not reveal whether a token is configured')
 })
 
 await test('POST /clip writes one markdown tiddler (bookmarklet)', async () => {
@@ -408,6 +411,29 @@ await test('assertPublicImageUrl rejects loopback/LAN/metadata/odd schemes', asy
   assert.equal(isPrivateAddress('127.0.0.1'), true)
   assert.equal(isPrivateAddress('169.254.169.254'), true)
   assert.equal(isPrivateAddress('93.184.216.34'), false)
+})
+
+// v0.19.0 regression: the guard used to judge IPv6 with string prefixes, so
+// these LOOPBACK spellings sailed through (`::ffff:7f00:1` IS 127.0.0.1).
+await test('SSRF guard blocks every IPv6 spelling of a private address', async () => {
+  const privateV6 = [
+    '::1', '[::1]', '0:0:0:0:0:0:0:1', '::0:1', '::',
+    '::ffff:7f00:1', '::ffff:127.0.0.1', '::ffff:169.254.169.254',
+    '::ffff:a00:1', '0:0:0:0:0:ffff:7f00:1',
+    'fd00::1', 'fc00::1', 'fe80::1', 'fe80::1%eth0',
+    '2002:7f00:0001::', '64:ff9b::7f00:1', '2001:db8::1', 'ff02::1',
+  ]
+  for (const ip of privateV6) {
+    assert.equal(isPrivateAddress(ip), true, `isPrivateAddress must block ${ip}`)
+  }
+  for (const ip of ['2606:4700:4700::1111', '2001:4860:4860::8888', '::ffff:8.8.8.8']) {
+    assert.equal(isPrivateAddress(ip), false, `isPrivateAddress must allow public ${ip}`)
+  }
+  for (const url of ['http://[::ffff:7f00:1]:3080/admin/state', 'http://[0:0:0:0:0:0:0:1]/a.png', 'http://[::0:1]/a.png']) {
+    let threw = false
+    try { await assertPublicImageUrl(url) } catch { threw = true }
+    assert.equal(threw, true, `rejected: ${url}`)
+  }
 })
 
 await test('bridge refuses to download a loopback image URL', async () => {

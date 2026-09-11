@@ -104,6 +104,8 @@ export class WikiServer {
   private restartDelay = 1_000
   private lastStartedAt: number | undefined
   private error: string | undefined
+  /** In-flight start() promise: single-flight guard (v0.19.0). */
+  private startPromise: Promise<WikiStatusView> | undefined
   /** Set by a successful readiness probe; a crash BEFORE readiness means the
    *  auto-chosen port may have been taken, so it is re-probed on restart. */
   private wasReady = false
@@ -166,8 +168,24 @@ export class WikiServer {
    * Start (or restart) the TW child. Resolves once `/status` answers 200 or
    * the readiness deadline passes. Never throws on a crash — the exit handler
    * schedules a self-healing restart unless we are stopping.
+   *
+   * SINGLE-FLIGHT (v0.19.0): two concurrent callers (double restart click, a
+   * restart racing the self-heal timer) both used to pass the
+   * `child !== undefined` check, probe their own port and spawn a child each —
+   * the loser became an orphan process holding a port until dsh web exited.
    */
   async start(): Promise<WikiStatusView> {
+    if (this.startPromise !== undefined) return this.startPromise
+    const run = this.startOnce()
+    this.startPromise = run
+    try {
+      return await run
+    } finally {
+      this.startPromise = undefined
+    }
+  }
+
+  private async startOnce(): Promise<WikiStatusView> {
     this.stopping = false
     this.restartDelay = 1_000
     await this.ensureWiki()
@@ -190,12 +208,28 @@ export class WikiServer {
     // wiki to anonymous read/write on the bound (loopback) address. Passing
     // anon-username/readers/writers here was verified to 401 every request
     // ('undefined' is not authorized), so the anonymous branch stays bare.
-    this.log(`spawn: ${process.execPath} ${args.join(' ')}`)
+    //
+    // NEVER log the raw argv: it carries `password=…`, the ring buffer is
+    // returned by the UNAUTHENTICATED GET /status, and the same string could
+    // end up in a crash dump. (v0.19.0 — the spawn line used to be logged
+    // verbatim; the password still lives in the OS process list, which is why
+    // the wiki binds loopback by default.)
+    this.log(`spawn: ${process.execPath} ${args.map((a) => (/^password=/.test(a) ? 'password=***' : a)).join(' ')}`)
     const child = spawn(process.execPath, args, { cwd: this.wikiPath, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     this.child = child
     child.stdout.on('data', (chunk: Buffer) => this.log(`[out] ${String(chunk).trimEnd()}`))
     child.stderr.on('data', (chunk: Buffer) => this.log(`[err] ${String(chunk).trimEnd()}`))
     child.once('exit', (code, signal) => {
+      // IDENTITY CHECK (v0.19.0): restart() SIGKILLs the old child and start()
+      // immediately flips `stopping` back to false, so the old child's exit
+      // event can arrive AFTER the new one is running. Without this check it
+      // cleared `this.child`/`this.port` and marked the healthy new child
+      // 'stopped' — waitReady() then polled `undefined/status` and every route
+      // 503'd while TW was actually up.
+      if (this.child !== child) {
+        this.log(`exit code=${code} signal=${signal ?? ''} (superseded child — ignored)`)
+        return
+      }
       this.log(`exit code=${code} signal=${signal ?? ''} stopping=${this.stopping}`)
       this.child = undefined
       this.health = 'stopped'
@@ -211,6 +245,7 @@ export class WikiServer {
     child.once('error', (err) => {
       this.log(`spawn error: ${err.message}`)
       this.error = err.message
+      if (this.child !== child) return
       this.child = undefined
       this.health = 'failed'
       if (!this.stopping) this.scheduleRestart()
@@ -302,8 +337,19 @@ export class WikiServer {
           }, KILL_GRACE_MS).unref?.()
         }),
       ])
+      // After the SIGKILL escalation, give the OS a moment to actually reap the
+      // process: an immediate start() that rebinds the same port would
+      // otherwise hit EADDRINUSE and enter the backoff loop (v0.19.0).
+      if (child.exitCode === null && child.signalCode === null) {
+        await Promise.race([
+          new Promise<void>((r) => child.once('exit', () => r())),
+          new Promise<void>((r) => { setTimeout(r, 1_000).unref?.() }),
+        ])
+      }
     }
-    this.health = 'stopped'
+    // Only report 'stopped' when no replacement child has been spawned in the
+    // meantime (restart() runs stop() → start()).
+    if (this.child === undefined) this.health = 'stopped'
   }
 
   /** Live status view (health, url, git-independent, recent logs). */

@@ -43,8 +43,13 @@ const TOOL_LABELS: Record<string, string> = {
   tiddlywiki_list_tags: '标签列表',
   tiddlywiki_put: '写入笔记',
   tiddlywiki_batch_put: '批量写入',
+  tiddlywiki_append: '增量写入',
   tiddlywiki_rename: '重命名笔记',
   tiddlywiki_delete: '删除笔记',
+  tiddlywiki_trash: '回收站',
+  tiddlywiki_backlinks: '反向链接',
+  tiddlywiki_attach: '保存附件',
+  tiddlywiki_lint: '知识库体检',
   tiddlywiki_git_sync: 'git 同步',
   tiddlywiki_git_resolve: 'git 冲突解决',
 }
@@ -183,6 +188,9 @@ function useAsync<T>(factory: () => Promise<T | null>, deps: readonly unknown[])
 /** Open a tiddler in the center TW panel (shared by rows + 「在 TW 打开」). */
 function openTw(title: string): (event: React.MouseEvent) => void {
   return (event) => {
+    // 列表行是 <a href=tw/#标题>：带修饰键 / 非左键的点击保留浏览器默认语义
+    // （新标签页、新窗口、复制链接），只有普通左键点击才改走中央 TW 面板。
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
     event.preventDefault()
     event.stopPropagation()
     openTiddler(title)
@@ -238,11 +246,55 @@ function ToolCardShell(props: {
 
 /* ── tiddler card (get / put / rename): native-rendered body ── */
 
+/**
+ * 卡片正文的小 LRU 缓存（title → {get, html}）：长会话里滚动历史会让同一张卡
+ * 反复挂载，每次都成对打 GET /get + POST /tw/render。容量 ~50、TTL 5 分钟；
+ * 命中即复用。写入类工具（put/batch_put/rename/delete）挂载时先失效对应标题，
+ * 所以写后的卡片仍会取到最新内容。
+ */
+interface CachedTiddlerBody { at: number; get: Record<string, unknown> | null; html: string | null }
+const BODY_CACHE_TTL_MS = 5 * 60_000
+const BODY_CACHE_MAX = 50
+const bodyCache = new Map<string, CachedTiddlerBody>()
+
+function readBodyCache(title: string): CachedTiddlerBody | undefined {
+  const hit = bodyCache.get(title)
+  if (hit === undefined) return undefined
+  if (Date.now() - hit.at > BODY_CACHE_TTL_MS) {
+    bodyCache.delete(title)
+    return undefined
+  }
+  // LRU：命中即把条目移到末尾（Map 保持插入序）。
+  bodyCache.delete(title)
+  bodyCache.set(title, hit)
+  return hit
+}
+
+function writeBodyCache(title: string, value: { get: Record<string, unknown> | null; html: string | null }): void {
+  bodyCache.delete(title)
+  bodyCache.set(title, { at: Date.now(), ...value })
+  while (bodyCache.size > BODY_CACHE_MAX) {
+    const oldest = bodyCache.keys().next().value
+    if (oldest === undefined) break
+    bodyCache.delete(oldest)
+  }
+}
+
+/** 写入/删除类工具会让缓存过期（同一标题的下一张卡必须看到最新内容）。 */
+function invalidateBodyCache(title: string): void {
+  if (title.length > 0) bodyCache.delete(title)
+}
+
 function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: string }): React.ReactElement {
   const { title } = props
   const both = useAsync(
     async () => {
+      const cached = readBodyCache(title)
+      if (cached !== undefined) return { get: cached.get, html: cached.html }
       const [get, html] = await Promise.all([fetchJson(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`), fetchRender(title)])
+      // 只缓存「渲染成功」的结果：服务不可用 / 条目不存在 / 渲染降级这类瞬时或
+      // 失败态不缓存，重新挂载时照常重试（否则一次抖动会被缓存 5 分钟）。
+      if (typeof html === 'string' && html.length > 0) writeBodyCache(title, { get, html })
       return { get, html }
     },
     [title],
@@ -447,7 +499,10 @@ function headerTitle(toolName: string, args: Record<string, unknown>): string {
   switch (toolName) {
     case 'tiddlywiki_get':
     case 'tiddlywiki_put':
+    case 'tiddlywiki_append':
     case 'tiddlywiki_delete':
+    case 'tiddlywiki_attach':
+    case 'tiddlywiki_backlinks':
       return str(args.title)
     case 'tiddlywiki_rename':
       return str(args.newTitle)
@@ -456,6 +511,8 @@ function headerTitle(toolName: string, args: Record<string, unknown>): string {
     case 'tiddlywiki_recent':
     case 'tiddlywiki_list_tags':
     case 'tiddlywiki_batch_put':
+    case 'tiddlywiki_trash':
+    case 'tiddlywiki_lint':
     case 'tiddlywiki_git_sync':
     case 'tiddlywiki_git_resolve':
       return ''
@@ -502,13 +559,28 @@ export function TiddlywikiToolView(props: ToolCallOwnerProps): React.ReactNode {
     case 'tiddlywiki_get':
       return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: '读取' })
     case 'tiddlywiki_put':
+      // 写入会改变正文：先失效该标题的缓存，卡片随即取到最新内容。
+      invalidateBodyCache(str(args.title))
       return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: '已写入' })
+    case 'tiddlywiki_append':
+      // 增量写入同样改变正文（追加/前插/段落写入）。
+      invalidateBodyCache(str(args.title))
+      return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: '已增量写入' })
     case 'tiddlywiki_rename':
+      invalidateBodyCache(str(args.newTitle))
+      invalidateBodyCache(str(args.oldTitle))
       return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.newTitle), subtitle: `已重命名「${str(args.oldTitle)}」→` })
     case 'tiddlywiki_delete':
+      invalidateBodyCache(str(args.title))
       return React.createElement(DeleteCard, { toolName: name, title: str(args.title), text })
-    case 'tiddlywiki_batch_put':
+    case 'tiddlywiki_batch_put': {
+      // 批量写入：逐条失效被写标题的缓存。
+      const items = Array.isArray(args.items) ? (args.items as unknown[]) : []
+      for (const item of items) {
+        if (typeof item === 'object' && item !== null) invalidateBodyCache(str((item as Record<string, unknown>).title))
+      }
       return React.createElement(BatchCard, { toolName: name, args, text })
+    }
     case 'tiddlywiki_search':
       return React.createElement(SearchCard, { toolName: name, args, text })
     case 'tiddlywiki_recent':
@@ -535,8 +607,13 @@ export const TOOL_VIEW_KEYS: readonly string[] = [
   'tiddlywiki_list_tags',
   'tiddlywiki_put',
   'tiddlywiki_batch_put',
+  'tiddlywiki_append',
   'tiddlywiki_rename',
   'tiddlywiki_delete',
+  'tiddlywiki_trash',
+  'tiddlywiki_backlinks',
+  'tiddlywiki_attach',
+  'tiddlywiki_lint',
   'tiddlywiki_git_sync',
   'tiddlywiki_git_resolve',
 ]
@@ -582,6 +659,9 @@ export function registerToolViews(slots: {
  */
 export function installWikiLinkInterceptor(): () => void {
   const onDocumentClick = (event: MouseEvent): void => {
+    // 只接管「普通左键点击」：中键 / Ctrl(⌘)·Shift·Alt+点击是浏览器的新标签页、
+    // 新窗口、下载等语义，一律放行（否则无法新标签页打开、无法复制链接）。
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
     const target = event.target
     if (!(target instanceof Element)) return
     const anchor = target.closest('a')

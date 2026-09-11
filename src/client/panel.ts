@@ -184,6 +184,8 @@ export function mountPanel(state: PanelState): () => void {
 
   /** Pin the overlay to the center column's current viewport rect. */
   const syncRect = (): void => {
+    // 面板关闭时不测量：2s interval 无条件调用，关闭后仍在做强制布局读取。
+    if (!state.isOpen()) return
     if (container === undefined || columnEl === undefined) return
     const rect = columnEl.getBoundingClientRect()
     if (rect.width === 0 && rect.height === 0) return
@@ -263,7 +265,10 @@ export function mountPanel(state: PanelState): () => void {
   const showFrame = (url: string): void => {
     if (iframe === undefined || errorArea === undefined) return
     errorArea.hidden = true
-    iframe.hidden = false
+    // 只有面板打开时才显示 iframe（对照 tw-frame.ts 的 `frame.hidden = !visible`）：
+    // doRefresh() 在面板关闭后仍可能在途，无条件 hidden=false 会让已关闭的面板
+    // 被一个迟到的 /status 响应重新显示出来。
+    iframe.hidden = !state.isOpen()
     // Set the src only when the url actually changed, so an editor in the
     // iframe never loses unsaved state on a status refresh.
     if (iframe.dataset.loaded !== url) {
@@ -386,6 +391,9 @@ export function mountPanel(state: PanelState): () => void {
       for (const attr of OTHER_ACTIVE_ATTRS) document.documentElement.removeAttribute(attr)
       document.documentElement.setAttribute(ACTIVE_ATTR, '')
       document.dispatchEvent(new CustomEvent(ACTIVATE_EVENT, { detail: PANEL_NAME }))
+      // syncRect() 现在只在打开时测量（关闭状态早退），所以打开这一帧必须主动
+      // 请求一次布局：否则容器要等到下一个 2s interval 才有 left/top/width/height。
+      scheduleLayout()
       void doRefresh()
     } else {
       document.documentElement.removeAttribute(ACTIVE_ATTR)
@@ -447,6 +455,9 @@ export function mountPanel(state: PanelState): () => void {
   // The "知识库" FAB's 重载面板 entry dispatches this event to reload the
   // iframe (the panel itself no longer owns a floating status/reload button).
   const onReloadRequest = (): void => {
+    // `!iframe.hidden` 在 showFrame 修正后仍然成立：iframe 只在「面板打开 + 服务
+    // running」时被显示，因此 !hidden ⇒ 面板开着且已加载真实 twProxy 地址（也避免
+    // 对尚未设置 src 的 iframe 赋值空串把 DSH 页面载进自身）。
     if (iframe !== undefined && !iframe.hidden) iframe.src = iframe.src
   }
   document.addEventListener(PANEL_RELOAD_EVENT, onReloadRequest)

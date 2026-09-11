@@ -254,6 +254,8 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-editor-bar {
   display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
   padding: 7px 8px 7px 14px; cursor: move; user-select: none;
+  /* 拖拽把手：touch-action:none 让触屏也能拖动（对照 .dsh-tw-note-head） */
+  touch-action: none;
   background: var(--dsw-alias-bg-layer-1, #f4f5f7);
   border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.1));
 }
@@ -264,7 +266,8 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-editor-close:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, #222); }
 .dsh-tw-editor-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--dsw-alias-bg-layer-1, #fff); }
-.dsh-tw-editor-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; }
+/* 右下角缩放把手：touch-action:none 让触屏也能拖拽缩放（对照 .dsh-tw-note-head） */
+.dsh-tw-editor-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; }
 
 /* ── toast ──────────────────────────────────────────────────── */
 .dsh-tw-toast {
@@ -645,6 +648,39 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-summary-state-spin { font-size: 22px; }
 .dsh-tw-summary-state-title { font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
 .dsh-tw-summary-state-detail { max-width: 420px; word-break: break-all; font-size: 12px; }
+
+/* ── 无障碍 / 动效偏好 ────────────────────────────────────────────────────
+   插件自有可交互元素统一补 :focus-visible 轮廓（键盘用户可定位；鼠标点击不显示
+   轮廓，不改变现有视觉）。输入框沿用各自的 focus 样式，不在此重复。 */
+.dsh-tw-entry:focus-visible,
+.dsh-tw-fab:focus-visible,
+.dsh-tw-fab-item:focus-visible,
+.dsh-tw-dock-note-btn:focus-visible,
+.dsh-tw-note-close:focus-visible,
+.dsh-tw-note-upload:focus-visible,
+.dsh-tw-note-save:focus-visible,
+.dsh-tw-note-edit:focus-visible,
+.dsh-tw-note-recent-btn:focus-visible,
+.dsh-tw-note-recent-item:focus-visible,
+.dsh-tw-note-tagsuggest-item:focus-visible,
+.dsh-tw-note-draft-discard:focus-visible,
+.dsh-tw-note-tagchip-x:focus-visible,
+.dsh-tw-settings-btn:focus-visible,
+.dsh-tw-settings-check:focus-visible,
+.dsh-tw-summary-btn:focus-visible,
+.dsh-tw-toolcard-open:focus-visible,
+.dsh-tw-toolcard-row:focus-visible,
+.dsh-tw-panel-error button:focus-visible,
+.dsh-tw-rightbar-error button:focus-visible,
+.dsh-tw-editor-close:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary, #3e63dd);
+  outline-offset: 2px;
+}
+/* 系统「减少动态效果」：关掉入场动画（内容与交互完全不变）。 */
+@media (prefers-reduced-motion: reduce) {
+  .dsh-tw-note-card,
+  .dsh-tw-fab-menu { animation: none; }
+}
 `
 
 /**

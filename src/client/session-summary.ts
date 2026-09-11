@@ -105,9 +105,13 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
   const [summaryTitle, setSummaryTitle] = React.useState<string | null>(null)
   const [error, setError] = React.useState('')
   const genRef = React.useRef(0)
-  const missesRef = React.useRef(0)
-  /** 渲染失败且条目缺失时自动重建一次的有界开关（防循环）。 */
-  const autoRetriedRef = React.useRef(false)
+  /**
+   * 统一「连续失败计数」：任何一次 generate() 失败（HTTP 失败 / 缺标题 / 渲染
+   * 服务不可用 / 条目缺失 / 抛错）都递增，任何一次成功归零。达到 MAX_MISSES 后
+   * 彻底停止自动重试（此前 missesRef 与 autoRetriedRef 交替复位会形成无界自动
+   * 重生成循环）；手动「🔄 刷新」是显式重来，会清零计数重新获得重试额度。
+   */
+  const failuresRef = React.useRef(0)
 
   const generate = React.useCallback(async (): Promise<void> => {
     const gen = ++genRef.current
@@ -115,6 +119,12 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       setPhase('error')
       setError('缺少会话 ID')
+      return
+    }
+    // 连续失败到顶：不再自动重试（彻底停止自愈），只提示手动刷新。
+    if (failuresRef.current >= MAX_MISSES) {
+      setPhase('error')
+      setError(`连续 ${MAX_MISSES} 次生成失败，已停止自动重试，请点「🔄 刷新」`)
       return
     }
     try {
@@ -127,11 +137,13 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
       const data = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; error?: string } | null
       if (gen !== genRef.current) return
       if (!res.ok || data?.ok !== true) {
+        failuresRef.current++
         setPhase('error')
         setError(data?.error ?? `HTTP ${res.status}`)
         return
       }
       if (typeof data.title !== 'string' || data.title.length === 0) {
+        failuresRef.current++
         setPhase('error')
         setError('汇总生成失败：缺少标题')
         return
@@ -143,30 +155,30 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
       if (gen !== genRef.current) return
       if (fragment === null) {
         // 区分「条目被清（TW 重启把 $:/temp 冲掉了）」与「渲染服务不可用」：
-        // 前者自动重建一次（有界），后者直接报错交还手动重试。
+        // 前者自动重建（受 MAX_MISSES 约束，有界），后者直接报错交还手动重试。
         const exists = await tiddlerExists(data.title)
         if (gen !== genRef.current) return
         if (!exists) {
-          if (autoRetriedRef.current) {
-            setPhase('error')
-            setError('汇总条目不存在，自动重建失败，请重试')
+          failuresRef.current++
+          if (failuresRef.current < MAX_MISSES) {
+            void generate()
             return
           }
-          autoRetriedRef.current = true
-          missesRef.current++
-          void generate()
+          setPhase('error')
+          setError('汇总条目不存在，自动重建失败，请重试')
           return
         }
+        failuresRef.current++
         setPhase('error')
         setError('渲染失败：wiki 渲染服务不可用（/tw/render）')
         return
       }
-      autoRetriedRef.current = false
-      missesRef.current = 0
+      failuresRef.current = 0
       setHtml(fragment)
       setPhase('ready')
     } catch (err) {
       if (gen !== genRef.current) return
+      failuresRef.current++
       setPhase('error')
       setError(err instanceof Error ? err.message : String(err))
     }
@@ -182,8 +194,12 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
   // （例如服务端写不进去）就停止自动重试，交还手动「🔄 刷新」。
   React.useEffect(() => {
     if (phase !== 'ready' || summaryTitle === null) return
+    // alive 守卫：clearInterval 挡不住已经在途的 fetch，回调 resolve 后会在已卸载
+    // 的组件上 setState 并再触发一轮请求风暴（与文件内 genRef 守卫同一风格）。
+    let alive = true
     const timer = window.setInterval(() => {
       void (async () => {
+        if (!alive) return
         let serverHas = false
         try {
           const res = await fetch(`${GET_ENDPOINT}?title=${encodeURIComponent(summaryTitle)}`, { signal: AbortSignal.timeout(8_000) })
@@ -192,15 +208,25 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         } catch {
           return // 探测失败保持现状，下个周期再试
         }
+        if (!alive) return
         if (!serverHas) {
-          missesRef.current++
-          if (missesRef.current < MAX_MISSES) void generate()
+          failuresRef.current++
+          if (failuresRef.current < MAX_MISSES) {
+            void generate()
+            return
+          }
+          // 连续失败到顶：停止自愈（也停掉本 interval），交还手动「🔄 刷新」。
+          setPhase('error')
+          setError('汇总条目已失效且自动重建多次失败，请点「🔄 刷新」重试')
         } else {
-          missesRef.current = 0
+          failuresRef.current = 0
         }
       })()
     }, SELF_HEAL_MS)
-    return () => window.clearInterval(timer)
+    return () => {
+      alive = false
+      window.clearInterval(timer)
+    }
   }, [phase, summaryTitle, generate])
 
   // 一次性 focus 请求直接确认（本视图无可聚焦子目标，避免 shell 挂起）。
@@ -209,6 +235,8 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
   }, [viewRequest, completeViewRequest])
 
   const refresh = (): void => {
+    // 手动刷新 = 显式重来：清零连续失败计数，重新获得自动重试额度。
+    failuresRef.current = 0
     void generate()
   }
 

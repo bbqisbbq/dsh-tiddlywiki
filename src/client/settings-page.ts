@@ -101,7 +101,7 @@ export function mountSettingsPage(container: HTMLElement): () => void {
       const state = await fetchJson<AdminState>(STATE_ENDPOINT)
       if (disposed) return
       renderStatus(statusRow, state, refresh)
-      renderMain(body, state, refresh)
+      renderMain(body, state, refresh, () => disposed)
     } catch (err) {
       if (disposed) return
       body.replaceChildren()
@@ -217,9 +217,17 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     const input = make('input', 'dsh-tw-settings-input')
     input.type = 'number'
     input.value = String(initial)
+    // 显式区分「空串/非法输入」与合法的 0：旧写法 `Number(v) || initial` 会把 0
+    // 当成 initial，changed() 变成 false —— 用户输入 0 以为保存了，其实没提交。
+    const read = (): number => {
+      const raw = input.value.trim()
+      if (raw.length === 0) return initial
+      const parsed = Number(raw)
+      return Number.isFinite(parsed) ? parsed : initial
+    }
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)
-    fields.push({ key, input, initial, read: () => Number(input.value) || initial, changed: () => (Number(input.value) || initial) !== initial })
+    fields.push({ key, input, initial, read, changed: () => read() !== initial })
     section.append(wrap)
   }
   const selectField = (key: string, label: string, initial: string, options: Array<{ value: string; label: string }>): void => {
@@ -268,6 +276,8 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   textField('bridge.token', '剪藏桥 token（非空时校验书签的 x-clip-token 头；强烈建议设置）', typeof bridge.token === 'string' ? bridge.token : '')
   textField('bridge.tag', '剪藏笔记默认 tag', typeof bridge.tag === 'string' && bridge.tag.trim().length > 0 ? bridge.tag.trim() : 'clip')
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
+  // 注意：uiLanguage 目前只影响 TW 侧语言，客户端插件文案（FAB/快速笔记/侧边栏/本页）
+  // 暂为中文，尚无 i18n 分支。
 
   const save = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '保存配置')
   save.type = 'button'
@@ -483,7 +493,7 @@ function renderCatalogSection(
  * Core seeds (发送给 Agent 按钮 / TW 前端 API 基址) are 功能必需: auto-seeded
  * on startup and never removable. Optional seeds are opt-in — never forced.
  */
-function renderSeedsSection(body: HTMLElement): void {
+function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void {
   const section = make('section', 'dsh-tw-settings-section')
   section.append(make('h3', 'dsh-tw-settings-h', '初始化（一次性预置）'))
   const hint = make('div', 'dsh-tw-settings-muted', '这些是插件与 dsh 联动、需要在 wiki 里预置的 tiddler/配置。「发送给 Agent 按钮」和「TW 前端 API 基址」是功能必需项，启动时自动写入（只写缺失，不覆盖你的改动）；其余为可选项，默认不自动写入、也不会强绑定——需要时点「重新初始化」写入，不想要了可随时「反初始化」移除。')
@@ -492,8 +502,12 @@ function renderSeedsSection(body: HTMLElement): void {
   const SEEDS_REMOVE_ENDPOINT = '/dsh-tiddlywiki/admin/seeds/remove'
 
   const load = async (): Promise<void> => {
+    // 与 refresh() 相同的卸载守卫：本函数由组件挂载时触发、也可能在卸载后由
+    // 按钮回调的 await 之后调用，晚到的响应不得再 wrap.replaceChildren()。
+    if (isDisposed()) return
     try {
       const data = await fetchJson<{ ok?: boolean; items?: SeedItem[]; error?: string }>(SEEDS_ENDPOINT)
+      if (isDisposed()) return
       if (data.ok !== true || !Array.isArray(data.items)) throw new Error(data.error ?? '获取失败')
       wrap.replaceChildren()
       let presentCount = 0
@@ -575,6 +589,7 @@ function renderSeedsSection(body: HTMLElement): void {
       }
       statusLine.textContent = `共 ${data.items.length} 项，${presentCount} 项已就绪；可移除 ${removableCount} 项`
     } catch (err) {
+      if (isDisposed()) return
       statusLine.textContent = `加载初始化状态失败：${err instanceof Error ? err.message : String(err)}`
     }
   }
@@ -639,11 +654,11 @@ function renderSeedsSection(body: HTMLElement): void {
   void load()
 }
 
-function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>): void {
+function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean): void {
   body.replaceChildren()
   renderConfigSection(body, state.config ?? {}, refresh)
   renderCatalogSection(body, state.info, state.catalog, refresh)
-  renderSeedsSection(body)
+  renderSeedsSection(body, isDisposed)
 }
 
 /** React wrapper consumed by the shell's settings.section slot. */
