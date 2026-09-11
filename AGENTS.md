@@ -208,7 +208,10 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 4. **同步 AGENTS.md**：更新 §1 易变清单 + 相关小节（§7 规则）。
 5. **提交推送**：`git add -A && git commit -m "..."` → `git push origin main`。
 6. **打 tag 并推送**：`git tag vX.Y.Z && git push origin vX.Y.Z`（tag 命名 `vX.Y.Z`）。
-7. **发布 npm**：`npm publish`（本机 npm 账号已登录：`ok1989223`）→ `npm view dsh-tiddlywiki version` 确认 latest。
+7. **发布 npm**（本机 npm 账号已登录：`ok1989223`）→ `npm view dsh-tiddlywiki version` 确认 latest。
+   - ⚠️ **本机默认 registry 是 `registry.npmmirror.com`（只读镜像）**，直接 `npm publish` 会 `ENEEDAUTH`；必须显式指定官方源：`npm publish --registry=https://registry.npmjs.org`。
+   - ⚠️ **发布后有传播延迟，别被两个假信号误导**：① 第一次 `npm view dsh-tiddlywiki version`（默认走 npmmirror）会**一直显示旧版本**，要加 `--registry=https://registry.npmjs.org` 或直接查 `https://registry.npmjs.org/dsh-tiddlywiki` 的 `dist-tags`；② `dist-tags.latest` 可能**先**变成新版本，而 `GET /dsh-tiddlywiki/<新版本>` 还 404（版本文档仍在同步），此时重发会报 `E409 Cannot publish over previously staged version` / `E403 You cannot publish over the previously published versions` —— 这两种都不是失败，**等 1–2 分钟再查一次**（v0.19.5 实测：`dist-tags` 已是 0.19.5、版本文档 404 约 30s 后才出现）。
+   - 发布包只含 `lib/` + `src/` + `docs/`（不含 `scripts/`）：要跑 `npm run verify*` 请用 git 仓库。
 8. **同步线上 wiki**（如改了 bundle/提示词）：覆盖对应 tiddler + 提示用户重载 TW 面板 / 重启 dsh web。
 9. 若本轮改动影响了本次会话相关的 wiki 笔记，顺手把 wiki `sync` 提交推送。
 
