@@ -111,11 +111,17 @@ const NOTE_RULES = `### 笔记约定
  */
 export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = [WRITE_RULES, SYNC_RULES, NOTE_RULES]
 
-/** `- `name`（p1, p2?, …）` for one tool; `?` marks an optional parameter. */
-function toolLine(tool: PromptToolSummary): string {
-  if (tool.params.length === 0) return `- \`${tool.name}\``
-  const params = tool.params.map((p) => (p.required ? p.name : `${p.name}?`)).join(', ')
-  return `- \`${tool.name}\`（${params}）`
+/**
+ * One line per tool: `bullet \`name\`（p1, p2?, …）`; `?` marks an optional
+ * parameter. Shared by the `full` prompt catalogue and by the TW-side doc seed
+ * (which reuses it as wikitext bullets), so both stay generated (v0.22.0).
+ */
+export function toolSignatureLines(tools: readonly PromptToolSummary[], bullet = '-'): string[] {
+  return tools.map((tool) => {
+    if (tool.params.length === 0) return `${bullet} \`${tool.name}\``
+    const params = tool.params.map((p) => (p.required ? p.name : `${p.name}?`)).join(', ')
+    return `${bullet} \`${tool.name}\`（${params}）`
+  })
 }
 
 /** Heading + a one-line capability pointer (slim intro). */
@@ -127,7 +133,7 @@ function slimIntro(count: number): string {
 
 /** Heading + the generated signature catalogue (full intro). */
 function fullIntro(tools: readonly PromptToolSummary[]): string {
-  const lines = tools.map(toolLine).join('\n')
+  const lines = toolSignatureLines(tools).join('\n')
   return `## TiddlyWiki 持久知识库
 
 本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。可用工具（${tools.length} 个，\`?\` 表示可选参数；详细契约以各工具的 description 为准）：

@@ -31,6 +31,19 @@ import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.t
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
 import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps } from './host/tools.ts'
 import { buildPromptText, normalizePromptMode, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig } from './host/prompt.ts'
+import {
+  clearLocationState,
+  defaultLocationStateFile,
+  expandEnvPath,
+  listWikiCandidates,
+  locationPath,
+  readLocationState,
+  writeLocationState,
+  type WikiLocation,
+  type WikiLocationInfo,
+  type WikiLocationSource,
+} from './host/wiki-location.ts'
+import { switchWiki, type WikiSwitchResult } from './host/wiki-switch.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
 
@@ -60,7 +73,8 @@ export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './host/routes.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './host/routes.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, ensurePlugin, bundledCatalog, ensureLanguage, normalizeThemes, MASKED_SECRET, maskConfigSecrets, stripMaskedSecrets } from './host/admin.ts'
 export { escapeInline } from './host/session-summary.ts'
-export { seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
+export { seedDocNote, docNoteText, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
+export { hashText, parseSeedMarker, readSeedMarker, writeSeedMarker, SEED_MARKER_VERSION } from './host/seed-util.ts'
 export { seedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE, DSH_DOCS_TAG } from './host/seed-starter-docs.ts'
 export { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './host/seed-send-to-agent.ts'
 export { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_PLUGIN_FILE, RENDER_BUNDLE_TEXT } from './host/seed-render.ts'
@@ -76,6 +90,7 @@ export {
   buildPromptText,
   escapePromptBraces,
   normalizePromptMode,
+  toolSignatureLines,
   PROMPT_GOVERNANCE_BLOCKS,
   PROMPT_MODES,
   PROMPT_SECTION_NAME,
@@ -85,6 +100,22 @@ export {
   type PromptMode,
   type PromptToolSummary,
 } from './host/prompt.ts'
+export {
+  clearLocationState,
+  defaultLocationStateFile,
+  expandEnvPath,
+  listWikiCandidates,
+  locationPath,
+  normalizeLocation,
+  readLocationState,
+  writeLocationState,
+  LOCATION_STATE_VERSION,
+  type WikiLocation,
+  type WikiLocationInfo,
+  type WikiLocationSource,
+  type WikiLocationState,
+} from './host/wiki-location.ts'
+export { switchWiki, type WikiSwitchResult, type WikiSwitchDeps } from './host/wiki-switch.ts'
 export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, downloadClipImage, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, isPrivateAddress, assertPublicImageUrl, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
@@ -174,15 +205,11 @@ export async function ensureTwWebHost(client: TiddlyWebClient | undefined): Prom
   await client.put({ title: TW_WEB_HOST_TIDDLER, text: TW_PROXY_PATH, type: 'text/plain', tags: [] })
 }
 
-/** Expand $VAR / ${VAR} / %VAR% from process.env (config uses $DSH_HOME). */
-function expandEnvPath(input: string): string {
-  return input
-    .replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, k: string) => process.env[k] ?? '')
-    .replace(/\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, k: string) => process.env[k] ?? '')
-    .replace(/%([A-Za-z_][A-Za-z0-9_]*%)/g, (_, k: string) => process.env[k.slice(0, -1)] ?? '')
-}
-
-/** Resolve wikiRoot: explicit config (env-expanded) else $DSH_HOME/tiddlywiki. */
+/**
+ * Resolve the DEFAULT wikiRoot: explicit config (env-expanded) else
+ * $DSH_HOME/tiddlywiki. The runtime pointer file can override it — see
+ * `readLocationState()` in host/wiki-location.ts.
+ */
 function resolveWikiRoot(config: TiddlywikiConfig): string {
   if (config.wikiRoot !== undefined && config.wikiRoot.trim().length > 0) {
     return expandEnvPath(config.wikiRoot.trim())
@@ -286,7 +313,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     uiLanguage: typeof rawConfig.uiLanguage === 'string' ? rawConfig.uiLanguage.trim() : DEFAULTS.uiLanguage,
     auth: { ...DEFAULTS.auth, ...(rawConfig.auth ?? {}) },
   }
-  const wikiPath = join(config.wikiRoot, config.wiki)
+  // The location is MUTABLE since v0.22.0: the runtime pointer file (read below
+  // in the startup task) and the settings page's「切换」both repoint it. Every
+  // consumer reads it through a getter (`() => wikiPath`), never a captured copy.
+  let wikiPath = join(config.wikiRoot, config.wiki)
+  /** Pointer file the runtime switch persists (outside every wiki, see wiki-location.ts). */
+  const locationStateFile = defaultLocationStateFile()
   const git = new GitFace()
 
   // Runtime-editable config (settings page): the cordis `config:` block is the
@@ -436,6 +468,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
 
   // Auto-committer + filesystem watcher (created after the wiki dir exists).
   // Reads the EFFECTIVE config so a settings-page git change survives a restart.
+  //
+  // SPLIT SETUP/TEARDOWN (v0.22.0): a runtime wiki switch has to release both
+  // (they hold the OLD folder) and re-arm them for the new one. The teardown is
+  // registered exactly ONCE below — a per-switch `disposers.push()` would leak a
+  // disposer per switch.
   let committer: AutoCommitter | undefined
   let unwatch: (() => void) | undefined
   const setupCommitter = (): void => {
@@ -449,11 +486,18 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       onError: (err) => console.warn('[dsh-tiddlywiki] autocommit:', err),
     })
     unwatch = watchWiki(wikiPath, () => committer?.touch())
-    disposers.push(() => {
-      committer?.dispose()
-      unwatch?.()
-    })
   }
+  const teardownCommitter = async (): Promise<void> => {
+    try { unwatch?.() } catch { /* already closed */ }
+    unwatch = undefined
+    const current = committer
+    committer = undefined
+    // Flush a pending auto-commit BEFORE dropping the folder, so a write made
+    // within the debounce window is not left uncommitted (switch + shutdown).
+    try { await current?.flush() } catch { /* best-effort */ }
+    current?.dispose()
+  }
+  disposers.push(() => { void teardownCommitter() })
 
   // Git bootstrap: repo init + initial commit + .gitignore (+ remote/first push).
   const bootstrapGit = async (): Promise<void> => {
@@ -503,8 +547,78 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // an orphan process and a leaked listener. Every await below is followed by a
   // `disposed` check, and the task stops the child itself when it notices.
   let disposed = false
+  /**
+   * Core-bootstrap the CURRENT `wikiPath`: markdown parser plugin, the core +
+   * starter seeds, and the configured UI language. Extracted from the startup
+   * task (v0.22.0) because a runtime wiki switch must run exactly this on the
+   * new folder — the two paths must not drift apart.
+   *
+   * Only `render-route` needs a TW restart (it carries a SERVER route loaded at
+   * boot); plain-content seeds must NOT restart, or the syncer's unflushed REST
+   * writes would be lost.
+   */
+  const bootstrapWiki = async (): Promise<void> => {
+    const seedClient = client()
+    if (seedClient === undefined) return
+    let pluginAdded = false
+    try {
+      pluginAdded = await ensurePlugin(wikiPath, resolveTwRoot(), MARKDOWN_PLUGIN)
+      if (pluginAdded) console.info(`[dsh-tiddlywiki] enabled ${MARKDOWN_PLUGIN} for this wiki`)
+    } catch (err) {
+      console.warn(`[dsh-tiddlywiki] enabling ${MARKDOWN_PLUGIN}:`, err)
+    }
+    const seedStartedAt = Date.now()
+    const results = await runAllSeeds({ client: seedClient, tools: tiddlywikiToolSummary() })
+    for (const r of results) {
+      if (!r.ok) console.warn(`[dsh-tiddlywiki] seed ${r.id} failed:`, r.error ?? r.detail)
+    }
+    if (needsRestartAfterSeeds(results)) {
+      const renderFile = join(wikiPath, 'tiddlers', RENDER_PLUGIN_FILE)
+      const flushed = await waitForFileWrite(renderFile, 8_000, 150, seedStartedAt)
+      if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
+      // Drain the rest of the syncer queue as well: a restart that boots from a
+      // stale snapshot loses every write still queued (v0.19.0).
+      const drained = await flushPendingWrites(seedClient, join(wikiPath, 'tiddlers'))
+      if (!drained) console.warn('[dsh-tiddlywiki] seed writes may not have been flushed before restart')
+      if (!disposed) await server.restart()
+    } else if (pluginAdded) {
+      // tiddlywiki.info is written directly by us (no TW flush to wait for),
+      // but TW only loads the plugin at boot.
+      if (!disposed) await server.restart()
+    }
+    // Apply the configured UI language (e.g. "zh-Hans"): enable the bundled
+    // language plugin in tiddlywiki.info.languages + restart once so TW loads
+    // it at boot (fully offline — official language packs ship in the pkg).
+    const uiLang = eff().uiLanguage
+    if (typeof uiLang === 'string' && uiLang.trim().length > 0) {
+      try {
+        const code = uiLang.trim()
+        const changed = await ensureLanguage(wikiPath, resolveTwRoot(), code)
+        if (changed && !disposed) await server.restart()
+        // Pin the active language tiddler so TW's UI actually switches.
+        const langClient = client()
+        if (langClient !== undefined) {
+          await langClient.put({ title: '$:/language', text: `$:/languages/${code}`, type: 'text/plain', tags: [] }).catch(() => undefined)
+        }
+      } catch (err) {
+        console.warn('[dsh-tiddlywiki] applying uiLanguage:', err)
+      }
+    }
+  }
+
   const startupTask = (async () => {
     try {
+      // Runtime pointer FIRST (v0.22.0): the settings page's「切换」persists the
+      // chosen location in $DSH_HOME/dsh-tiddlywiki/location.json, which must
+      // win over the cordis config default. Applied while the child is still
+      // stopped, so the very first spawn already serves the right folder.
+      const saved = await readLocationState(locationStateFile)
+      if (saved.error !== undefined) console.warn('[dsh-tiddlywiki]', saved.error)
+      if (saved.active !== undefined) {
+        server.setLocation(saved.active)
+        wikiPath = locationPath(saved.active)
+        console.info(`[dsh-tiddlywiki] wiki location (pointer file): ${wikiPath}`)
+      }
       await server.start()
       if (disposed) {
         await server.stop().catch(() => undefined)
@@ -533,76 +647,23 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         return
       }
       // Point TW's frontend at the same-origin DSH proxy (remote-access mode):
-      // part of the seed registry below (tw-web-host), so it is also covered by
-      // the settings page's 重新初始化. Runs before git bootstrap so the config
+      // part of the seed registry (tw-web-host), so it is also covered by the
+      // settings page's 重新初始化. Runs before git bootstrap so the config
       // tiddler joins the first commit.
-      // Seeds (run after the effective config is loaded): every one-time
-      // "与 dsh 联动需要 wiki 预置" item lives in the SEED_DEFS registry.
-      // The startup path seeds ONLY the CORE items (功能必需：发送给 Agent
-      // 按钮 + TW 前端 API 基址) NON-force — write only what is missing, never
-      // overwrite user content. Optional seeds (说明笔记 / 首页 / 所有文章 /
-      // menubar 顶栏主题自适应 / 剪藏桥说明) are never forced on users: they
-      // opt in from the settings page「初始化」section (重新初始化) and can opt
-      // out again with 反初始化 (remove).
+      //
+      // Seeds run after the effective config is loaded: every one-time
+      // "与 dsh 联动需要 wiki 预置" item lives in the SEED_DEFS registry, and the
+      // startup path seeds ONLY the core items (功能必需：发送给 Agent 按钮 +
+      // TW 前端 API 基址 + 原生渲染路由) plus the starter docs — NON-force, so a
+      // same-named tiddler is never overwritten. Optional seeds (首页 / 所有文章 /
+      // 自定义样式 / menubar 顶栏主题自适应 / 剪藏桥说明) are opt-in from the
+      // settings page「初始化」section.
+      // Markdown parser + seeds + UI language: the SAME routine a runtime wiki
+      // switch runs on its new folder (v0.22.0, host/wiki-switch.ts).
       try {
-        const seedClient = client()
-        if (seedClient !== undefined) {
-          // Markdown parser bootstrap (v0.19.0): `--init server` scaffolds a
-          // wiki WITHOUT tiddlywiki/markdown, but every note this plugin writes
-          // (agent put/batch_put, quick note, drafts, clips) defaults to
-          // `text/markdown`. Without the plugin a fresh install renders all of
-          // them as raw source. Idempotent; one restart when it actually changed.
-          let pluginAdded = false
-          try {
-            pluginAdded = await ensurePlugin(wikiPath, resolveTwRoot(), MARKDOWN_PLUGIN)
-            if (pluginAdded) console.info(`[dsh-tiddlywiki] enabled ${MARKDOWN_PLUGIN} for this wiki`)
-          } catch (err) {
-            console.warn(`[dsh-tiddlywiki] enabling ${MARKDOWN_PLUGIN}:`, err)
-          }
-          const seedStartedAt = Date.now()
-          const results = await runAllSeeds({ client: seedClient })
-          for (const r of results) {
-            if (!r.ok) console.warn(`[dsh-tiddlywiki] seed ${r.id} failed:`, r.error ?? r.detail)
-          }
-          // ONLY the render-route seed needs a TW restart: it carries a SERVER
-          // route, which TW loads at boot. Restarting for plain-content seeds
-          // (docs / home / styles) would kill the child over REST writes the
-          // syncer had not flushed to disk yet, silently losing them.
-          if (needsRestartAfterSeeds(results)) {
-            const renderFile = join(wikiPath, 'tiddlers', RENDER_PLUGIN_FILE)
-            const flushed = await waitForFileWrite(renderFile, 8_000, 150, seedStartedAt)
-            if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
-            // Drain the rest of the syncer queue as well: a restart that boots
-            // from a stale snapshot loses every write still queued (v0.19.0).
-            const drained = await flushPendingWrites(seedClient, join(wikiPath, 'tiddlers'))
-            if (!drained) console.warn('[dsh-tiddlywiki] seed writes may not have been flushed before restart')
-            if (!disposed) await server.restart()
-          } else if (pluginAdded) {
-            // tiddlywiki.info is written directly by us (no TW flush to wait
-            // for), but TW only loads the plugin at boot.
-            if (!disposed) await server.restart()
-          }
-        }
+        await bootstrapWiki()
       } catch (err) {
         console.warn('[dsh-tiddlywiki] seeding wiki:', err)
-      }
-      // Apply the configured UI language (e.g. "zh-Hans"): enable the bundled
-      // language plugin in tiddlywiki.info.languages + restart once so TW loads
-      // it at boot (fully offline — official language packs ship in the pkg).
-      const uiLang = eff().uiLanguage
-      if (typeof uiLang === 'string' && uiLang.trim().length > 0) {
-        try {
-          const code = uiLang.trim()
-          const changed = await ensureLanguage(wikiPath, resolveTwRoot(), code)
-          if (changed && !disposed) await server.restart()
-          // Pin the active language tiddler so TW's UI actually switches.
-          const langClient = client()
-          if (langClient !== undefined) {
-            await langClient.put({ title: '$:/language', text: `$:/languages/${code}`, type: 'text/plain', tags: [] }).catch(() => undefined)
-          }
-        } catch (err) {
-          console.warn('[dsh-tiddlywiki] applying uiLanguage:', err)
-        }
       }
     } catch (err) {
       console.warn('[dsh-tiddlywiki] startup issue (self-healing is armed):', err)
@@ -621,6 +682,83 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       console.warn('[dsh-tiddlywiki] git bootstrap failed:', err)
     }
   })()
+
+  // ── Runtime wiki location (v0.22.0) ────────────────────────────────────────
+  // The cordis `config:` block stays the DEFAULT; the settings page can switch
+  // the running plugin to another folder and persists that choice in a pointer
+  // file OUTSIDE every wiki (host/wiki-location.ts explains why). Everything
+  // below is read through getters, so a switch is visible to tools, routes and
+  // the git face immediately.
+  const defaultLocation: WikiLocation = { root: config.wikiRoot, name: config.wiki }
+  /** Source of the CURRENT location, for the settings page. */
+  const locationSource = async (): Promise<WikiLocationSource> => {
+    const state = await readLocationState(locationStateFile)
+    if (state.active !== undefined && locationPath(state.active) === wikiPath) return 'state'
+    return typeof rawConfig.wikiRoot === 'string' && rawConfig.wikiRoot.trim().length > 0 ? 'config' : 'default'
+  }
+  const locationInfo = async (): Promise<WikiLocationInfo> => {
+    const state = await readLocationState(locationStateFile)
+    const current = server.currentLocation
+    return {
+      current: { ...current, path: wikiPath, source: await locationSource() },
+      default: { ...defaultLocation, path: locationPath(defaultLocation) },
+      stateFile: locationStateFile,
+      candidates: await listWikiCandidates(current.root),
+      ...(state.error !== undefined ? { error: state.error } : {}),
+    }
+  }
+  /** Single-flight guard: two concurrent switches would fight over the child. */
+  let switching = false
+  const runSwitch = async (target: { root?: unknown; name?: unknown }, persist: (t: WikiLocation) => Promise<void>): Promise<WikiSwitchResult> => {
+    if (switching) return { ok: false, error: '正在切换知识库，请稍候再试', rolledBack: true }
+    switching = true
+    try {
+      return await switchWiki({
+        currentLocation: () => server.currentLocation,
+        currentPath: () => wikiPath,
+        stopServer: () => server.stop(),
+        applyLocation: (nextLocation) => {
+          server.setLocation({ root: nextLocation.root, name: nextLocation.name })
+          wikiPath = locationPath(nextLocation)
+          // The cached REST client holds a 2s list cache belonging to the OLD
+          // wiki; drop it so the next request reads the new one.
+          clientCache = undefined
+          clientPort = undefined
+        },
+        startServer: async () => { await server.start() },
+        teardownExtras: () => teardownCommitter(),
+        setupExtras: () => { setupCommitter() },
+        reloadConfig: async () => {
+          await configStore.load(client())
+          // The new wiki carries its own config tiddler → its own prompt.*.
+          applyPrompt()
+        },
+        bootstrap: async () => {
+          await bootstrapWiki()
+          await bootstrapGit()
+        },
+        savePointer: persist,
+        log: (message) => console.warn('[dsh-tiddlywiki]', message),
+      }, target)
+    } finally {
+      switching = false
+    }
+  }
+  /** Switch to another folder and remember the choice. */
+  const switchWikiLocation = (target: { root?: unknown; name?: unknown }): Promise<WikiSwitchResult> =>
+    runSwitch(target, async (t) => { await writeLocationState(t, locationStateFile) })
+  /**
+   * 「恢复为配置默认」: drop the pointer and go back to the cordis default. The
+   * pointer must be cleared EVEN when the current folder already IS the default
+   * (otherwise the stale pointer would win again after the next restart).
+   */
+  const resetWikiLocation = async (): Promise<WikiSwitchResult> => {
+    if (locationPath(defaultLocation) === wikiPath) {
+      await clearLocationState(locationStateFile)
+      return { ok: true, location: defaultLocation, path: wikiPath }
+    }
+    return runSwitch(defaultLocation, async () => { await clearLocationState(locationStateFile) })
+  }
 
   // Routes + settings-panel admin surface (lazy webServer).
   ctx.inject(['webServer'], (webCtx: HostCtx) => {
@@ -685,9 +823,18 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         mode: normalizePromptMode(eff().prompt?.mode),
         text: promptText(),
       }),
+      // Runtime wiki location (v0.22.0): read the current folder + how it was
+      // decided, switch to another one, or drop back to the cordis default.
+      wiki: {
+        info: locationInfo,
+        switch: switchWikiLocation,
+        reset: resetWikiLocation,
+      },
       seeds: {
-        checkAll: async (c) => checkAllSeeds({ client: c }),
-        run: async (c, id, force) => runSeedById({ client: c }, id, force),
+        // Tool summaries feed the GENERATED seed content (the doc note's tool
+        // list, v0.22.0) — pass them everywhere the registry can be re-run.
+        checkAll: async (c) => checkAllSeeds({ client: c, tools: tiddlywikiToolSummary() }),
+        run: async (c, id, force) => runSeedById({ client: c, tools: tiddlywikiToolSummary() }, id, force),
         remove: async (c, id) => removeSeedById({ client: c }, id),
       },
     }

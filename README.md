@@ -23,7 +23,9 @@
 
 | 能力 | 说明 |
 |---|---|
-| 🏠 **文档中心起步包** | 首次安装自动 seed：插件说明 + 「示例与文档」（主题汇总模板 / 教程 / 三个示例主题页），首页「📚 插件文档」栏一键查阅；**同名 tiddler 已存在一律安全跳过，绝不覆盖你的数据**（v0.16.22） |
+| 🏠 **文档中心起步包** | 首次安装自动 seed：插件说明 + 「示例与文档」（主题汇总模板 / 教程 / 三个示例主题页），首页「📚 插件文档」栏一键查阅；**同名 tiddler 已存在一律安全跳过，绝不覆盖你的数据**（v0.16.22）；插件说明里的**工具清单由工具注册表实时生成**，不会再写着「10 个工具」却已经 15 个（v0.22.0） |
+| 📍 **知识库位置可切换** | 设置页「知识库位置」可把插件切换到**任意本地文件夹**（不用改 cordis 配置、不用重装）：就地停/起 TW 子进程，目标目录没有 `tiddlywiki.info` 时自动 `--init server` 建一个全新知识库；选择记在 `$DSH_HOME/dsh-tiddlywiki/location.json`——一个**在 wiki 之外**的指针文件（所以切到新 wiki 后仍记得「我用的是哪个」），「恢复为配置默认」一键清除；**切换失败自动回滚**到原知识库并如实告知（v0.22.0） |
+| 🔄 **seed 更新检测** | seed 标记记录**内容哈希**：内置内容在本 wiki 预置之后更新过 → 设置页显示「⬆ 有更新」；被你改过 → 显示「✏️ 本地已修改」，且「重新初始化」前**二次确认**；两者都基于哈希判定，绝不猜（旧格式标记会明确显示「尚未启用更新检测」，不会误报为「你改过」，v0.22.0） |
 | 🎨 **自定义样式** | 「自定义样式」seed：编辑器美化 / 窄屏侧栏隐藏 / menubar 加高 / 批注弹窗等 5 张通用样式表，新 wiki 也能一键初始化（可选，v0.16.22） |
 | 📝 **可配置的注入提示词** | 插件注入每个会话的「TiddlyWiki 持久知识库」提示词可在设置页配置：**默认精简版**（~1.7KB，只保留工具 schema 表达不了的约定——同步纪律 / 标签约定 / 链接格式），可选**完整版**（额外附一份**由工具注册表实时生成**的参数索引，不会再过期）；`extra` 追加自定义规范、`override` 整段接管、可整体停用；**保存后无需重启 dsh web**（section 即时重注册，当前会话下一步即生效），设置页可**预览**即将注入的全文（v0.21.0） |
 | 🤖 **Agent 工具** | 15 个 `tiddlywiki_*` 工具：检索（**相关度排序 + 命中处片段 + 字段过滤**）、读写、**增量追加**、批量、重命名、**软删除/回收站**、**反向链接**、**附件入库**、**知识库体检**、git 同步与冲突解决（v0.19.0；检索/最近仍在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
@@ -136,7 +138,19 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 - **📚 会话知识库 Tab**：会话顶部 Tab（`ui.tabLabel` 改名、`ui.showSessionTab` 关闭），自动汇总本会话读写过的 wiki 笔记（写入 volatile `$:/temp`，不落盘不进 git），**TW 原生渲染**（v0.16.19 起 `/tw/render` 片段管线，与回复流工具卡同链路），链接点击直达中央 TW 面板，不可编辑。
 - **🌗 跟随 DSH 主题**：内嵌 TW 随 DSH 深浅切换 palette，纯内存不写回 wiki（`ui.followDshTheme`/`ui.darkPalette`）。
 - **🔧 知识库 FAB**：统一入口（TW 面板开关/重载、快速笔记、同步、TW 服务状态悬停 tip）。同步拉取到新内容会自动重启 TW（同端口）。
-- **⚙️ 设置页**：DSH 设置 →「TiddlyWiki 知识库」：状态/重启、常规配置、插件/主题/语言管理、**初始化**（seed 状态与重新初始化）。配置写入 `$:/plugins/dsh-tiddlywiki/config` tiddler，覆盖 cordis `config:` 块（tiddler 优先）。
+- **⚙️ 设置页**：DSH 设置 →「TiddlyWiki 知识库」：状态/重启、**知识库位置（可切换）**、常规配置、插件/主题/语言管理、**初始化**（seed 状态与重新初始化）。配置写入 `$:/plugins/dsh-tiddlywiki/config` tiddler，覆盖 cordis `config:` 块（tiddler 优先）。
+
+### 📍 知识库位置（可切换，v0.22.0）
+
+设置页顶部「**知识库位置（可切换）**」区块显示当前实际服务的文件夹、这个位置**是怎么决定的**（指针文件 / cordis 配置 / 默认值）、指针文件路径，以及**同目录下其它看起来像 wiki 的文件夹**（含 `tiddlywiki.info`）的快捷填入按钮。
+
+- **换一个位置**：填根目录（绝对路径，支持 `$DSH_HOME` / `${VAR}` / `%VAR%`）+ 文件夹名 → 「切换到这个位置」。host 会停掉 TW → 释放自动提交与监听 → 指向新目录 → 起 TW → 重载新 wiki 的配置 tiddler → 跑核心 seed（markdown 插件 / 发送给 Agent / 渲染路由 / 同源代理 / 语言）→ 重新武装自动提交；**选中即被记住**（写进 `$DSH_HOME/dsh-tiddlywiki/location.json`），重启 dsh web 后仍在新知识库。
+- **新建一个知识库**：目标文件夹若还没有 `tiddlywiki.info`，插件会照常自动 `--init server` 建一个全新的（**别填已有的普通笔记目录**——它会被初始化）。
+- **恢复为配置默认**：删除指针文件并（必要时）切回 `config.wikiRoot` / `config.wiki`。
+- **安全语义**：指针文件在任何 wiki **之外**（若存在 wiki 自己的配置 tiddler 里，切到新 wiki 就会把这个选择一起丢掉——鸡生蛋）；指针文件损坏/非法时**明确报告并回退到配置默认**，不会静默乱跑；切换**失败会回滚**到原来的知识库，并告诉你是「已回滚」还是「回滚也失败了」；同刻只允许一个切换（并发请求直接拒绝）。
+- **注意**：切换期间正在跑的 Agent 工具调用会失败（TW 在重启），界面上按钮会禁用并显示「切换中…（重启 TW）」。
+
+`wikiRoot` / `wiki` 现在只是**默认值**——运行中的实际位置以指针文件优先。这也是为什么它能不改 cordis、不重装就切。
 
 ### 🧩 初始化（一次性预置 seed）：哪些「必备」，哪些「可有可无」
 
@@ -158,6 +172,7 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
 - **想获得完整插件体验**：核心 3 项首次安装就有；再补 `home-index`（首页）+ `starter-docs`（示例文档）即是一个开箱即用的文档中心。
 - **一个可选项都不想要**：完全不影响功能——设置页「反初始化」即可，核心项受保护不可移除。
 - **文档怎么扩散到更多**：以后插件新增的任何说明 / 教程 / 模板类内容都走 seed 并带 **`dsh-docs`** 标签——首页「📚 插件文档」栏自动收录，你无需任何配置。
+- **内置内容更新了怎么办**（v0.22.0）：seed 标记里记着**内容哈希**，设置页据此显示两个提示 chip——「**⬆ 有更新**」（内置内容比你 wiki 里预置的更新，可点「更新到内置版本」取用）与「**✏️ 本地已修改**」（这篇是你的内容，重新初始化会覆盖它，会先二次确认）。升级插件后旧 wiki 的标记没有哈希，会显示「更新检测尚未启用（重新初始化一次即可）」，**不会**把老标记误判成「你改过」；重新初始化一次即升级标记。**绝不自动改写你的 wiki**——更新只在你点的时候发生。
 
 ---
 
@@ -168,8 +183,8 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
 ```yaml
 - id: dsh-tiddlywiki
   config:
-    wikiRoot: "$DSH_HOME/tiddlywiki"   # 缺省自动展开
-    wiki: "main"
+    wikiRoot: "$DSH_HOME/tiddlywiki"   # 默认位置；运行中可被设置页「知识库位置」覆盖（指针文件优先，v0.22.0）
+    wiki: "main"                       # 文件夹名（"." = 直接用 wikiRoot 这个目录）
     port: 0                            # 0 = 自动探测空闲端口
     git:
       autoCommit: true
@@ -208,6 +223,8 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
 ```
 
 > **运行时配置**：设置页写入的 `$:/plugins/dsh-tiddlywiki/config` tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki git 同步），改 note tag / git / ui 开关 / **注入提示词（`prompt.*`）** 都无需动 cordis；**提示词改动保存后立即生效**（section 即时重注册，当前会话下一步生效），剪藏桥端口改动仍需重启 dsh web 重新绑定监听。
+>
+> **知识库位置是三层**（v0.22.0）：指针文件 `$DSH_HOME/dsh-tiddlywiki/location.json` > `config:` 块的 `wikiRoot`/`wiki` > 内置默认（`$DSH_HOME/tiddlywiki` + `main`）。`wikiRoot`/`wiki` 因此是「默认位置」而不是「唯一位置」——设置页切过的位置存在指针文件里（一个在 wiki 之外的文件），所以要换回配置值就点「恢复为配置默认」。
 
 ---
 
@@ -234,6 +251,7 @@ node scripts/verify-seed-send-to-agent.mjs    # 全新 wiki 上的 seed E2E
 node scripts/verify-clip-bridge.mjs   # 剪藏桥 headless 验收（含 SSRF 守卫）
 node scripts/verify-seeds-admin.mjs   # /admin/seeds 状态与 run 的 E2E
 node scripts/verify-prompt.mjs        # 注入提示词守门（slim 无参数清单 / full 与工具注册表逐项一致 / 治理约定不丢）
+node scripts/verify-wiki-switch.mjs   # 运行时切换知识库 E2E（真起 TW：切换 / 回滚 / 指针文件 / 非法输入，v0.22.0）
 ```
 
 > 📦 从 **npm 包**安装的用户只有 `lib/` + `src/` + `docs/`（`scripts/` 不在发布包里，避免把构建脚本塞进依赖树）——想跑上面的验收脚本请用 git 仓库：`git clone https://github.com/bbqisbbq/dsh-tiddlywiki && npm install`。
@@ -276,8 +294,10 @@ node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/<样式.css>' … src/host/
 | `/dsh-tiddlywiki/agent/sessions` `/modes` `/send` `/create` | GET/POST | TW「发送给 Agent」：会话/模式/发送/新建 |
 | `/dsh-tiddlywiki/api/*` | any | 透传 TW 服务（JSON） |
 | `/dsh-tiddlywiki/tw/*` | any | 同源 TW 代理（远程访问核心） |
-| `/dsh-tiddlywiki/admin/seeds` `/run` `/remove` | GET/POST | seed 状态 / 运行 / 反初始化 |
+| `/dsh-tiddlywiki/admin/seeds` `/run` `/remove` | GET/POST | seed 状态（v0.22.0 起含内容哈希的「有更新 / 本地已修改」）/ 运行 / 反初始化 |
 | `/dsh-tiddlywiki/admin/prompt` | GET | 当前注入提示词全文（设置页预览用，v0.21.0） |
+| `/dsh-tiddlywiki/admin/wiki/location` | GET | 当前知识库位置 + 来源（指针/配置/默认）+ 指针文件路径 + 同目录候选 wiki（v0.22.0） |
+| `/dsh-tiddlywiki/admin/wiki/switch` `/reset` | POST | 运行时切换知识库 / 恢复为配置默认（失败自动回滚并报告，v0.22.0） |
 
 ### 项目结构
 
@@ -321,6 +341,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.22.0**（2026-09-11）：**知识库位置可在设置页运行时切换 + seed 文档「过期」检测 + 一个隐藏很久的数据丢失竞态**。① **知识库位置可切换**：`wikiRoot`/`wiki` 之前只能写死在 cordis 配置里（改一次要动配置文件 + 重启），现在设置页顶部「知识库位置」显示当前实际目录、这个位置**怎么决定的**（指针文件 / cordis 配置 / 默认值）、指针文件路径与同目录的候选 wiki；填一个绝对路径即可**运行中切换**——停 TW → 释放自动提交与监听 → 改指 → 起 TW → 重载新 wiki 的配置 tiddler → 跑核心 seed（markdown 插件 / 发送给 Agent / 渲染路由 / 同源代理 / 语言）→ 重建 git → **最后**才写指针；目标目录没有 `tiddlywiki.info` 会自动 `--init server` 建一个全新知识库；**失败自动回滚**到原知识库并如实回报 `rolledBack`。选择存在 `$DSH_HOME/dsh-tiddlywiki/location.json`——一个**在 wiki 之外**的指针文件：设置页的覆盖层就存在 wiki 自己的配置 tiddler 里，若「用哪个 wiki」也存那里，切过去就会把这个选择一起丢掉（鸡生蛋）；指针损坏只会报告并回退配置默认，绝不乱跑。② **seed 更新检测**：seed 标记从一行 `seeded-once` 升级为 `{version,hashes,at}`——记下**我们写下的内置正文的哈希**，于是设置页能区分「⬆ 内置内容有更新」（可一键「更新到内置版本」）与「✏️ 本地已修改」（覆盖前二次确认）；旧标记（无哈希）会显示「更新检测尚未启用」并按文本比对判定归属，**不会**被误判成「用户改过」；`updateAvailable` 只是提示，**绝不自动改写你的 wiki**。③ **文档不再手抄易变事实**：插件说明笔记里的工具清单由**工具注册表生成**（`docNoteText(tools)`）——它此前写死「10 个 agent 工具」而实际已有 15 个。④ **修掉一个潜伏的数据丢失竞态（本次最重要的修复）**：`flushPendingWrites()`（「重启 TW 前把 syncer 队列排干」的哨兵）假设「哨兵落盘 ⇒ 队列已空」，但 TW 的 syncer 会**跳过最近 1 秒内保存过的标题**（`syncer.js` 的 `throttleInterval` / `chooseNextTask`）——哨兵是另一个标题、随时可写，于是它会**插队**先落盘，被 throttle 的写入仍留在队列里、随即被重启吞掉。这个竞态一直存在（AGENTS.md 记录过 v0.19.0「force-all 随机丢 `tw-web-host`」），v0.22.0 新增的 seed 标记写入改变了时序，使它变成**必现**（`verify-seeds-admin` 稳定复现）。现在改为**两段式**：写哨兵 A 等落盘 → 睡一个 throttle 窗口（从 `$:/config/SyncThrottleInterval` 读，默认 1s）→ 再写哨兵 B 等落盘；这期间所有被 throttle 的标题都会变可用并被写出，第二枚哨兵才是真正的队尾。守门：新增 `scripts/verify-wiki-switch.mjs`（真起两个 wiki：切换 / 回滚 / 指针文件 / 非法输入，已进 `verify:e2e`），`verify-seeds-admin.mjs` 增加 5 组内容哈希断言（新鲜 / 用户改过 / 内置更新 / 旧标记两种 / 重新初始化后刷新）。
 
 - **v0.21.0**（2026-09-11）：**注入提示词改为「默认精简 + 可配置 + 不再过期」**。旧提示词手抄了一份工具参数清单，最后一次同步停在 v0.19.0，此后 v0.19.4（`list_tags limit`）、v0.19.5（`delete`/`attach`/`batch_put` 并发令牌与 `attach` 默认拒绝同名覆盖）、v0.20.1（`append` 的 `fields`）都改过工具层——模型实际看到 **6 处过期签名**。现在：① 新增 `prompt.{enabled,mode,extra,override}` 配置（设置页「系统提示词」区块）：默认 `slim`（~1.7KB，只保留工具 schema 表达不了的约定：写入/并发纪律、同步纪律、标签约定、可点击链接格式），`full` 形态额外附参数索引但**由 `tiddlywikiToolSummary()` 从注册表实时生成**，不可能再脱节；② **保存后无需重启 dsh web**——section 即时重新注册，当前会话从下一步起生效（DSH `system-prompt/change` 会更新历史里的系统消息），设置页还能一键**预览**即将注入的全文（`GET /admin/prompt`）；③ 用户文本里的 `{{…}}` 会被转义（DSH 对未知变量直接抛错，会炸掉整个系统提示词装配）；④ 守门：新增 `scripts/verify-prompt.mjs`（slim 不得出现参数清单 / full 的每个工具与每个参数都必须在场 / 两种形态都必须保留治理约定块 / 转义与 extra-override 语义），已进 `verify:unit`。
 

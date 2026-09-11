@@ -94,7 +94,11 @@ function resolveTwEntry(): string {
 
 export class WikiServer {
   private child: ChildProcessByStdio<null, Readable, Readable> | undefined
-  private readonly wikiPath: string
+  /**
+   * The wiki folder this server currently serves. MUTABLE since v0.22.0: a
+   * runtime switch calls {@link setLocation} while the child is stopped.
+   */
+  private wikiPath: string
   private readonly logs: string[] = []
   private readonly logLimit: number
   private health: WikiHealth = 'stopped'
@@ -114,7 +118,49 @@ export class WikiServer {
 
   constructor(private readonly options: WikiServerOptions) {
     this.wikiPath = resolve(options.wikiRoot, options.wiki)
+    this.location = { root: options.wikiRoot, name: options.wiki }
     this.logLimit = options.logBufferLimit ?? LOG_BUFFER_LIMIT
+  }
+
+  /**
+   * The wiki folder this server currently serves (v0.22.0: mutable — a runtime
+   * switch calls {@link setLocation} while the child is stopped).
+   */
+
+  /** Last location applied through {@link setLocation} / the constructor. */
+  private location: { root: string; name: string }
+
+  /** Current location (root + folder name), for the settings page. */
+  get currentLocation(): { root: string; name: string } {
+    return { ...this.location }
+  }
+
+  /**
+   * Point this server at a DIFFERENT wiki folder (runtime switch, v0.22.0).
+   *
+   * Refuses while a child is running: a switch that forgot the folder while the
+   * old process still served it would leave `/status`, the REST client and the
+   * git face describing two different wikis. Callers stop() first (see
+   * `switchWiki()` in host/wiki-switch.ts), then start() again.
+   *
+   * The bound port is INTENTIONALLY kept: reusing it across a switch keeps the
+   * iframe src and the cached REST client valid (same reasoning as restart()).
+   */
+  setLocation(location: { root: string; name: string }): void {
+    if (this.child !== undefined) throw new Error('wiki 必须先在停止状态下才能切换位置')
+    const next = resolve(location.root, location.name)
+    if (next === this.wikiPath) {
+      this.location = { root: location.root, name: location.name }
+      return
+    }
+    this.location = { root: location.root, name: location.name }
+    this.wikiPath = next
+    // A different folder is a different wiki: clear the stale failure message
+    // and the readiness flag (a crash before readiness re-probes the port).
+    this.wasReady = false
+    this.error = undefined
+    if (this.child === undefined) this.health = 'stopped'
+    this.log(`location → ${next}`)
   }
 
   /** Base URL of the TW service, once a port is bound (root, no path prefix). */

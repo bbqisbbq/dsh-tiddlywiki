@@ -27,6 +27,8 @@ import { type ConfigStore, type PluginConfigShape } from './config.ts'
 import { readBody, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
 import { waitForFileWrite, needsRestartAfterSeeds, flushPendingWrites } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
+import type { WikiLocationInfo } from './wiki-location.ts'
+import type { WikiSwitchResult } from './wiki-switch.ts'
 import { GitFace } from './git.ts'
 
 /** One bundled plugin/theme from the catalog. */
@@ -306,9 +308,24 @@ export interface AdminDeps {
    * page preview (v0.21.0). Read-only; absent in headless contexts.
    */
   getPrompt?: () => { enabled: boolean; mode: string; text: string }
+  /**
+   * Runtime wiki location (v0.22.0): where the wiki folder is, how that was
+   * decided, and the two operations the settings page can perform. Absent in
+   * headless contexts.
+   */
+  wiki?: {
+    info: () => Promise<WikiLocationInfo>
+    switch: (target: { root?: unknown; name?: unknown }) => Promise<WikiSwitchResult>
+    reset: () => Promise<WikiSwitchResult>
+  }
   /** Seed registry for the settings-page "初始化" section. */
   seeds: {
-    checkAll: (client: TiddlyWebClient) => Promise<Array<{ id: string; title: string; description: string; present: boolean; removable: boolean; detail?: string }>>
+    /**
+     * `updateAvailable` / `userModified` / `legacyMarker` come from the marker's
+     * content hashes (v0.22.0): the page shows 「有更新」 and refuses to imply a
+     * local edit was checked for when the marker predates hashes.
+     */
+    checkAll: (client: TiddlyWebClient) => Promise<Array<{ id: string; title: string; description: string; present: boolean; removable: boolean; detail?: string; updateAvailable?: boolean; userModified?: boolean; legacyMarker?: boolean }>>
     run: (client: TiddlyWebClient, id: string | undefined, force: boolean) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
     /** 反初始化: remove one (or all) optional seed's seeded tiddlers + markers. */
     remove: (client: TiddlyWebClient, id: string | undefined) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
@@ -713,10 +730,71 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     }
   }
 
+  /**
+   * GET /dsh-tiddlywiki/admin/wiki/location — the folder the plugin currently
+   * serves, how that was decided (pointer file / cordis config / default), the
+   * config default to fall back to, and the wiki-looking folders next to it
+   * (settings-page「知识库位置」, v0.22.0). Read-only + CSRF-hardened.
+   */
+  const handleWikiLocation = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectNonRead(req, res)) return
+      if (deps.wiki === undefined) {
+        json(res, { ok: false, error: 'wiki location is not available' }, 503)
+        return
+      }
+      json(res, { ok: true, ...(await deps.wiki.info()) })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/admin/wiki/switch { root, name } — repoint the running
+   * plugin at another wiki folder (v0.22.0). Serialized against itself by the
+   * host; a failure is reported with `rolledBack` so the page can say whether
+   * the old wiki is still serving.
+   */
+  const handleWikiSwitch = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      if (deps.wiki === undefined) {
+        json(res, { ok: false, error: 'wiki location is not available' }, 503)
+        return
+      }
+      const body = JSON.parse(await readBody(req)) as { root?: unknown; name?: unknown }
+      const result = await deps.wiki.switch({ root: body.root, name: body.name })
+      json(res, result.ok ? { ...result, status: deps.server.status().status } : result, result.ok ? 200 : 400)
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+    }
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/admin/wiki/reset — 「恢复为配置默认」: delete the pointer
+   * file and (when needed) switch back to the cordis default folder (v0.22.0).
+   */
+  const handleWikiReset = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      if (deps.wiki === undefined) {
+        json(res, { ok: false, error: 'wiki location is not available' }, 503)
+        return
+      }
+      const result = await deps.wiki.reset()
+      json(res, result.ok ? { ...result, status: deps.server.status().status } : result, result.ok ? 200 : 400)
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+    }
+  }
+
   // Same rejection safety net as routes.ts (v0.19.3).
   const disposers = [
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/state`, handler: guardHandler(handleState) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/prompt`, handler: guardHandler(handlePrompt) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/wiki/location`, handler: guardHandler(handleWikiLocation) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/wiki/switch`, handler: guardHandler(handleWikiSwitch) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/wiki/reset`, handler: guardHandler(handleWikiReset) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/info`, handler: guardHandler(handleInfo) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/config`, handler: guardHandler(handleConfig) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/restart`, handler: guardHandler(handleRestart) }),

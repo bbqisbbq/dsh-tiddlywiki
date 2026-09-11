@@ -12,6 +12,7 @@
  */
 import type { TiddlyWebClient } from './tw-api.ts'
 import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
+import { toolSignatureLines, type PromptToolSummary } from './prompt.ts'
 
 /** Note tiddler title (a normal, searchable note — not a system tiddler). */
 export const DOC_NOTE_TITLE = 'dsh-tiddlywiki 插件说明'
@@ -29,14 +30,28 @@ export const DOC_NOTE_DSH_DOCS_TAG = 'dsh-docs'
 export const SEED_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-doc-note'
 
 /** The note body, TiddlyWiki wiki-text. */
-export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
+const DOC_NOTE_HEAD = `! dsh-tiddlywiki 插件说明
 
 本插件把 **TiddlyWiki 5** 作为 DSH 的持久知识库（wiki 文件夹本身就是一个 git 仓库，随内容自动提交/同步）。
 
 !! 它能做什么
+`
 
-* **15 个 agent 工具**：\`tiddlywiki_search\`（检索，支持 tags/since/type/field+value/limit 过滤，按相关度排序）/ \`tiddlywiki_get\`（读，含二进制附件元数据）/ \`tiddlywiki_put\`（写/覆盖，支持乐观并发）/ \`tiddlywiki_batch_put\`（批量写）/ \`tiddlywiki_append\`（增量追加，写日志批注不必读全文）/ \`tiddlywiki_rename\`（重命名+同步引用）/ \`tiddlywiki_delete\`（默认软删除进回收站）/ \`tiddlywiki_trash\`（回收站 list/restore/empty）/ \`tiddlywiki_backlinks\`（反向链接与标签归属）/ \`tiddlywiki_attach\`（本机文件/公网 URL → 二进制附件）/ \`tiddlywiki_lint\`（知识库体检）/ \`tiddlywiki_recent\`（最近修改）/ \`tiddlywiki_list_tags\`（标签清单）/ \`tiddlywiki_git_sync\`（git 同步）/ \`tiddlywiki_git_resolve\`（冲突按 tiddler 二选一）。
-* **TW 编辑器面板**：侧边栏「TiddlyWiki」按钮 → 在界面中央打开完整版 TW 编辑器。
+/**
+ * Tool-list bullet for the doc note, GENERATED from the live tool registry
+ * (v0.22.0). The note used to hard-code 「10 个 agent 工具」 and was 5 tools
+ * behind by the time anyone noticed — the same class of drift the prompt
+ * catalogue had. With no registry available (headless callers) it degrades to
+ * a pointer instead of an outdated list.
+ */
+function docToolBullet(tools: readonly PromptToolSummary[]): string {
+  if (tools.length === 0) {
+    return "* **agent 工具**：`tiddlywiki_*` 系列（检索 / 读写 / 批量写 / 增量追加 / 重命名 / 删除与回收站 / 反向链接 / 附件 / 体检 / git 同步与冲突解决）——完整清单与参数见 DSH 设置页与各工具的 schema。"
+  }
+  return ['* **' + String(tools.length) + ' 个 agent 工具**（参数以工具 schema 为准，\u0060?\u0060 表示可选）：', ...toolSignatureLines(tools, '* ')].join('\n')
+}
+
+const DOC_NOTE_TAIL = `* **TW 编辑器面板**：侧边栏「TiddlyWiki」按钮 → 在界面中央打开完整版 TW 编辑器。
 * **快速笔记**：点击聊天输入框上方或右下角「知识库」菜单里的「📝 快速笔记」——默认**直达 TW 原生编辑页**（独立小窗，草稿自动续写）；也可在设置页切回 Markdown 卡片（语法高亮、文件上传、多选 tag、草稿自动保存、Ctrl+Enter 保存）。「✏️ 在 TW 中编辑」会弹出独立小窗用 TW 原生编辑器编辑。
 * **一键同步**：「知识库」按钮 → 「🔁 同步」一键 pull → commit → push，按钮上的状态点实时反映 git 状态。
 * **git 同步**：写入自动防抖 commit（默认 60 秒）；手动 \`tiddlywiki_git_sync action=sync\` 做 pull → commit → push。
@@ -62,6 +77,17 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
 * 更多细节见插件仓库 README。`
 
 /**
+ * The doc note text. `tools` should be the live registry summary
+ * (`tiddlywikiToolSummary()`), so the tool list can never go stale.
+ */
+export function docNoteText(tools: readonly PromptToolSummary[] = []): string {
+  return `${DOC_NOTE_HEAD}${docToolBullet(tools)}${DOC_NOTE_TAIL}`
+}
+
+/** Back-compat constant: the note as built without a live registry. */
+export const DOC_NOTE_TEXT = docNoteText()
+
+/**
  * Seed the doc note once per wiki (mirrors the one-shot policy). A marker
  * tiddler records that the note has been offered; from then on the note is
  * user-owned and is never re-created (deleting it survives restarts).
@@ -70,7 +96,7 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
  * the marker is (re)written — the settings page uses this for
  * "重新初始化". Returns whether a note was written this call. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
-export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
+export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: boolean; tools?: readonly PromptToolSummary[] }): Promise<boolean> {
   const force = opts?.force === true
   if (!force) {
     const marker = await readSeedTiddler(client, SEED_MARKER_TITLE)
@@ -81,7 +107,7 @@ export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: bool
   if (force || existing === undefined) {
     await client.put({
       title: DOC_NOTE_TITLE,
-      text: DOC_NOTE_TEXT,
+      text: docNoteText(opts?.tools ?? []),
       type: 'text/vnd.tiddlywiki',
       tags: [DOC_NOTE_TAG, DOC_NOTE_DSH_DOCS_TAG],
     })

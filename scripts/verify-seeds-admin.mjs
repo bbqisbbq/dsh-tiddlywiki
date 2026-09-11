@@ -15,6 +15,8 @@ import {
   ConfigStore,
   TW_PROXY_PATH,
   buildPromptText,
+  docNoteText,
+  hashText,
   registerAdminRoutes,
   registerTiddlywikiTools,
   runAllSeeds,
@@ -22,6 +24,9 @@ import {
   runSeedById,
   removeSeedById,
   tiddlywikiToolSummary,
+  DOC_NOTE_TITLE,
+  STARTER_DOCS_ITEMS,
+  STARTER_DOCS_MARKER_TITLE,
 } from '../lib/index.js'
 
 const ROUTE_PREFIX = '/dsh-tiddlywiki'
@@ -74,8 +79,8 @@ const deps = {
     }
   },
   seeds: {
-    checkAll: async (c) => checkAllSeeds({ client: c }),
-    run: async (c, id, force) => runSeedById({ client: c }, id, force),
+    checkAll: async (c) => checkAllSeeds({ client: c, tools: tiddlywikiToolSummary() }),
+    run: async (c, id, force) => runSeedById({ client: c, tools: tiddlywikiToolSummary() }, id, force),
     remove: async (c, id) => removeSeedById({ client: c }, id),
   },
 }
@@ -208,6 +213,78 @@ try {
   const promptPost = await post(`${base}${ROUTE_PREFIX}/admin/prompt`, {})
   console.log('POST /admin/prompt:', promptPost.status)
   if (promptPost.status !== 405) throw new Error(`POST /admin/prompt must be 405, got ${promptPost.status}`)
+
+  // 9. v0.22.0 — seed 内容哈希：区分「内置内容已更新」与「用户自己改过」，
+  //    并证明文档正文是**生成**的（工具清单来自注册表，不会再过期）。
+  const MARKER = '$:/plugins/dsh-tiddlywiki/seed-doc-note'
+  const runDoc = await post(`${base}${ROUTE_PREFIX}/admin/seeds/run`, { id: 'doc-note', force: true })
+  if (runDoc.status !== 200 || runDoc.json?.results?.[0]?.wrote !== true) throw new Error('force doc-note failed')
+  const tools = tiddlywikiToolSummary()
+  const seededText = docNoteText(tools)
+  const seededTiddler = await clientRef.get(DOC_NOTE_TITLE)
+  if (seededTiddler?.text !== seededText) throw new Error('the doc note must be generated from the live tool registry')
+  // The count is read from the registry, never hard-coded: the note claimed a
+  // stale 「10 个 agent 工具」 for five versions, which is why it is generated now.
+  if (!seededText.includes(`${tools.length} 个 agent 工具`)) {
+    throw new Error(`the generated doc note must carry the live tool count (${tools.length})`)
+  }
+  for (const tool of tools) {
+    if (!seededText.includes(`\`${tool.name}\``)) throw new Error(`the generated doc note is missing ${tool.name}`)
+  }
+  const findSeed = async (id) => {
+    const items = (await (await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)).json()).items ?? []
+    return items.find((i) => i.id === id)
+  }
+  let doc = await findSeed('doc-note')
+  console.log('doc-note (fresh):', JSON.stringify({ update: doc.updateAvailable, modified: doc.userModified, legacy: doc.legacyMarker }))
+  if (doc.updateAvailable !== false || doc.userModified !== false) throw new Error('freshly seeded content must report neither update nor local edit')
+
+  // (b) a user edit → userModified (and never silently overwritten).
+  await clientRef.put({ title: DOC_NOTE_TITLE, text: `${seededText}\n\n我的补充`, type: 'text/vnd.tiddlywiki', tags: ['docs', 'dsh-docs'] })
+  doc = await findSeed('doc-note')
+  if (doc.userModified !== true) throw new Error('a user edit must be reported as userModified')
+
+  // (c) the BUILT-IN moved on: marker holds the old text's hash, the stored
+  //     tiddler still holds the old text → update, but no user modification.
+  const OLD = '旧的内置正文'
+  await clientRef.put({ title: DOC_NOTE_TITLE, text: OLD, type: 'text/vnd.tiddlywiki', tags: ['docs', 'dsh-docs'] })
+  await clientRef.put({ title: MARKER, text: JSON.stringify({ version: 1, hashes: { [DOC_NOTE_TITLE]: hashText(OLD) } }), type: 'application/json', tags: [] })
+  doc = await findSeed('doc-note')
+  console.log('doc-note (built-in moved on):', JSON.stringify({ update: doc.updateAvailable, modified: doc.userModified }))
+  if (doc.updateAvailable !== true || doc.userModified !== false) throw new Error('an upgraded built-in must report updateAvailable without userModified')
+
+  // (d) pre-v0.22 marker (no hashes): different text → update + unknown authorship.
+  await clientRef.put({ title: MARKER, text: 'seeded-once', type: 'text/plain', tags: [] })
+  doc = await findSeed('doc-note')
+  console.log('doc-note (legacy marker, diverged):', JSON.stringify({ update: doc.updateAvailable, modified: doc.userModified }))
+  if (doc.updateAvailable !== true || doc.userModified !== undefined) throw new Error('a legacy marker with different text must report update-unknown')
+  // (d2) legacy marker but identical text → nothing to update (marker upgradeable).
+  await clientRef.put({ title: DOC_NOTE_TITLE, text: seededText, type: 'text/vnd.tiddlywiki', tags: ['docs', 'dsh-docs'] })
+  doc = await findSeed('doc-note')
+  console.log('doc-note (legacy marker, identical):', JSON.stringify({ update: doc.updateAvailable, legacy: doc.legacyMarker }))
+  if (doc.updateAvailable !== false || doc.legacyMarker !== true) throw new Error('a legacy marker with identical text must report no update but legacyMarker')
+
+  // (e) 重新初始化 refreshes the recorded hashes → the chip disappears.
+  await post(`${base}${ROUTE_PREFIX}/admin/seeds/run`, { id: 'doc-note', force: true })
+  doc = await findSeed('doc-note')
+  if (doc.updateAvailable !== false || doc.userModified !== false || doc.legacyMarker !== false) throw new Error('after re-init the marker must hold fresh hashes')
+  const marker = JSON.parse((await clientRef.get(MARKER)).text)
+  if (marker.hashes[DOC_NOTE_TITLE] !== hashText(seededText)) throw new Error('the marker must record the built-in hash')
+
+  // (f) v0.22.0 回归：**有自定义 check/run 的 content seed 也必须记账**。
+  //     starter-docs / home-index / ui-styles 走自己的 runner，早期实现把它们
+  //     静默漏掉（哈希既不进状态也不写标记），而当时的测试只覆盖了 doc-note。
+  const starterRun = await post(`${base}${ROUTE_PREFIX}/admin/seeds/run`, { id: 'starter-docs', force: true })
+  if (starterRun.status !== 200 || starterRun.json?.results?.[0]?.wrote !== true) throw new Error('force starter-docs failed')
+  const starter = await findSeed('starter-docs')
+  console.log('starter-docs (custom runner):', JSON.stringify({ update: starter.updateAvailable, modified: starter.userModified, legacy: starter.legacyMarker }))
+  if (starter.updateAvailable !== false || starter.userModified !== false || starter.legacyMarker !== false) {
+    throw new Error('a content seed with a custom runner must still get hash bookkeeping')
+  }
+  const starterMarker = JSON.parse((await clientRef.get(STARTER_DOCS_MARKER_TITLE)).text)
+  if (Object.keys(starterMarker.hashes ?? {}).length !== STARTER_DOCS_ITEMS.length) {
+    throw new Error(`the custom-run seed must record a hash per written tiddler (got ${Object.keys(starterMarker.hashes ?? {}).length})`)
+  }
 
   await new Promise((resolveP) => mini.close(() => resolveP()))
   dispose()

@@ -43,3 +43,7 @@ export const ADMIN_RESTART_ENDPOINT = `${ROUTE_PREFIX}/admin/restart`
 export const ADMIN_SEEDS_ENDPOINT = `${ROUTE_PREFIX}/admin/seeds`
 export const ADMIN_SEEDS_RUN_ENDPOINT = `${ROUTE_PREFIX}/admin/seeds/run`
 export const ADMIN_SEEDS_REMOVE_ENDPOINT = `${ROUTE_PREFIX}/admin/seeds/remove`
+/** Runtime wiki location (v0.22.0): read current folder / switch / reset. */
+export const ADMIN_WIKI_LOCATION_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/location`
+export const ADMIN_WIKI_SWITCH_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/switch`
+export const ADMIN_WIKI_RESET_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/reset`

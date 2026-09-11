@@ -291,6 +291,8 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-settings-chip[data-state="failed"], .dsh-tw-settings-chip[data-state="stopped"] { color: var(--dsw-alias-state-error-primary, #d13b3b); }
 .dsh-tw-settings-chip[data-state="ok"] { color: var(--dsw-alias-state-success-primary, #3eaa5f); }
 .dsh-tw-settings-chip[data-state="missing"] { color: var(--dsw-alias-state-error-primary, #d13b3b); }
+/* seed 有更新（v0.22.0 内容哈希比对）：提示色，不是错误。 */
+.dsh-tw-settings-chip[data-state="update"] { color: var(--dsw-alias-state-warning-primary, #d9822b); flex: 0 0 auto; }
 .dsh-tw-settings-section { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.18)); }
 .dsh-tw-settings-h { margin: 0; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
 /* 字段行：标签自然换行（不再固定 170px 列导致断行错乱），输入框右对齐限宽。
@@ -327,6 +329,9 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
   background: var(--dsw-alias-bg-input, rgba(128,128,128,.06)); color: var(--dsw-alias-label-primary, #222);
 }
+/* 知识库位置（v0.22.0）：同目录候选 wiki 的快捷填入按钮。 */
+.dsh-tw-settings-candidates { flex-wrap: wrap; align-items: center; gap: 6px; }
+.dsh-tw-settings-chipbtn { flex: 0 0 auto; padding: 2px 8px; font-size: 12px; }
 .dsh-tw-settings-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow: auto; }
 .dsh-tw-settings-plugin { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 12px; }
 .dsh-tw-settings-plugin:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.08)); }

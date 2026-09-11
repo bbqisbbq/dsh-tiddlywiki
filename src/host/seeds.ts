@@ -31,17 +31,19 @@
  * @module dsh-tiddlywiki/host/seeds
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+import type { PromptToolSummary } from './prompt.ts'
+import { hashText, readSeedMarker, readSeedTiddler, writeSeedMarker } from './seed-util.ts'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { seedDocNote, unseedDocNote, DOC_NOTE_TITLE } from './seed-notes.ts'
-import { seedStarterDocs, unseedStarterDocs, STARTER_DOCS_ITEMS } from './seed-starter-docs.ts'
-import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE } from './seed-send-to-agent.ts'
-import { seedHomeIndex, unseedHomeIndex, HOME_INDEX_ITEMS } from './seed-home.ts'
-import { seedAllArticles, unseedAllArticles, ALL_ARTICLES_TITLE } from './seed-all-articles.ts'
-import { seedUiStyles, unseedUiStyles, UI_STYLE_ITEMS } from './seed-ui-styles.ts'
-import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER } from './seed-menubar-theme.ts'
-import { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE } from './seed-clip-bridge.ts'
-import { seedRenderRoute, RENDER_PLUGIN_TITLE } from './seed-render.ts'
+import { seedDocNote, unseedDocNote, docNoteText, DOC_NOTE_TITLE, SEED_MARKER_TITLE } from './seed-notes.ts'
+import { seedStarterDocs, unseedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE } from './seed-starter-docs.ts'
+import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT } from './seed-send-to-agent.ts'
+import { seedHomeIndex, unseedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE } from './seed-home.ts'
+import { seedAllArticles, unseedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE, ALL_ARTICLES_TEXT } from './seed-all-articles.ts'
+import { seedUiStyles, unseedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } from './seed-ui-styles.ts'
+import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './seed-menubar-theme.ts'
+import { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT } from './seed-clip-bridge.ts'
+import { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT } from './seed-render.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
 
@@ -59,6 +61,20 @@ export interface SeedStatus {
   removable: boolean
   /** Human detail, e.g. which tiddlers are missing. */
   detail?: string
+  /**
+   * true = the BUILT-IN content moved on since this wiki was seeded, so
+   * 「重新初始化」would bring something new (v0.22.0 content hashes). Only set
+   * for seeds that declare `content`.
+   */
+  updateAvailable?: boolean
+  /**
+   * true = the stored tiddler no longer matches what we wrote (a human edited
+   * it); `undefined` = cannot tell (marker written before hashes existed);
+   * `false` = untouched. The settings page warns before overwriting.
+   */
+  userModified?: boolean
+  /** true = the marker tiddler predates v0.22.0 (no hashes recorded yet). */
+  legacyMarker?: boolean
 }
 
 /** Result of running one seed. */
@@ -74,6 +90,12 @@ export interface SeedRunResult {
 /** Context a seed needs (client to the live TW server). */
 export interface SeedContext {
   client: TiddlyWebClient
+  /**
+   * Live tool registry summary, so generated seed content (the doc note's tool
+   * list) can never go stale (v0.22.0). Absent in headless callers — generated
+   * content then degrades to a pointer instead of an outdated list.
+   */
+  tools?: readonly PromptToolSummary[]
 }
 
 /**
@@ -110,14 +132,20 @@ export async function waitForFileWrite(filePath: string, timeoutMs = 8_000, poll
 export const RESTART_REQUIRED_SEED_IDS = ['render-route'] as const
 
 /**
- * Flush sentinel (v0.19.0). TW's REST layer answers 204 as soon as the tiddler
- * is in the in-memory store; the filesystem syncer writes it on a ~250ms timer.
- * A restart in that window boots from the OLD snapshot and silently loses every
- * write still queued — the v0.18.0 review caught it for the render plugin file,
- * but any seed write could be lost (force-all repeatedly lost `tw-web-host`
- * when the disk was busy). Writing this sentinel LAST and waiting for its file
- * proves the queue has drained, because the syncer drains its save tasks in
- * order.
+ * Flush sentinel. TW's REST layer answers 204 as soon as the tiddler is in the
+ * in-memory store; the filesystem syncer writes it on a ~250ms timer. A restart
+ * in that window boots from the OLD snapshot and silently loses every write
+ * still queued — the v0.18.0 review caught it for the render plugin file, but
+ * any write could be lost (force-all repeatedly lost `tw-web-host`).
+ *
+ * A sentinel alone is NOT enough (v0.22.0). TW's syncer defers a title whose
+ * last save is younger than `throttleInterval` (`$:/config/SyncThrottleInterval`,
+ * default 1s): `chooseNextTask()` picks the first title that `hasChanged` AND is
+ * ready, and SKIPS throttled ones — so the sentinel (a different, never-saved
+ * title) can land while another dirty title is still deferred. v0.19.0's
+ * "probe landed ⇒ queue drained" assumption is therefore false, and the extra
+ * marker writes of v0.22.0 were enough to make `tw-web-host` the deferred title
+ * every time. See `flushPendingWrites()` for the two-phase fix.
  */
 export const FLUSH_PROBE_TITLE = '$:/plugins/dsh-tiddlywiki/flush-probe'
 /**
@@ -133,32 +161,71 @@ export const FLUSH_PROBE_TITLE = '$:/plugins/dsh-tiddlywiki/flush-probe'
  */
 export const FLUSH_PROBE_FILE_HINT = 'dsh-tiddlywiki_flush-probe'
 
-/** Write the flush sentinel and wait for ITS CONTENT to reach the file. */
-export async function flushPendingWrites(client: TiddlyWebClient, tiddlersDir: string, timeoutMs = 8_000): Promise<boolean> {
+/** TW default `$:/config/SyncThrottleInterval` (ms) when the tiddler is absent. */
+const DEFAULT_SYNC_THROTTLE_MS = 1_000
+
+/** Read TW's sync throttle interval (ms), clamped; a read failure → the default. */
+async function readSyncThrottleMs(client: TiddlyWebClient): Promise<number> {
+  try {
+    const raw = (await client.get('$:/config/SyncThrottleInterval'))?.text?.trim()
+    const parsed = raw === undefined || raw.length === 0 ? Number.NaN : Number.parseInt(raw, 10)
+    if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_SYNC_THROTTLE_MS
+    return Math.min(parsed, 10_000)
+  } catch {
+    return DEFAULT_SYNC_THROTTLE_MS
+  }
+}
+
+/**
+ * Flush the syncer queue before a restart.
+ *
+ * Returns true only when the store is provably QUIESCENT. Two phases, because a
+ * single probe can overtake a throttled title (see the doc block above):
+ *
+ *   1. write probe A and wait for A on disk — this drains everything the syncer
+ *      is willing to write now;
+ *   2. wait out one throttle window (no writes of ours in between), then write
+ *      probe B and wait for IT. Any title still dirty after phase 1 becomes
+ *      ready inside that window and is written, so only the probe remains.
+ *
+ * Returns false on timeout / a failed probe PUT; callers treat that as a warning
+ * (the operation still proceeds — this is best-effort hardening, not a gate).
+ */
+export async function flushPendingWrites(client: TiddlyWebClient, tiddlersDir: string, timeoutMs = 12_000): Promise<boolean> {
   // ⚠️ 判定不能靠 mtime（v0.19.1 教训之二）：哨兵是在等待**紧接**它之前写的，
   // Windows 上新文件的 mtime 可能落在 `Date.now()` 同一/前一个时钟刻，
   // `mtime >= startedAt` 于是永远不成立、轮询到超时返回 false。改成写一段唯一
   // 内容、轮询文件里是否出现它：内容一致才算真的落盘，与时钟精度无关。
-  const stamp = `flush ${Date.now()} ${Math.random().toString(36).slice(2)}`
-  try {
-    // 不传 type → TW 按默认 wikitext 存成 .tid。
-    await client.put({ title: FLUSH_PROBE_TITLE, text: stamp })
-  } catch {
-    return false
-  }
   const deadline = Date.now() + timeoutMs
-  for (;;) {
+  const probeAndWait = async (phase: string): Promise<boolean> => {
+    const stamp = `flush ${phase} ${Date.now()} ${Math.random().toString(36).slice(2)}`
     try {
-      for (const name of readdirSync(tiddlersDir)) {
-        if (!name.includes(FLUSH_PROBE_FILE_HINT)) continue
-        try {
-          if (readFileSync(join(tiddlersDir, name), 'utf8').includes(stamp)) return true
-        } catch { /* transient read failure */ }
-      }
-    } catch { /* tiddlers dir not readable yet */ }
-    if (Date.now() >= deadline) return false
-    await new Promise<void>((r) => setTimeout(r, 150))
+      // 不传 type → TW 按默认 wikitext 存成 .tid。
+      await client.put({ title: FLUSH_PROBE_TITLE, text: stamp })
+    } catch {
+      return false
+    }
+    for (;;) {
+      try {
+        for (const name of readdirSync(tiddlersDir)) {
+          if (!name.includes(FLUSH_PROBE_FILE_HINT)) continue
+          try {
+            if (readFileSync(join(tiddlersDir, name), 'utf8').includes(stamp)) return true
+          } catch { /* transient read failure */ }
+        }
+      } catch { /* tiddlers dir not readable yet */ }
+      if (Date.now() >= deadline) return false
+      await new Promise<void>((r) => setTimeout(r, 150))
+    }
   }
+  if (!(await probeAndWait('a'))) return false
+  // Phase 2: let every throttled title become ready and be written. The probe
+  // itself was just saved, so it is throttled too — which is exactly why the
+  // second send must wait out the window (otherwise probe B could land while
+  // probe A's contemporaries are still deferred).
+  const waitMs = Math.min((await readSyncThrottleMs(client)) + 400, 4_000)
+  await new Promise<void>((r) => setTimeout(r, waitMs))
+  return probeAndWait('b')
 }
 
 /** Did one of the RESTART_REQUIRED seeds actually write something? */
@@ -182,6 +249,18 @@ export interface SeedDef {
    * which stay removable via「反初始化」. Meaningful only when `core` is false.
    */
   startup?: boolean
+  /**
+   * One-shot marker tiddler (v0.22.0): its `hashes` record what the built-in
+   * content looked like when this wiki was seeded, which is what lets the
+   * settings page tell 「内置内容有更新」 from 「用户自己改过」.
+   */
+  markerTitle?: string
+  /**
+   * The tiddlers this seed writes, in a stable order (title → text). Declaring
+   * it opts the seed into update detection + marker hashes; the seed modules
+   * export the very constants their writers use, so the two cannot drift.
+   */
+  content?: (ctx: SeedContext) => Promise<Array<{ title: string; text: string }>>
   check(ctx: SeedContext): Promise<SeedStatus>
   run(ctx: SeedContext, force: boolean): Promise<SeedRunResult>
   /** Non-core seeds only: delete the seeded tiddlers + markers (反初始化). */
@@ -215,10 +294,93 @@ interface SeedMeta {
   core: boolean
   /** STARTER tier: also auto-seeded on first install (removable). */
   startup?: boolean
+  /** One-shot marker tiddler (enables content-hash bookkeeping). */
+  markerTitle?: string
 }
 
-type SeedWriter = (client: TiddlyWebClient, opts?: { force?: boolean }) => Promise<boolean>
+type SeedWriter = (client: TiddlyWebClient, opts?: { force?: boolean; tools?: readonly PromptToolSummary[] }) => Promise<boolean>
 type SeedUnseeder = (client: TiddlyWebClient) => Promise<{ removed: string[] }>
+/** The tiddlers a seed writes, in a stable order (title → built-in text). */
+type SeedContent = (ctx: SeedContext) => Promise<Array<{ title: string; text: string }>>
+
+/**
+ * Compare a seed's built-in content with what is in the wiki + with the hashes
+ * recorded when it was seeded (v0.22.0).
+ *
+ * Decision table (per tiddler):
+ *   - recorded hash === current built-in  → nothing changed;
+ *   - recorded hash !== current built-in  → the built-in MOVED ON (`updateAvailable`);
+ *   - stored text    !== recorded hash    → a human edited it (`userModified: true`);
+ *   - no recorded hash + text === built-in → LEGACY marker (pre-hash); ownership
+ *     is proven, so the caller may upgrade the marker;
+ *   - no recorded hash + text !== built-in → either the user edited it or the
+ *     built-in changed: `updateAvailable` with `userModified: undefined`
+ *     (unknown) — never silently overwrite on that basis.
+ */
+async function inspectSeedContent(
+  ctx: SeedContext,
+  content: Array<{ title: string; text: string }>,
+  markerTitle: string | undefined,
+): Promise<{ missing: string[]; updateAvailable: boolean; userModified: boolean | undefined; legacyMarker: boolean }> {
+  const markerState = markerTitle === undefined ? {} : await readSeedMarker(ctx.client, markerTitle)
+  const hashes = markerState.marker?.hashes ?? {}
+  const missing: string[] = []
+  let updateAvailable = false
+  let userModified: boolean | undefined = false
+  let legacyMarker = markerState.legacy === true
+  for (const item of content) {
+    const current = await readSeedTiddler(ctx.client, item.title)
+    if (current === undefined) {
+      missing.push(item.title)
+      continue
+    }
+    const stored = typeof current.text === 'string' ? current.text : ''
+    const builtinHash = hashText(item.text)
+    const recorded = hashes[item.title]
+    if (recorded !== undefined) {
+      if (recorded !== builtinHash) updateAvailable = true
+      if (hashText(stored) !== recorded) userModified = true
+    } else if (stored === item.text) {
+      legacyMarker = true
+    } else {
+      updateAvailable = true
+      if (userModified !== true) userModified = undefined
+    }
+  }
+  return { missing, updateAvailable, userModified, legacyMarker }
+}
+
+/**
+ * Record/refresh the marker's content hashes after a run (v0.22.0). Only
+ * tiddlers whose stored text equals the built-in text are hashed — that is what
+ * "we own this content" means, and it keeps user-edited copies out of the
+ * bookkeeping. Existing hashes are merged (never dropped), so a run that
+ * skipped an edited tiddler does not forget the others.
+ */
+async function refreshSeedMarker(
+  content: SeedContent,
+  markerTitle: string,
+  ctx: SeedContext,
+  previousHashes: Record<string, string>,
+): Promise<void> {
+  try {
+    const hashes: Record<string, string> = { ...previousHashes }
+    for (const item of await content(ctx)) {
+      const current = await readSeedTiddler(ctx.client, item.title)
+      const stored = current === undefined ? undefined : (typeof current.text === 'string' ? current.text : '')
+      if (stored === item.text) hashes[item.title] = hashText(item.text)
+    }
+    // Skip the PUT when nothing changed: the startup path runs this for every
+    // typed seed on EVERY boot, and a no-op marker write per boot is noise (and
+    // one more REST write before the syncer flush that follows).
+    const unchanged = Object.keys(hashes).length === Object.keys(previousHashes).length
+      && Object.keys(hashes).every((key) => hashes[key] === previousHashes[key])
+    if (!unchanged) await writeSeedMarker(ctx.client, markerTitle, hashes)
+  } catch (err) {
+    // Bookkeeping only — the content write already succeeded.
+    console.warn(`[dsh-tiddlywiki] seed marker hash refresh failed (${markerTitle}):`, err instanceof Error ? err.message : err)
+  }
+}
 
 /**
  * Define a seed from a small spec, killing the id/title/description
@@ -237,8 +399,9 @@ function defineSeed(meta: SeedMeta, impl: {
   write?: SeedWriter
   run?: (ctx: SeedContext, force: boolean) => Promise<SeedRunResult>
   unseed?: SeedUnseeder
+  content?: SeedContent
 }): SeedDef {
-  const { id, title, description, core, startup } = meta
+  const { id, title, description, core, startup, markerTitle } = meta
   const removable = !core
   if (impl.check === undefined && (impl.presentTitle === undefined || impl.presentTitle.length === 0)) {
     // Fail fast at module load: a seed without a presence probe would query an
@@ -248,18 +411,62 @@ function defineSeed(meta: SeedMeta, impl: {
   if (impl.run === undefined && impl.write === undefined) {
     throw new Error(`seed "${id}" needs either write or run`)
   }
-  const check: SeedDef['check'] = impl.check ?? (async (ctx) => {
+  // Presence only — every seed gets one. `content`-aware seeds WRAP this below
+  // (v0.22.0) instead of replacing it, so a seed's own present/detail semantics
+  // survive and the hash fields are added on top.
+  const presenceCheck: SeedDef['check'] = impl.check ?? (async (ctx) => {
     const present = await presentOf(ctx, impl.presentTitle ?? '')
     return { id, title, description, present, removable, detail: present ? '已存在' : '缺失' }
   })
-  const run: SeedDef['run'] = impl.run ?? (async (ctx, force) => {
+  /**
+   * A `content`-declaring seed reports update/modification state ALONGSIDE its
+   * own presence check. ⚠️ This must wrap the custom check, not be skipped when
+   * one exists: `starter-docs` / `home-index` / `ui-styles` all have custom
+   * checks AND custom runners, and an earlier version of this wiring silently
+   * left them without update detection (the gap was invisible because the E2E
+   * only covered `doc-note`).
+   */
+  const check: SeedDef['check'] = impl.content === undefined ? presenceCheck : async (ctx) => {
+    const base = await presenceCheck(ctx)
+    const state = await inspectSeedContent(ctx, await impl.content!(ctx), markerTitle)
+    const missingDetail = state.missing.length > 0 ? `缺失：${state.missing.join('、')}` : (base.detail ?? '缺失')
+    const bits: string[] = [base.present ? (base.detail ?? '已存在') : missingDetail]
+    if (state.updateAvailable) bits.push('内置内容有更新')
+    if (state.userModified === true) bits.push('本地已修改')
+    else if (state.userModified === undefined && state.updateAvailable) bits.push('无法确认是否本地已修改')
+    else if (state.legacyMarker) bits.push('更新检测尚未启用（重新初始化一次即可）')
+    return {
+      ...base,
+      updateAvailable: state.updateAvailable,
+      userModified: state.userModified,
+      legacyMarker: state.legacyMarker,
+      detail: bits.join(' · '),
+    }
+  }
+  /**
+   * Run wrapper. It ALWAYS wraps (v0.22.0): a custom `run` still needs the
+   * marker-hash refresh afterwards, which is what makes「内置内容有更新」work
+   * for the seeds that write through their own runner.
+   */
+  const run: SeedDef['run'] = async (ctx, force) => {
     try {
-      const wrote = await impl.write!(ctx.client, { force })
-      return { id, ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
+      // Capture the marker BEFORE the writer rewrites it, so refreshed hashes
+      // merge onto what we already knew instead of erasing it.
+      const previous = markerTitle === undefined ? {} : (await readSeedMarker(ctx.client, markerTitle)).marker?.hashes ?? {}
+      const result = impl.run !== undefined
+        ? await impl.run(ctx, force)
+        : await (async (): Promise<SeedRunResult> => {
+            const wrote = await impl.write!(ctx.client, { force, tools: ctx.tools })
+            return { id, ok: true, wrote, detail: wrote ? (force ? '已重新初始化' : '已写入') : (force ? '内容已是最新（未重写）' : '已存在，跳过') }
+          })()
+      if (impl.content !== undefined && markerTitle !== undefined && result.ok) {
+        await refreshSeedMarker(impl.content, markerTitle, ctx, previous)
+      }
+      return result
     } catch (err) {
       return { id, ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
     }
-  })
+  }
   const remove: SeedDef['remove'] = impl.unseed === undefined ? undefined : async (ctx) => {
     try {
       return removedDetail(id, (await impl.unseed!(ctx.client)).removed)
@@ -267,18 +474,26 @@ function defineSeed(meta: SeedMeta, impl: {
       return { id, ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
-  return { id, title, description, core, ...(startup === undefined ? {} : { startup }), check, run, ...(remove === undefined ? {} : { remove }) }
+  return {
+    id, title, description, core,
+    ...(startup === undefined ? {} : { startup }),
+    ...(markerTitle === undefined ? {} : { markerTitle }),
+    ...(impl.content === undefined ? {} : { content: impl.content }),
+    check, run,
+    ...(remove === undefined ? {} : { remove }),
+  }
 }
 
 /** The full registry, in display order. */
 export const SEED_DEFS: SeedDef[] = [
   defineSeed(
-    { id: 'doc-note', title: '插件说明笔记', description: '「dsh-tiddlywiki 插件说明」——入门说明笔记（首次安装默认写入；ONE-SHOT，用户可改可删，标记 dsh-docs 自动进首页「📚 插件文档」栏）。', core: false, startup: true },
-    { presentTitle: DOC_NOTE_TITLE, write: seedDocNote, unseed: unseedDocNote },
+    { id: 'doc-note', title: '插件说明笔记', description: '「dsh-tiddlywiki 插件说明」——入门说明笔记（首次安装默认写入；ONE-SHOT，用户可改可删，标记 dsh-docs 自动进首页「📚 插件文档」栏）。', markerTitle: SEED_MARKER_TITLE, core: false, startup: true },
+    { content: async (ctx) => [{ title: DOC_NOTE_TITLE, text: docNoteText(ctx.tools ?? []) }], presentTitle: DOC_NOTE_TITLE, write: seedDocNote, unseed: unseedDocNote },
   ),
   defineSeed(
-    { id: 'starter-docs', title: '示例与文档（汇总模板 / 教程 / 主题页示例）', description: '新手文档中心起步包：主题汇总页·模板、教程（按主题/标签做汇总页）、三个可直接运行的示例主题页（日志 / 决策记录 / 排障）。全部打 dsh-docs 标签，自动出现在首页「📚 插件文档」栏；纯示例无个人数据，同名 tiddler 已存在则安全跳过，不会覆盖。首次安装默认写入，可反初始化。', core: false, startup: true },
+    { id: 'starter-docs', title: '示例与文档（汇总模板 / 教程 / 主题页示例）', description: '新手文档中心起步包：主题汇总页·模板、教程（按主题/标签做汇总页）、三个可直接运行的示例主题页（日志 / 决策记录 / 排障）。全部打 dsh-docs 标签，自动出现在首页「📚 插件文档」栏；纯示例无个人数据，同名 tiddler 已存在则安全跳过，不会覆盖。首次安装默认写入，可反初始化。', markerTitle: STARTER_DOCS_MARKER_TITLE, core: false, startup: true },
     {
+      content: async () => STARTER_DOCS_ITEMS.map((i) => ({ title: i.title, text: i.text })),
       check: async (ctx) => {
         const missing: string[] = []
         for (const item of STARTER_DOCS_ITEMS) {
@@ -291,16 +506,17 @@ export const SEED_DEFS: SeedDef[] = [
     },
   ),
   defineSeed(
-    { id: 'send-to-agent', title: '「发送给 Agent」按钮', description: 'TW 笔记工具栏「发送给 Agent」按钮插件（$:/plugins/dsh/send-to-agent）——把笔记一键注入 DSH 会话。', core: true },
-    { presentTitle: SEND_TO_AGENT_PLUGIN_TITLE, write: seedSendToAgent },
+    { id: 'send-to-agent', title: '「发送给 Agent」按钮', description: 'TW 笔记工具栏「发送给 Agent」按钮插件（$:/plugins/dsh/send-to-agent）——把笔记一键注入 DSH 会话。', markerTitle: SEND_TO_AGENT_MARKER_TITLE, core: true },
+    { content: async () => [{ title: SEND_TO_AGENT_PLUGIN_TITLE, text: SEND_TO_AGENT_BUNDLE_TEXT }], presentTitle: SEND_TO_AGENT_PLUGIN_TITLE, write: seedSendToAgent },
   ),
   defineSeed(
-    { id: 'render-route', title: '原生渲染路由（/render）', description: 'TW 服务端路由插件（$:/plugins/dsh/render，server-routes/render.js）——把 wiki 文本在运行中的 TW 里原生渲染成 HTML 片段，回复流工具卡与 wiki 链接跳转依赖它。seed 写入后需重启 TW 使路由生效。', core: true },
-    { presentTitle: RENDER_PLUGIN_TITLE, write: seedRenderRoute },
+    { id: 'render-route', title: '原生渲染路由（/render）', description: 'TW 服务端路由插件（$:/plugins/dsh/render，server-routes/render.js）——把 wiki 文本在运行中的 TW 里原生渲染成 HTML 片段，回复流工具卡与 wiki 链接跳转依赖它。seed 写入后需重启 TW 使路由生效。', markerTitle: RENDER_MARKER_TITLE, core: true },
+    { content: async () => [{ title: RENDER_PLUGIN_TITLE, text: RENDER_BUNDLE_TEXT }], presentTitle: RENDER_PLUGIN_TITLE, write: seedRenderRoute },
   ),
   defineSeed(
-    { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页（🏠 主页）同时写入 $:/DefaultTiddlers。', core: false },
+    { id: 'home-index', title: '首页（主页 / 所有标签 / 标签笔记）', description: '默认主页：四象限待办 + 「所有标签」「所有文章」入口；所有标签：标签统计 + Agent 区块（纯 Agent / Agent+人工）；标签笔记：按标签浏览。系统提示承诺的首页由这里 seed，主页（🏠 主页）同时写入 $:/DefaultTiddlers。', markerTitle: HOME_INDEX_MARKER_TITLE, core: false },
     {
+      content: async () => HOME_INDEX_ITEMS.map((i) => ({ title: i.title, text: i.text })),
       check: async (ctx) => {
         const missing: string[] = []
         for (const item of HOME_INDEX_ITEMS) {
@@ -313,12 +529,13 @@ export const SEED_DEFS: SeedDef[] = [
     },
   ),
   defineSeed(
-    { id: 'all-articles', title: '所有文章（两列分页总览）', description: '「所有文章」——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页展示。每页条数取插件设置 ui.allArticles.pageSize（默认 10）。', core: false },
-    { presentTitle: ALL_ARTICLES_TITLE, write: seedAllArticles, unseed: unseedAllArticles },
+    { id: 'all-articles', title: '所有文章（两列分页总览）', description: '「所有文章」——全部条目分两列（🤖 Agent 撰写 / 👤 人工·人类）各自分页展示。每页条数取插件设置 ui.allArticles.pageSize（默认 10）。', markerTitle: ALL_ARTICLES_MARKER_TITLE, core: false },
+    { content: async () => [{ title: ALL_ARTICLES_TITLE, text: ALL_ARTICLES_TEXT }], presentTitle: ALL_ARTICLES_TITLE, write: seedAllArticles, unseed: unseedAllArticles },
   ),
   defineSeed(
-    { id: 'ui-styles', title: '自定义样式（编辑器美化 / 窄屏侧栏 / menubar 加高 / 批注弹窗）', description: '5 张通用样式表（tag $:/tags/Stylesheet）：编辑器美化（CodeMirror 字体/光标/行号）、标题与按钮区分开、侧边栏窄屏自动隐藏（<960px）、menubar 顶栏加高、批注弹窗美化。纯样式无个人数据。', core: false },
+    { id: 'ui-styles', title: '自定义样式（编辑器美化 / 窄屏侧栏 / menubar 加高 / 批注弹窗）', description: '5 张通用样式表（tag $:/tags/Stylesheet）：编辑器美化（CodeMirror 字体/光标/行号）、标题与按钮区分开、侧边栏窄屏自动隐藏（<960px）、menubar 顶栏加高、批注弹窗美化。纯样式无个人数据。', markerTitle: UI_STYLES_MARKER_TITLE, core: false },
     {
+      content: async () => UI_STYLE_ITEMS.map((i) => ({ title: i.title, text: i.text })),
       check: async (ctx) => {
         const missing: string[] = []
         for (const item of UI_STYLE_ITEMS) {
@@ -331,12 +548,12 @@ export const SEED_DEFS: SeedDef[] = [
     },
   ),
   defineSeed(
-    { id: 'menubar-theme', title: 'menubar 顶栏主题自适应', description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。', core: false },
-    { presentTitle: MENUBAR_THEME_TIDDLER, write: seedMenubarTheme, unseed: unseedMenubarTheme },
+    { id: 'menubar-theme', title: 'menubar 顶栏主题自适应', description: '样式表覆盖（$:/plugins/dsh-tiddlywiki/menubar-theme，tag $:/tags/Stylesheet）——把 tiddlywiki/menubar 顶栏从「默认色映射的蓝色」改为跟随当前 palette 的 background/foreground，随 DSH 主题切换（$:/palette 翻转）自动换色。', markerTitle: MENUBAR_THEME_MARKER_TITLE, core: false },
+    { content: async () => [{ title: MENUBAR_THEME_TIDDLER, text: MENUBAR_THEME_TEXT }], presentTitle: MENUBAR_THEME_TIDDLER, write: seedMenubarTheme, unseed: unseedMenubarTheme },
   ),
   defineSeed(
-    { id: 'clip-bridge', title: '本地剪藏桥（书签小工具）', description: '「本地剪藏桥 + 书签小工具」使用说明（Markdown 文档，带书签代码/启用步骤/安全说明）：DSH 监听 127.0.0.1 端口接收剪藏请求，浏览器书签一键把当前页标题/URL/选中文字写进知识库（配置 bridge.*，默认 clip 标签）。真功能在插件运行时代码里，此 seed 只预置说明文档。', core: false },
-    { presentTitle: CLIP_BRIDGE_DOC_TITLE, write: seedClipBridge, unseed: unseedClipBridge },
+    { id: 'clip-bridge', title: '本地剪藏桥（书签小工具）', description: '「本地剪藏桥 + 书签小工具」使用说明（Markdown 文档，带书签代码/启用步骤/安全说明）：DSH 监听 127.0.0.1 端口接收剪藏请求，浏览器书签一键把当前页标题/URL/选中文字写进知识库（配置 bridge.*，默认 clip 标签）。真功能在插件运行时代码里，此 seed 只预置说明文档。', markerTitle: CLIP_BRIDGE_MARKER_TITLE, core: false },
+    { content: async () => [{ title: CLIP_BRIDGE_DOC_TITLE, text: CLIP_BRIDGE_DOC_TEXT }], presentTitle: CLIP_BRIDGE_DOC_TITLE, write: seedClipBridge, unseed: unseedClipBridge },
   ),
   defineSeed(
     { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', core: true },

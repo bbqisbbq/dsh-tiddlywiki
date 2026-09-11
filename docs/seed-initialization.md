@@ -61,6 +61,10 @@ interface SeedDef {
 | `tw-web-host` | `seeds.ts` 内联 | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 无 marker（ensure 型，见 §4） | **核心** |
 
 > ℹ️ `home-index` 的 seed 版首页是**通用版**：生成脚本**默认**剥离作者 wiki 里的个人元素（主题页 tabs、书籍书架入口等，仅 `--keep-private` 才原样嵌入），并内置「📚 插件文档」tabs 栏（`[tag[dsh-docs]!is[system]]`，默认展开插件说明）。作者自己的 wiki 首页不受影响（seed 是 ONE-SHOT，不会覆盖）。
+>
+> ℹ️ **v0.22.0 起 marker 记内容哈希**：marker tiddler（`$:/plugins/dsh-tiddlywiki/seed-*`）的正文从一行 `seeded-once` 升级为 JSON `{ version, hashes: { <标题>: <sha256 前 16 位> }, at }`——哈希记录的是**我们写下的内置正文**，据此可区分「内置内容更新了」与「用户自己改过」（见 §3.1）。旧 marker 仍可读，按文本比对，并在下一次重新初始化时升级。
+>
+> ℹ️ **v0.22.0 起 `doc-note` 正文是生成的**：工具清单来自 `tiddlywikiToolSummary()`（`docNoteText(tools)`），不再手抄「N 个 agent 工具」。无注册表的 headless 调用会退化成一句指针，绝不写出过期数量。
 
 ### 统一入口（`src/index.ts` 导出）
 
@@ -81,6 +85,28 @@ interface SeedDef {
 - **升级兼容**：老 wiki 已有这些 tiddler（旧版本手工放的）时，首次执行只补写 marker、不覆盖现有内容，从这一刻起同样归用户所有。起步项（doc-note / starter-docs）在**首次安装/升级后启动**时也是这个逻辑：**同名 tiddler 已存在 = 你自己的数据，安全跳过，绝不覆盖**。
 
 **tw-web-host 例外**：它不是 marker 型，而是 **ensure 型**——非 force 时仅在 **tiddler 缺失**或**仍是旧默认值**（`$protocol$//$host$/`）时写入代理路径；**用户自定义的其它基址会被保留**（例如确实在专属域名上暴露 TW 的场景）。
+
+---
+
+## 3.1 内容哈希与「更新检测」（v0.22.0）
+
+seed 是 ONE-SHOT，所以**插件升级后旧 wiki 的内容不会自动更新**——这正是「插件说明里写着 10 个工具、实际已有 15 个」这类问题的根源。v0.22.0 让检测变成可能，但**不改变 ONE-SHOT 的安全性**：
+
+| 判定 | 条件 | 设置页表现 |
+|---|---|---|
+| 内置内容有更新 | marker 记录的哈希 ≠ 当前内置正文的哈希 | 「⬆ 有更新」chip，按钮变为「更新到内置版本」 |
+| 用户改过 | 当前 tiddler 正文的哈希 ≠ marker 记录的哈希 | 「✏️ 本地已修改」chip；覆盖前**二次确认** |
+| 两者都不是 | 哈希一致 | 无 chip |
+| 旧 marker（无哈希） | marker 不是我们的 JSON | 「更新检测尚未启用（重新初始化一次即可）」 |
+| 旧 marker + 文本已不同 | 无法判断是用户改的还是内置变了 | 报 `updateAvailable` 且 `userModified: undefined`（**无法确认**），UI 明说可能覆盖你的改动 |
+
+三条不容妥协的规则：
+
+1. **绝不猜**：没有哈希就不编造「用户改过」——否则升级后满屏误报；
+2. **绝不自动改写**：`updateAvailable` 只是提示，更新必须在设置页手动点（自动更新等于覆盖用户内容）；
+3. **哈希只在「写入的确实是我们写的内容」时记录**：`refreshSeedMarker()` 只对「当前正文 === 内置正文」的 tiddler 记哈希，用户改过的副本不进账；已有哈希**合并而非清空**，一次跳过不会忘掉其余条目。
+
+实现：`src/host/seed-util.ts`（`hashText` / `parseSeedMarker` / `readSeedMarker` / `writeSeedMarker`）+ `src/host/seeds.ts` 的 `inspectSeedContent()` / `refreshSeedMarker()`（`SeedDef.markerTitle` + `SeedDef.content` 两个钩子启用检测）。回归在 `scripts/verify-seeds-admin.mjs` 第 9 段（5 组断言：新鲜 / 用户改过 / 内置更新 / 旧标记两种 / 重新初始化后刷新）。
 
 ---
 

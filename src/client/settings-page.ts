@@ -33,6 +33,9 @@ import {
   ADMIN_SEEDS_REMOVE_ENDPOINT as SEEDS_REMOVE_ENDPOINT,
   ADMIN_SEEDS_RUN_ENDPOINT as SEEDS_RUN_ENDPOINT,
   ADMIN_STATE_ENDPOINT as STATE_ENDPOINT,
+  ADMIN_WIKI_LOCATION_ENDPOINT as WIKI_LOCATION_ENDPOINT,
+  ADMIN_WIKI_RESET_ENDPOINT as WIKI_RESET_ENDPOINT,
+  ADMIN_WIKI_SWITCH_ENDPOINT as WIKI_SWITCH_ENDPOINT,
   SYNC_ENDPOINT,
 } from './endpoints.ts'
 
@@ -61,6 +64,21 @@ interface SeedItem {
   /** true = 可选 seed（非功能必需），可「反初始化」移除。 */
   removable?: boolean
   detail?: string
+  /** v0.22.0：内置内容比本 wiki 预置时更新（可重新初始化拿来）。 */
+  updateAvailable?: boolean
+  /** true=本地改过；false=没动过；undefined=旧格式标记，无法判断。 */
+  userModified?: boolean
+  legacyMarker?: boolean
+}
+
+/** Payload of GET /admin/wiki/location (v0.22.0 runtime wiki switch). */
+interface WikiLocationView {
+  ok?: boolean
+  current?: { root?: string; name?: string; path?: string; source?: string }
+  default?: { root?: string; name?: string; path?: string }
+  stateFile?: string
+  candidates?: string[]
+  error?: string
 }
 
 function make<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -547,6 +565,142 @@ function renderCatalogSection(
 }
 
 /**
+ * 知识库位置 section (v0.22.0): show the folder the plugin is serving, how that
+ * was decided, and let the user switch to another folder at runtime.
+ *
+ * The choice lives in a pointer file OUTSIDE every wiki (host/wiki-location.ts
+ * explains why it cannot live in the wiki's own config tiddler). Switching
+ * stops and restarts the TW child in place — a few seconds, and it can fail
+ * (in which case the host rolls back and says so).
+ */
+function renderWikiLocationSection(body: HTMLElement, isDisposed: () => boolean, refresh: () => Promise<void>): void {
+  const section = make('section', 'dsh-tw-settings-section')
+  section.append(make('h3', 'dsh-tw-settings-h', '知识库位置（可切换）'))
+  const status = make('div', 'dsh-tw-settings-muted', '读取中…')
+  const sourceLine = make('div', 'dsh-tw-settings-muted')
+  const stateLine = make('div', 'dsh-tw-settings-muted')
+  const warn = make('div', 'dsh-tw-settings-muted')
+  const rootInput = make('input', 'dsh-tw-settings-input')
+  const nameInput = make('input', 'dsh-tw-settings-input')
+  rootInput.placeholder = '绝对路径，如 D:\\notes 或 $DSH_HOME/tiddlywiki'
+  nameInput.placeholder = '文件夹名（默认 main；填 . 表示直接用上面这个目录）'
+  const rootWrap = make('label', 'dsh-tw-settings-field')
+  rootWrap.append(make('span', 'dsh-tw-settings-label', '根目录（wikiRoot）'), rootInput)
+  const nameWrap = make('label', 'dsh-tw-settings-field')
+  nameWrap.append(make('span', 'dsh-tw-settings-label', '文件夹名（wiki）'), nameInput)
+  const switchBtn = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '切换到这个位置')
+  switchBtn.type = 'button'
+  const resetBtn = make('button', 'dsh-tw-settings-btn', '恢复为配置默认')
+  resetBtn.type = 'button'
+  const row = make('div', 'dsh-tw-settings-row')
+  row.append(switchBtn, resetBtn)
+  const candidates = make('div', 'dsh-tw-settings-row dsh-tw-settings-candidates')
+  const hint = make('div', 'dsh-tw-settings-muted', '切换会停掉并就地重启 TW 子进程（几秒）；新目录若还没有 tiddlywiki.info，插件会自动 `--init server` 初始化一个全新知识库。选中的位置会记在 $DSH_HOME 下的指针文件里（不进 wiki），可用「恢复为配置默认」清除。')
+
+  const setBusy = (busy: boolean, label: string): void => {
+    switchBtn.disabled = busy
+    resetBtn.disabled = busy
+    switchBtn.textContent = busy ? label : '切换到这个位置'
+  }
+
+  const load = async (): Promise<void> => {
+    if (isDisposed()) return
+    try {
+      const data = await fetchJson<WikiLocationView>(WIKI_LOCATION_ENDPOINT)
+      if (isDisposed()) return
+      if (data.ok !== true) throw new Error(data.error ?? '获取失败')
+      const current = data.current ?? {}
+      status.textContent = `当前：${current.path ?? '(未知)'}`
+      const sourceText = current.source === 'state'
+        ? '来源：指针文件（在设置页切换过）'
+        : current.source === 'config'
+          ? '来源：cordis 配置（config.wikiRoot / config.wiki）'
+          : '来源：默认值（$DSH_HOME/tiddlywiki + main）'
+      sourceLine.textContent = `${sourceText} · 配置默认：${data.default?.path ?? '(未知)'}`
+      stateLine.textContent = data.stateFile !== undefined ? `指针文件：${data.stateFile}（不存在＝使用配置默认）` : ''
+      warn.textContent = data.error !== undefined ? `⚠️ ${data.error}` : ''
+      if (rootInput.value.length === 0 && typeof current.root === 'string') rootInput.value = current.root
+      if (nameInput.value.length === 0 && typeof current.name === 'string') nameInput.value = current.name
+      candidates.replaceChildren()
+      const names = data.candidates ?? []
+      if (names.length > 0) {
+        candidates.append(make('span', 'dsh-tw-settings-label', '同目录下可选的 wiki：'))
+        for (const name of names) {
+          const chip = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', name === '.' ? '(根目录本身)' : name)
+          chip.type = 'button'
+          chip.title = `填入文件夹名「${name}」`
+          chip.addEventListener('click', () => { nameInput.value = name })
+          candidates.append(chip)
+        }
+      }
+    } catch (err) {
+      if (isDisposed()) return
+      status.textContent = `读取位置失败：${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+
+  switchBtn.addEventListener('click', () => {
+    const root = rootInput.value.trim()
+    const name = nameInput.value.trim().length > 0 ? nameInput.value.trim() : 'main'
+    if (root.length === 0) {
+      toast('请先填写根目录（绝对路径）')
+      return
+    }
+    if (!window.confirm(`切换知识库到：\n${root}\\${name}\n\n会停止并重启 TW 子进程；当前对话/工具随后读写的是新知识库。确定继续？`)) return
+    setBusy(true, '切换中…（重启 TW）')
+    void (async () => {
+      try {
+        const data = await fetchJson<{ ok?: boolean; error?: string; warning?: string; path?: string; rolledBack?: boolean }>(WIKI_SWITCH_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ root, name }),
+          signal: AbortSignal.timeout(120_000),
+        })
+        if (data.warning !== undefined) toast(`已切换到 ${data.path ?? ''}（注意：${data.warning}）`)
+        else toast(`已切换到 ${data.path ?? ''}`)
+        invalidateUiConfig()
+        await load()
+        await refresh()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        toast(`切换失败：${message}`)
+        await load()
+      } finally {
+        setBusy(false, '')
+      }
+    })()
+  })
+
+  resetBtn.addEventListener('click', () => {
+    if (!window.confirm('恢复为配置默认位置？会删除位置指针文件，并（必要时）切回配置里的知识库。')) return
+    setBusy(true, '切换中…（重启 TW）')
+    void (async () => {
+      try {
+        const data = await fetchJson<{ ok?: boolean; error?: string; warning?: string; path?: string }>(WIKI_RESET_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+          signal: AbortSignal.timeout(120_000),
+        })
+        toast(data.warning !== undefined ? `已恢复默认（注意：${data.warning}）` : `已恢复为配置默认：${data.path ?? ''}`)
+        invalidateUiConfig()
+        await load()
+        await refresh()
+      } catch (err) {
+        toast(`恢复失败：${err instanceof Error ? err.message : String(err)}`)
+        await load()
+      } finally {
+        setBusy(false, '')
+      }
+    })()
+  })
+
+  section.append(status, sourceLine, stateLine, rootWrap, nameWrap, row, candidates, warn, hint)
+  body.append(section)
+  void load()
+}
+
+/**
  * 初始化 section: lists every one-time seed with its live status and offers
  * per item (and for all):
  *   - 「重新初始化」(force) — write/restore the built-in content;
@@ -582,10 +736,35 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
         const title = make('span', 'dsh-tw-settings-name', item.title)
         title.title = item.id
         const desc = make('span', 'dsh-tw-settings-muted', item.detail ?? item.description)
-        const btn = make('button', 'dsh-tw-settings-btn', '重新初始化')
+        // v0.22.0: the marker records content hashes, so we can say whether the
+        // BUILT-IN moved on and whether the user edited their copy — and warn
+        // before a 「重新初始化」 overwrites local edits.
+        const updateChip = item.updateAvailable === true
+          ? make('span', 'dsh-tw-settings-chip', '⬆ 有更新')
+          : undefined
+        if (updateChip !== undefined) {
+          updateChip.dataset.state = 'update'
+          updateChip.title = '内置内容在本 wiki 预置之后更新过，可点「重新初始化」取用'
+        }
+        const modifiedChip = item.userModified === true
+          ? make('span', 'dsh-tw-settings-chip', '✏️ 本地已修改')
+          : undefined
+        if (modifiedChip !== undefined) {
+          modifiedChip.dataset.state = 'missing'
+          modifiedChip.title = '这篇是你的内容：重新初始化会覆盖它'
+        }
+        const btn = make('button', 'dsh-tw-settings-btn', item.updateAvailable === true ? '更新到内置版本' : '重新初始化')
         btn.type = 'button'
         btn.title = `强制重写「${item.title}」的内置内容（会覆盖当前 tiddler）`
         btn.addEventListener('click', () => {
+          if (item.updateAvailable === true) {
+            const warning = item.userModified === true
+              ? `「${item.title}」有你的本地修改，更新会覆盖它。`
+              : item.userModified === undefined
+                ? `无法确认「${item.title}」是否被你编辑过（旧格式标记），更新可能覆盖你的改动。`
+                : ''
+            if (!window.confirm(`${warning}${warning.length > 0 ? '\n\n' : ''}用内置版本覆盖？`)) return
+          }
           btn.disabled = true
           btn.textContent = '执行中…'
           void (async () => {
@@ -607,12 +786,15 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
               toast(`重新初始化失败：${err instanceof Error ? err.message : String(err)}`)
             } finally {
               btn.disabled = false
-              btn.textContent = '重新初始化'
+              btn.textContent = item.updateAvailable === true ? '更新到内置版本' : '重新初始化'
             }
           })()
         })
         const row = make('div', 'dsh-tw-settings-row dsh-tw-settings-plugin')
-        row.append(dot, title, desc, btn)
+        row.append(dot, title)
+        if (updateChip !== undefined) row.append(updateChip)
+        if (modifiedChip !== undefined) row.append(modifiedChip)
+        row.append(desc, btn)
         if (item.removable) {
           const rm = make('button', 'dsh-tw-settings-btn dsh-tw-settings-danger', '反初始化')
           rm.type = 'button'
@@ -738,6 +920,7 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
     configState.signature = signature
   }
   body.append(configState.host)
+  renderWikiLocationSection(body, isDisposed, refresh)
   renderCatalogSection(body, state.info, state.catalog, refresh)
   renderSeedsSection(body, isDisposed)
 }
