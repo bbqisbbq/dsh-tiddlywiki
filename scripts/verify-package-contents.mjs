@@ -71,21 +71,39 @@ try {
 
 let files = []
 if (stdout !== undefined) {
-  // npm 可能在 JSON 前打警告，稳健地截取 JSON 数组本身。
-  const start = stdout.indexOf('[')
-  const end = stdout.lastIndexOf(']')
+  // npm 可能在 JSON 前打警告，先整体解析，失败再截取第一个 '{'/'[' 到结尾
+  // （新 npm 输出对象 `{ "<name>": {...} }`，旧版输出数组 `[{...}]`）。
+  let parsed = null
+  const parseJson = (s) => JSON.parse(s)
   try {
-    const parsed = JSON.parse(start >= 0 && end > start ? stdout.slice(start, end + 1) : stdout)
-    assert.ok(Array.isArray(parsed) && parsed.length >= 1, `npm pack --json 未返回数组：${stdout.slice(0, 400)}`)
-    const entry = parsed[0]
-    assert.ok(Array.isArray(entry.files), `npm pack --json 条目缺少 files：${JSON.stringify(Object.keys(entry ?? {}))}`)
-    files = entry.files.map((f) => String(f.path).replace(/\\/g, '/'))
-    console.log(`npm pack 内容 ${files.length} 项（tarball: ${entry.filename ?? '?'}）`)
-  } catch (err) {
+    parsed = parseJson(stdout.trim())
+  } catch {
+    try {
+      const first = stdout.search(/[\[{]/)
+      if (first >= 0) parsed = parseJson(stdout.slice(first))
+    } catch {
+      parsed = null
+    }
+  }
+  if (parsed === null) {
     failures++
     console.error('FAIL  无法解析 npm pack --dry-run --json 输出')
-    console.error(`      ${err && err.message ? err.message : err}`)
     console.error(`      原始输出前 600 字：${stdout.slice(0, 600)}`)
+  } else {
+    try {
+      // 新 npm：`{ "name": {files...} }`；旧 npm：`[{files...}]`
+      const entry = Array.isArray(parsed) && parsed.length >= 1
+        ? parsed[0]
+        : parsed[Object.keys(parsed)[0]]
+      assert.ok(Array.isArray(entry?.files), `npm pack --json 条目缺少 files：${JSON.stringify(Object.keys(entry ?? {}))}`)
+      files = entry.files.map((f) => String(f.path).replace(/\\/g, '/'))
+      console.log(`npm pack 内容 ${files.length} 项（tarball: ${entry.filename ?? '?'}）`)
+    } catch (err) {
+      failures++
+      console.error('FAIL  无法解析 npm pack --dry-run --json 输出')
+      console.error(`      ${err && err.message ? err.message : err}`)
+      console.error(`      原始输出前 600 字：${stdout.slice(0, 600)}`)
+    }
   }
 }
 

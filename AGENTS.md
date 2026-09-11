@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.22.1`（git tag `v0.22.1`；v0.22.1 = 首页快速笔记标题日期 token 修复 + gen-seed-home 转义修复；v0.22.0 = 运行时切换知识库 + seed 内容哈希更新检测 + flush 真正排干；v0.21.0 = 注入提示词精简+可配置） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
+| **插件版本** | `0.22.2`（git tag `v0.22.2`；v0.22.2 = 修「主题汇总页·模板」seed 内容重复：删掉裸 `<$list>` 可选段，模板只留一个列表；v0.22.1 = 首页快速笔记标题日期 token 修复 + gen-seed-home 转义修复；v0.22.0 = 运行时切换知识库 + seed 内容哈希更新检测 + flush 真正排干；v0.21.0 = 注入提示词精简+可配置） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
 | **「发送给 Agent」bundle 版本** | `0.3.5`（v0.20.0 修复 `notify()`：TW 的 notifier 只认**已存在的 tiddler 标题**，传自由文本＝静默无提示；现在先写 `$:/temp/dsh/send-to-agent/notice` 再 display。提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs`（含外层 version 守门） |
 | **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` + `scripts/verify-render-bundle.mjs`（v0.19.0 新增逐字节守门） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |

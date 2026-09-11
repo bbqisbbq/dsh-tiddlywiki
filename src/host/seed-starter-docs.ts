@@ -42,7 +42,7 @@ export const STARTER_DOCS_ITEMS: StarterDocItem[] = [
 
 !! 📌 主题汇总页
 
-<div style="color:#888; font-size:0.85em; border:1px dashed rgba(128,128,128,0.35); border-radius:8px; padding:6px 10px; margin-bottom:8px;">【模板】复制本页 → 改名（如「XX主题汇总」）→ 把下面两处 <code>主题A</code> 替换成你的标签名 → 保存。给笔记打上该标签即自动收录，本页无需维护。</div>
+<div style="color:#888; font-size:0.85em; border:1px dashed rgba(128,128,128,0.35); border-radius:8px; padding:6px 10px; margin-bottom:8px;">【模板】复制本页 → 改名（如「XX主题汇总」）→ 把正文里的 <code>主题A</code> 全部替换成你的标签名 → 保存。给笔记打上该标签即自动收录，本页无需维护。</div>
 
 <div class="tc-message-box">自动收集带 <code>主题A</code> 标签的笔记，按最近修改排序，共 <strong>{{{[tag[主题A]!is[system]!has[draft.of]count[]]}}}</strong> 篇。</div>
 
@@ -50,17 +50,7 @@ export const STARTER_DOCS_ITEMS: StarterDocItem[] = [
 
 ---
 
-### 可选：自定义样式的 <$list> 版（想更花哨时用它替换上面的 list-links）
-
-<ul>
-<$list filter="[tag[主题A]!is[system]!has[draft.of]] +[!sort[modified]]">
-<li><$link to=<<currentTiddler>>><$view field="title"/></$link><span style="color:#aaa; font-size:0.85em;"> · <$view field="modified" format="relativedate"/></span></li>
-</$list>
-</ul>
-
-### 可选：把本页收进「一页多主题」tabs
-
-给本页打上 <code>主题页</code> 标签、并加一个 <code>caption</code> 字段（按钮文字），然后在总览页写：<code>&lt;&lt;tabs "[tag[主题页]!is[system]]"&gt;&gt;</code>。详见 [[教程：按主题/标签做汇总页]]。
+> 想自定义每行样式，或把本页收进「一页多主题」tabs？见 [[教程：按主题/标签做汇总页]]。
 `,
   },
   {
