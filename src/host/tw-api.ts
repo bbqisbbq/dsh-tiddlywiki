@@ -77,6 +77,18 @@ export const TEXT_LIST_FILTER = [
   '[all[tiddlers]!is[system]regexp:type[(?i)^text/]]',
 ].join(' ')
 
+/**
+ * 真正「没有 type 字段」的条目（v0.19.1）。
+ *
+ * 必须靠过滤器判定：TW 服务端在 listing 与单条 GET 里都会给无 type 的条目
+ * **补上** `text/vnd.tiddlywiki`（`tiddlerFields.type = tiddlerFields.type ||
+ * "text/vnd.tiddlywiki"`），所以响应里的 `type` 永远非空，客户端无法区分
+ * 「本来是 wikitext」与「压根没有 type」。过滤器在服务端按真实字段求值，返回
+ * 的标题就是真的没有 type 的那些。串长 36 字符（白名单 tiddler 文件名 = 整个
+ * filter，必须短）。
+ */
+export const MISSING_TYPE_FILTER = '[all[tiddlers]!is[system]!has[type]]'
+
 /** TiddlyWeb blocks every non-default filter with 403 unless the EXACT filter
  *  string is whitelisted at `$:/config/Server/ExternalFilters/<filter>` = "yes".
  *  This client writes that tiddler once on 403 (self-heal, idempotent) and
@@ -156,11 +168,20 @@ export class TiddlyWebClient {
    * every write this client performs (v0.19.0).
    */
   private textListing: { at: number; value: Promise<Tiddler[]> } | undefined
+  /**
+   * Same short-TTL + in-flight-merge cache for the SKINNY listings (v0.19.1):
+   * `/tags` (`list(TEXT_LIST_FILTER, false)`) and the lint title/dedup listings
+   * each pull the whole title list; without a cache every `/status`-adjacent
+   * poll and every lint re-downloaded + re-parsed it. Keyed by filter string
+   * ('' = server default listing).
+   */
+  private readonly skinnyListings = new Map<string, { at: number; value: Promise<Tiddler[]> }>()
   private static readonly TEXT_LISTING_TTL_MS = 2_000
 
-  /** Drop the listing cache — called after any write so reads never go stale. */
+  /** Drop the listing caches — called after any write so reads never go stale. */
   private invalidateListing(): void {
     this.textListing = undefined
+    this.skinnyListings.clear()
   }
 
   constructor(private readonly baseUrl: string, auth?: { username?: string; password?: string }) {
@@ -198,6 +219,28 @@ export class TiddlyWebClient {
     if (res.status === 404) return undefined
     if (!res.ok) throw new Error(`TiddlyWeb GET /recipes/default/tiddlers/${title} HTTP ${res.status}`)
     return normalizeTiddler((await res.json()) as Record<string, unknown>)
+  }
+
+  /**
+   * Render a tiddler (or raw wiki text) to an HTML fragment through TW's own
+   * `/render` server route — the bundle the `render-route` seed installs.
+   *
+   * READ-ONLY, but the route is a POST (handler contract) and TW's server gates
+   * POST behind the writer CSRF header, so the CSRF header is sent like a write.
+   * Throws on 404 (`notFound`) so callers can distinguish "no such tiddler".
+   */
+  async render(body: { title?: string; text?: string; type?: string; contextTitle?: string; parseAsInline?: boolean }): Promise<string> {
+    const res = await this.request('/render', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...CSRF_HEADER },
+      body: JSON.stringify(body),
+    })
+    if (res.status === 404) throw new Error('TiddlyWeb POST /render HTTP 404: tiddler not found')
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`TiddlyWeb POST /render HTTP ${res.status}: ${detail.slice(0, 200)}`)
+    }
+    return res.text()
   }
 
   /** Write (create or overwrite) one tiddler via PUT (204 on success). */
@@ -240,7 +283,18 @@ export class TiddlyWebClient {
    * skinny listing (title/tags matchable, empty snippets).
    */
   async list(filter?: string, includeText = false): Promise<Tiddler[]> {
-    if (!includeText) return this.fetchListing(filter)
+    if (!includeText) {
+      // Skinny listings share the short-TTL promise cache (v0.19.1): `/tags` and
+      // the lint title listings are re-requested by every poll/lint, and each
+      // miss transferred + parsed the whole title list.
+      const key = filter ?? ''
+      const cached = this.skinnyListings.get(key)
+      if (cached !== undefined && Date.now() - cached.at < TiddlyWebClient.TEXT_LISTING_TTL_MS) return cached.value
+      const pending = this.fetchListing(filter)
+      this.skinnyListings.set(key, { at: Date.now(), value: pending })
+      pending.catch(() => { if (this.skinnyListings.get(key)?.value === pending) this.skinnyListings.delete(key) })
+      return pending
+    }
     const explicit = filter !== undefined && filter.length > 0
     // Explicit filter: the caller asked for a SPECIFIC set — never silently
     // answer with a different one (the old code fell back to TEXT_LIST_FILTER,

@@ -16,31 +16,27 @@
  */
 import { defineTool } from '../sdk.ts'
 import { readFile, stat } from 'node:fs/promises'
-import { basename, extname, isAbsolute } from 'node:path'
-import { isBinaryType, parseTiddlerDate, toIsoDateString } from './tw-api.ts'
+import { basename, extname, isAbsolute, join } from 'node:path'
+import { MISSING_TYPE_FILTER, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { TiddlyWebClient, Tiddler } from './tw-api.ts'
 import type { GitFace } from './git.ts'
 import { downloadClipImage } from './clip-bridge.ts'
+import { flushPendingWrites } from './seeds.ts'
+import {
+  AGENT_WRITTEN_TAG,
+  DEFAULT_NOTE_TYPE,
+  HUMAN_EDITED_TAG,
+  assertNoConflict,
+  buildWriteTiddler,
+  cleanTiddler,
+  finalTagsForWrite,
+  finalTypeForWrite,
+  flattenTiddlerFields,
+  normalizeTagArg,
+} from './write-policy.ts'
 
-/**
- * 约定标签：标记「由 Agent 撰写」的笔记。
- * 新建（title 不存在）时由 tiddlywiki_put / tiddlywiki_batch_put 自动补打；
- * 首页据此把这类笔记单独列在「Agent 区块」并从主标签列表排除。
- */
-export const AGENT_WRITTEN_TAG = 'agent-written'
+export { AGENT_WRITTEN_TAG, DEFAULT_NOTE_TYPE, HUMAN_EDITED_TAG } from './write-policy.ts'
 
-/**
- * 约定标签：标记「Agent 撰写后又经人类编辑」的笔记（双标签分级第二档）。
- * 人类在编辑某篇 Agent 笔记时手动补打，首页把这类笔记归入「Agent + 人工」档。
- */
-export const HUMAN_EDITED_TAG = 'human-edited'
-
-/**
- * Agent 写入的默认内容类型。agent 正文按约定是 Markdown，而 TW 对无 type 的
- * tiddler 按 wikitext（text/vnd.tiddlywiki）解析——`##`/`**` 之类原样显示，显示
- * 解析全坏（v0.16.15 起 put/batch_put 自动补该默认；wiki 已启用 tiddlywiki/markdown）。
- */
-export const DEFAULT_NOTE_TYPE = 'text/markdown'
 
 /** Structural tool-registry face (subset of the dsh tools service). */
 export interface ToolsCtx {
@@ -177,63 +173,18 @@ function isJunkTag(tag: string): boolean {
   return false
 }
 
-/** Strip dsh-tiddlywiki internal fields from a tiddler for the model. */
-function pickFields(t: Tiddler): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(t)) {
-    if (k === 'title' || k === 'text' || k === 'tags') continue
-    out[k] = v
-  }
-  return out
-}
-
-/** Fields that belong to the tiddler's identity / TW-owned bookkeeping. */
-const CLEAN_SKIP_FIELDS = new Set(['title', 'text', 'tags', 'type', 'created', 'modified', 'fields'])
-
 /**
- * A put-ready copy of a tiddler (no created/modified, tags as array).
+ * tiddler 的非内容字段（自定义字段 + 内容类型 + 时间戳 + revision），供模型读。
  *
- * CUSTOM-FIELD FLATTENING (v0.19.0, data-loss fix): a single-tiddler GET nests
- * every non-known field under `fields` (core-server get-tiddler.js), while PUT
- * accepts them flat. The old version copied top-level entries only and skipped
- * the `fields` key, so every write that bases itself on an existing tiddler —
- * put / append / rename / trash — silently DROPPED custom fields such as `q`,
- * `due`, `clip-url` or `draft.of`.
+ * v0.19.1 修复：单条 GET 把自定义字段**嵌在 `fields` 里**，旧实现只把顶层条目
+ * 抄一遍，于是渲染出来的 `字段:` 行是 `fields=[object Object]` —— `q`/`due`/
+ * `clip-url`/`workspace` 这些笔记元数据对模型完全不可见（实测）。现在统一走
+ * `flattenTiddlerFields()` 摊平，并显式带上 `revision`（乐观并发令牌）。
  */
-function cleanTiddler(t: Tiddler): Tiddler {
-  const out: Tiddler = { title: t.title, text: t.text ?? '', tags: t.tags ?? [] }
-  for (const [k, v] of Object.entries(t)) {
-    if (CLEAN_SKIP_FIELDS.has(k)) continue
-    out[k] = v
-  }
-  const nested = t.fields
-  if (typeof nested === 'object' && nested !== null && !Array.isArray(nested)) {
-    for (const [k, v] of Object.entries(nested)) {
-      if (CLEAN_SKIP_FIELDS.has(k) || v === undefined) continue
-      out[k] = v
-    }
-  }
+function pickFields(t: Tiddler): Record<string, unknown> {
+  const out = flattenTiddlerFields(t)
+  if (t.revision !== undefined) out.revision = t.revision
   return out
-}
-
-/**
- * Fields a caller may NOT set through the `fields` argument: they are the
- * tiddler's identity/content (and TW owns the timestamps). `fields.title`
- * would desync the PUT URL from the body, `fields.text` would silently replace
- * the `text` argument. `type` is deliberately ALLOWED — passing
- * `{"type":"text/vnd.tiddlywiki"}` is the documented way to opt out of the
- * Markdown default.
- */
-const RESERVED_TIDDLER_FIELDS = new Set(['title', 'text', 'tags', 'created', 'modified'])
-
-/** Merge caller-supplied custom fields, skipping the reserved identity fields. */
-function applyCustomFields(tiddler: Tiddler, fields: Record<string, unknown> | undefined): void {
-  if (fields === undefined || fields === null || typeof fields !== 'object') return
-  for (const [key, value] of Object.entries(fields)) {
-    if (RESERVED_TIDDLER_FIELDS.has(key)) continue
-    if (value === undefined) continue
-    tiddler[key] = value
-  }
 }
 
 /**
@@ -288,114 +239,6 @@ function insertIntoSection(base: string, heading: string, addition: string): str
   return after.trim().length === 0 ? head : `${head}\n\n${after.replace(/^\s+/, '')}`
 }
 
-/**
- * Build the tiddler to PUT for one write.
- *
- * FIELD PRESERVATION (v0.19.0, data-loss fix): a PUT replaces the whole tiddler,
- * so the old code — which sent only `{title, text}` plus the caller's fields —
- * silently DROPPED every existing tag and custom field whenever the caller
- * omitted `tags` (e.g. an agent fixing a typo in a note). Now:
- *   - an existing tiddler is used as the base (tags, custom fields and the
- *     content type survive);
- *   - `tags` is only REPLACED when the caller actually passes it;
- *   - `fields` still wins field-by-field on top;
- *   - a brand-new tiddler gets the agent-written tag and the markdown default.
- * `cleanTiddler` drops TW-owned timestamps/revision so they are regenerated.
- */
-function buildWriteTiddler(
-  title: string,
-  text: string,
-  existing: Tiddler | undefined,
-  tags: string[] | undefined,
-  fields: Record<string, unknown> | undefined,
-): { tiddler: Tiddler; typeDefaulted: boolean } {
-  const tiddler: Tiddler = existing !== undefined
-    ? { ...cleanTiddler(existing), title, text }
-    : { title, text }
-  if (tags !== undefined) {
-    const finalTags = finalTagsForWrite(title, existing, tags)
-    if (finalTags.length > 0) tiddler.tags = finalTags
-    else delete tiddler.tags
-  } else if (existing === undefined) {
-    const finalTags = finalTagsForWrite(title, undefined, [])
-    if (finalTags.length > 0) tiddler.tags = finalTags
-  }
-  applyCustomFields(tiddler, fields)
-  const { defaulted } = finalTypeForWrite(title, tiddler)
-  return { tiddler, typeDefaulted: defaulted }
-}
-
-/** Normalize the tool's optional `tags` argument. */
-function normalizeTagArg(tags: unknown): string[] | undefined {
-  if (!Array.isArray(tags)) return undefined
-  return tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
-}
-
-/**
- * Optimistic-concurrency guard for writes (v0.19.0).
- *
- * The wiki is shared with the human: they edit notes in the embedded TW editor
- * while an agent may hold a stale copy. `put` used to overwrite blindly, so a
- * concurrent human edit was lost without a trace. Callers can pass the
- * `modified` value they read (`tiddlywiki_get` returns it); a mismatch refuses
- * the write and tells the agent to re-read (or to pass force).
- */
-function assertNoConflict(
-  title: string,
-  existing: Tiddler | undefined,
-  expected: { expectedModified?: string; expectedRevision?: string | number; force?: boolean },
-): void {
-  if (expected.force === true || existing === undefined) return
-  const wantsToken = expected.expectedModified !== undefined || expected.expectedRevision !== undefined
-  if (!wantsToken) return
-  // Accept BOTH date forms: `tiddlywiki_get` hands the model an ISO string while
-  // the REST layer stores TW's compact form — a raw string compare would report
-  // a bogus conflict on every write.
-  const expectedMs = parseTiddlerDate(expected.expectedModified)
-  const currentMs = parseTiddlerDate(existing.modified)
-  if (expectedMs !== undefined && currentMs !== undefined && expectedMs === currentMs) return
-  // `revision` is TW's per-tiddler change counter from the GET response; it is
-  // the only token that always exists (a freshly PUT tiddler has no `modified`
-  // until the filesystem syncer writes and reloads it).
-  const currentRevision = existing.revision
-  if (expected.expectedRevision !== undefined && currentRevision !== undefined
-    && String(currentRevision) === String(expected.expectedRevision)) return
-  throw new Error(
-    `写入冲突：tiddler「${title}」在你读取之后已被改动（当前 revision=${currentRevision ?? '?'} modified=${toIsoDateString(existing.modified) ?? '?'}；`
-    + `期望 revision=${expected.expectedRevision ?? '?'} modified=${expected.expectedModified ?? '?'}）。`
-    + '请重新 tiddlywiki_get 获取最新内容后重试；确认要用你的版本覆盖时可传 force: true。',
-  )
-}
-
-/**
- * Compute the final tags for a write:
- * - NEW tiddler (created by this tool) → auto-append the agent-written tag,
- *   unless it is a `$:/` system tiddler (config/language/theme internals).
- * - Existing tiddler → keep the caller's tags as-is (an agent maintaining a
- *   human note must NOT silently claim authorship; an already agent-written
- *   note keeps its tag because the caller provides the full tag list).
- */
-function finalTagsForWrite(title: string, existing: Tiddler | undefined, tags: string[]): string[] {
-  if (existing !== undefined) return tags
-  if (title.startsWith('$:/')) return tags
-  if (tags.includes(AGENT_WRITTEN_TAG)) return tags
-  return [...tags, AGENT_WRITTEN_TAG]
-}
-
-/**
- * Compute the final content type for a write (mutates the tiddler in place):
- * - explicit `type` (normally via fields) wins — untouched;
- * - `$:/` system tiddlers keep TW's own default (config/plugin internals must
- *   not be force-marked as markdown);
- * - everything else defaults to Markdown (DEFAULT_NOTE_TYPE) — agent notes are
- *   written in Markdown and TW would otherwise parse them as wikitext.
- */
-function finalTypeForWrite(title: string, tiddler: Tiddler): { defaulted: boolean } {
-  if (typeof tiddler.type === 'string' && tiddler.type.length > 0) return { defaulted: false }
-  if (title.startsWith('$:/')) return { defaulted: false }
-  tiddler.type = DEFAULT_NOTE_TYPE
-  return { defaulted: true }
-}
 
 export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<() => void> {
   const disposers: Array<() => void> = []
@@ -611,7 +454,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         force: args.force,
       })
       const tags = normalizeTagArg(args.tags)
-      const { tiddler, typeDefaulted } = buildWriteTiddler(args.title, args.text, existing, tags, args.fields)
+      const { tiddler, typeDefaulted } = buildWriteTiddler(args.title, args.text, { existing, tags, fields: args.fields })
       await wiki.put(tiddler)
       deps.autoCommit()
       return { ok: true, title: args.title, tags: tiddler.tags ?? [], type: typeof tiddler.type === 'string' ? tiddler.type : null, ...(typeDefaulted ? { typeDefaulted: true } : {}), fields: args.fields ?? null }
@@ -677,7 +520,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
             results.push({ title, written: false, skipped: true, failed: false })
             continue
           }
-          const { tiddler } = buildWriteTiddler(title, item.text, existing, normalizeTagArg(item.tags), item.fields)
+          const { tiddler } = buildWriteTiddler(title, item.text, { existing, tags: normalizeTagArg(item.tags), fields: item.fields })
           await wiki.put(tiddler)
           written++
           results.push({ title, written: true, skipped: false, failed: false })
@@ -883,7 +726,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       if (existing !== undefined) {
         await wiki.put({ ...cleanTiddler(existing), text: next })
       } else {
-        const tags = finalTagsForWrite(title, undefined, Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [])
+        const tags = finalTagsForWrite(title, undefined, Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [], true)
         const tiddler: Tiddler = { title, text: next }
         if (tags.length > 0) tiddler.tags = tags
         finalTypeForWrite(title, tiddler)
@@ -1020,10 +863,10 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_lint ──────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_lint',
-    description: '知识库体检（只读）：找出垃圾/异常标签、指向不存在条目的死链、空笔记、疑似 Markdown 却缺 type 的笔记，以及超大二进制附件。返回按类别分组的问题清单与修复建议。',
+    description: '知识库体检（只读）：找出垃圾/异常标签、指向不存在条目的死链、空笔记、疑似 Markdown 却缺 type 的笔记。返回按类别分组的问题清单与修复建议。',
     parameters: {
       limit: { type: 'integer', description: '可选：每类最多返回多少条示例（默认 10，最大 100）' },
-      checks: { type: 'array', items: { type: 'string' }, description: '可选：只跑指定检查（junk-tags / broken-links / empty-notes / missing-type / large-binary）' },
+      checks: { type: 'array', items: { type: 'string' }, description: '可选：只跑指定检查（junk-tags / broken-links / empty-notes / missing-type）' },
     },
     output: {
       schema: { type: 'json' },
@@ -1043,7 +886,19 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const wanted = Array.isArray(args.checks) && args.checks.length > 0 ? new Set(args.checks) : undefined
       const want = (kind: string): boolean => wanted === undefined || wanted.has(kind)
       const items = await wiki.list(undefined, true)
-      const titles = new Set(items.map((t) => t.title))
+      // 死链检查需要**全部**标题（含图片/PDF 等二进制附件）——只拿文本列表会
+      // 把每一条 `[[图.png]]` / `{{附件}}` 都误报成死链（v0.19.1 修复）。
+      // 瘦列表（不带正文）一次请求就能拿到全部标题。
+      const titles = want('broken-links')
+        ? new Set((await wiki.list()).map((t) => t.title))
+        : new Set(items.map((t) => t.title))
+      // 缺 type 判定要走 `[!has[type]]` 过滤器：TW 服务端会给 listing 里**每条**
+      // 无 type 的条目补 `text/vnd.tiddlywiki`，靠响应里的 type 永远认不出来
+      // （v0.19.1 修复：旧实现里这个检查永远不触发）。过滤器在服务端按真实字段
+      // 求值，返回的标题就是真正没有 type 的那些。
+      const typelessTitles = want('missing-type')
+        ? new Set((await wiki.list(MISSING_TYPE_FILTER)).map((t) => t.title))
+        : new Set<string>()
       const issues: LintIssue[] = []
 
       if (want('junk-tags')) {
@@ -1097,15 +952,14 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         let count = 0
         for (const t of items) {
           if (t.title.startsWith('$:/')) continue
-          const type = typeof t.type === 'string' ? t.type : ''
-          if (type === DEFAULT_NOTE_TYPE || type === 'text/vnd.tiddlywiki') continue
+          if (!typelessTitles.has(t.title)) continue
           const text = t.text ?? ''
           if (/^#{1,6}\s|\n#{1,6}\s|^\s*[-*]\s|\*\*[^*]+\*\*/m.test(text)) {
             count++
-            if (samples.length < limit) samples.push(`「${t.title}」（type=${type || '（无）'}）`)
+            if (samples.length < limit) samples.push(`「${t.title}」（无 type 字段，当前按 wikitext 渲染）`)
           }
         }
-        if (count > 0) issues.push({ kind: 'missing-type', count, hint: '正文像 Markdown 但 type 不是 text/markdown，TW 会按 wikitext 渲染；用 fields.type 明确内容类型', samples })
+        if (count > 0) issues.push({ kind: 'missing-type', count, hint: '正文像 Markdown 但条目没有 type 字段，TW 会按 wikitext 渲染；用 tiddlywiki_put 的 fields.type 明确内容类型', samples })
       }
 
       return { scanned: items.length, issues }
@@ -1130,6 +984,14 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const restartIfChanged = async (pulled: { changed?: boolean }): Promise<{ restarted?: boolean; restartError?: string }> => {
         if (pulled.changed !== true || deps.restartWiki === undefined) return {}
         try {
+          // DRAIN THE SYNCER FIRST (v0.19.1, data safety): a PUT answers 204 as
+          // soon as the tiddler is in TW's in-memory store; the filesystem
+          // syncer writes it ~250ms later. Restarting TW before that flush KILLS
+          // the write (the restarted server boots from the old snapshot and the
+          // note is gone — not even the git commit that follows can recover it).
+          // The agent path is the risky one: `tiddlywiki_put` → `git_sync`
+          // back-to-back. Same sentinel trick as seeds.ts / index.ts.
+          await flushPendingWrites(requireWiki(), join(dir, 'tiddlers')).catch(() => undefined)
           await deps.restartWiki()
           return { restarted: true }
         } catch (err) {

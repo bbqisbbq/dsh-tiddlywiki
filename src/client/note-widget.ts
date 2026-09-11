@@ -141,6 +141,14 @@ function clearDraft(): void {
   try { localStorage.removeItem(draftKey()) } catch { /* ignore */ }
 }
 
+/**
+ * 内容签名（标题 + 正文 + 标签）：用来判断「这份内容是不是已经写进 wiki 了」。
+ * 只做相等比较，不是哈希——不做安全用途（v0.19.1）。
+ */
+function draftSignature(title: string, text: string, tags: string[]): string {
+  return `${title}\u0000${text}\u0000${tags.join('\u0001')}`
+}
+
 function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n)
 }
@@ -428,6 +436,20 @@ export function createNoteWidget(): NoteWidgetHandle {
   let defaultTag = 'inbox'
   let draftTimer: number | undefined
   let recentOpen = false
+  /**
+   * Optimistic-concurrency token of the note currently loaded into the card
+   * (v0.19.1): set by the 「🕘 最近」picker, echoed on save so a human edit made
+   * in the embedded TW editor in the meantime is not silently overwritten.
+   * Cleared once the note is saved (the fresh value is re-read on next load).
+   */
+  let loadedToken: { title: string; modified?: string; revision?: number } | null = null
+  /**
+   * Signature of content that was already persisted to the wiki by the last
+   * successful save /「在 TW 中编辑」(v0.19.1). `flushDraft` skips re-persisting
+   * the IDENTICAL content, so a no-op change event after saving no longer
+   * resurrects an "unsaved draft" banner on the next open.
+   */
+  let persistedSignature: string | null = null
 
   /**
    * Broadcast the card's open/close state to the rest of the page (the input-
@@ -489,6 +511,12 @@ export function createNoteWidget(): NoteWidgetHandle {
       clearDraft()
       return
     }
+    // 刚写入 wiki / 刚在 TW 原生编辑器里打开过的同一份内容不再写成"未保存草稿"
+    // （v0.19.1）：保存成功后清草稿，但编辑器内容还在，随后任何一个 change 事件
+    // （哪怕内容没变）都会把整篇重新持久化成草稿，下次打开弹「已恢复未保存草稿」，
+    // 用户会以为保存失败。
+    const signature = draftSignature(title, text, ui.tagEditor.getTags())
+    if (persistedSignature !== null && signature === persistedSignature) return
     persistDraft({ text, title, tags: ui.tagEditor.getTags(), savedAt: Date.now() })
   }
 
@@ -532,6 +560,11 @@ export function createNoteWidget(): NoteWidgetHandle {
       }
       clearDraft()
       hideDraftBanner()
+      // The content just went to the wiki; remember it so no later no-op change
+      // event re-persists it as an "unsaved draft" (v0.19.1), and drop the
+      // concurrency token (the note was just rewritten).
+      persistedSignature = draftSignature(title, text, tags)
+      loadedToken = null
       // twUrl is the same-origin proxy path (e.g. /dsh-tiddlywiki/tw/);
       // resolve it against this page's origin so the popup works from any
       // host/domain DSH is reached on (loopback, LAN, Tailscale, HTTPS).
@@ -554,7 +587,7 @@ export function createNoteWidget(): NoteWidgetHandle {
   const loadNote = async (title: string): Promise<void> => {
     try {
       const res = await fetch(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`, { signal: AbortSignal.timeout(10_000) })
-      const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; text?: string; tags?: string[]; notFound?: boolean; error?: string } | null
+      const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; text?: string; tags?: string[]; notFound?: boolean; error?: string; modified?: string | null; revision?: number | null } | null
       if (!res.ok || payload?.ok !== true || typeof payload.title !== 'string') {
         const reason = payload?.notFound === true ? '不存在' : (payload?.error ?? `HTTP ${res.status}`)
         toast(`读取失败：${reason}`)
@@ -564,6 +597,15 @@ export function createNoteWidget(): NoteWidgetHandle {
       ui.editor.setValue(payload.text ?? '')
       ui.titleInput.value = payload.title
       ui.tagEditor.setTags(payload.tags ?? [])
+      // Remember the concurrency token of this note so a later save refuses to
+      // overwrite a concurrent human edit (v0.19.1). A freshly loaded note is by
+      // definition not "already persisted" by this card.
+      loadedToken = {
+        title: payload.title,
+        ...(typeof payload.modified === 'string' && payload.modified.length > 0 ? { modified: payload.modified } : {}),
+        ...(typeof payload.revision === 'number' ? { revision: payload.revision } : {}),
+      }
+      persistedSignature = draftSignature(payload.title, payload.text ?? '', payload.tags ?? [])
       hideDraftBanner()
       closeRecent()
       toast(`已载入「${payload.title}」`)
@@ -793,6 +835,9 @@ export function createNoteWidget(): NoteWidgetHandle {
     const saveDone = (): void => {
       clearDraft()
       hideDraftBanner()
+      // 这份内容已经进 wiki 了：同内容不再回写成草稿（v0.19.1），token 也失效。
+      persistedSignature = draftSignature(titleInput.value.trim(), editor.getValue(), tagEditor.getTags())
+      loadedToken = null
       editor.setValue('')
       titleInput.value = timestampTitle()
       tagEditor.setTags([])
@@ -814,14 +859,27 @@ export function createNoteWidget(): NoteWidgetHandle {
       saveBtn.disabled = true
       saveBtn.textContent = '保存中…'
       try {
+        const title = titleInput.value.trim()
+        const body: Record<string, unknown> = { title, tags: tagEditor.getTags(), text }
+        // Echo the token of the note loaded from 「🕘 最近」 (v0.19.1): if a human
+        // edited it in the embedded TW editor meanwhile, the host answers 409 and
+        // we refuse instead of silently overwriting their change.
+        if (loadedToken !== null && loadedToken.title === title) {
+          if (loadedToken.modified !== undefined) body.expectedModified = loadedToken.modified
+          if (loadedToken.revision !== undefined) body.expectedRevision = loadedToken.revision
+        }
         const res = await fetch(NOTE_ENDPOINT, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ title: titleInput.value.trim(), tags: tagEditor.getTags(), text }),
+          body: JSON.stringify(body),
           signal: AbortSignal.timeout(10_000),
         })
-        const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; error?: string } | null
+        const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; error?: string; conflict?: boolean } | null
         if (!res.ok || payload?.ok !== true) {
+          if (res.status === 409 || payload?.conflict === true) {
+            toast('保存被拒绝：这篇笔记在你读取之后被改动过。请用「🕘 最近」重新载入后再保存。')
+            return
+          }
           toast(`保存失败：${payload?.error ?? `HTTP ${res.status}`}`)
           return
         }

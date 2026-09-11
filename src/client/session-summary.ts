@@ -18,8 +18,9 @@
  * 原生 hash 导航」（条目进了浏览器 store 后，story view 仍被 system 级联规则按
  * 代码块展示），汇总都呈现为「整篇 wikitext 源码、像包在代码标签里」——这正是
  * 用户看到的现象。修复：客户端**不再用 iframe / story view**，改走与回复流工具卡
- * 同一条原生渲染管线——`POST /tw/render { title }`（服务端 renderText 把 wikitext
- * 块解析成 HTML 片段，内部 [[链接]] 重写为同源代理 hash /dsh-tiddlywiki/tw/#标题）
+ * 同一条原生渲染管线——`POST /dsh-tiddlywiki/render { title }`（host 转 TW 的
+ * /render 并由 **host 净化片段**后再返回，见 host/sanitize.ts；服务端 renderText
+ * 把 wikitext 块解析成 HTML 片段，内部 [[链接]] 重写为同源代理 hash /dsh-tiddlywiki/tw/#标题）
  * → dangerouslySetInnerHTML 注入滚动容器；主题与样式复用 .dsh-tw-toolcard-native
  * 的 tc-* 重主题（与工具卡视觉一致）；片段内链接由全局 wiki-link 拦截器打开中央
  * TW 面板。无 iframe → 无 story view → 无编辑按钮/草稿（v0.16.16 的三层防误编辑
@@ -33,12 +34,11 @@
  * @module dsh-tiddlywiki/client/session-summary
  */
 import * as React from 'react'
-import { GET_ENDPOINT } from './endpoints.ts'
+import { GET_ENDPOINT, RENDER_ENDPOINT } from './endpoints.ts'
 import { getTabLabel, setTabLabel } from './tw-frame.ts'
 
 export const SESSION_SUMMARY_VIEW_ID = 'dsh-tiddlywiki-summary'
 const SUMMARY_ENDPOINT = '/dsh-tiddlywiki/session/summary'
-const RENDER_ENDPOINT = '/dsh-tiddlywiki/tw/render'
 /** 自愈探测周期：服务端 volatile 条目被清（TW 重启）→ 自动重新生成。 */
 const SELF_HEAL_MS = 30_000
 /** 连续多少次「生成后服务端仍缺失」后停止自动重试，交还手动「🔄 刷新」。 */

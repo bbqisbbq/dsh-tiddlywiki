@@ -140,7 +140,13 @@ export function createSyncController(): SyncController {
 
   const poll = async (): Promise<void> => {
     if (disposed) return // unmounted: no further fetches or state churn
-    applyStatus(await fetchStatus())
+    const payload = await fetchStatus()
+    // Re-check AFTER the await (v0.19.1): the widget may have been disposed while
+    // the request was in flight — without this the late response still mutated
+    // `state` and emitted into a cleared listener set, racing a freshly mounted
+    // instance's own poll.
+    if (disposed) return
+    applyStatus(payload)
   }
 
   const doSync = async (): Promise<SyncStateView> => {

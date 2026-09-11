@@ -18,15 +18,15 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.19.0`（npm latest = 0.18.0；git tag `v0.19.0`） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
+| **插件版本** | `0.19.1`（npm latest = 0.18.0；git tag `v0.19.1`） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` + `scripts/verify-render-bundle.mjs`（v0.19.0 新增逐字节守门） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
 | **Seed 注册表（10 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（首次安装默认写、可移除）：`doc-note`、`starter-docs`；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge`（剪藏桥使用说明，真功能在 `clip-bridge.ts` 运行时代码里）。文档类内容统一打 `dsh-docs` 标签（进首页「📚 插件文档」栏） | `src/host/seeds.ts` 的 `SEED_DEFS` |
 | **注入提示词** | `PROMPT_TEXT`（name `dsh-tiddlywiki`，order 100）：工具清单（15 个）/ **覆盖前先 `tiddlywiki_get` 拿 `modified` 并作为 `expectedModified` 写回**（v0.19.0 并发纪律）/ 同步纪律 / 冲突处理 / 标签约定（`agent-written`/`human-edited`/workspace tag）/ **内容类型约定**（默认 markdown，`fields.type` 是内容类型保留字段勿放业务分类）/ **想法沉淀约定**（`todo`+`agent-written` 写将来有用的 idea）/ **二进制附件说明**（`search`/`recent` 不含二进制，`get` 只回元数据）/ 可点击链接格式 | `src/index.ts` |
 | **配置项** | `wikiRoot`/`wiki`/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag}`/`bridge{enabled,port,token,tag}`/`ui{showQuickNote,showQuickNoteDock,quickNoteMode,sidebarLabel,showPanelStatus,showSyncButton,followDshTheme,darkPalette,sendToAgent{enabled,endpoint,token},allArticles{pageSize},tabLabel,showSessionTab,showRightbarTab}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
-| **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/sync` `/upload` `/restart` `/session/summary` `/agent/sessions` `/agent/modes` `/agent/send` `/agent/create` `/api/*` `/tw/*`；admin：`/admin/state` `/admin/info` `/admin/config` `/admin/restart` `/admin/seeds` `/admin/seeds/run` `/admin/seeds/remove` | `src/host/routes.ts` + `src/host/admin.ts` |
-| **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；`conversation.input.dock`（id `quick-note`，order 8，输入框上方快速笔记按钮，受 `ui.showQuickNoteDock` 控制；点击行为由 `ui.quickNoteMode` 决定——native=直达 TW 原生编辑弹窗（默认，`openNative`+`openEditorPopup`），card=Markdown 卡片，见 `src/client/quick-note-dock.ts`、`src/client/note-widget.ts`、`src/client/editor-popup.ts`）；`conversation.view`（id `dsh-tiddlywiki-summary`，order 20，会话顶部「知识库」Tab = 本会话相关 wiki 汇总，**TW 原生渲染**：后端写 volatile `$:/temp/dsh/session-summary/<会话ID>`，前端 **POST /tw/render 取原生片段**注入 Tab——v0.16.19 起**不再用 iframe / story view**（TW 核心把 `$:/temp/` 前缀 tiddler 一律按代码块渲染，见 §8），链接点击直达中央 TW 面板，不可编辑；受 `ui.showSessionTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/session-summary.ts`）；`sidebar.right.pane.tab`（keyed，key=`dsh-tiddlywiki`，**右侧栏 TW tab**（v0.16.21）：type 注册进 `ctx.sidebarRightTabs`（服务**可选访问** `ctx.get('sidebarRightTabs')`，老版本 DSH 自动跳过），body 为 React 包装的 TW iframe（同源代理 + theme-sync + 链接 hash 导航），guide 首页入口盒点击打开；受 `ui.showRightbarTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/rightbar-tab.ts`）；**~~DSH Better Sidebar TW tab~~（v0.16.23 引入，v0.17.0 已移除：不再向 dsh-better-sidebar 注册 tab 类型，避免 tab kind 重复注册冲突；侧边栏只用 rightbar）**；回复流工具卡片 `tool.call.toolview`（15 个工具各自 key） | `src/client/index.ts`、`src/client/quick-note-dock.ts`、`src/client/rightbar-tab.ts`、`src/client/tw-frame.ts`、`src/client/session-summary.ts`、`src/client/tool-views.ts` |
+| **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/render` `/sync` `/upload` `/restart` `/session/summary` `/agent/sessions` `/agent/modes` `/agent/send` `/agent/create` `/api/*` `/tw/*`；admin：`/admin/state` `/admin/info` `/admin/config` `/admin/restart` `/admin/seeds` `/admin/seeds/run` `/admin/seeds/remove` | `src/host/routes.ts` + `src/host/admin.ts` |
+| **客户端 Slot** | `settings.section`（id `dsh-tiddlywiki`，order 50）；`conversation.input.dock`（id `quick-note`，order 8，输入框上方快速笔记按钮，受 `ui.showQuickNoteDock` 控制；点击行为由 `ui.quickNoteMode` 决定——native=直达 TW 原生编辑弹窗（默认，`openNative`+`openEditorPopup`），card=Markdown 卡片，见 `src/client/quick-note-dock.ts`、`src/client/note-widget.ts`、`src/client/editor-popup.ts`）；`conversation.view`（id `dsh-tiddlywiki-summary`，order 20，会话顶部「知识库」Tab = 本会话相关 wiki 汇总，**TW 原生渲染**：后端写 volatile `$:/temp/dsh/session-summary/<会话ID>`，前端 **POST /dsh-tiddlywiki/render 取原生片段**（host 转 TW `/render` 并**净化**后返回，v0.19.1）注入 Tab——v0.16.19 起**不再用 iframe / story view**（TW 核心把 `$:/temp/` 前缀 tiddler 一律按代码块渲染，见 §8），链接点击直达中央 TW 面板，不可编辑；受 `ui.showSessionTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/session-summary.ts`）；`sidebar.right.pane.tab`（keyed，key=`dsh-tiddlywiki`，**右侧栏 TW tab**（v0.16.21）：type 注册进 `ctx.sidebarRightTabs`（服务**可选访问** `ctx.get('sidebarRightTabs')`，老版本 DSH 自动跳过），body 为 React 包装的 TW iframe（同源代理 + theme-sync + 链接 hash 导航），guide 首页入口盒点击打开；受 `ui.showRightbarTab` 控制、tab 名跟随 `ui.tabLabel`，见 `src/client/rightbar-tab.ts`）；**~~DSH Better Sidebar TW tab~~（v0.16.23 引入，v0.17.0 已移除：不再向 dsh-better-sidebar 注册 tab 类型，避免 tab kind 重复注册冲突；侧边栏只用 rightbar）**；回复流工具卡片 `tool.call.toolview`（15 个工具各自 key） | `src/client/index.ts`、`src/client/quick-note-dock.ts`、`src/client/rightbar-tab.ts`、`src/client/tw-frame.ts`、`src/client/session-summary.ts`、`src/client/tool-views.ts` |
 
 ## 2. 仓库布局与关键文件
 
@@ -40,6 +40,8 @@ src/
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
 │   ├── routes.ts       # 全部 DSH 路由（见 §1 路由表）+ agent-send/create/modes/sessions + session/summary
 │   ├── http.ts         # 共用 HTTP 助手：readBody/readBodyBuffer（带大小上限）+ json() 响应 + rejectCrossSiteWrite（写路由的同源/CSRF 守卫）
+│   ├── sanitize.ts     # 渲染片段白名单净化器（v0.19.1）：丢 script/iframe/object/embed/form/svg…、丢 on*/srcdoc、URL 只放行 http(s)/相对路径/栅格 data:image
+│   ├── write-policy.ts # 共享写策略（v0.19.1）：cleanTiddler/buildWriteTiddler/assertNoConflict/flattenTiddlerFields —— agent 工具与 /note /edit 路由共用
 │   ├── clip-bridge.ts  # 本地剪藏桥（v0.16.25 图片 / v0.18.0 SSRF 守卫）：只监听 127.0.0.1 的 HTTP 桥，POST /clip 把书签剪藏写进 wiki；「浮层选图」——桥下载所选图片字节存为二进制附件 tiddler（type image/* + base64，笔记 [img[标题]] 内嵌，失败降级链接）；Host 校验防 DNS rebinding + 可选 token + CORS/PNA preflight；端口按 **effective config** 绑定一次（改端口需重启 dsh web），enabled/token/tag 每请求读 effective config；`assertPublicImageUrl` 只放行公网 http(s)（逐跳校验重定向）
 │   ├── session-summary.ts # 会话「知识库」Tab 后端：sessionQuery 读日志+后代 → 产生/读取/检索 → $:/temp 汇总 wikitext（后代/条目/检索记录都有上限）
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/* 路由（seeds run/remove；seed 写了 render-route 才等 flush 并重启 TW）
@@ -53,7 +55,7 @@ src/
 │   ├── endpoints.ts    # 客户端同源端点常量（/dsh-tiddlywiki/status 等，与 §1 路由表对应）
 │   ├── rightbar-tab.ts # 右侧栏 TW tab（v0.16.21）：type 注册 + guide 入口 + React body（TW iframe）/互斥
 │   ├── tw-frame.ts     # 共享 TW iframe 机制（v0.16.23）：lazy-load/status 轮询/主题同步/hash 导航/互斥 + live-frame 链接路由注册表
-│   ├── session-summary.ts # 会话「知识库」Tab（conversation.view 槽位）：POST 生成 → /tw/render 原生片段注入（不走 story view，见 §1 客户端 Slot）
+│   ├── session-summary.ts # 会话「知识库」Tab（conversation.view 槽位）：POST 生成 → /dsh-tiddlywiki/render 原生片段注入（host 净化后返回，不走 story view，见 §1 客户端 Slot）
 scripts/                # 构建/校验/再生成脚本（见 §4）；bundle/versions.mjs = bundle 版本唯一来源
 docs/seed-initialization.md  # seed 机制详解（权威）
 cordis.patch.yml        # 插件行插入 web profile（dsh.bundle.patch）
@@ -71,7 +73,7 @@ npm run selftest      # headless：spawn TW → REST 读写 → git → 15 个�
 npm run smoke:client  # client bundle 的 module-loader 形状冒烟（wrap-client 之外的第二道）
 npm run verify        # = verify:static + verify:unit + verify:e2e（本地一键；CI 同款分档）
 npm run verify:static # send-to-agent bundle 逐字节 / render bundle 逐字节 / 发布包内容 / 版本一致性
-npm run verify:unit   # 剪藏桥（含 IPv6 SSRF 回归）/ seed 读失败策略
+npm run verify:unit   # 剪藏桥（含 IPv6 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器（v0.19.1）
 npm run verify:e2e    # auth 模式 / 工具层 / git 冲突解决 / 崩溃自愈+并发写
 npm run verify:large  # 3000+ 条目大 wiki：filter 长度、检索耗时、二进制零出现、真跑 commit（约 1 分钟）
 # 另有（不进 CI，依赖本机 Chrome / 线上 wiki）：
@@ -82,6 +84,8 @@ node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 ```
 
 **CI**：`.github/workflows/ci.yml`（v0.19.0 起）4 个 job——`static`（typecheck + build + `git diff --exit-code -- lib/` + 静态 verify）、`selftest`、`verify-unit`、`verify-e2e`；后三者 `needs: static`。浏览器类脚本不进 CI（会静默 SKIP，等于假绿）。
+
+**⚠️ 行尾必须 LF（v0.19.1 教训）**：仓库根有 **`.gitattributes`（`* text=auto eol=lf`）**。`lib/index.js.map` 内嵌源文件原文（`sourcesContent`），Windows 工作区若是 CRLF，生成的 map 里就是 `\r\n` 转义，而 GitHub runner 检出为 LF → 重建出的 map 与提交版不同 → `static` 的 `git diff --exit-code -- lib/` 必失败，且它一挂其余三个 job（`needs: static`）**根本不会跑**（v0.19.0 的 CI 实际就是这个状态）。改完 src 一律 `npm run build` 后提交 lib/；不要绕开 `.gitattributes` 的 LF 约定。
 
 **构建约束（踩过的坑）**：host 端 `tiddlywiki` **不打包**（运行时 `createRequire().resolve('tiddlywiki/tiddlywiki.js')`）；client 端 `react` **不打包**（web app 运行时解析）；client 必须 **minify**（否则 >1MB，被 dsh.pub 等注册表校验拒绝）。发布前的自包含检查要断言**不存在真实的 import 语句**（`grep -nE "(from|require\()\s*['\"]@deepseek-ai" lib/*.js` 必须无输出）——简单的 `grep -r "@deepseek-ai" lib/` 会命中 `sdk.ts` 的说明注释（2 处），永远失败。
 
@@ -119,7 +123,8 @@ node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 
 - **内容类型默认**（v0.16.15）：`put`/`batch_put` 对未指定 `type` 的条目自动补 `text/markdown`（`$:/` 系统条目除外；显式 `fields.type` 优先）；`fields.type` 是 TW 内容类型**保留字段**，工具描述/提示词都明确警告勿放业务分类值。
 - **读取错误策略**（v0.18.0）：`put`/`batch_put` 判「是否新条目」的 `wiki.get()` **不得吞错**——只有 404 才算新条目，否则网络故障会把人类笔记误判为新建并补打 `agent-written`。`fields` 也不能覆盖 `title`/`text`/`tags`/`created`/`modified`（`type` 例外，那是改内容类型的正规入口）；`batch_put` 逐条 try/catch，单条失败不影响其余，结果含 `failed` 与逐条 `error`（`items[].title/text` **故意不是 required**，否则参数预校验会在逐条容错之前整批抛错）。
-- **写入保留字段（v0.19.0，数据安全）**：`buildWriteTiddler()` 以**已有条目为基底**构造 PUT——不传 `tags` 就保留原标签、原自定义字段与内容类型，显式传 `tags` 才整体替换标签。⚠️ 单条 GET 的自定义字段是**嵌套在 `fields` 里**的（`get-tiddler.js` 把 knownFields 之外的字段收进 `fields`），`cleanTiddler()` 必须把它们**摊平**，否则 put/append/rename/trash 都会静默丢掉 `q`/`due`/`clip-url`/`draft.of` 之类的字段。
+- **写入保留字段（v0.19.0 / 抽成共享策略 v0.19.1，数据安全）**：写策略住在 **`src/host/write-policy.ts`**（`cleanTiddler`/`buildWriteTiddler`/`assertNoConflict`/`flattenTiddlerFields`），**agent 工具与 `/note`、`/edit` 人类路由共用同一份实现**——v0.19.0 只在工具层修了「不丢 tags/自定义字段」，HTTP 路由仍在盲覆盖（同名保存会清掉人类笔记的标签与 `q`/`due`）。`buildWriteTiddler()` 以**已有条目为基底**构造 PUT：不传 `tags` 就保留原标签/自定义字段/内容类型，显式传 `tags` 才整体替换；`agentTag: false`（人类路由）不补 `agent-written`。⚠️ 单条 GET 的自定义字段是**嵌套在 `fields` 里**的（`get-tiddler.js` 把 knownFields 之外的字段收进 `fields`），必须摊平，否则 put/append/rename/trash 会静默丢字段，`tiddlywiki_get` 也会渲染成 `fields=[object Object]`。
+- **`tiddlywiki_lint` 的两个坑（v0.19.1 修复）**：① 死链检查的标题集合必须取**全部**标题（瘦列表），只取文本列表会把每条指向图片/附件的 `[[x.png]]`/`{{x}}` 误报成死链；② 「缺 type」不能用响应里的 `type` 判断——TW 服务端会给无 type 的条目补 `text/vnd.tiddlywiki`，只能靠 `MISSING_TYPE_FILTER`（`[all[tiddlers]!is[system]!has[type]]`，服务端按真实字段求值）列标题，再回文本列表取正文。
 - **乐观并发（v0.19.0）**：`put` 支持 `expectedRevision` / `expectedModified` + `force`；`revision` 是 GET 响应里的 changeCount，**刚 PUT 还没落盘的条目没有 `modified`**，所以两个令牌都支持（比较前经 `parseTiddlerDate` 归一）。
 - **检索/最近跳过二进制附件**（v0.16.20）：`search`/`recent` 的列表在**服务端**用外部 filter 只取文本 tiddler（无 `type` 或 `text/*`，见 `tw-api.ts` 的 `TEXT_LIST_FILTER`），图片等二进制 tiddler（base64 正文）完全不参与检索/不出现在结果（含标题命中，防同名书页图刷屏）；`get` 对二进制 tiddler 只回元数据（`binary=true`/`binaryType`/`binaryChars` + 链接）。403 时自动 PUT `$:/config/Server/ExternalFilters/<filter>`="yes" 自愈重试；**显式 filter 仍 403 就抛错**（不再偷换成默认列表），只有插件自用的 `TEXT_LIST_FILTER` 会降级瘦身列表。带正文的列表有 **2s TTL + in-flight 合并缓存**（写后失效）。**filter 串必须保持短**（白名单 tiddler 文件名 = 整个 filter，见 §8）。
 - **检索质量（v0.19.0）**：`search` 按 `标题命中 6 > 标签命中 3 > 正文命中次数` 打分排序，片段取**命中处上下文**（`snippetAround`），支持 `field`/`value` 自定义字段过滤，`limit` 统一 clamp 到 200。⚠️ TW 的 listing 返回的 `modified` 是**紧凑格式**（`YYYYMMDDhhmmssSSS`），必须走 `parseTiddlerDate`，用 `new Date()` 会让 `since` 过滤恒为空。
@@ -232,6 +237,9 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **写路由必须显式声明 HTTP 方法（v0.19.0）**：宿主 webserver 只按 pathname 分发，`isCrossSiteWrite` 又放行 GET，所以漏写方法的写路由会被 `GET`（乃至跨站 `<img>`）触发。新加写路由时用 `rejectCrossSiteWrite(req, res, ['POST'])`，读路由用 `rejectNonRead`。
 - **SSRF 守卫要按字节判 IPv6（v0.19.0）**：字符串前缀法漏掉 `0:0:0:0:0:0:0:1`、`::0:1`、`::ffff:7f00:1`（都是回环）。`isPrivateAddress` 现在用 `ipv6ToBytes` 展开成 16 字节，并处理 IPv4-mapped / 6to4 / NAT64；下载用 `lookup` **pin 住已校验的 IP**，避免 DNS rebinding 在 check 与 connect 之间换答案。
 - **TW REST 的 PUT 是整体替换（v0.19.0 数据安全）**：只发 `{title, text}` 会抹掉既有 tags 与自定义字段。所有「基于已有条目改写」的路径都要走 `buildWriteTiddler()`；而单条 GET 返回的自定义字段**嵌套在 `fields` 下**，`cleanTiddler()` 必须摊平（否则 rename/append/trash 一样会丢字段）。
+- **任何重启 TW 之前都要 `flushPendingWrites()`（v0.19.1 补漏）**：REST PUT 返回 204 时 syncer 还握着这条写入（~250ms 定时器），此时重启会**直接吞掉它**（v0.19.0 只在 seed 路径做了，`/sync` 与工具 `git_sync` 漏了 → agent 连续 `put → git_sync` 时可能丢笔记）。两条路径现在都先写哨兵再重启。
+- **Host 侧注入浏览器的 TW 片段必须净化（v0.19.1 安全）**：回复流卡片与会话汇总用 `dangerouslySetInnerHTML` 把 TW 渲染结果插进 **DSH 同源页面**，而 TW 的解析器只剥 `on*`——`<iframe src="javascript:…">`、`<a href="javascript:…">`、`<form action="javascript:…">` 全部原样通过（实测）。客户端一律走 **`POST /dsh-tiddlywiki/render`**（`src/host/sanitize.ts` 的 `sanitizeTwFragment` 净化后返回），不要直连 TW 的 `/tw/render`；新增注入点时 `verify-render-sanitizer.mjs` 会断言它引用 `RENDER_ENDPOINT`。
+- **重启是有状态的，必须单飞（v0.19.1）**：`WikiServer.restart()` 内部串行（routes 层的 `beginMutation` 只覆盖 `/restart` 与 `/sync`，`/admin/*` 那三处够不着——并发重启会留下孤儿 TW 进程）。启动任务（`apply()` 里的 fire-and-forget IIFE）与 teardown 也要靠 `disposed` 标志握手：先置位再 await，否则「disposer 先跑完、startup 后 spawn」同样留孤儿。
 - **`$:/` 条目无法通过 recipe listing 枚举（v0.19.0 实测）**：新 wiki 的 `$:/config/SyncSystemTiddlersFromServer` 默认 `"no"`，`get-tiddlers-json.js` 于是给每个 filter 追加 `+[!is[system]]`。要靠 listing 找 `$:/` 条目（如回收站）必须另建**非系统索引 tiddler** 并用 `get` 读（回收站就是这么做的）。
 - **TW 的日期字段是紧凑格式（v0.19.0）**：listing 返回 `modified` 形如 `20260101000000000`（UTC），`new Date()` 会得到 Invalid Date——`since` 过滤曾因此恒为空。统一用 `parseTiddlerDate()` / `toIsoDateString()`（`tw-api.ts` 导出）。
 - **新装的 wiki 没有 markdown 插件（v0.19.0）**：`--init server` 只带 tiddlyweb/filesystem/highlight，而插件把每篇笔记都写成 `text/markdown`。`ensurePlugin(wikiPath, twRoot, 'tiddlywiki/markdown')` 在启动时幂等补齐并在变更后重启一次；作者本机 wiki 因历史导入流程早有该插件，所以这个坑长期没暴露。

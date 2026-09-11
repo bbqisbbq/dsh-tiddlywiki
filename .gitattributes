@@ -1,0 +1,17 @@
+# 统一行尾为 LF（v0.19.1）。
+#
+# 为什么必须显式声明：`lib/index.js.map` 的 sourcesContent 内嵌源文件原文，
+# 工作区若是 CRLF，生成的 map 里就是 `\r\n` 转义；Linux CI 检出为 LF，重建
+# 出的 map 与提交版必然不同 → `.github/workflows/ci.yml` 的
+# `git diff --exit-code -- lib/` 失败，static 一挂，其余三个 job（needs: static）
+# 全部不跑。把工作区钉死为 LF 后，Windows 本机与 CI 的产物才逐字节一致。
+* text=auto eol=lf
+
+# 二进制资源不做行尾转换。
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

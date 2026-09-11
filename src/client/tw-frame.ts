@@ -147,6 +147,8 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
   let started = false
   let disposed = false
   let refreshTimer: number | undefined
+  /** In-flight hash-readiness retry timers (cancelled by dispose, v0.19.1). */
+  const hashWaitTimers = new Set<number>()
   let refreshAttempts = 0
   let frameLoaded = false
   let pendingHash: string | null = null
@@ -232,7 +234,13 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
       const frameTw = win as { $tw?: unknown }
       if (typeof frameTw.$tw !== 'object' || frameTw.$tw === null) {
         if (attempt < 40) {
-          window.setTimeout(() => tryOnce(attempt + 1), 150)
+          // Tracked so dispose() cancels the chain (v0.19.1 — the untracked
+          // 40×150ms retry kept the iframe/closure alive after unmount).
+          const timer = window.setTimeout(() => {
+            hashWaitTimers.delete(timer)
+            tryOnce(attempt + 1)
+          }, 150)
+          hashWaitTimers.add(timer)
           return
         }
         fallbackLoad(hash)
@@ -342,6 +350,8 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
       document.removeEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
       signal.removeEventListener('abort', onAbort)
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+      for (const timer of hashWaitTimers) window.clearTimeout(timer)
+      hashWaitTimers.clear()
       themeSyncDispose?.()
       view.remove()
     },

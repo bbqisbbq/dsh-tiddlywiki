@@ -106,6 +106,8 @@ export class WikiServer {
   private error: string | undefined
   /** In-flight start() promise: single-flight guard (v0.19.0). */
   private startPromise: Promise<WikiStatusView> | undefined
+  /** In-flight restart(): two concurrent restarts must not spawn two children (v0.19.1). */
+  private restartPromise: Promise<WikiStatusView> | undefined
   /** Set by a successful readiness probe; a crash BEFORE readiness means the
    *  auto-chosen port may have been taken, so it is re-probed on restart. */
   private wasReady = false
@@ -309,10 +311,27 @@ export class WikiServer {
     }, delay)
   }
 
-  /** One-click restart (route /dsh-tiddlywiki/restart, panel retry button). */
+  /**
+   * One-click restart (routes `/restart`, `/sync`, every `/admin/*` restart).
+   *
+   * SINGLE-FLIGHT (v0.19.1): the route-level mutex in routes.ts could not cover
+   * the admin routes (separate closure), so two concurrent restarts — a double
+   * click, or `/restart` racing `/admin/seeds/run` — used to run `stop()` twice
+   * and spawn two children; the loser became an orphan process holding a port
+   * until dsh web exited. Serializing here fixes every caller at once.
+   */
   async restart(): Promise<WikiStatusView> {
-    await this.stop()
-    return this.start()
+    if (this.restartPromise !== undefined) return this.restartPromise
+    const run = (async (): Promise<WikiStatusView> => {
+      await this.stop()
+      return this.start()
+    })()
+    this.restartPromise = run
+    try {
+      return await run
+    } finally {
+      this.restartPromise = undefined
+    }
   }
 
   /** Deterministic teardown: cancel timers, SIGTERM, escalate to SIGKILL. */

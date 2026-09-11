@@ -25,12 +25,15 @@ import { mkdir, writeFile, access, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { TiddlyWebClient } from './tw-api.ts'
-import { TEXT_LIST_FILTER, toIsoDateString } from './tw-api.ts'
+import { TEXT_LIST_FILTER, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
 import { readBody, readBodyBuffer, json, rejectCrossSiteWrite, rejectNonRead, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
+import { sanitizeTwFragment } from './sanitize.ts'
+import { flushPendingWrites } from './seeds.ts'
+import { WriteConflictError, assertNoConflict, buildWriteTiddler, flattenTiddlerFields } from './write-policy.ts'
 
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './session-summary.ts'
@@ -309,10 +312,22 @@ export async function openInTwEditor(
   client: TiddlyWebClient,
   title: string,
   text: string,
-  tags: string[],
+  tags: string[] | undefined,
+  options: { defaultTags?: string[]; expectedModified?: string; expectedRevision?: string | number; force?: boolean } = {},
 ): Promise<{ title: string; draftTitle: string }> {
   if (text.trim().length > 0) {
-    await client.put({ title, text, tags, type: NOTE_TYPE })
+    // PRESERVE, do not blind-replace (v0.19.1): the old code PUT
+    // `{title, text, tags, type}` with no read, wiping the note's custom fields
+    // and (because `tags` defaulted to the note tag) its tags too.
+    const existing = await client.get(title)
+    assertNoConflict(title, existing, options)
+    const { tiddler } = buildWriteTiddler(title, text, {
+      existing,
+      tags,
+      defaultTags: options.defaultTags,
+      agentTag: false,
+    })
+    await client.put(tiddler)
   }
   // Draft content: the provided text, else the existing tiddler's content.
   let draftText = text
@@ -352,12 +367,15 @@ export async function openInTwEditor(
   return { title, draftTitle }
 }
 
-/** Resolve note tags from the request body: `tags` array wins, then the
- *  legacy single `tag` string, then the configured default tag. */
-function resolveTags(
-  body: { tag?: unknown; tags?: unknown },
-  defaultTag: string,
-): string[] {
+/**
+ * Resolve note tags from the request body: `tags` array wins, then the legacy
+ * single `tag` string. Returns **undefined** when the body asks for nothing —
+ * the caller (`buildWriteTiddler`) then preserves the existing note's tags
+ * (v0.19.1 data safety) or falls back to the configured default for new notes.
+ * The old version always returned `[defaultTag]`, so re-saving an existing note
+ * under its own title silently replaced its tags with the default.
+ */
+function resolveTags(body: { tag?: unknown; tags?: unknown }): string[] | undefined {
   if (Array.isArray(body.tags)) {
     const tags = body.tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim())
     if (tags.length > 0) return tags
@@ -365,7 +383,22 @@ function resolveTags(
   if (typeof body.tag === 'string' && body.tag.trim().length > 0) {
     return body.tag.trim().split(/\s+/).filter(Boolean)
   }
-  return [defaultTag]
+  return undefined
+}
+
+/** Body fields accepted by the note routes for optimistic concurrency. */
+function conflictTokens(body: { expectedModified?: unknown; expectedRevision?: unknown; force?: unknown }): {
+  expectedModified?: string
+  expectedRevision?: string | number
+  force?: boolean
+} {
+  return {
+    ...(typeof body.expectedModified === 'string' && body.expectedModified.length > 0 ? { expectedModified: body.expectedModified } : {}),
+    ...(typeof body.expectedRevision === 'string' || typeof body.expectedRevision === 'number'
+      ? { expectedRevision: body.expectedRevision }
+      : {}),
+    ...(body.force === true ? { force: true } : {}),
+  }
 }
 
 export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDeps): () => void {
@@ -737,7 +770,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   const handleNote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown }
+      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown; expectedModified?: unknown; expectedRevision?: unknown; force?: unknown }
       const text = typeof body.text === 'string' && body.text.trim().length > 0 ? body.text.trim() : null
       if (text === null) {
         json(res, { ok: false, error: 'text is required' }, 400)
@@ -756,12 +789,29 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'title must not be a system tiddler ($:/…)' }, 400)
         return
       }
-      const tags = resolveTags(body, deps.noteDefaults().tag)
-      await client.put({ title, text, tags, type: NOTE_TYPE })
+      const tags = resolveTags(body)
+      // PRESERVE, do not blind-replace (v0.19.1): read first (404 = new note,
+      // any other failure propagates), keep the existing tags/custom fields
+      // unless the body explicitly provides them, and honour the optimistic
+      // concurrency tokens the quick-note card sends for a note it loaded.
+      const existing = await client.get(title)
+      assertNoConflict(title, existing, conflictTokens(body))
+      const { tiddler } = buildWriteTiddler(title, text, {
+        existing,
+        tags,
+        defaultTags: [deps.noteDefaults().tag],
+        agentTag: false,
+      })
+      await client.put(tiddler)
       deps.autoCommit()
       invalidateGitStatus()
-      json(res, { ok: true, title, tag: tags.join(' '), tags, text, type: NOTE_TYPE })
+      const finalTags = tiddler.tags ?? []
+      json(res, { ok: true, title, tag: finalTags.join(' '), tags: finalTags, text, type: typeof tiddler.type === 'string' ? tiddler.type : NOTE_TYPE })
     } catch (err) {
+      if (err instanceof WriteConflictError) {
+        json(res, { ok: false, error: err.message, conflict: true }, 409)
+        return
+      }
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
   }
@@ -769,7 +819,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   const handleEdit = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown }
+      const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown; expectedModified?: unknown; expectedRevision?: unknown; force?: unknown }
       const client = deps.getClient()
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -780,13 +830,19 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'title must not be a system tiddler ($:/…)' }, 400)
         return
       }
-      const tags = resolveTags(body, deps.noteDefaults().tag)
       const text = typeof body.text === 'string' ? body.text : ''
-      const result = await openInTwEditor(client, title, text, tags)
+      const result = await openInTwEditor(client, title, text, resolveTags(body), {
+        defaultTags: [deps.noteDefaults().tag],
+        ...conflictTokens(body),
+      })
       deps.autoCommit()
       invalidateGitStatus()
       json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH })
     } catch (err) {
+      if (err instanceof WriteConflictError) {
+        json(res, { ok: false, error: err.message, conflict: true }, 409)
+        return
+      }
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
   }
@@ -878,19 +934,25 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, notFound: true, title }, 404)
         return
       }
-      const fields: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(t)) {
-        if (k === 'title' || k === 'text' || k === 'tags') continue
-        fields[k] = v
-      }
+      // Custom fields are FLATTENED (v0.19.1): a single-tiddler GET nests every
+      // non-known field under `fields`, so the old copy-top-level loop shipped
+      // `fields: {fields: {q: …}}` — consumers could never read `q`/`due`/
+      // `clip-url`. `revision` is surfaced explicitly as the concurrency token
+      // the quick-note card echoes back on save.
+      const binary = isBinaryType(typeof t.type === 'string' ? t.type : undefined)
       json(res, {
         ok: true,
         title: t.title,
-        text: t.text ?? '',
+        // Binary attachments carry base64 in `text`: never ship 20MB to the
+        // note picker (it only needs metadata) — same rule as tiddlywiki_get.
+        text: binary ? '' : (t.text ?? ''),
+        binary,
+        binaryChars: binary ? (t.text ?? '').length : undefined,
         tags: t.tags ?? [],
         type: t.type ?? 'text/vnd.tiddlywiki',
         modified: toIsoDateString(t.modified),
-        fields,
+        revision: t.revision ?? null,
+        fields: flattenTiddlerFields(t),
       })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
@@ -992,6 +1054,16 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       let restartError: string | undefined
       if (pulled.changed === true) {
         try {
+          // DRAIN THE SYNCER FIRST (v0.19.1, data safety): a REST PUT answers 204
+          // while the filesystem syncer still holds the tiddler (~250ms timer).
+          // Restarting TW before the flush kills those writes — the restarted
+          // server boots from the pre-write snapshot and the note is gone, and
+          // the `git commit` right below cannot recover what never hit disk.
+          // Seeds/admin/index already used this sentinel; this route did not.
+          const flushClient = deps.getClient()
+          if (flushClient !== undefined) {
+            await flushPendingWrites(flushClient, join(dir, 'tiddlers')).catch(() => undefined)
+          }
           await deps.server.restart()
           restarted = true
         } catch (err) {
@@ -1078,6 +1150,69 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, err instanceof Error && /too large/.test(err.message) ? 413 : 500)
+    }
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/render — the ONLY render endpoint the GUI uses.
+   *
+   * Proxies to TW's own `/render` server route (installed by the `render-route`
+   * seed) and **sanitizes the fragment before it leaves the host**.
+   *
+   * WHY (v0.19.1, security): the reply-stream tool card and the session
+   * 「知识库」 Tab inject that HTML with `dangerouslySetInnerHTML` inside the DSH
+   * page. TW's wikitext/markdown parsers only strip `on*` attributes — measured
+   * against the live `/render`: `<iframe src="javascript:…">`,
+   * `<a href="javascript:…">` and `<form action="javascript:…">` all pass
+   * through, i.e. any note text (agent-written, clipped, imported) could run
+   * script on the DSH origin and call the unauthenticated `/dsh-tiddlywiki/*`
+   * routes. Sanitizing host-side also protects wikis whose ONE-SHOT render
+   * bundle predates this fix (the client can never see raw TW output).
+   */
+  const handleRender = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      const client = deps.getClient()
+      if (client === undefined) {
+        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        return
+      }
+      let body: { title?: unknown; text?: unknown; type?: unknown; contextTitle?: unknown; parseAsInline?: unknown } = {}
+      try {
+        body = JSON.parse(await readBody(req, MAX_PROXY_BODY_BYTES)) as typeof body
+      } catch {
+        json(res, { ok: false, error: 'invalid JSON body' }, 400)
+        return
+      }
+      const title = typeof body.title === 'string' ? body.title.trim() : ''
+      const text = typeof body.text === 'string' ? body.text : undefined
+      if (title.length === 0 && text === undefined) {
+        json(res, { ok: false, error: 'body must provide "title" or "text"' }, 400)
+        return
+      }
+      const request = title.length > 0
+        ? { title }
+        : {
+            text: text as string,
+            ...(typeof body.type === 'string' && body.type.length > 0 ? { type: body.type } : {}),
+            ...(typeof body.contextTitle === 'string' && body.contextTitle.length > 0 ? { contextTitle: body.contextTitle } : {}),
+            ...(body.parseAsInline === true ? { parseAsInline: true } : {}),
+          }
+      const html = await client.render(request)
+      const safe = sanitizeTwFragment(html)
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'content-length': Buffer.byteLength(safe, 'utf8'),
+      })
+      res.end(safe)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (/HTTP 404/.test(message)) {
+        json(res, { ok: false, notFound: true, error: message }, 404)
+        return
+      }
+      json(res, { ok: false, error: message }, 502)
     }
   }
 
@@ -1186,6 +1321,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/recent`, handler: (req, res) => { void handleRecent(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/get`, handler: (req, res) => { void handleGet(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/search`, handler: (req, res) => { void handleSearch(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/render`, handler: (req, res) => { void handleRender(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/sync`, handler: (req, res) => { void handleSync(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),

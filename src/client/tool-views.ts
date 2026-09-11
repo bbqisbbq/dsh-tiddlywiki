@@ -25,15 +25,14 @@
  */
 import * as React from 'react'
 import { openTiddler } from './panel.ts'
+import { GET_ENDPOINT, RENDER_ENDPOINT } from './endpoints.ts'
 
 /** Same-origin TW proxy base (mirrors host TW_PROXY_PATH, client can't import it). */
 const TW_PROXY_BASE = '/dsh-tiddlywiki/tw/'
 
-const GET_ENDPOINT = '/dsh-tiddlywiki/get'
 const SEARCH_ENDPOINT = '/dsh-tiddlywiki/search'
 const RECENT_ENDPOINT = '/dsh-tiddlywiki/recent'
 const TAGS_ENDPOINT = '/dsh-tiddlywiki/tags'
-const RENDER_ENDPOINT = '/dsh-tiddlywiki/tw/render'
 
 /** Chinese label for each tool (card badge). */
 const TOOL_LABELS: Record<string, string> = {
@@ -280,15 +279,35 @@ function writeBodyCache(title: string, value: { get: Record<string, unknown> | n
   }
 }
 
-/** 写入/删除类工具会让缓存过期（同一标题的下一张卡必须看到最新内容）。 */
+/**
+ * 写入/删除类工具会让缓存过期（同一标题的下一张卡必须看到最新内容）。
+ *
+ * v0.19.1：调用点从 render 阶段挪进 TiddlerBodyCard 的 loader（`fresh` 属性）
+ * ——渲染期间改模块级 Map 在 React 并发渲染/StrictMode 下是不纯的（渲染可能被
+ * 丢弃或重放），副作用属于 effect 阶段。语义不变：写入类卡片总是重新拉取。
+ */
 function invalidateBodyCache(title: string): void {
   if (title.length > 0) bodyCache.delete(title)
 }
 
-function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: string }): React.ReactElement {
-  const { title } = props
+/**
+ * 在 **effect 阶段**失效若干标题的正文缓存（写入/删除类卡片挂载时调用）。
+ * 渲染期不得有副作用：React 并发渲染/StrictMode 下渲染可能被丢弃或重放，
+ * 模块级 Map 的删除必须放进 effect（v0.19.1）。
+ */
+function useInvalidateBodies(titles: readonly string[]): void {
+  const key = titles.join('\u0000')
+  React.useEffect(() => {
+    for (const title of key.split('\u0000')) invalidateBodyCache(title)
+  }, [key])
+}
+
+function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: string; fresh?: boolean }): React.ReactElement {
+  const { title, fresh } = props
   const both = useAsync(
     async () => {
+      // 写入类卡片的 loader 先失效缓存（effect 阶段执行），保证看到最新正文。
+      if (fresh === true) invalidateBodyCache(title)
       const cached = readBodyCache(title)
       if (cached !== undefined) return { get: cached.get, html: cached.html }
       const [get, html] = await Promise.all([fetchJson(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`), fetchRender(title)])
@@ -297,7 +316,7 @@ function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: str
       if (typeof html === 'string' && html.length > 0) writeBodyCache(title, { get, html })
       return { get, html }
     },
-    [title],
+    [title, fresh],
   )
   const { loading, data } = both
   const get = data?.get ?? null
@@ -438,6 +457,8 @@ function BatchCard(props: { toolName: string; args: Record<string, unknown>; tex
     .map((item): string | null => (typeof item === 'object' && item !== null && typeof (item as Record<string, unknown>).title === 'string' ? str((item as Record<string, unknown>).title) : null))
     .filter((t): t is string => t !== null && t.length > 0)
     .map((title) => ({ title }))
+  // 批量写入的标题在挂载时失效缓存（effect 阶段，见 useInvalidateBodies）。
+  useInvalidateBodies(rows.map((row) => row.title))
   return React.createElement(ListCard, {
     toolName: props.toolName,
     title: '批量写入',
@@ -457,6 +478,10 @@ function TagsCard(props: { toolName: string; text: string }): React.ReactElement
     tag: str(item.tag),
     count: typeof item.count === 'number' ? (item.count as number) : 0,
   }))
+  // 大 wiki 可能有上千个标签：一次全量渲染会塞进上千个 DOM 节点，把回复流拖死
+  // （v0.19.1）。与 ListCard 一样截断展示，只提示总数。
+  const MAX_CHIPS = 60
+  const shown = chips.slice(0, MAX_CHIPS)
   let body: React.ReactNode
   if (chips.length === 0) {
     body = React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, '暂无标签')
@@ -464,13 +489,16 @@ function TagsCard(props: { toolName: string; text: string }): React.ReactElement
     body = React.createElement(
       'div',
       { className: 'dsh-tw-toolcard-tags-wrap' },
-      ...chips.map((chip) =>
+      ...shown.map((chip) =>
         React.createElement(
           'span',
           { className: 'dsh-tw-toolcard-tag', key: chip.tag },
           `${chip.tag} · ${chip.count}`,
         ),
       ),
+      ...(chips.length > shown.length
+        ? [React.createElement('span', { className: 'dsh-tw-toolcard-tag-more', key: '__more' }, `…另有 ${chips.length - shown.length} 个`)]
+        : []),
     )
   }
   return React.createElement(ToolCardShell, { toolName: props.toolName, title: '标签', subtitle: `共 ${chips.length} 个` }, body)
@@ -486,6 +514,8 @@ function GitCard(props: { toolName: string; text: string }): React.ReactElement 
 }
 
 function DeleteCard(props: { toolName: string; title: string; text: string }): React.ReactElement {
+  // 删除后同标题的缓存必须失效，否则紧跟着的读取卡会拿旧正文（effect 阶段执行）。
+  useInvalidateBodies([props.title])
   const body = props.title.length > 0
     ? React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, `已删除 tiddler「${props.title}」`)
     : React.createElement('pre', { className: 'dsh-tw-toolcard-fallback' }, props.text || '（已删除）')
@@ -559,28 +589,18 @@ export function TiddlywikiToolView(props: ToolCallOwnerProps): React.ReactNode {
     case 'tiddlywiki_get':
       return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: '读取' })
     case 'tiddlywiki_put':
-      // 写入会改变正文：先失效该标题的缓存，卡片随即取到最新内容。
-      invalidateBodyCache(str(args.title))
-      return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: '已写入' })
+      // 写入会改变正文：卡片带 fresh，loader（effect 阶段）先失效缓存再取最新内容。
+      return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: '已写入', fresh: true })
     case 'tiddlywiki_append':
       // 增量写入同样改变正文（追加/前插/段落写入）。
-      invalidateBodyCache(str(args.title))
-      return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: '已增量写入' })
+      return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: '已增量写入', fresh: true })
     case 'tiddlywiki_rename':
-      invalidateBodyCache(str(args.newTitle))
-      invalidateBodyCache(str(args.oldTitle))
-      return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.newTitle), subtitle: `已重命名「${str(args.oldTitle)}」→` })
+      return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.newTitle), subtitle: `已重命名「${str(args.oldTitle)}」→`, fresh: true })
     case 'tiddlywiki_delete':
-      invalidateBodyCache(str(args.title))
+      // 删除类卡片只展示工具文本，没有 body 缓存；旧标题的残留缓存由 TTL 兜底。
       return React.createElement(DeleteCard, { toolName: name, title: str(args.title), text })
-    case 'tiddlywiki_batch_put': {
-      // 批量写入：逐条失效被写标题的缓存。
-      const items = Array.isArray(args.items) ? (args.items as unknown[]) : []
-      for (const item of items) {
-        if (typeof item === 'object' && item !== null) invalidateBodyCache(str((item as Record<string, unknown>).title))
-      }
+    case 'tiddlywiki_batch_put':
       return React.createElement(BatchCard, { toolName: name, args, text })
-    }
     case 'tiddlywiki_search':
       return React.createElement(SearchCard, { toolName: name, args, text })
     case 'tiddlywiki_recent':

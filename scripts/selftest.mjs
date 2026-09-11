@@ -10,7 +10,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensurePlugin, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, flushPendingWrites, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensurePlugin, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
@@ -317,6 +317,11 @@ try {
   // a too-long TEXT_LIST_FILTER would cause on Windows).
   const git = new GitFace()
   const wikiDir = join(tempRoot, 'main')
+  // Drain TW's filesystem syncer BEFORE taking the git snapshot (v0.19.1): REST
+  // writes answer 204 while the syncer still holds them (~250ms timer), so a
+  // write queued by the tests above could land after the initial commit and
+  // make "working tree clean after auto-commit" flaky.
+  await flushPendingWrites(api, join(wikiDir, 'tiddlers'))
   assert(await git.isRepo(wikiDir) === false, 'fresh wiki folder is not a repo')
   await git.init(wikiDir, 'main')
   await git.initialCommit(wikiDir)
@@ -331,13 +336,16 @@ try {
     onCommit: (info) => committed.push(info),
   })
   await api.put({ title: 'Draft', text: 'auto commit me' })
+  // Let the write reach disk before the debounced commit runs, so the assertion
+  // below tests the COMMITTER (not the syncer's 250ms timer).
+  await flushPendingWrites(api, join(wikiDir, 'tiddlers'))
   committer.touch()
   // Bounded poll instead of a fixed 1s sleep: continue as soon as the debounced
   // commit fires (auto-commit is asynchronous).
   await waitFor(() => committed.some((c) => c.committed))
   assert(committed.some((c) => c.committed), 'auto-commit fired after debounce')
   const after = await git.status(wikiDir)
-  assert(!after.dirty, 'working tree clean after auto-commit')
+  assert(!after.dirty, `working tree clean after auto-commit (dirtyFiles=${JSON.stringify(after.dirtyFiles)})`)
   committer.dispose()
 
   // 5. git remote round-trip against a local bare origin + conflict policy
@@ -584,6 +592,43 @@ try {
   const noteTid = await new TiddlyWebClient(server.url).get('NoteTypeTest')
   assert((noteTid.type ?? noteTid.fields?.type) === 'text/markdown', 'note tiddler type is text/markdown on the wiki')
 
+  // ── v0.19.1: the HUMAN write path must preserve, not blind-replace ──────────
+  // A human note with tags + custom fields exists; re-saving it through /note
+  // WITHOUT tags (the card's "load from 最近 then save" flow sends the loaded
+  // tags, but a plain API caller may not) must keep both.
+  const preClient = new TiddlyWebClient(server.url)
+  await preClient.put({
+    title: 'HumanFieldNote',
+    text: 'first',
+    tags: ['meeting', 'human-tag'],
+    type: 'text/markdown',
+    due: '2026-12-31',
+    q: 'q1',
+  })
+  const noteResave = await callRoute(
+    routeHandlers.get('/dsh-tiddlywiki/note'),
+    makeReq('/dsh-tiddlywiki/note', Buffer.from(JSON.stringify({ title: 'HumanFieldNote', text: 'second' })), 'POST'),
+    makeRes(),
+  )
+  assert(noteResave.ok === true, `re-saving an existing note succeeds (${JSON.stringify(noteResave)})`)
+  const preservedHuman = await preClient.get('HumanFieldNote')
+  assert(preservedHuman.tags?.includes('meeting') && preservedHuman.tags?.includes('human-tag'), `re-save keeps the existing tags (${JSON.stringify(preservedHuman.tags)})`)
+  assert(preservedHuman.due === '2026-12-31' || preservedHuman.fields?.due === '2026-12-31', 're-save keeps custom fields (due)')
+  assert(preservedHuman.q === 'q1' || preservedHuman.fields?.q === 'q1', 're-save keeps custom fields (q)')
+  assert((preservedHuman.text ?? '') === 'second', 're-save still updates the body')
+
+  // Optimistic concurrency on the human path: a stale token must be refused
+  // (409) instead of overwriting the newer revision.
+  const conflictRes = makeRes()
+  const conflictBody = await callRaw(
+    routeHandlers.get('/dsh-tiddlywiki/note'),
+    makeReq('/dsh-tiddlywiki/note', Buffer.from(JSON.stringify({ title: 'HumanFieldNote', text: 'stale write', expectedRevision: 0 })), 'POST'),
+    conflictRes,
+  )
+  assert(conflictRes._status === 409, `stale expectedRevision on /note is 409 (got ${conflictRes._status}: ${conflictBody})`)
+  const afterConflict = await preClient.get('HumanFieldNote')
+  assert((afterConflict.text ?? '') === 'second', 'the refused write did not touch the note')
+
   // /sync: pull a change made on the clone side, then commit + push. The wiki
   // is still mid-divergence from the step-5 conflict test, so first align it
   // onto origin (a /sync on a genuinely conflicted repo MUST fail — the
@@ -599,13 +644,16 @@ try {
   await writeFile(join(clonePath, 'tiddlers', 'SyncTest.tid'), 'from clone\n')
   await gclone.commit(clonePath, 'sync-test remote change')
   assert((await gclone.push(clonePath)).ok, 'clone pushes change for sync test')
-  const sync = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync', undefined, 'POST'), makeRes())
+  // NOTE: /sync now drains the syncer (flushPendingWrites sentinel) before
+  // restarting TW — a data-safety fix (v0.19.1) that makes the route slower by
+  // design, so give it a generous timeout instead of the 8s default.
+  const sync = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync', undefined, 'POST'), makeRes(), 60_000)
   assert(sync.ok === true && sync.pull === 'ok' && sync.status?.branch === 'main', `sync pulls+commits+pushes (${JSON.stringify(sync.message ?? sync.error)})`)
   assert(sync.changed === true && sync.restarted === true, `changed pull restarts TW (changed=${sync.changed} restarted=${sync.restarted})`)
   const syncText = (await readFile(join(wikiDir, 'tiddlers', 'SyncTest.tid'), 'utf8')).replace(/\r/g, '')
   assert(syncText === 'from clone\n', 'sync pulled the remote change into the wiki')
   // A no-op sync (nothing new on origin) must NOT restart TW.
-  const sync2 = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync', undefined, 'POST'), makeRes())
+  const sync2 = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync', undefined, 'POST'), makeRes(), 60_000)
   assert(sync2.ok === true && sync2.changed !== true && sync2.restarted !== true, `no-op sync does not restart (changed=${sync2.changed} restarted=${sync2.restarted})`)
 
   // /recent + /get: the quick-note "最近" picker backend. Raw files written by
@@ -988,6 +1036,24 @@ try {
   assert(r4.status === 400, 'POST /render {} rejects with 400')
   const r5 = await postJson(renderUrl, { text: 'x' })
   assert(r5.status === 200, 'POST /render {text} works with a bare text body')
+
+  // v0.19.1 — the HOST render route (the one the GUI actually calls) must
+  // sanitize: TW's parser passes `<iframe src="javascript:…">` / javascript:
+  // hrefs straight through, and that fragment is innerHTML'd into the DSH page.
+  const hostRenderHandler = routeHandlers.get('/dsh-tiddlywiki/render')
+  assert(hostRenderHandler !== undefined, 'host /render route is registered')
+  const dirty = await callRaw(
+    hostRenderHandler,
+    makeReq('/dsh-tiddlywiki/render', Buffer.from(JSON.stringify({ text: '<p>ok</p><iframe src="javascript:alert(1)"></iframe><a href="javascript:alert(2)">x</a>' })), 'POST'),
+    makeRes(),
+  )
+  const dirtyText = String(dirty)
+  assert(dirtyText.includes('<p>ok</p>'), `host /render returns the rendered fragment (${dirtyText.slice(0, 120)})`)
+  assert(!/iframe/i.test(dirtyText), `host /render strips iframe (${dirtyText.slice(0, 200)})`)
+  assert(!/javascript:/i.test(dirtyText), `host /render strips javascript: URLs (${dirtyText.slice(0, 200)})`)
+  const cleanGet = makeRes()
+  await callRaw(hostRenderHandler, makeReq('/dsh-tiddlywiki/render'), cleanGet)
+  assert(cleanGet._status === 405, `GET /dsh-tiddlywiki/render is 405 (got ${cleanGet._status})`)
   await renderTid.delete('RenderMe')
   await seedApi.delete(RENDER_PLUGIN_TITLE)
   await seedApi.delete(RENDER_MARKER_TITLE)

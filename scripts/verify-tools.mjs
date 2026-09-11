@@ -37,11 +37,16 @@ import {
 /** 新建条目自动补打的约定标签（tools.ts 导出，这里用字面量）。 */
 const AGENT_TAG = 'agent-written'
 
-/** 核心工具集（v0.18.0 的 10 个）。之后新增工具不应让本守门误报，所以只做子集断言。 */
+/**
+ * 全量工具集（v0.19.1 起 15 个，与 src/host/tools.ts 的注册表 / 提示词清单一一对应）。
+ * 这里断言「一个都不能少」——v0.19.0 新增的 5 个工具（append/trash/backlinks/
+ * attach/lint）当时只在 selftest 里各点了一下，工具层守门仍停在 10 个。
+ */
 const CORE_TOOL_NAMES = [
   'tiddlywiki_search', 'tiddlywiki_get', 'tiddlywiki_put', 'tiddlywiki_batch_put',
-  'tiddlywiki_rename', 'tiddlywiki_delete', 'tiddlywiki_recent', 'tiddlywiki_list_tags',
-  'tiddlywiki_git_sync', 'tiddlywiki_git_resolve',
+  'tiddlywiki_append', 'tiddlywiki_rename', 'tiddlywiki_delete', 'tiddlywiki_trash',
+  'tiddlywiki_backlinks', 'tiddlywiki_attach', 'tiddlywiki_lint',
+  'tiddlywiki_recent', 'tiddlywiki_list_tags', 'tiddlywiki_git_sync', 'tiddlywiki_git_resolve',
 ]
 
 let failures = 0
@@ -231,6 +236,39 @@ try {
     assert.ok(Array.isArray(r.tags) && r.tags.length > 0, `应返回标签列表：${JSON.stringify(r)}`)
     assert.ok(!r.tags.some((x) => x.tag === 'binary-only-tag'), 'binary-only-tag 只挂在 image/png 附件上，不应出现在标签统计里（listTags 走的是未过滤的精简列表）')
     assert.ok(r.tags.some((x) => x.tag === 'human'), '文本笔记的标签仍应被统计')
+  })
+
+  // ── get：自定义字段必须摊平（v0.19.1） ───────────────────────────────────
+  await test('get：单条 GET 的嵌套 fields 被摊平给模型（不再 fields=[object Object]）', async () => {
+    await api.put({ title: 'FlattenProbe', text: 'x', type: 'text/markdown', tags: ['human'], q: 'q1', due: '2026-12-31' })
+    const r = await call('tiddlywiki_get', { title: 'FlattenProbe' })
+    assert.equal(r.fields.q, 'q1', `自定义字段 q 应直接可见：${JSON.stringify(r.fields)}`)
+    assert.equal(r.fields.due, '2026-12-31', `自定义字段 due 应直接可见：${JSON.stringify(r.fields)}`)
+    assert.equal(r.fields.fields, undefined, '不得把嵌套的 fields 对象原样塞给模型')
+    assert.equal(r.fields.bag, undefined, '传输字段 bag 不该出现在结果里')
+  })
+
+  // ── lint：死链与缺 type（v0.19.1 修的两个坏检查） ────────────────────────
+  await test('lint：指向二进制附件的 [[链接]] 不得误报死链', async () => {
+    await api.put({ title: 'LinkProbe', text: `见 [[${BIN_TITLE}]] 和 [[真正不存在的条目XYZ]]`, type: 'text/markdown', tags: ['human'] })
+    const r = await call('tiddlywiki_lint', { checks: ['broken-links'], limit: 20 })
+    const issue = r.issues.find((i) => i.kind === 'broken-links')
+    assert.ok(issue !== undefined, `应报出真正的死链：${JSON.stringify(r.issues)}`)
+    const joined = issue.samples.join('\n')
+    assert.ok(!joined.includes(BIN_TITLE), `二进制附件的标题不该被当成死链：${joined}`)
+    assert.ok(joined.includes('真正不存在的条目XYZ'), `真正缺失的标题应该被报出来：${joined}`)
+  })
+
+  await test('lint：真正没有 type 字段的 Markdown 笔记会被报出来', async () => {
+    // 绕过工具直接 PUT，得到一个**没有 type 字段**的条目——TW 服务端在 listing
+    // 里会替它补 text/vnd.tiddlywiki，所以只能靠 [!has[type]] 过滤器识别。
+    await api.put({ title: 'TypelessProbe', text: '# 标题\n\n- 列表项\n' })
+    const stored = await api.get('TypelessProbe')
+    assert.equal(stored.type, 'text/vnd.tiddlywiki', '（前置条件）GET 会把缺省的 type 补成 wikitext')
+    const r = await call('tiddlywiki_lint', { checks: ['missing-type'], limit: 20 })
+    const issue = r.issues.find((i) => i.kind === 'missing-type')
+    assert.ok(issue !== undefined, `应报出缺 type 的笔记：${JSON.stringify(r.issues)}`)
+    assert.ok(issue.samples.some((s) => s.includes('TypelessProbe')), `样本里应有 TypelessProbe：${JSON.stringify(issue.samples)}`)
   })
 
   // ── limit clamp ──────────────────────────────────────────────────────────

@@ -42,6 +42,18 @@ export const inject = ['tools', 'systemPrompt']
 /** Re-exports for the headless selftest and future consumers. */
 export { AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool }
 export { ConfigStore, deepMerge } from './host/config.ts'
+export { sanitizeTwFragment, isSafeUrl } from './host/sanitize.ts'
+export { MISSING_TYPE_FILTER } from './host/tw-api.ts'
+export {
+  AGENT_WRITTEN_TAG,
+  DEFAULT_NOTE_TYPE,
+  HUMAN_EDITED_TAG,
+  WriteConflictError,
+  assertNoConflict,
+  buildWriteTiddler,
+  cleanTiddler,
+  flattenTiddlerFields,
+} from './host/write-policy.ts'
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './host/routes.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './host/routes.ts'
@@ -55,7 +67,7 @@ export { seedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE, ALL_ART
 export { seedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } from './host/seed-ui-styles.ts'
 export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './host/seed-menubar-theme.ts'
 export { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET, CLIP_BRIDGE_DRAG_HREF } from './host/seed-clip-bridge.ts'
-export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
+export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools } from './host/tools.ts'
 export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, downloadClipImage, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, isPrivateAddress, assertPublicImageUrl, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
 export type { PluginConfigShape } from './host/config.ts'
@@ -452,10 +464,26 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   disposers.push(...registerTiddlywikiTools(ctx, toolsDeps))
 
   // Bring the wiki up, load the override config, then bootstrap git + committer.
-  void (async () => {
+  //
+  // DISPOSAL-AWARE (v0.19.1): this task is fire-and-forget, but teardown can run
+  // while it is still awaiting (plugin hot-reload / disable / dsh web exit
+  // within the first seconds). Without the flag the disposer finished first and
+  // the startup task then spawned the TW child / bound the clip-bridge port —
+  // an orphan process and a leaked listener. Every await below is followed by a
+  // `disposed` check, and the task stops the child itself when it notices.
+  let disposed = false
+  const startupTask = (async () => {
     try {
       await server.start()
+      if (disposed) {
+        await server.stop().catch(() => undefined)
+        return
+      }
       await configStore.load(client())
+      if (disposed) {
+        await server.stop().catch(() => undefined)
+        return
+      }
       // Clip bridge: bind once on the configured port (works even while
       // disabled — every request re-checks the effective enabled flag, so the
       // settings-page toggle applies without a dsh web restart).
@@ -464,6 +492,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         console.info(`[dsh-tiddlywiki] clip bridge listening on 127.0.0.1:${clipBridge.port} (enabled=${effectiveBridge().enabled})`)
       } catch (err) {
         console.warn('[dsh-tiddlywiki] clip bridge start:', err)
+      }
+      if (disposed) {
+        try { await clipBridge.stop() } catch { /* already closing */ }
+        await server.stop().catch(() => undefined)
+        return
       }
       // Point TW's frontend at the same-origin DSH proxy (remote-access mode):
       // part of the seed registry below (tw-web-host), so it is also covered by
@@ -509,11 +542,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
             // from a stale snapshot loses every write still queued (v0.19.0).
             const drained = await flushPendingWrites(seedClient, join(wikiPath, 'tiddlers'))
             if (!drained) console.warn('[dsh-tiddlywiki] seed writes may not have been flushed before restart')
-            await server.restart()
+            if (!disposed) await server.restart()
           } else if (pluginAdded) {
             // tiddlywiki.info is written directly by us (no TW flush to wait
             // for), but TW only loads the plugin at boot.
-            await server.restart()
+            if (!disposed) await server.restart()
           }
         }
       } catch (err) {
@@ -527,7 +560,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         try {
           const code = uiLang.trim()
           const changed = await ensureLanguage(wikiPath, resolveTwRoot(), code)
-          if (changed) await server.restart()
+          if (changed && !disposed) await server.restart()
           // Pin the active language tiddler so TW's UI actually switches.
           const langClient = client()
           if (langClient !== undefined) {
@@ -542,9 +575,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     }
     // Git bootstrap + the auto-committer do not depend on the TW child, so run
     // them even when the wiki failed to start: every write is still versioned
-    // (and a retry/restart later finds a ready repository).
+    // (and a retry/restart later finds a ready repository). Skipped entirely
+    // once disposed — otherwise this would register a watcher/timer (and an
+    // initial commit) after teardown already ran.
+    if (disposed) return
     try {
       await bootstrapGit()
+      if (disposed) return
       setupCommitter()
     } catch (err) {
       console.warn('[dsh-tiddlywiki] git bootstrap failed:', err)
@@ -626,6 +663,16 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // fire-and-forget 里与进程退出竞速（竞速会在 Windows 上遗留孤儿 TW 进程）。
   ctx.effect(() => () => {
     return (async () => {
+      // Signal the startup task first (v0.19.1): it checks `disposed` after every
+      // await and stops the child it may have spawned, instead of racing us and
+      // leaving an orphan TW process / a bound clip-bridge port.
+      disposed = true
+      try {
+        await Promise.race([
+          startupTask.catch(() => undefined),
+          new Promise<void>((r) => { setTimeout(r, 3_000).unref?.() }),
+        ])
+      } catch { /* startup issues are already logged */ }
       // Flush a pending auto-commit BEFORE teardown, so a write made within the
       // debounce window is not left uncommitted when dsh web stops (best-effort).
       try { await committer?.flush() } catch { /* best-effort */ }

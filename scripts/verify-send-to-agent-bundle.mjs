@@ -69,6 +69,25 @@ for (const [file, title] of SOURCE_PARTS) {
   ok(`source part ${file} is byte-identical to bundle tiddler ${title}`, embedded !== null && disk === embedded)
 }
 
+// --- seed parity gate -------------------------------------------------------
+// v0.19.1: the render pipeline had this gate, send-to-agent did not — so
+// "edited a bundle source → ran build → forgot gen-seed-…" produced all-green
+// CI while lib/index.js kept embedding the OLD startup.js. Compare the bundle
+// file against the literal in src/host/seed-send-to-agent.ts.
+const seedRaw = fs.readFileSync(path.join(scriptsDir, '..', 'src', 'host', 'seed-send-to-agent.ts'), 'utf8')
+const bundleRaw = fs.readFileSync(bundlePath, 'utf8')
+const literal = seedRaw.match(/^export const SEND_TO_AGENT_BUNDLE_TEXT = ("(?:\\.|[^"\\])*")$/m)
+ok('seed-send-to-agent.ts 内嵌单行 SEND_TO_AGENT_BUNDLE_TEXT 字面量', literal !== null)
+if (literal !== null) {
+  let embeddedSeed = null
+  try { embeddedSeed = JSON.parse(literal[1]) } catch { embeddedSeed = null }
+  ok('SEND_TO_AGENT_BUNDLE_TEXT 可 JSON.parse', typeof embeddedSeed === 'string' && embeddedSeed.length > 0)
+  ok(
+    'send-to-agent.bundle.json 与 seed-send-to-agent.ts 内嵌 bundle 逐字节一致（忘了重跑 gen-seed-send-to-agent.mjs？）',
+    embeddedSeed !== null && norm(embeddedSeed) === norm(bundleRaw),
+  )
+}
+
 let failed = false
 for (const [name, pass] of checks) {
   console.log(`${pass ? 'PASS' : 'FAIL'}  ${name}`)

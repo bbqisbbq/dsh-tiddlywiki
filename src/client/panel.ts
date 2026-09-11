@@ -140,6 +140,8 @@ export function mountPanel(state: PanelState): () => void {
   let frameArea: HTMLDivElement | undefined
   let errorArea: HTMLDivElement | undefined
   let refreshTimer: number | undefined
+  /** In-flight hash-readiness retry timers (cancelled by dispose, v0.19.1). */
+  const hashWaitTimers = new Set<number>()
   let refreshAttempts = 0
   let themeSyncDispose: (() => void) | undefined
   /** true once the iframe's document finished loading (hash navigation target ready). */
@@ -306,7 +308,14 @@ export function mountPanel(state: PanelState): () => void {
       const frameTw = win as { $tw?: unknown }
       if (typeof frameTw.$tw !== 'object' || frameTw.$tw === null) {
         if (attempt < 40) {
-          window.setTimeout(() => tryOnce(attempt + 1), 150)
+          // Track the retry timer so dispose() can cancel it (v0.19.1): an
+          // untracked 40×150ms chain kept the closure (and the iframe) alive up
+          // to ~6s after hot-reload/unmount.
+          const timer = window.setTimeout(() => {
+            hashWaitTimers.delete(timer)
+            tryOnce(attempt + 1)
+          }, 150)
+          hashWaitTimers.add(timer)
           return
         }
         fallbackLoad(hash)
@@ -466,6 +475,8 @@ export function mountPanel(state: PanelState): () => void {
   return () => {
     disposed = true
     if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+    for (const timer of hashWaitTimers) window.clearTimeout(timer)
+    hashWaitTimers.clear()
     if (layoutRaf !== undefined) window.cancelAnimationFrame(layoutRaf)
     layoutRaf = undefined
     window.clearInterval(syncInterval)

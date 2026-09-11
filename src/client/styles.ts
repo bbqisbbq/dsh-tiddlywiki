@@ -547,6 +547,12 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 8%, transparent);
   color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 70%, transparent);
 }
+.dsh-tw-toolcard-tag-more {
+  font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 999px;
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--dsw-alias-label-primary, #222) 25%, transparent);
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent);
+}
 .dsh-tw-toolcard-body {
   padding: 4px 12px 10px; font-size: 13px; line-height: 1.6;
   color: var(--dsw-alias-label-primary, #222);
@@ -688,6 +694,12 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
  * A style tag that already exists is REUSED, but its content is refreshed when
  * it differs (HMR / re-apply after a CSS change) — the old version returned
  * early and left stale CSS in place.
+ *
+ * TOKENED DISPOSAL (v0.19.1): the node is shared across instances (same id), so
+ * a stale disposer must not remove a stylesheet a NEWER instance is using. Each
+ * apply stamps a fresh token on the element and the disposer only removes it
+ * while the token still matches — the interleaved hot-reload case (new apply
+ * reuses the node → old dispose fires) no longer leaves the page unstyled.
  */
 export function injectStyles(): () => void {
   if (typeof document === 'undefined') return () => {}
@@ -701,5 +713,9 @@ export function injectStyles(): () => void {
   } else if (el.textContent !== CSS_TEXT) {
     el.textContent = CSS_TEXT
   }
-  return () => { el?.remove() }
+  const token = String(Date.now()) + ':' + Math.random().toString(36).slice(2)
+  el.dataset.instance = token
+  return () => {
+    if (el?.dataset.instance === token) el.remove()
+  }
 }

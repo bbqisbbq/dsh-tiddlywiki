@@ -49,7 +49,10 @@ jobs:
       - name: lib/ 必须与 src/ 同步（改了 src 忘了 npm run build）
         run: |
           set -euo pipefail
-          git diff --exit-code --stat -- lib/
+          if ! git diff --exit-code --stat -- lib/; then
+            echo "::error::lib/ 与 src/ 不同步 —— 改了 src 请跑 npm run build 并把 lib/ 一并提交"
+            exit 1
+          fi
           if [ -n "$(git status --porcelain -- lib/)" ]; then
             echo "::error::lib/ 存在未提交/未跟踪的构建产物 —— 改了 src 请跑 npm run build 并把 lib/ 一并提交"
             git status --porcelain -- lib/
@@ -120,6 +123,8 @@ jobs:
         run: node scripts/verify-clip-bridge.mjs
       - name: verify-seed-error-policy（读取失败 ≠ 条目不存在）
         run: node scripts/verify-seed-error-policy.mjs
+      - name: verify-render-sanitizer（渲染片段净化 + 注入点接线）
+        run: node scripts/verify-render-sanitizer.mjs
 
   # ── 慢：端到端（都要 spawn 真实 TW / 真实 git，逐条单列 step 便于定位） ──
   verify-e2e:
@@ -141,7 +146,7 @@ jobs:
         run: npm run build
       - name: verify-auth（auth 模式端到端 + 口令不进日志）
         run: node scripts/verify-auth.mjs
-      - name: verify-tools（10 个 tiddlywiki_* 工具层断言）
+      - name: verify-tools（工具层断言：写入策略 / 逐条容错 / 检索 / 乐观并发 …）
         run: node scripts/verify-tools.mjs
       - name: verify-git-resolve（真冲突 keep-local / keep-remote）
         run: node scripts/verify-git-resolve.mjs
