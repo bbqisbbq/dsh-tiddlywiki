@@ -190,6 +190,11 @@ export class WikiServer {
   private async startOnce(): Promise<WikiStatusView> {
     this.stopping = false
     this.restartDelay = 1_000
+    // Clear a previous failure's message (v0.19.5): a self-healed restart left
+    // `this.error` set forever, so `/status` (and the panel/FAB tooltip) kept
+    // reporting a stale fault even though the wiki was healthy. A fresh attempt
+    // is not a failure until it proves to be one.
+    this.error = undefined
     await this.ensureWiki()
     if (this.child !== undefined) return this.status()
     this.health = 'starting'

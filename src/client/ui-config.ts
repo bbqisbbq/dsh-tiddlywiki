@@ -8,10 +8,15 @@
  * every interaction, while a settings-page change still takes effect within
  * seconds without a reload.
  *
+ * The cache stores the PROMISE (v0.19.5): on page load the FAB, the dock, the
+ * rightbar mount and the sidebar entry all read the config at nearly the same
+ * moment, and value-caching let each of them fire its own request (each one
+ * makes the host shell out to git). Coalescing means one request for the burst.
+ *
  * @module dsh-tiddlywiki/client/ui-config
  */
 
-import { STATUS_ENDPOINT } from './endpoints.ts'
+import { fetchStatus } from './status-cache.ts'
 
 export interface UiConfig {
   /** 聊天输入框上方的「快速笔记」快捷按钮是否显示（默认 true）。 */
@@ -31,7 +36,7 @@ export interface UiConfig {
 const FALLBACK: UiConfig = { showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: '知识库', showSessionTab: true, showRightbarTab: true }
 
 const CACHE_TTL_MS = 15_000
-let cache: { at: number; value: UiConfig } | undefined
+let cache: { at: number; value: Promise<UiConfig> } | undefined
 
 /**
  * Drop the cached config: the settings page calls this right after a successful
@@ -42,32 +47,31 @@ export function invalidateUiConfig(): void {
   cache = undefined
 }
 
-/** Fetch /status once and read the ui.* fields (backward compatible: a host
+/** Read /status once and project the ui.* fields (backward compatible: a host
  *  that predates a field simply falls back to the default). Cached for
- *  `CACHE_TTL_MS`; callers that need a fresh value (settings just saved) may
- *  pass `{ force: true }`. */
-export async function fetchUiConfig(opts: { force?: boolean } = {}): Promise<UiConfig> {
+ *  `CACHE_TTL_MS`, with concurrent callers sharing one in-flight request;
+ *  callers that need a fresh value (settings just saved) may pass
+ *  `{ force: true }`. */
+export function fetchUiConfig(opts: { force?: boolean } = {}): Promise<UiConfig> {
   const now = Date.now()
   if (!opts.force && cache !== undefined && now - cache.at < CACHE_TTL_MS) return cache.value
-  try {
-    const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
-    if (!res.ok) return FALLBACK
-    const p = (await res.json()) as { ui?: { showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean } }
-    const value: UiConfig = {
-      showQuickNoteDock: p.ui?.showQuickNoteDock !== false,
-      quickNoteMode: p.ui?.quickNoteMode === 'card' ? 'card' : 'native',
-      sidebarLabel: typeof p.ui?.sidebarLabel === 'string' && p.ui.sidebarLabel.trim().length > 0
-        ? p.ui.sidebarLabel.trim()
+  const pending = (async (): Promise<UiConfig> => {
+    const status = await fetchStatus()
+    const ui = status?.ui
+    if (status === null || ui === undefined) return FALLBACK
+    return {
+      showQuickNoteDock: ui.showQuickNoteDock !== false,
+      quickNoteMode: ui.quickNoteMode === 'card' ? 'card' : 'native',
+      sidebarLabel: typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0
+        ? ui.sidebarLabel.trim()
         : 'TiddlyWiki',
-      tabLabel: typeof p.ui?.tabLabel === 'string' && p.ui.tabLabel.trim().length > 0
-        ? p.ui.tabLabel.trim()
+      tabLabel: typeof ui.tabLabel === 'string' && ui.tabLabel.trim().length > 0
+        ? ui.tabLabel.trim()
         : '知识库',
-      showSessionTab: p.ui?.showSessionTab !== false,
-      showRightbarTab: p.ui?.showRightbarTab !== false,
+      showSessionTab: ui.showSessionTab !== false,
+      showRightbarTab: ui.showRightbarTab !== false,
     }
-    cache = { at: Date.now(), value }
-    return value
-  } catch {
-    return FALLBACK
-  }
+  })()
+  cache = { at: Date.now(), value: pending }
+  return pending
 }

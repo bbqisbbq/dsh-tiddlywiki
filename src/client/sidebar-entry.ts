@@ -10,7 +10,7 @@
  * @module dsh-tiddlywiki/client/sidebar-entry
  */
 import type { PanelState } from './state.ts'
-import { STATUS_ENDPOINT } from './endpoints.ts'
+import { fetchStatus } from './status-cache.ts'
 
 /** Stable data attribute identifying this entry row. */
 export const ENTRY_SELECTOR = '[data-dsh-tw-entry]'
@@ -106,16 +106,12 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
   // 自定义显示名：/status 返回 ui.sidebarLabel（设置页「侧边栏入口显示名称」），
   // 异步到达后原地更新，无需重建 DOM（旧 host 无该字段时保持默认名）。
   void (async () => {
-    try {
-      const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
-      if (!res.ok) return
-      const p = (await res.json()) as { ui?: { sidebarLabel?: string } }
-      const label = p.ui?.sidebarLabel
-      if (typeof label === 'string' && label.trim().length > 0) {
-        labelEl.textContent = label.trim()
-        entry.setAttribute('aria-label', label.trim())
-      }
-    } catch { /* keep the initial label */ }
+    const status = await fetchStatus()
+    const label = status?.ui?.sidebarLabel
+    if (typeof label === 'string' && label.trim().length > 0) {
+      labelEl.textContent = label.trim()
+      entry.setAttribute('aria-label', label.trim())
+    }
   })()
   const debug: TwDebug = { attempts: 0, found: false, placed: false }
   const host = globalThis.location?.hostname

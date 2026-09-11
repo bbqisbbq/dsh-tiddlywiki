@@ -24,7 +24,6 @@ import { downloadClipImage } from './clip-bridge.ts'
 import { flushPendingWrites } from './seeds.ts'
 import {
   AGENT_WRITTEN_TAG,
-  DEFAULT_NOTE_TYPE,
   HUMAN_EDITED_TAG,
   assertNoConflict,
   buildWriteTiddler,
@@ -48,7 +47,6 @@ export interface ToolsDeps {
   wiki: () => TiddlyWebClient | undefined
   git: GitFace
   wikiPath: () => string
-  noteTag: () => string
   /** Debounced auto-commit touch (fires after our writes). */
   autoCommit: () => void
   /** Restart the TW child (same port). Called after a pull that changed the
@@ -104,26 +102,56 @@ function trashTitleFor(title: string, at = new Date()): string {
   return `${TRASH_PREFIX}${stamp}/${title}`
 }
 
-/** Read the trash index (missing/invalid → empty list). */
-async function readTrashIndex(wiki: TiddlyWebClient): Promise<TrashIndexEntry[]> {
-  const tiddler = await wiki.get(TRASH_INDEX_TITLE)
-  if (tiddler === undefined || typeof tiddler.text !== 'string') return []
+/**
+ * Read the trash index.
+ *
+ * `readOk:false` distinguishes「索引读不到」(a failure: 5xx/timeout/auth — the
+ * tool layer MUST stop, because overwriting the index with whatever we managed
+ * to read would drop every earlier entry and orphan those trashed tiddlers) from
+ *「索引不存在」(404 = a brand-new wiki with an empty trash) and「JSON 坏了」
+ * (rebuildable: the trash tiddlers themselves are still there, only the index
+ * entries are lost).
+ *
+ * Swallowing the error into `[]` was the v0.19.4 defect: one transient failure
+ * during `tiddlywiki_delete` rewrote the whole index to a single-entry array.
+ */
+async function readTrashIndex(wiki: TiddlyWebClient): Promise<{ readOk: boolean; corrupted: boolean; entries: TrashIndexEntry[] }> {
+  let tiddler: Tiddler | undefined
+  try {
+    // Only 404 yields undefined (tw-api): any other throw is a real read failure.
+    tiddler = await wiki.get(TRASH_INDEX_TITLE)
+  } catch {
+    return { readOk: false, corrupted: false, entries: [] }
+  }
+  if (tiddler === undefined || typeof tiddler.text !== 'string' || tiddler.text.trim().length === 0) {
+    return { readOk: true, corrupted: false, entries: [] }
+  }
   try {
     const parsed = JSON.parse(tiddler.text) as unknown
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((entry): entry is TrashIndexEntry => {
+    if (!Array.isArray(parsed)) return { readOk: true, corrupted: true, entries: [] }
+    const entries = parsed.filter((entry): entry is TrashIndexEntry => {
       if (typeof entry !== 'object' || entry === null) return false
       const e = entry as Record<string, unknown>
       return typeof e.trash === 'string' && typeof e.of === 'string'
     }).map((e) => ({ trash: e.trash, of: e.of, at: typeof e.at === 'string' ? e.at : '' }))
+    return { readOk: true, corrupted: false, entries }
   } catch {
-    return []
+    return { readOk: true, corrupted: true, entries: [] }
   }
 }
 
 /** Persist the trash index. */
 async function writeTrashIndex(wiki: TiddlyWebClient, entries: TrashIndexEntry[]): Promise<void> {
   await wiki.put({ title: TRASH_INDEX_TITLE, text: JSON.stringify(entries, null, 2), type: 'application/json', tags: [] })
+}
+
+/** Raised when the trash index cannot be read: the operation must abort rather
+ *  than rebuild the index from an empty base (data-loss guard, v0.19.5). */
+export class TrashIndexUnavailableError extends Error {
+  constructor() {
+    super('回收站索引暂时读不到（TiddlyWiki 可能正在重启或超时）；为避免覆盖索引、丢回收站记录，本次操作已中止，请稍后重试。')
+    this.name = 'TrashIndexUnavailableError'
+  }
 }
 
 /** Mime types offered by `tiddlywiki_attach` for local files. */
@@ -429,7 +457,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_put ───────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_put',
-    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；**覆盖已有条目时，未传的 tags / 自定义字段会原样保留**（不会静默丢掉笔记原有的标签与字段），显式传 tags 才整体替换标签。写入后触发自动 commit。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。未指定内容类型时自动默认 text/markdown（$:/ 系统条目除外）；要写原生 wikitext 需显式在 fields 传 {"type":"text/vnd.tiddlywiki"}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
+    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；**覆盖已有条目时，未传的 tags / 自定义字段会原样保留**（不会静默丢掉笔记原有的标签与字段），显式传 tags 才整体替换标签。写入后触发防抖自动 commit（默认 60s；手动同步用 tiddlywiki_git_sync）。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。未指定内容类型时自动默认 text/markdown（$:/ 系统条目除外）；要写原生 wikitext 需显式在 fields 传 {"type":"text/vnd.tiddlywiki"}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配，覆盖同名）', required: true },
       text: { type: 'string', description: 'tiddler 全文（默认按 Markdown 解析）', required: true },
@@ -475,7 +503,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_batch_put ─────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_batch_put',
-    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果（单条失败不影响其余条目，失败原因逐条列出）。写入后触发自动 commit。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。未指定内容类型（fields.type）的条目自动默认 text/markdown（$:/ 系统条目除外）。',
+    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果（单条失败不影响其余条目，失败原因逐条列出）。写入后触发防抖自动 commit（默认 60s）。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。未指定内容类型（fields.type）的条目自动默认 text/markdown（$:/ 系统条目除外）。',
     parameters: {
       items: {
         type: 'array',
@@ -513,13 +541,20 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const list = Array.isArray(args.items) ? args.items : []
       if (list.length === 0) return { ok: true, written: 0, skipped: 0, failed: 0, items: [] }
       const overwrite = args.overwrite !== false
-      const results: BatchItemResult[] = []
+      const results: BatchItemResult[] = new Array<BatchItemResult>(list.length)
       let written = 0
       let skipped = 0
       let failed = 0
       // One item failing (validation, network, a rejected title) must not lose
       // the report of the items that DID land — the model needs per-item truth.
-      for (const item of list) {
+      //
+      // BOUNDED CONCURRENCY (v0.19.5): the previous sequential loop issued 2N
+      // REST round-trips (a GET + a PUT per item) — a 200-item import spent
+      // minutes in request latency. Four workers share the same client (its
+      // listing caches are invalidated per write, which only costs a refetch),
+      // and results are stored BY INDEX so the report keeps the caller's order
+      // regardless of completion order.
+      const writeOne = async (item: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }, index: number): Promise<void> => {
         const title = typeof item?.title === 'string' ? item.title : ''
         try {
           if (title.length === 0) throw new Error('缺少非空 title')
@@ -528,18 +563,27 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           const existing = await wiki.get(title)
           if (!overwrite && existing !== undefined) {
             skipped++
-            results.push({ title, written: false, skipped: true, failed: false })
-            continue
+            results[index] = { title, written: false, skipped: true, failed: false }
+            return
           }
           const { tiddler } = buildWriteTiddler(title, item.text, { existing, tags: normalizeTagArg(item.tags), fields: item.fields })
           await wiki.put(tiddler)
           written++
-          results.push({ title, written: true, skipped: false, failed: false })
+          results[index] = { title, written: true, skipped: false, failed: false }
         } catch (err) {
           failed++
-          results.push({ title: title.length > 0 ? title : '(无标题)', written: false, skipped: false, failed: true, error: err instanceof Error ? err.message : String(err) })
+          results[index] = { title: title.length > 0 ? title : '(无标题)', written: false, skipped: false, failed: true, error: err instanceof Error ? err.message : String(err) }
         }
       }
+      const workers = Math.max(1, Math.min(4, list.length))
+      let next = 0
+      await Promise.all(Array.from({ length: workers }, async () => {
+        for (;;) {
+          const index = next++
+          if (index >= list.length) return
+          await writeOne(list[index] as { title: string; text: string }, index)
+        }
+      }))
       deps.autoCommit()
       return { ok: failed === 0, written, skipped, failed, items: results }
     },
@@ -590,9 +634,21 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         }
       }
       await wiki.put({ ...cleanTiddler(existing), title: newTitle })
-      await wiki.delete(oldTitle)
+      // The new title is already written; a failure here leaves BOTH copies on
+      // disk, so report the partial state instead of throwing a bare error (the
+      // caller would otherwise assume the rename never happened) — v0.19.5.
+      let deleteFailed: string | undefined
+      try {
+        await wiki.delete(oldTitle)
+      } catch (err) {
+        deleteFailed = err instanceof Error ? err.message : String(err)
+      }
       if (refsTiddlers === 0) {
         warning = '未找到任何其他 tiddler 引用旧标题；如确实需要，可手动补充链接。'
+      }
+      if (deleteFailed !== undefined) {
+        const partial = `新标题「${newTitle}」已写入，但旧标题「${oldTitle}」删除失败（${deleteFailed}）：现在两个标题都存在同一份内容，请手动删除旧标题。`
+        warning = warning === undefined ? partial : `${warning} ${partial}`
       }
       deps.autoCommit()
       return { ok: true, from: oldTitle, to: newTitle, refsUpdated, refsTiddlers, ...(warning !== undefined ? { warning } : {}) }
@@ -606,6 +662,9 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配）', required: true },
       permanent: { type: 'boolean', description: '可选：true = 永久删除（回收站也拿不回来，仅剩 git 历史）；默认 false = 移入回收站' },
+      expectedModified: { type: 'string', description: '可选：乐观并发保护。传 tiddlywiki_get 读到的 modified；若条目在你读取之后被改动（人类在 TW 编辑器里改过）则拒绝删除' },
+      expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——传 tiddlywiki_get 返回字段里的 revision' },
+      force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制删除（默认 false）' },
     },
     output: {
       schema: { type: 'json' },
@@ -616,9 +675,19 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           : `已永久删除 tiddler「${value.title}」。`,
       }],
     },
-    execute: async (args: { title: string; permanent?: boolean }): Promise<DeleteResult> => {
+    execute: async (args: { title: string; permanent?: boolean; expectedModified?: string; expectedRevision?: number; force?: boolean }): Promise<DeleteResult> => {
       const wiki = requireWiki()
       const existing = await wiki.get(args.title)
+      // Deleting something the caller never saw is fine only when it does not
+      // exist; a token means the note WAS read, so a changed revision since then
+      // must abort (v0.19.5 — delete used to have no concurrency protection at
+      // all, while put/batch_put did: `get` → human edits in TW → `delete` threw
+      // the human's work into the trash with no warning).
+      assertNoConflict(args.title, existing, {
+        expectedModified: args.expectedModified,
+        expectedRevision: args.expectedRevision,
+        force: args.force,
+      })
       // Trash entries themselves and system tiddlers are never nested.
       const canTrash = existing !== undefined && args.permanent !== true && !args.title.startsWith(TRASH_PREFIX)
       if (!canTrash) {
@@ -630,9 +699,16 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const at = new Date().toISOString()
       await wiki.put({ ...cleanTiddler(existing), title: trashTitle, 'trash-of': args.title, 'trash-at': at })
       await wiki.delete(args.title)
+      // Read the index BEFORE touching it, and ABORT when the read failed or the
+      // JSON is broken: overwriting it with `[] + thisEntry` after a transient
+      // failure dropped every earlier entry — the trashed tiddlers survive but
+      // become unreachable orphans (`trash list` cannot see them, `trash empty`
+      // cannot clean them). A corrupt index is treated the same way: we cannot
+      // know what it held, so we never silently replace it (v0.19.5).
       const index = await readTrashIndex(wiki)
-      index.push({ trash: trashTitle, of: args.title, at })
-      await writeTrashIndex(wiki, index)
+      if (!index.readOk || index.corrupted) throw new TrashIndexUnavailableError()
+      index.entries.push({ trash: trashTitle, of: args.title, at })
+      await writeTrashIndex(wiki, index.entries)
       deps.autoCommit()
       return { ok: true, title: args.title, trashed: true, trashTitle }
     },
@@ -657,7 +733,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     },
     execute: async (args: { action: 'list' | 'restore' | 'empty'; title?: string; limit?: number }): Promise<TrashResult> => {
       const wiki = requireWiki()
-      const indexed = await readTrashIndex(wiki)
+      const index = await readTrashIndex(wiki)
+      // A failed/corrupt index must never be treated as「回收站是空的」: `empty`
+      // would then report success while doing nothing, and `restore` would claim
+      // the note was never trashed (v0.19.5).
+      if (!index.readOk) throw new TrashIndexUnavailableError()
+      if (index.corrupted) {
+        throw new Error('回收站索引已损坏（JSON 解析失败），本次操作已中止以免误删记录；可手动检查 $:/dsh-tiddlywiki/trash-index 后重试。')
+      }
+      const indexed = index.entries
       if (args.action === 'list') {
         const limit = Math.max(1, Math.min(args.limit ?? 30, 200))
         return {
@@ -802,6 +886,9 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       url: { type: 'string', description: '公网 http(s) 地址（与 path 二选一；含 SSRF 守卫，拒绝内网/回环地址）' },
       tags: { type: 'array', items: { type: 'string' }, description: '可选：附件标签' },
       noteTitle: { type: 'string', description: '可选：把该附件嵌入到这篇笔记末尾（图片用 [img[标题]]，其它用 [[标题]] 链接）' },
+      expectedModified: { type: 'string', description: '可选：乐观并发保护，仅在同名 tiddler 已存在时有意义（传 tiddlywiki_get 读到的 modified）' },
+      expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——传 tiddlywiki_get 返回字段里的 revision' },
+      force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision，允许覆盖同名 tiddler（默认 false；即便覆盖也会保留其 tags 与自定义字段）' },
     },
     output: {
       schema: { type: 'json' },
@@ -813,7 +900,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { title: string; path?: string; url?: string; tags?: string[]; noteTitle?: string }): Promise<AttachResult> => {
+    execute: async (args: { title: string; path?: string; url?: string; tags?: string[]; noteTitle?: string; expectedModified?: string; expectedRevision?: number; force?: boolean }): Promise<AttachResult> => {
       const wiki = requireWiki()
       const title = args.title.trim()
       if (title.length === 0) throw new Error('tiddlywiki_attach: title 不能为空')
@@ -845,26 +932,59 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       }
       if (buffer.length === 0) throw new Error('tiddlywiki_attach: 内容为空')
       if (buffer.length > MAX_ATTACH_BYTES) throw new Error(`tiddlywiki_attach: 内容超过 ${Math.floor(MAX_ATTACH_BYTES / 1024 / 1024)}MB 上限`)
-      const tags = Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : []
-      await wiki.put({
-        title,
-        type: mime,
-        text: buffer.toString('base64'),
-        ...(tags.length > 0 ? { tags } : {}),
-        'attach-source': source,
-        'attach-at': new Date().toISOString(),
+      // DATA SAFETY (v0.19.5): this used to `wiki.put({title, type, text})` with
+      // no read at all — attaching an image whose title collided with an existing
+      // note silently replaced that note (tags, custom fields and body all gone),
+      // the exact class the write policy exists to prevent. It also never added
+      // the `agent-written` tag every other creating tool adds. Read first (404 =
+      // new tiddler; any other failure propagates), then build the PUT from the
+      // existing tiddler so a same-named note keeps everything but its body.
+      const existing = await wiki.get(title)
+      assertNoConflict(title, existing, {
+        expectedModified: args.expectedModified,
+        expectedRevision: args.expectedRevision,
+        force: args.force,
       })
+      // An attachment sharing a title with an existing tiddler is almost always
+      // a mistake (the old code silently destroyed the note). Require explicit
+      // consent: a concurrency token (the caller proved it read the tiddler) or
+      // `force: true`. `expectedRevision`/`expectedModified` alone does NOT
+      // consent to an overwrite — `assertNoConflict` above only rejects when the
+      // tiddler changed since that token, so a stale-but-matching token would
+      // still wipe the body.
+      if (existing !== undefined && args.force !== true) {
+        throw new Error(
+          `tiddlywiki_attach: 标题「${title}」已存在（type=${typeof existing.type === 'string' ? existing.type : '?'}）。`
+          + '为避免静默覆盖既有笔记，请换一个附件标题；确认要覆盖时传 force: true（tags 与自定义字段仍会保留）。',
+        )
+      }
+      const explicitTags = Array.isArray(args.tags)
+        ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0)
+        : undefined
+      const { tiddler } = buildWriteTiddler(title, buffer.toString('base64'), {
+        existing,
+        ...(explicitTags !== undefined && explicitTags.length > 0 ? { tags: explicitTags } : {}),
+        fields: {
+          type: mime,
+          'attach-source': source,
+          'attach-at': new Date().toISOString(),
+        },
+      })
+      await wiki.put(tiddler)
       let embedInto: string | null = null
       if (typeof args.noteTitle === 'string' && args.noteTitle.trim().length > 0) {
         embedInto = args.noteTitle.trim()
         const note = await wiki.get(embedInto)
-        const embed = mime.startsWith('image/') ? `[img[${title}]]` : `[[${title}]]`
+        // `[img[Title]]` breaks if the attachment title itself contains `]]`;
+        // fall back to a plain link (which has the same constraint, so strip the
+        // sequence) instead of silently producing a broken embed.
+        const safeTitle = title.replace(/\]\]/g, '] ]')
+        const embed = mime.startsWith('image/') ? `[img[${safeTitle}]]` : `[[${safeTitle}]]`
         const text = note === undefined ? embed : `${(note.text ?? '').replace(/\s+$/, '')}\n\n${embed}`
-        if (note === undefined) {
-          await wiki.put({ title: embedInto, text, type: DEFAULT_NOTE_TYPE, tags: [] })
-        } else {
-          await wiki.put({ ...cleanTiddler(note), text })
-        }
+        // Same read-modify-write policy as everywhere else: preserve the note's
+        // tags/custom fields/type, only append the embed.
+        const { tiddler: noteTiddler } = buildWriteTiddler(embedInto, text, { existing: note })
+        await wiki.put(noteTiddler)
       }
       deps.autoCommit()
       return { ok: true, title, mime, bytes: buffer.length, chars: buffer.toString('base64').length, source, embedInto }

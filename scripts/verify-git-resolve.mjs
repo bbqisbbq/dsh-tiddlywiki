@@ -102,7 +102,7 @@ try {
     const tools = new Map()
     registerTiddlywikiTools(
       { tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } },
-      { wiki: () => undefined, git, wikiPath: () => wikiPath, noteTag: () => 'inbox', autoCommit: () => {} },
+      { wiki: () => undefined, git, wikiPath: () => wikiPath, autoCommit: () => {} },
     )
     const resolve = tools.get('tiddlywiki_git_resolve')
     assert.ok(resolve !== undefined, 'tiddlywiki_git_resolve 未注册')
@@ -120,7 +120,7 @@ try {
     const tools = new Map()
     registerTiddlywikiTools(
       { tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } },
-      { wiki: () => undefined, git, wikiPath: () => wikiPath, noteTag: () => 'inbox', autoCommit: () => {} },
+      { wiki: () => undefined, git, wikiPath: () => wikiPath, autoCommit: () => {} },
     )
     const resolve = tools.get('tiddlywiki_git_resolve')
     const r = await resolve.execute({ strategy: 'keep-remote', files: [CONFLICT_FILE] }, undefined)

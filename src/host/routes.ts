@@ -342,12 +342,14 @@ export async function openInTwEditor(
   tags: string[] | undefined,
   options: { defaultTags?: string[]; expectedModified?: string; expectedRevision?: string | number; force?: boolean } = {},
 ): Promise<{ title: string; draftTitle: string }> {
+  // One read drives everything: the write base (tags/custom fields/type), the
+  // conflict check, and — when the body carried no text — the draft content.
+  const existing = await client.get(title)
+  assertNoConflict(title, existing, options)
   if (text.trim().length > 0) {
     // PRESERVE, do not blind-replace (v0.19.1): the old code PUT
     // `{title, text, tags, type}` with no read, wiping the note's custom fields
     // and (because `tags` defaulted to the note tag) its tags too.
-    const existing = await client.get(title)
-    assertNoConflict(title, existing, options)
     const { tiddler } = buildWriteTiddler(title, text, {
       existing,
       tags,
@@ -357,40 +359,49 @@ export async function openInTwEditor(
     await client.put(tiddler)
   }
   // Draft content: the provided text, else the existing tiddler's content.
-  let draftText = text
-  if (draftText.trim().length === 0) {
-    const existing = await client.get(title)
-    draftText = existing?.text ?? ''
-  }
-  // Draft lookup + creation. The skinny listing (no `text` payloads) carries
-  // the custom fields, so there is no need to ship the whole wiki's text just
-  // to find a draft.
+  const draftText = text.trim().length > 0 ? text : (existing?.text ?? '')
+  // Draft TYPE (v0.19.5): must match the note's real content type. Hardcoding
+  // `text/markdown` meant that editing a wikitext note through the quick-note
+  // surface downgraded it — TW's save copies the draft's fields back onto the
+  // original, so `fields.type` flipped to markdown and the body started
+  // rendering as source (`!` headings, `<$list>`, `[[links]]` all broke).
+  const draftType = typeof existing?.type === 'string' && existing.type.length > 0 ? existing.type : NOTE_TYPE
+  // Draft lookup. The canonical TW name is probed with a single GET first — the
+  // old code always pulled the ENTIRE listing (megabytes on a big wiki) just to
+  // find a draft; the listing stays as the fallback for a differently-named one.
+  const canonical = `Draft of "${title}"`
   let draftTitle: string | undefined
+  let canonicalProbe: boolean | undefined
   try {
-    const items = await client.list(undefined, false)
-    for (const item of items) {
-      if (item['draft.of'] === title && typeof item.title === 'string') {
-        draftTitle = item.title
-        break
-      }
-    }
+    canonicalProbe = (await client.get(canonical)) === undefined
   } catch {
-    /* fall back to a fresh draft */
+    canonicalProbe = undefined
   }
-  if (draftTitle === undefined) {
+  if (canonicalProbe === false) {
+    // The canonical name is free → use it (TW's own "save draft" bookkeeping
+    // lines up). Only a TAKEN canonical name needs the listing scan.
+    draftTitle = canonical
+  } else if (canonicalProbe === true) {
+    try {
+      const items = await client.list(undefined, false)
+      for (const item of items) {
+        if (item['draft.of'] === title && typeof item.title === 'string') {
+          draftTitle = item.title
+          break
+        }
+      }
+    } catch {
+      /* fall back to a fresh draft */
+    }
     // Prefer TW's CANONICAL draft name so the embedded editor's own "save
     // draft" bookkeeping lines up; fall back to a timestamped name when it is
     // taken (or the probe failed) so an existing draft is never clobbered.
-    const canonical = `Draft of "${title}"`
-    let free = false
-    try {
-      free = (await client.get(canonical)) === undefined
-    } catch {
-      free = false
-    }
-    draftTitle = free ? canonical : `${canonical} ${Date.now()}`
+    if (draftTitle === undefined) draftTitle = canonical
+    else if (draftTitle !== canonical) draftTitle = `${canonical} ${Date.now()}`
+  } else {
+    draftTitle = `${canonical} ${Date.now()}`
   }
-  await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: NOTE_TYPE })
+  await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: draftType })
   return { title, draftTitle }
 }
 
@@ -1221,7 +1232,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         type: req.headers['content-type'] ?? 'application/octet-stream',
       })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, err instanceof Error && /too large/.test(err.message) ? 413 : 500)
+      // Same mapping as every other route (v0.19.5): the old bespoke `/too
+      // large/i` test disagreed with `errorStatus`'s `/body too large/i`, so the
+      // 413 was decided by whichever wording the thrown error happened to use.
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -1316,7 +1330,11 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   /** Passthrough /dsh-tiddlywiki/api/<rest> → TW root /<rest>. */
   const handleApiProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    if (rejectCrossSiteWrite(req, res)) return
+    // Explicit method whitelist (v0.19.5): the host webserver dispatches by
+    // pathname only, so without it every method (TRACE, or a typo'd verb) was
+    // forwarded to the TW child. The set is the TiddlyWeb API surface the TW
+    // frontend uses.
+    if (rejectCrossSiteWrite(req, res, ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'])) return
     const client = deps.getClient()
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -1385,6 +1403,12 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const signal = typeof AbortSignal.any === 'function' ? AbortSignal.any([abort.signal, timeout]) : timeout
       const init: RequestInit = { method, headers, signal }
       if (method === 'PUT' || method === 'POST') init.body = await readBodyBuffer(req, MAX_UPLOAD_BYTES)
+      // A DELETE with a body would otherwise stay unread on the socket: the
+      // upstream fetch goes out, but this request never drains, so the client
+      // sits on a half-open connection until the 30s timeout (v0.19.5). The TW
+      // frontend does not send DELETE bodies, but the proxy is a generic
+      // passthrough — drain whatever is there.
+      else if (req.readableEnded === false && (req.headers['content-length'] !== undefined || req.headers['transfer-encoding'] !== undefined)) req.resume()
       const upstream = await fetch(`${deps.server.url}${rest}${url.search}`, init)
       const responseHeaders: Record<string, string> = {
         'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',

@@ -21,7 +21,7 @@ import type { NoteWidgetHandle } from './note-widget.ts'
 import type { SyncController } from './sync-button.ts'
 import { PANEL_RELOAD_EVENT } from './tw-frame.ts'
 
-import { STATUS_ENDPOINT } from './endpoints.ts'
+import { fetchStatus } from './status-cache.ts'
 import { fetchUiConfig } from './ui-config.ts'
 
 /** Book icon (same visual family as the sidebar entry). */
@@ -30,17 +30,11 @@ const BOOK_ICON = '<svg viewBox="0 0 16 16" width="17" height="17" fill="none" s
 interface UiFlags { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean }
 
 async function fetchUiFlags(): Promise<UiFlags> {
-  try {
-    const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
-    if (!res.ok) return { showQuickNote: true, showPanelStatus: true, showSyncButton: true }
-    const p = (await res.json()) as { ui?: { showQuickNote?: boolean; showPanelStatus?: boolean; showSyncButton?: boolean } }
-    return {
-      showQuickNote: p.ui?.showQuickNote !== false,
-      showPanelStatus: p.ui?.showPanelStatus !== false,
-      showSyncButton: p.ui?.showSyncButton !== false,
-    }
-  } catch {
-    return { showQuickNote: true, showPanelStatus: true, showSyncButton: true }
+  const status = await fetchStatus()
+  return {
+    showQuickNote: status?.ui?.showQuickNote !== false,
+    showPanelStatus: status?.ui?.showPanelStatus !== false,
+    showSyncButton: status?.ui?.showSyncButton !== false,
   }
 }
 
@@ -49,17 +43,12 @@ interface TwHealth { state: string; text: string; logs: string[] }
 
 /** Fetch the TW service health (state line text + recent logs for the tip). */
 async function fetchTwHealth(): Promise<TwHealth> {
-  try {
-    const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(8_000) })
-    if (!res.ok) return { state: 'failed', text: '状态不可达', logs: [] }
-    const p = (await res.json()) as { status?: string; url?: string; error?: string; logs?: string[] }
-    const logs = Array.isArray(p.logs) ? p.logs.filter((l): l is string => typeof l === 'string') : []
-    if (p.status === 'running') return { state: 'running', text: `TW 在线 · ${p.url ?? ''}`, logs }
-    if (p.status === 'starting') return { state: 'starting', text: 'TW 启动中…', logs }
-    return { state: 'failed', text: p.error ?? `TW 状态：${p.status ?? '?'}`, logs }
-  } catch {
-    return { state: 'failed', text: '状态不可达', logs: [] }
-  }
+  const p = await fetchStatus()
+  if (p === null) return { state: 'failed', text: '状态不可达', logs: [] }
+  const logs = Array.isArray(p.logs) ? p.logs.filter((l): l is string => typeof l === 'string') : []
+  if (p.status === 'running') return { state: 'running', text: `TW 在线 · ${p.url ?? ''}`, logs }
+  if (p.status === 'starting') return { state: 'starting', text: 'TW 启动中…', logs }
+  return { state: 'failed', text: p.error ?? `TW 状态：${p.status ?? '?'}`, logs }
 }
 
 /**

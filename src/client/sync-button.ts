@@ -18,7 +18,7 @@
  */
 import { toast } from './toast.ts'
 
-import { STATUS_ENDPOINT } from './endpoints.ts'
+import { fetchStatus, type StatusPayload } from './status-cache.ts'
 const SYNC_ENDPOINT = '/dsh-tiddlywiki/sync'
 const POLL_MS = 30_000
 
@@ -32,12 +32,6 @@ interface GitView {
   lastCommit?: string
   ahead?: number
   behind?: number
-}
-
-interface StatusPayload {
-  ok?: boolean
-  status?: string
-  git?: GitView | null
 }
 
 export interface SyncStateView {
@@ -57,16 +51,6 @@ function pad(n: number): string {
 /** Compact local time for the tooltip (e.g. "10:32"). */
 function clock(date: Date): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
-async function fetchStatus(): Promise<StatusPayload | null> {
-  try {
-    const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(8_000) })
-    if (!res.ok) return null
-    return (await res.json()) as StatusPayload
-  } catch {
-    return null
-  }
 }
 
 /** Map a git summary onto a SyncStateView. */

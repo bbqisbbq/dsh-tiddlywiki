@@ -19,7 +19,7 @@
  * @module dsh-tiddlywiki/client/tw-frame
  */
 import * as React from 'react'
-import { STATUS_ENDPOINT } from './endpoints.ts'
+import { fetchStatus } from './status-cache.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
 /** Cross-plugin activation event; detail is the activating panel name. */
@@ -43,26 +43,7 @@ export function getTabLabel(): string {
   return tabLabel
 }
 
-export interface StatusPayload {
-  ok?: boolean
-  status: string
-  url?: string
-  /** Same-origin TW proxy path (e.g. /dsh-tiddlywiki/tw/); the iframe base. */
-  twProxy?: string
-  wikiPath?: string
-  error?: string
-  ui?: { followDshTheme?: boolean; darkPalette?: string; tabLabel?: string }
-}
-
-export async function fetchStatus(): Promise<StatusPayload | null> {
-  try {
-    const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(8_000) })
-    if (!res.ok) return null
-    return (await res.json()) as StatusPayload
-  } catch {
-    return null
-  }
-}
+import type { StatusPayload } from './status-cache.ts'
 
 async function requestRestart(): Promise<boolean> {
   try {

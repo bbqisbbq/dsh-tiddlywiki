@@ -76,7 +76,7 @@ try {
   const tools = new Map()
   registerTiddlywikiTools(
     { tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } },
-    { wiki: () => api, git, wikiPath: () => wikiDir, noteTag: () => 'inbox', autoCommit: () => {} },
+    { wiki: () => api, git, wikiPath: () => wikiDir, autoCommit: () => {} },
   )
   const call = (name, args) => {
     const tool = tools.get(name)

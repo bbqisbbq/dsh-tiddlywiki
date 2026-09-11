@@ -544,7 +544,10 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       await deps.config.set(client, stripMaskedSecrets(body as Record<string, unknown>, deps.config.get()) as PluginConfigShape)
       json(res, { ok: true, config: maskConfigSecrets(deps.config.get()) })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 400)
+      // Not a blanket 400 (v0.19.5): a refused/dead wiki client surfaces as a
+      // 500/413 like everywhere else — reporting「参数错误」for a service failure
+      // sent the settings page down the wrong recovery path.
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 

@@ -60,7 +60,7 @@ const APP_OVERLAY_Z_INDEX = 20
 /** Safety re-measure cadence for shell layout changes CSS can't see. */
 const SYNC_INTERVAL_MS = 2_000
 
-import { STATUS_ENDPOINT } from './endpoints.ts'
+import { fetchStatus } from './status-cache.ts'
 const RESTART_ENDPOINT = '/dsh-tiddlywiki/restart'
 
 /**
@@ -94,34 +94,12 @@ function resolvePanelZIndex(): number {
   return Math.max(APP_OVERLAY_Z_INDEX, Math.min(PANEL_Z_INDEX, parsed - 1))
 }
 
-interface StatusPayload {
-  ok?: boolean
-  status: string
-  url?: string
-  /** Same-origin TW proxy path (e.g. /dsh-tiddlywiki/tw/); the iframe base. */
-  twProxy?: string
-  wikiPath?: string
-  error?: string
-  note?: { tag?: string }
-  ui?: { followDshTheme?: boolean; darkPalette?: string }
-}
-
 function conversationColumn(): HTMLElement | undefined {
   for (const selector of COLUMN_SELECTORS) {
     const el = document.querySelector<HTMLElement>(selector)
     if (el !== null) return el
   }
   return undefined
-}
-
-async function fetchStatus(): Promise<StatusPayload | null> {
-  try {
-    const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(8_000) })
-    if (!res.ok) return null
-    return (await res.json()) as StatusPayload
-  } catch {
-    return null
-  }
 }
 
 async function requestRestart(): Promise<boolean> {

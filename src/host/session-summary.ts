@@ -352,9 +352,14 @@ function buildWikitext(
 
   const entryLine = (title: string, state: TitleState | undefined, entry: NoteEntry): string => {
     const bits: string[] = [`[[${title}]]`]
-    if (state !== undefined && state.unknown === true) {
+    if (state === undefined) {
+      // Not probed at all: `enrichTitles` only queries the first
+      // MAX_ENRICH_TITLES titles, so a long session's tail must NOT be reported
+      // as「已删除/不存在」(v0.19.5) — that is a false accusation, not a status.
+      bits.push('（未探测，超出单次查询上限）')
+    } else if (state.unknown === true) {
       bits.push('⚠️ 状态未知（查询失败）')
-    } else if (state === undefined || !state.exists) {
+    } else if (!state.exists) {
       bits.push('⚠️ 已删除/不存在')
     } else {
       if (state.tags.length > 0) bits.push(`标签 ${state.tags.slice(0, 6).map((tag) => escapeInline(tag, 40)).join('、')}${state.tags.length > 6 ? '…' : ''}`)
@@ -451,7 +456,8 @@ export async function writeSessionSummary(client: TiddlyWebClient, sq: SessionQu
   // 4) 查询当前状态（存在？标签？时间？）→ 组装 wikitext → PUT volatile tiddler。
   //    探测量有上限：一篇超长会话可能触碰成百上千篇笔记。
   const allTitles = [...new Set([...producedTitles, ...readTitles])]
-  const stateByTitle = await enrichTitles(client, allTitles.slice(0, MAX_ENRICH_TITLES))
+  const probedTitles = allTitles.slice(0, MAX_ENRICH_TITLES)
+  const stateByTitle = await enrichTitles(client, probedTitles)
   const text = buildWikitext(sessionId, collected, producedTitles, readTitles, stateByTitle)
   const title = `${SESSION_SUMMARY_PREFIX}${sessionId}`
   await client.put({ title, text, type: 'text/vnd.tiddlywiki', tags: [] })

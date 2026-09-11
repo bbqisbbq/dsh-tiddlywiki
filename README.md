@@ -26,7 +26,7 @@
 | 🏠 **文档中心起步包** | 首次安装自动 seed：插件说明 + 「示例与文档」（主题汇总模板 / 教程 / 三个示例主题页），首页「📚 插件文档」栏一键查阅；**同名 tiddler 已存在一律安全跳过，绝不覆盖你的数据**（v0.16.22） |
 | 🎨 **自定义样式** | 「自定义样式」seed：编辑器美化 / 窄屏侧栏隐藏 / menubar 加高 / 批注弹窗等 5 张通用样式表，新 wiki 也能一键初始化（可选，v0.16.22） |
 | 🤖 **Agent 工具** | 15 个 `tiddlywiki_*` 工具：检索（**相关度排序 + 命中处片段 + 字段过滤**）、读写、**增量追加**、批量、重命名、**软删除/回收站**、**反向链接**、**附件入库**、**知识库体检**、git 同步与冲突解决（v0.19.0；检索/最近仍在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
-| 🛡️ **不会被覆盖的写入** | 所有写入路径（agent 工具 **与** 快速笔记/编辑器路由）都**先读后写**：不传 tags 就保留原有标签与自定义字段；`tiddlywiki_put(..., expectedModified/expectedRevision)` 乐观并发——读取后若有人（在 TW 编辑器里）改过，写入被拒绝（HTTP 409）而不是静默覆盖；`tiddlywiki_delete` 默认**软删除进回收站**，`tiddlywiki_trash` 可恢复（v0.19.0 / v0.19.1） |
+| 🛡️ **不会被覆盖的写入** | 所有写入路径（agent 工具 **与** 快速笔记/编辑器路由）都**先读后写**：不传 tags 就保留原有标签与自定义字段；`tiddlywiki_put(..., expectedModified/expectedRevision)` 与 `tiddlywiki_delete(..., expectedModified/expectedRevision)` 乐观并发——读取后若有人（在 TW 编辑器里）改过，写入/删除被拒绝（HTTP 409）而不是静默覆盖或丢进回收站；`tiddlywiki_attach` 的同名标题**默认拒绝**（要覆盖必须 `force: true`）；`tiddlywiki_delete` 默认**软删除进回收站**，`tiddlywiki_trash` 可恢复（v0.19.0 / v0.19.1 / v0.19.5） |
 | 🧼 **渲染片段净化** | 回复流卡片与会话汇总注入的 TW 片段先经 **host 白名单净化**（丢 `iframe`/`script`/`svg`/`on*`/`javascript:`/`data:text/html` 等）——TW 自己的解析器只剥 `on*`，`<iframe src="javascript:…">` 会原样通过并在 DSH 页面里执行（v0.19.1 修复的存储型 XSS） |
 | 🔒 **写路由方法校验** | 每个写路由只接受自己的 HTTP 方法：跨站 `GET /sync`、`GET /restart`、`GET /upload` 一律 405 且无副作用（v0.19.0 修复了「任意网页一张 `<img>` 即可触发 pull/commit/push」的 CSRF 面） |
 | 🔑 **密钥不外泄** | `bridge.token` / `ui.sendToAgent.token` 在 `/admin/state`、`/admin/config` 的回包里是 `********`（设置页原样保存 ≠ 覆盖，清空即删除），`git.remote` 里的 PAT 打码；**`/tw` 与 `/api` 代理拒绝 `$:/plugins/dsh-tiddlywiki/` 命名空间**——此前可绕过 `/get` 的限制直接经代理读到配置 tiddler（v0.19.3） |
@@ -87,13 +87,13 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 | `tiddlywiki_list_tags` | 现有非系统 tag 及计数（已排除只挂在二进制附件上的 tag）；默认列使用最多的 200 个（`limit` 可调、上限 1000），截断时返回 `total`/`truncated` |
 | `tiddlywiki_get` | 读单个 tiddler 全文（`modified` 以 ISO 返回，可直接用作 `expectedModified`） |
 | `tiddlywiki_put` | 写/覆盖；未指定类型时自动默认 `text/markdown`（`$:/` 系统条目除外）；`expectedModified` + `force` 提供乐观并发保护 |
-| `tiddlywiki_batch_put` | 批量写入（`overwrite=false` 跳过已存在；单条失败不影响其余，逐条报错） |
+| `tiddlywiki_batch_put` | 批量写入（`overwrite=false` 跳过已存在；单条失败不影响其余、逐条报错；4 路并发但结果保持入参顺序） |
 | `tiddlywiki_append` | **增量追加**：`mode=append\|prepend`、`heading=某标题` 定位段落，写日志/批注无需读全文 |
-| `tiddlywiki_rename` | 重命名 + 尽量同步其他条目里的引用 |
-| `tiddlywiki_delete` | 删除（幂等）。默认**软删除**进 `$:/dsh-tiddlywiki/trash/`，`permanent=true` 才真删 |
-| `tiddlywiki_trash` | 回收站：`action=list\|restore\|empty` |
+| `tiddlywiki_rename` | 重命名 + 尽量同步其他条目里的引用；旧标题删除失败时如实回报「两份副本都在」 |
+| `tiddlywiki_delete` | 删除（幂等）。默认**软删除**进 `$:/dsh-tiddlywiki/trash/`，`permanent=true` 才真删；支持 `expectedModified`/`expectedRevision`/`force` 乐观并发（读后被改动则拒绝，不把人类的新改动丢进回收站） |
+| `tiddlywiki_trash` | 回收站：`action=list\|restore\|empty`（索引读不到或损坏时显式报错，绝不把回收站当空的重建） |
 | `tiddlywiki_backlinks` | 反向链接：谁用 `[[标题]]`/`{{标题}}` 引用了它、谁把它当标签 |
-| `tiddlywiki_attach` | 把**本机文件或公网 http(s) 地址**存成二进制附件（图片/PDF/…），可嵌入某篇笔记；URL 走 SSRF 守卫 |
+| `tiddlywiki_attach` | 把**本机文件或公网 http(s) 地址**存成二进制附件（图片/PDF/…），可嵌入某篇笔记；URL 走 SSRF 守卫；**同名 tiddler 已存在时默认拒绝**（避免静默覆盖笔记），确认覆盖要传 `force: true`（tags/自定义字段仍保留） |
 | `tiddlywiki_lint` | 知识库体检：垃圾标签 / 死链 / 空笔记 / 缺内容类型的类 Markdown 笔记 |
 | `tiddlywiki_git_sync` | `action: pull\|push\|sync` |
 | `tiddlywiki_git_resolve` | pull 冲突后按 tiddler 二选一（`keep-local\|keep-remote`） |
@@ -205,11 +205,15 @@ npm run typecheck     # tsc --noEmit
 npm run build         # clean + host tsdown + client tsdown + wrap（wrap 会校验 id 与体积 <900KB）
 npm run selftest      # headless：spawn TW → REST 读写 → git → 退出回收
 npm run smoke:client  # client bundle 的 module-loader 形状冒烟
+npm run verify        # = verify:static + verify:unit + verify:e2e（本地一键；CI 同款分档）
+npm run verify:large  # 3000+ 条目大 wiki：检索耗时 / 二进制零出现 / 真跑 commit（约 1 分钟）
 node scripts/verify-send-to-agent-bundle.mjs  # bundle 字段 + 源件逐字一致
 node scripts/verify-seed-send-to-agent.mjs    # 全新 wiki 上的 seed E2E
 node scripts/verify-clip-bridge.mjs   # 剪藏桥 headless 验收（含 SSRF 守卫）
 node scripts/verify-seeds-admin.mjs   # /admin/seeds 状态与 run 的 E2E
 ```
+
+> 📦 从 **npm 包**安装的用户只有 `lib/` + `src/` + `docs/`（`scripts/` 不在发布包里，避免把构建脚本塞进依赖树）——想跑上面的验收脚本请用 git 仓库：`git clone https://github.com/bbqisbbq/dsh-tiddlywiki && npm install`。
 
 **改 bundle/seed 的再生成流水线**（不要手改 `seed-*.ts` 里的生成常量；bundle 版本号只在 `scripts/bundle/versions.mjs` 定义一处）：
 
@@ -292,6 +296,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.19.5**（2026-09-11）：**第三轮代码审计的修复版**（数据安全 / 正确性 / 客户端网络卫生 / 工具性能）。**数据安全**：① `tiddlywiki_attach` 此前**完全不读旧条目**就 `PUT`——附件标题一旦撞上既有笔记（`会议纪要.png` 之类）会把那篇笔记连 tags/自定义字段/正文一起**静默替换成 base64**，是本轮最危险的一条。现在先读后写（004 = 新建，其余错误照常抛出），撞名时**默认拒绝**并要求 `force: true`（并发令牌只证明「读过」、不等于「同意覆盖」），覆盖时仍保留原 tags 与自定义字段，新建附件也会补 `agent-written`；嵌入笔记（`noteTitle`）同样走写策略。② `/edit`（快速笔记直达 TW 原生编辑器）此前把草稿写死 `text/markdown`，而 TW 保存草稿会把字段抄回原条目——**任何 wikitext 笔记被这样编辑一次就降级成 Markdown**，`!` 标题 / `<$list>` / `[[链接]]` 下次全渲染成源码。现在草稿类型跟随原条目，只有新笔记才回落 Markdown。③ 回收站索引读失败/JSON 损坏时，`delete` 此前把它当「空索引」再全量覆盖 → **之前所有回收站记录变成既查不到、也清不掉的孤儿**（体积还留在 git 里）。现在读失败即中止（新增 `TrashIndexUnavailableError`），损坏也不静默重建，`trash list/restore/empty` 一律显式报错。④ `rename` 先写新标题、再删旧标题，此前若删除失败会**抛裸错**让调用方以为整个重命名没发生；现在如实回报「两份副本都在，请手动删除旧标题」。⑤ `tiddlywiki_delete` 支持 `expectedModified`/`expectedRevision`/`force`——删除比覆盖更具破坏性，此前却没有任何乐观并发保护（`get` → 人类在 TW 里改动 → `delete` 会把新改动一起丢进回收站）。**正确性**：⑥ 会话汇总只探测前 300 篇，却把**所有**条目按探测结果渲染，超出上限的会被谎报成「⚠️ 已删除/不存在」；现在未探测的条目标「（未探测，超出单次查询上限）」。⑦ `/api` 透传补上方法白名单（宿主按 pathname 分发，此前 TRACE 之类的任意方法都会被转发给 TW）。⑧ `/tw` 代理遇到带 body 的 DELETE 不再把请求体留在 socket 上（此前会挂到 30s 超时）。⑨ `/admin/config` 不再把所有失败都当 400（服务不可用/超限走 413/500）；`/upload` 的「超限」判定与 `errorStatus` 统一。⑩ `WikiServer` 成功启动时清掉上一次失败的 `error`（自愈成功后 `/status` 与面板提示不再长期显示过期故障）。**工具性能**：⑪ `batch_put` 从「顺序 2N 次 REST」改为 **4 路有界并发**（结果按入参下标回填，顺序与逐条容错完全不变），`autoCommit` 移出循环。⑫ 快速笔记找草稿从「拉整份 listing」改为**先单条 GET 规范草稿名**，listing 只作兜底。**客户端网络卫生**：⑬ 新增共享的 `/status` 读取器（2s TTL + **在途合并**）——此前中央面板、侧栏框架、同步按钮、快速笔记配置**四处各有一份 `fetchStatus`**，页面加载时会同时发多次请求，而 host 每处理一次 `/status` 要起最多 5 个 git 进程；⑭ `ui-config` 的缓存同样改为 promise（并发调用共享一次请求），失败不缓存。**其它**：`ToolsDeps.noteTag` 死代码删除；`put`/`batch_put` 描述改为「防抖自动 commit（默认 60s）」以免模型误以为写完即提交。守门：新增 `scripts/verify-audit-fixes.mjs`（10 条 E2E，真实 TW + 真实路由，每条都能复现旧缺陷）与 `scripts/verify-status-cache.mjs`（5 条单测，`tsx` 直跑源码），均已并入 `verify:unit` / `verify:e2e`。
 
 - **v0.19.4**（2026-09-11）：**标签列表全面「有界」——最后一个没有上限的列表接口**。`GET /dsh-tiddlywiki/tags` 此前会把**每一个**去重标签（大 wiki 上千个）连同计数全量回给浏览器，而回复流工具卡只是展示前 60 个；`tiddlywiki_list_tags` 更严重——同样全量灌进**模型上下文**。现在：① `/tags` 支持 `limit`（1–500，缺省仍是全量，快速笔记的标签自动补全保留完整词表）与 `sort=alpha|count`（默认 `alpha`，`count` 按使用次数降序），回包新增 `total`（去重后的真实总数）与 `truncated`；② 工具 `tiddlywiki_list_tags` 新增可选 `limit`（默认 200、上限 1000），截断时 render 明说「共 N 个，仅列出最多的 M 个」，不再让模型以为那就是全部；③ 客户端 `TagsCard` 改为直接请求 `?limit=60&sort=count`（不再下载上千条再丢掉），并用 `total` 显示「共 N 个 · …另有 M 个」；④ 顺手消掉重复实现：路由与工具现在共用 `TiddlyWebClient.tagStats()` 一份计数逻辑（此前路由自己遍历一遍，且不跳过 `$:/` 系统标题，两侧口径可能不一致），`/recent`、`/search`、`/tags` 的 limit 解析收进 `readLimit()`/`readOptionalLimit()` 两个助手。守门：selftest 增 6 条断言（截断/`total` 不丢分母/`tags` 与 `items` 同集同序/上限 500/`sort=count` 单调递减/无 limit 时 `truncated=false`），`verify-tools` 增 `list_tags` 的 limit 用例。
 

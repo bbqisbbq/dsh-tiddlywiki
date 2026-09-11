@@ -32,7 +32,7 @@ import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
 
 const NOTE_ENDPOINT = '/dsh-tiddlywiki/note'
 const EDIT_ENDPOINT = '/dsh-tiddlywiki/edit'
-import { STATUS_ENDPOINT } from './endpoints.ts'
+import { fetchStatus } from './status-cache.ts'
 const TAGS_ENDPOINT = '/dsh-tiddlywiki/tags'
 const RECENT_ENDPOINT = '/dsh-tiddlywiki/recent'
 const GET_ENDPOINT = '/dsh-tiddlywiki/get'
@@ -178,16 +178,11 @@ interface UiOptions { showQuickNote: boolean; defaultTag: string }
 
 async function fetchUiOptions(): Promise<UiOptions> {
   const fallback: UiOptions = { showQuickNote: true, defaultTag: 'inbox' }
-  try {
-    const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
-    if (!res.ok) return fallback
-    const payload = (await res.json()) as { ui?: { showQuickNote?: boolean }; note?: { tag?: string } }
-    return {
-      showQuickNote: payload.ui?.showQuickNote !== false,
-      defaultTag: payload.note?.tag ?? 'inbox',
-    }
-  } catch {
-    return fallback
+  const status = await fetchStatus()
+  if (status === null) return fallback
+  return {
+    showQuickNote: status.ui?.showQuickNote !== false,
+    defaultTag: typeof status.note?.tag === 'string' && status.note.tag.length > 0 ? status.note.tag : 'inbox',
   }
 }
 
