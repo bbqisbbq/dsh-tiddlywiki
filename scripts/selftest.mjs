@@ -561,6 +561,14 @@ try {
     makeRes(),
   )
   assert(upDotdot.ok === false, 'bare ".." filename rejected')
+  // v0.19.3: `evil.html.` used to slip past the extension denylist (extname → '.')
+  // and Windows stores the trailing dot verbatim — canonicalize before checking.
+  const upTrailingDot = await callRoute(
+    routeHandlers.get('/dsh-tiddlywiki/upload'),
+    makeReq('/dsh-tiddlywiki/upload?name=evil.html.', Buffer.from('<script>alert(1)</script>'), 'POST'),
+    makeRes(),
+  )
+  assert(upTrailingDot.ok === false, `trailing-dot executable name rejected (${JSON.stringify(upTrailingDot)})`)
 
   // SECURITY REGRESSION (v0.19.0): a GET must never reach a write handler.
   // `http.ts` used to skip the CSRF check for GET and the host webserver
@@ -706,6 +714,23 @@ try {
   assert(proxyWrite.length === 0, 'proxy PUT returns an empty body (204)')
   const proxyWritten = await api.get('ProxyWrite')
   assert(proxyWritten?.text === 'via proxy', 'proxy PUT reached TW (CSRF header injected)')
+
+  // SECURITY REGRESSION (v0.19.3): the browser proxies must never serve the
+  // plugin's config tiddler. The `/get` route blocks it, but `/tw` (and `/api`)
+  // forward ANY path to the TW child, whose TiddlyWeb REST answers for `$:/…`
+  // titles — `GET /dsh-tiddlywiki/tw/recipes/default/tiddlers/%24%3A%2Fplugins…`
+  // used to return the config JSON with its tokens.
+  const configTitle = '$:/plugins/dsh-tiddlywiki/config'
+  const blockedTw = await callRaw(proxyHandler, makeReq(`${TW_PROXY_PREFIX}/recipes/default/tiddlers/${encodeURIComponent(configTitle)}`), makeRes())
+  assert(blockedTw.toString('utf8').includes('not exposed'), `tw proxy refuses the plugin config tiddler (${blockedTw.toString('utf8').slice(0, 120)})`)
+  const proxyConfigRes = makeRes()
+  await callRaw(proxyHandler, makeReq(`${TW_PROXY_PREFIX}/recipes/default/tiddlers/${encodeURIComponent(configTitle)}`), proxyConfigRes)
+  assert(proxyConfigRes._status === 403, `tw proxy answers 403 for the config tiddler (got ${proxyConfigRes._status})`)
+  const apiHandler = routeHandlers.get('/dsh-tiddlywiki/api')
+  assert(apiHandler !== undefined, 'api passthrough route registered')
+  const apiConfigRes = makeRes()
+  await callRaw(apiHandler, makeReq(`/dsh-tiddlywiki/api/recipes/default/tiddlers/${encodeURIComponent(configTitle)}`), apiConfigRes)
+  assert(apiConfigRes._status === 403, `api passthrough answers 403 for the config tiddler (got ${apiConfigRes._status})`)
 
   // ensureTwWebHost: TW's frontend API base must point at the same-origin
   // proxy; a missing/legacy-default tiddler is replaced, a user override kept.

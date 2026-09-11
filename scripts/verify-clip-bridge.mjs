@@ -411,6 +411,14 @@ await test('assertPublicImageUrl rejects loopback/LAN/metadata/odd schemes', asy
   assert.equal(isPrivateAddress('127.0.0.1'), true)
   assert.equal(isPrivateAddress('169.254.169.254'), true)
   assert.equal(isPrivateAddress('93.184.216.34'), false)
+  // v0.19.3: the IPv4 denylist was missing multicast / reserved / TEST-NET
+  // ranges, so a literal `http://255.255.255.255/x.png` passed the guard.
+  for (const ip of [
+    '224.0.0.1', '239.255.255.250', '255.255.255.255', '240.0.0.1', '250.1.2.3',
+    '192.0.2.1', '198.51.100.7', '203.0.113.9', '192.88.99.1', '198.18.0.1',
+  ]) {
+    assert.equal(isPrivateAddress(ip), true, `isPrivateAddress must block reserved ${ip}`)
+  }
 })
 
 // v0.19.0 regression: the guard used to judge IPv6 with string prefixes, so

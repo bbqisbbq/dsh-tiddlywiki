@@ -125,6 +125,8 @@ jobs:
         run: node scripts/verify-seed-error-policy.mjs
       - name: verify-render-sanitizer（渲染片段净化 + 注入点接线）
         run: node scripts/verify-render-sanitizer.mjs
+      - name: verify-secret-masking（配置 token 遮掩 + 汇总文本转义）
+        run: node scripts/verify-secret-masking.mjs
 
   # ── 慢：端到端（都要 spawn 真实 TW / 真实 git，逐条单列 step 便于定位） ──
   verify-e2e:

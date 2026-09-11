@@ -76,6 +76,41 @@ export function json(res: ServerResponse, payload: unknown, status = 200): void 
 }
 
 /**
+ * Map a thrown error to an HTTP status. Oversized bodies are a client problem
+ * (413), everything else is ours (500) — the routes used to answer 500 for
+ * `/note` and `/admin/*` but 413 for `/upload` for the identical condition.
+ */
+export function errorStatus(err: unknown): number {
+  const message = err instanceof Error ? err.message : String(err)
+  return /body too large/i.test(message) ? 413 : 500
+}
+
+/** The route-handler shape the registries take. */
+export type RouteHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>
+
+/**
+ * Wrap an async route handler so a rejected promise can never become an
+ * unhandled rejection (v0.19.3).
+ *
+ * WHY: every registration used to be `void handleX(req, res)`, and the host
+ * installs no `unhandledRejection` handler — Node's default policy then EXITS
+ * the whole dsh web process, while the client request hangs with no response.
+ * A handler that throws (including a sync throw before its own try block, e.g.
+ * `new URL(req.url)` outside the try in the proxies) now always ends in a
+ * response: 413/500 JSON, or a bare `end()` when headers are already sent.
+ */
+export function guardHandler(handler: RouteHandler): (req: IncomingMessage, res: ServerResponse) => void {
+  return (req, res) => {
+    void handler(req, res).catch((err) => {
+      try {
+        if (!res.headersSent) json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+        else res.end()
+      } catch { /* response already gone */ }
+    })
+  }
+}
+
+/**
  * True when a NON-GET/HEAD/OPTIONS request is a cross-site (CSRF) request.
  *
  * Every legitimate caller of these routes is same-origin: the DSH GUI, the

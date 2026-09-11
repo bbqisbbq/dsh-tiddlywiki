@@ -137,8 +137,14 @@ const PRIVATE_V4_PATTERNS = [
   /^169\.254\./, // link-local (cloud metadata 169.254.169.254)
   /^172\.(1[6-9]|2\d|3[01])\./, // private
   /^192\.0\.0\./, // IETF protocol assignments
+  /^192\.0\.2\./, // TEST-NET-1
+  /^192\.88\.99\./, // 6to4 relay anycast
   /^192\.168\./, // private
-  /^198\.1[89]\./, // benchmarking
+  /^198\.1[89]\./, // benchmarking 198.18/15
+  /^198\.51\.100\./, // TEST-NET-2
+  /^203\.0\.113\./, // TEST-NET-3
+  /^22[4-9]\./, /^23\d\./, // multicast 224/4
+  /^24\d\./, /^25[0-5]\./, // reserved 240/4 (incl. 255.255.255.255 broadcast)
 ]
 
 /** Parse a dotted-quad IPv4 into 4 bytes, or null. */
@@ -659,6 +665,13 @@ export class ClipBridge {
       }
       const onListening = (): void => {
         server.removeListener('error', onError)
+        // Replace the bind-time handler with a PERMANENT one (v0.19.3): without
+        // any 'error' listener a later server error (e.g. EMFILE/ECONNRESET on a
+        // accept) is an unhandled 'error' event → Node throws → the whole dsh
+        // web process dies. Log and keep serving.
+        server.on('error', (err: Error) => {
+          this.deps.log?.(`server error after listen: ${err.message}`)
+        })
         const addr = server.address() as AddressInfo
         this.boundPort = addr.port
         resolve()
@@ -675,8 +688,22 @@ export class ClipBridge {
     this.server = undefined
     this.boundPort = 0
     if (server === undefined) return Promise.resolve()
+    // `server.close()` only resolves once every open connection ends, and the
+    // bookmarklet's keep-alive socket can hold it open forever — the effect
+    // disposer (plugin unload) would then hang (v0.19.3). Force-close the
+    // connections and cap the wait.
     return new Promise<void>((resolve) => {
-      server.close(() => resolve())
+      let done = false
+      const finish = (): void => {
+        if (done) return
+        done = true
+        resolve()
+      }
+      try {
+        ;(server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.()
+      } catch { /* not available on this Node */ }
+      server.close(() => finish())
+      setTimeout(finish, 1_000).unref?.()
     })
   }
 

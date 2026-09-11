@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.19.2`（npm：0.19.1 曾被 npm staged 但缺少 flush 修复，以 0.19.2 为准；git tag `v0.19.2`） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
+| **插件版本** | `0.19.3`（git tag `v0.19.3`；npm 上 0.19.1 曾被 staged 且不含后续修复，以最新 tag 为准） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` + `scripts/verify-render-bundle.mjs`（v0.19.0 新增逐字节守门） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
@@ -73,7 +73,7 @@ npm run selftest      # headless：spawn TW → REST 读写 → git → 15 个�
 npm run smoke:client  # client bundle 的 module-loader 形状冒烟（wrap-client 之外的第二道）
 npm run verify        # = verify:static + verify:unit + verify:e2e（本地一键；CI 同款分档）
 npm run verify:static # send-to-agent bundle 逐字节 / render bundle 逐字节 / 发布包内容 / 版本一致性
-npm run verify:unit   # 剪藏桥（含 IPv6 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器（v0.19.1）
+npm run verify:unit   # 剪藏桥（含 IPv6/保留网段 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器 / 配置密钥遮掩（v0.19.1–3）
 npm run verify:e2e    # auth 模式 / 工具层 / git 冲突解决 / 崩溃自愈+并发写
 npm run verify:large  # 3000+ 条目大 wiki：filter 长度、检索耗时、二进制零出现、真跑 commit（约 1 分钟）
 # 另有（不进 CI，依赖本机 Chrome / 线上 wiki）：
@@ -145,12 +145,15 @@ node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 - **启动自举（v0.19.0）**：`apply()` 启动时会调 `ensurePlugin(..., 'tiddlywiki/markdown')`（全新 wiki 的 `--init server` 不含它，而笔记默认是 `text/markdown`）；它变更了 `tiddlywiki.info` 就重启一次 TW。
 - 详细见 `docs/seed-initialization.md`。
 
-### 写路由的方法校验、同源守卫与 auth（v0.18.0 / v0.19.0）
+### 写路由的方法校验、同源守卫与 auth（v0.18.0 / v0.19.0 / v0.19.3）
 
 - **方法校验（v0.19.0，必读）**：`rejectCrossSiteWrite(req, res, ['POST'])` 先判方法、再判同源；读路由用 `rejectNonRead`（GET/HEAD）。**每个 handler 都必须声明自己的方法**——宿主 webserver（`dsh-host-webserver`）**只按 pathname 分发**，旧版 `isCrossSiteWrite` 又主动放行 GET，于是 `GET /dsh-tiddlywiki/sync` 会 pull+commit+push、`GET /restart` 会重启子进程、`GET /upload` 会落文件，任意网页一张 `<img>` 即可触发（实测复现）。selftest 有回归断言：这些路径的 GET 必须 405 且无副作用。
 - 同源守卫：`Sec-Fetch-Site: cross-site` 或 `Origin` 与 `Host` 不同源即 403；GET/HEAD/OPTIONS 一律放行（跨站导航要能打开 `/tw/`），无这两个头的调用方（curl/服务端）也放行——这是 CSRF 硬化，不是鉴权边界（网络暴露由宿主认证负责）。
 - 重活路由（`/restart`、`/sync`）有 **in-flight 互斥**：并发调用返回 429，不再叠加重启/拉取。
 - `auth.username/password` 非空时：TW 子进程带 `readers`/`writers` 启动，因此**内置 `TiddlyWebClient` 与 `WikiServer.waitReady()` 都必须带 preemptive Basic 头**（否则全站 401、启动 20s 后 failed）；`/tw` 与 `/api` 代理由此都要转发 `authorization`（`forwardHeaders`）并回传 `WWW-Authenticate`，浏览器才会弹登录框。spawn 日志会**打码 `password=`**（日志经无需认证的 `/status` 返回）。
+- **配置密钥只出「打码」形态（v0.19.3）**：`/admin/state` 与 `/status` 一样是**只读、无鉴权的读路由**，v0.19.2 之前它把 `config` 原样回给浏览器（设置页需要读），于是任何同源请求都能取到 `bridge.token`、`auth.password`、`git.remote`（可能带凭据的 URL）。现在 `admin.ts` 的 `maskConfigSecrets()` 把密钥替换成 `********`（`MASKED_SECRET`），`/admin/config` 收到回传的 `********` 用 `stripMaskedSecrets()` 丢弃（表示"未修改"）——**新增返回 config 的接口必须过这道打码**，回归在 `scripts/verify-secret-masking.mjs`。设置页的密钥输入框也据此显示占位语义。
+- **`$:/plugins/dsh-tiddlywiki/` 命名空间不给代理（v0.19.3）**：`/tw/*` 与 `/api/*` 是同源代理，此前能直接 `GET /dsh-tiddlywiki/tw/tiddlers/$:/plugins/dsh-tiddlywiki/config` 拿到**未打码**的配置 tiddler（密钥暴露的第二条路）。`BLOCKED_PROXY_TITLE_PREFIXES` + `isBlockedProxyPath()` 现在对**插件自身命名空间**返回 403（selftest 断言 `tw`/`api` 两条路径都是 403）；插件配置只能经 `/admin/state`（已打码）读写。TW 自身系统 tiddler（`$:/config/...` 等）不受影响。
+- **每个路由 handler 都要包 `guardHandler`（v0.19.3）**：宿主 webserver 拿到 `async` handler 的 rejection 时既不回包也不回收，路由层的 `await` 抛错会变成**挂死请求**（此前几十个注册点全靠手写 try/catch）。`http.ts` 的 `guardHandler(fn)` 统一兜住 rejection → 已发头就 `res.end()`、否则按 `errorStatus(err)` 回 413/500 JSON；**新增路由注册一律 `guardHandler(...)` 包裹**。`errorStatus()` 把 `/body too large/i` 映射成 413，其余 500。
 
 ### 配置双层
 
@@ -241,6 +244,11 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **flush 哨兵的两个静默陷阱（v0.19.1 实测）**：① **扩展名**——TW 的文件系统适配器按内容类型决定扩展名（`text/plain` → `.txt` + `.txt.meta`、`application/json` → `.json`、默认 wikitext → `.tid`），旧实现写 `text/plain` 却等 `.tid`，永远等不到；② **mtime**——哨兵是紧接在等待之前写的，Windows 上新文件的 mtime 可能落在同一/前一个时钟刻，`mtime >= startedAt` 永不成立。两者都会让 `flushPendingWrites` **每次都超时返回 false，而调用方只当 warning**（v0.19.0 的「排干 syncer」实际没生效）。现在按「文件名含 `dsh-tiddlywiki_flush-probe` + 文件内容含本次随机戳」判定，与扩展名/时钟无关。
 - **Host 侧注入浏览器的 TW 片段必须净化（v0.19.1 安全）**：回复流卡片与会话汇总用 `dangerouslySetInnerHTML` 把 TW 渲染结果插进 **DSH 同源页面**，而 TW 的解析器只剥 `on*`——`<iframe src="javascript:…">`、`<a href="javascript:…">`、`<form action="javascript:…">` 全部原样通过（实测）。客户端一律走 **`POST /dsh-tiddlywiki/render`**（`src/host/sanitize.ts` 的 `sanitizeTwFragment` 净化后返回），不要直连 TW 的 `/tw/render`；新增注入点时 `verify-render-sanitizer.mjs` 会断言它引用 `RENDER_ENDPOINT`。
 - **重启是有状态的，必须单飞（v0.19.1）**：`WikiServer.restart()` 内部串行（routes 层的 `beginMutation` 只覆盖 `/restart` 与 `/sync`，`/admin/*` 那三处够不着——并发重启会留下孤儿 TW 进程）。启动任务（`apply()` 里的 fire-and-forget IIFE）与 teardown 也要靠 `disposed` 标志握手：先置位再 await，否则「disposer 先跑完、startup 后 spawn」同样留孤儿。
+- **读路由也会泄露密钥（v0.19.3）**：`/status`、`/admin/state` 都**不需要认证**（宿主 auth 只管页面，不管这些 JSON 路由），而设置页需要读配置 → 曾经把 `bridge.token`/`auth.password`/带凭据的 `git.remote` 原样回给浏览器。现在一律经 `maskConfigSecrets()` 打成 `********`（`/admin/config` 回传时 `stripMaskedSecrets()` 视为「未修改」丢弃）。**任何新增的"返回 config"接口都必须过打码**；改完跑 `node scripts/verify-secret-masking.mjs`。
+- **代理路由要挡插件自己的命名空间（v0.19.3）**：`/tw/*`、`/api/*` 是**原样转发**的同源代理，打码管不到——`GET /dsh-tiddlywiki/tw/tiddlers/$:/plugins/dsh-tiddlywiki/config` 能直接读到未打码的配置 tiddler。`isBlockedProxyPath()` 对 `$:/plugins/dsh-tiddlywiki/` 前缀返回 403（selftest 有断言）；新加代理前缀时别忘了这个命名空间。
+- **async 路由 handler 的 rejection 会挂死请求（v0.19.3）**：宿主 webserver 只调 handler 不 await，未捕获的 rejection 既不回包也不回收连接。所有注册点统一包 `guardHandler(fn)`（`http.ts`）：已发头就 `res.end()`，否则按 `errorStatus(err)` 回 413（超限）/500 JSON。新增路由忘了包 → 一个 await 抛错就是一个永久挂起的请求。
+- **`/upload` 的"存在即改后缀"要原子（v0.19.3）**：先 `existsSync` 再 `writeFile` 是 TOCTOU，两个并发上传会互相覆盖。改成 `writeFile(..., {flag:'wx'})` 并用 **EEXIST-only** 判定重试（其它 errno 直接抛），重试有上界。文件名也会先去掉结尾的 `.`/空格（Windows 会把 `x.html.` 规范化成 `x.html`，判重与落盘名字不一致）。
+- **剪藏桥 listen 之后必须常驻 `error` 监听（v0.19.3）**：只在 `listen()` 那一次挂一次性 error handler，之后任何 socket 级错误都是 `unhandledRejection`/进程级 uncaught——桥是长驻服务，`server.on('error')` 要永久挂着；`stop()` 用 `closeAllConnections()` 收掉 keep-alive 连接（1s 兜底），否则 `close()` 回调可能永远不触发。
 - **`$:/` 条目无法通过 recipe listing 枚举（v0.19.0 实测）**：新 wiki 的 `$:/config/SyncSystemTiddlersFromServer` 默认 `"no"`，`get-tiddlers-json.js` 于是给每个 filter 追加 `+[!is[system]]`。要靠 listing 找 `$:/` 条目（如回收站）必须另建**非系统索引 tiddler** 并用 `get` 读（回收站就是这么做的）。
 - **TW 的日期字段是紧凑格式（v0.19.0）**：listing 返回 `modified` 形如 `20260101000000000`（UTC），`new Date()` 会得到 Invalid Date——`since` 过滤曾因此恒为空。统一用 `parseTiddlerDate()` / `toIsoDateString()`（`tw-api.ts` 导出）。
 - **新装的 wiki 没有 markdown 插件（v0.19.0）**：`--init server` 只带 tiddlyweb/filesystem/highlight，而插件把每篇笔记都写成 `text/markdown`。`ensurePlugin(wikiPath, twRoot, 'tiddlywiki/markdown')` 在启动时幂等补齐并在变更后重启一次；作者本机 wiki 因历史导入流程早有该插件，所以这个坑长期没暴露。

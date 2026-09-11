@@ -21,7 +21,7 @@
  */
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http'
 import { createHash, timingSafeEqual } from 'node:crypto'
-import { mkdir, writeFile, access, stat } from 'node:fs/promises'
+import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { TiddlyWebClient } from './tw-api.ts'
@@ -30,7 +30,7 @@ import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
-import { readBody, readBodyBuffer, json, rejectCrossSiteWrite, rejectNonRead, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
+import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 import { sanitizeTwFragment } from './sanitize.ts'
 import { flushPendingWrites } from './seeds.ts'
 import { WriteConflictError, assertNoConflict, buildWriteTiddler, flattenTiddlerFields } from './write-policy.ts'
@@ -247,6 +247,11 @@ function sanitizeUploadName(input: unknown): string {
     .replace(/^\.+/, '')
     .trim()
   if (name.length === 0 || name === '.' || name === '..') return ''
+  // Windows stores a trailing dot/space verbatim but never strips it, and
+  // `extname('evil.html.')` is just `.` — so the extension denylist was
+  // bypassable with `evil.html.` (v0.19.3). Canonicalize before the check.
+  name = name.replace(/[. ]+$/, '')
+  if (name.length === 0) return ''
   // `CON`, `NUL`, `COM1…` are not creatable on Windows — prefix instead of 500.
   if (WINDOWS_RESERVED_NAMES.test(name)) name = `_${name}`
   if (name.length > 160) name = name.slice(0, 160)
@@ -482,6 +487,13 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'session is required' }, 400)
         return
       }
+      // The id becomes part of a tiddler title (`$:/temp/dsh/session-summary/<id>`)
+      // and is echoed into the summary wikitext — keep it to a safe charset
+      // instead of trusting the request body (v0.19.3).
+      if (!/^[A-Za-z0-9._:-]{1,120}$/.test(session)) {
+        json(res, { ok: false, error: 'session id has an unsupported format' }, 400)
+        return
+      }
       const client = deps.getClient()
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
@@ -495,7 +507,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const result = await writeSessionSummary(client, sq, session)
       json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -545,7 +557,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         .sort((a, b) => b.updatedAt - a.updatedAt)
       json(res, { ok: true, items })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -622,7 +634,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         permissions,
       })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -659,7 +671,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       json(res, { ok: true, requestId, sessionId })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -708,6 +720,26 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       if (sc === undefined) {
         json(res, { ok: false, error: 'session service unavailable' }, 503)
         return
+      }
+      // Validate the agent preset (工作模式) BEFORE any side effect (v0.19.3):
+      // the old code created the cwd directory + workspace first, so an unknown
+      // mode left an orphaned directory behind a 500 from `sc.create`.
+      if (mode !== undefined) {
+        const ap = deps.getAgentPresets()
+        if (ap === undefined) {
+          json(res, { ok: false, error: 'agent presets service unavailable' }, 503)
+          return
+        }
+        try {
+          const presets = await ap.list()
+          if (!presets.some((preset) => preset.id === mode)) {
+            json(res, { ok: false, error: `unknown agent preset "${mode}" (available: ${presets.map((preset) => preset.id).join(', ')})` }, 400)
+            return
+          }
+        } catch (err) {
+          json(res, { ok: false, error: `cannot validate agent preset: ${err instanceof Error ? err.message : String(err)}` }, 503)
+          return
+        }
       }
       const ws = deps.getWorkspaceRegistry()
       if (cwd.length > 0) {
@@ -763,7 +795,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         permissionApplied,
       })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -812,7 +844,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: err.message, conflict: true }, 409)
         return
       }
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -843,7 +875,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: err.message, conflict: true }, 409)
         return
       }
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -875,7 +907,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         items: tags.map((tag) => ({ tag, count: counts.get(tag) ?? 0 })),
       })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -903,7 +935,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         })),
       })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -955,7 +987,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         fields: flattenTiddlerFields(t),
       })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -999,7 +1031,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         })),
       })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -1017,7 +1049,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       json(res, { ok: true, status: deps.server.status().status })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 
@@ -1087,7 +1119,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         lastSync: new Date().toISOString(),
       }, pushed.ok ? 200 : 502)
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     } finally {
       endMutation()
     }
@@ -1126,16 +1158,31 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       const filesDir = join(deps.getWikiPath(), 'files')
       await mkdir(filesDir, { recursive: true })
+      // Collision avoidance with an ATOMIC create (v0.19.3): the old code did
+      // `access(candidate)` then `writeFile(candidate)`, so (a) any access error
+      // (EACCES/EBUSY, not just ENOENT) was read as "name free" and (b) two
+      // concurrent uploads could both pick the same name and one silently
+      // replaced the other — contradicting the route's own "nothing is ever
+      // overwritten" contract. `flag: 'wx'` fails with EEXIST instead, and we
+      // walk the suffix chain on that error only. Bounded, so a pathological
+      // directory cannot spin this loop forever.
       const ext = extname(name)
       const stem = ext.length > 0 ? name.slice(0, -ext.length) : name
-      // Collision avoidance: files/some.txt, files/some-1.txt, … (bounded, so a
-      // pathological directory cannot spin this loop forever).
-      let candidate = name
-      for (let i = 1; i <= 10_000; i++) {
-        try { await access(join(filesDir, candidate)) } catch { break }
-        candidate = `${stem}-${i}${ext}`
+      let candidate = ''
+      let wrote = false
+      for (let i = 0; i <= 10_000 && !wrote; i++) {
+        candidate = i === 0 ? name : `${stem}-${i}${ext}`
+        try {
+          await writeFile(join(filesDir, candidate), buf, { flag: 'wx' })
+          wrote = true
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+        }
       }
-      await writeFile(join(filesDir, candidate), buf)
+      if (!wrote) {
+        json(res, { ok: false, error: '同名文件过多，请换一个文件名' }, 409)
+        return
+      }
       deps.autoCommit()
       invalidateGitStatus()
       json(res, {
@@ -1216,6 +1263,32 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
   }
 
+  /**
+   * Titles the browser-facing TW proxies must never serve (v0.19.3).
+   *
+   * `$:/plugins/dsh-tiddlywiki/config` holds the shared tokens and the git
+   * remote (possibly with a PAT); both `/tw` and `/api` forward ANY path to the
+   * loopback TW child, whose TiddlyWeb REST answers for `$:/…` titles — a
+   * route-level guard on `/get` was therefore trivially bypassed by
+   * `GET /dsh-tiddlywiki/tw/recipes/default/tiddlers/%24%3A%2Fplugins%2F…`
+   * (verified). The whole plugin namespace is blocked: nothing under it is
+   * needed by the TW frontend, and the host itself talks to TW directly.
+   */
+  const BLOCKED_PROXY_TITLE_PREFIXES = ['$:/plugins/dsh-tiddlywiki/']
+
+  /** True when a proxied pathname addresses a blocked (secret-bearing) tiddler. */
+  const isBlockedProxyPath = (pathname: string): boolean => {
+    const marker = '/tiddlers/'
+    const at = pathname.indexOf(marker)
+    if (at < 0) return false
+    const raw = pathname.slice(at + marker.length)
+    let title = raw
+    try {
+      title = decodeURIComponent(raw)
+    } catch { /* malformed encoding: check the raw form */ }
+    return BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix))
+  }
+
   /** Passthrough /dsh-tiddlywiki/api/<rest> → TW root /<rest>. */
   const handleApiProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectCrossSiteWrite(req, res)) return
@@ -1224,9 +1297,13 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
     }
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    const rest = url.pathname.replace(/^\/dsh-tiddlywiki\/api/, '') || '/'
     try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const rest = url.pathname.replace(/^\/dsh-tiddlywiki\/api/, '') || '/'
+      if (isBlockedProxyPath(rest)) {
+        json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
+        return
+      }
       // Share the /tw proxy's header forwarding so `authorization`/`cookie`
       // reach the TW child: in locked-down mode (auth.username configured) the
       // /api passthrough used to 401 on every call because it dropped them.
@@ -1266,12 +1343,22 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const rest = url.pathname.replace(new RegExp(`^${TW_PROXY_PREFIX}(?=/|$)`), '') || '/'
+    if (isBlockedProxyPath(rest)) {
+      json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
+      return
+    }
     try {
       const method = (req.method ?? 'GET').toUpperCase()
       const headers = forwardHeaders(req.headers)
       // TW's CSRF gate requires X-Requested-With on writes; forward it through.
       if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
-      const init: RequestInit = { method, headers, signal: AbortSignal.timeout(30_000) }
+      // Abort the upstream fetch when the CLIENT goes away: without this the TW
+      // child kept streaming a large attachment into the DSH process until the
+      // 30s timeout fired, long after the browser had cancelled (v0.19.3).
+      const abort = new AbortController()
+      const timeout = AbortSignal.timeout(30_000)
+      const signal = typeof AbortSignal.any === 'function' ? AbortSignal.any([abort.signal, timeout]) : timeout
+      const init: RequestInit = { method, headers, signal }
       if (method === 'PUT' || method === 'POST') init.body = await readBodyBuffer(req, MAX_UPLOAD_BYTES)
       const upstream = await fetch(`${deps.server.url}${rest}${url.search}`, init)
       const responseHeaders: Record<string, string> = {
@@ -1300,7 +1387,13 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       await new Promise<void>((resolveP, rejectP) => {
         body.on('error', rejectP)
         res.on('error', rejectP)
-        res.on('close', () => resolveP())
+        res.on('close', () => {
+          // Client hung up (aborted download / closed tab): stop pulling from the
+          // TW child instead of draining it until the timeout.
+          try { abort.abort() } catch { /* already aborted */ }
+          try { body.destroy() } catch { /* already closed */ }
+          resolveP()
+        })
         res.on('finish', () => resolveP())
         body.pipe(res)
       })
@@ -1313,25 +1406,29 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
   }
 
+  // Every handler goes through guardHandler (v0.19.3): a rejection — including a
+  // synchronous throw before the handler's own try, e.g. `new URL(req.url)` —
+  // becomes a 413/500 JSON response instead of an unhandled rejection that
+  // would exit the dsh web process with the request hanging.
   const disposers = [
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/status`, handler: (req, res) => { void handleStatus(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/note`, handler: (req, res) => { void handleNote(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/edit`, handler: (req, res) => { void handleEdit(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/tags`, handler: (req, res) => { void handleTags(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/recent`, handler: (req, res) => { void handleRecent(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/get`, handler: (req, res) => { void handleGet(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/search`, handler: (req, res) => { void handleSearch(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/render`, handler: (req, res) => { void handleRender(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/sync`, handler: (req, res) => { void handleSync(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: (req, res) => { void handleUpload(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/session/summary`, handler: (req, res) => { void handleSessionSummary(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/sessions`, handler: (req, res) => { void handleAgentSessions(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/modes`, handler: (req, res) => { void handleAgentModes(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: (req, res) => { void handleAgentSend(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/create`, handler: (req, res) => { void handleAgentCreate(req, res) } }),
-    ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: (req, res) => { void handleApiProxy(req, res) } }),
-    ctx.webServer.register({ kind: 'prefix', path: `${TW_PROXY_PREFIX}`, handler: (req, res) => { void handleTwProxy(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/status`, handler: guardHandler(handleStatus) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/note`, handler: guardHandler(handleNote) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/edit`, handler: guardHandler(handleEdit) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/tags`, handler: guardHandler(handleTags) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/recent`, handler: guardHandler(handleRecent) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/get`, handler: guardHandler(handleGet) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/search`, handler: guardHandler(handleSearch) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/render`, handler: guardHandler(handleRender) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/sync`, handler: guardHandler(handleSync) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: guardHandler(handleUpload) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: guardHandler(handleRestart) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/session/summary`, handler: guardHandler(handleSessionSummary) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/sessions`, handler: guardHandler(handleAgentSessions) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/modes`, handler: guardHandler(handleAgentModes) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: guardHandler(handleAgentSend) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/create`, handler: guardHandler(handleAgentCreate) }),
+    ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: guardHandler(handleApiProxy) }),
+    ctx.webServer.register({ kind: 'prefix', path: `${TW_PROXY_PREFIX}`, handler: guardHandler(handleTwProxy) }),
   ]
   return () => {
     for (const dispose of disposers) dispose()

@@ -24,7 +24,7 @@ import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { ROUTE_PREFIX, redactLogLines, redactRemoteUrl, type WebServerFace } from './routes.ts'
 import { CONFIG_TIDDLER, type ConfigStore, type PluginConfigShape } from './config.ts'
-import { readBody, json, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
+import { readBody, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
 import { waitForFileWrite, needsRestartAfterSeeds, flushPendingWrites } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
 import { GitFace } from './git.ts'
@@ -85,21 +85,28 @@ export async function readWikiInfo(wikiPath: string): Promise<WikiInfo> {
     }
     throw new Error(`读取 tiddlywiki.info 失败：${err instanceof Error ? err.message : String(err)}`)
   }
-  let parsed: Partial<WikiInfo>
+  let parsed: unknown
   try {
-    parsed = JSON.parse(raw) as Partial<WikiInfo>
+    parsed = JSON.parse(raw)
   } catch {
     throw new Error('tiddlywiki.info 不是合法 JSON；请先修复该文件再保存设置（已保留原文件）')
   }
+  // A top-level `null`/array/primitive is NOT a valid tiddlywiki.info; the old
+  // code spread it and crashed with "Cannot read properties of null" (a
+  // confusing 500 instead of the intended readable error).
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('tiddlywiki.info 顶层不是对象；请先修复该文件再保存设置（已保留原文件）')
+  }
+  const obj = parsed as Partial<WikiInfo>
   return {
     // Spread FIRST, then the normalized fields: the old order let a literal
     // `"plugins": null` (or a non-array) overwrite the `[]` default and crash
     // every consumer with `.includes is not a function`.
-    ...parsed,
-    description: parsed.description,
-    plugins: Array.isArray(parsed.plugins) ? parsed.plugins : [],
-    themes: Array.isArray(parsed.themes) ? parsed.themes : [],
-    languages: Array.isArray(parsed.languages) ? parsed.languages : [],
+    ...obj,
+    description: obj.description,
+    plugins: Array.isArray(obj.plugins) ? obj.plugins : [],
+    themes: Array.isArray(obj.themes) ? obj.themes : [],
+    languages: Array.isArray(obj.languages) ? obj.languages : [],
   }
 }
 
@@ -297,6 +304,79 @@ export interface AdminDeps {
   }
 }
 
+/**
+ * Sentinel returned instead of a stored secret (`bridge.token` /
+ * `ui.sendToAgent.token`) by `GET /admin/state` and by `POST /admin/config`'s
+ * echo. `/admin/*` is an unauthenticated surface (only CSRF-hardened), and the
+ * config tiddler legitimately carries shared tokens — handing them to any
+ * caller of the loopback/LAN-reachable GUI is a real leak (v0.19.3). The
+ * settings page renders the sentinel verbatim; posting it back is a no-op
+ * (`stripMaskedSecrets` drops it), so the real value never leaves the host.
+ */
+export const MASKED_SECRET = '********'
+
+/** Mask secrets (and credentials inside the git remote URL) for an HTTP caller. */
+export function maskConfigSecrets(config: PluginConfigShape): PluginConfigShape {
+  const bridge = (config.bridge ?? {}) as Record<string, unknown>
+  const ui = (config.ui ?? {}) as Record<string, unknown>
+  const sendToAgent = (ui.sendToAgent ?? {}) as Record<string, unknown>
+  const git = (config.git ?? {}) as Record<string, unknown>
+  const maskToken = (value: unknown): string => (typeof value === 'string' && value.length > 0 ? MASKED_SECRET : '')
+  return {
+    ...config,
+    git: { ...git, remote: typeof git.remote === 'string' ? redactRemoteUrl(git.remote) : git.remote },
+    bridge: {
+      ...bridge,
+      token: maskToken(bridge.token),
+      tokenSet: typeof bridge.token === 'string' && bridge.token.length > 0,
+    },
+    ui: {
+      ...ui,
+      sendToAgent: {
+        ...sendToAgent,
+        token: maskToken(sendToAgent.token),
+        tokenSet: typeof sendToAgent.token === 'string' && sendToAgent.token.length > 0,
+      },
+    },
+  } as PluginConfigShape
+}
+
+/**
+ * Drop the masked placeholders from an incoming config patch so saving the
+ * settings page never overwrites a stored secret with `********` (or the
+ * redacted git remote with `https://***@…`). `bridge.token`/`ui.sendToAgent.token`
+ * are cleared only when the caller actually sends an empty string.
+ */
+export function stripMaskedSecrets<T extends Record<string, unknown>>(patch: T, current: PluginConfigShape): T {
+  const copy = { ...patch } as Record<string, unknown>
+  const cleanToken = (container: unknown): unknown => {
+    if (typeof container !== 'object' || container === null) return container
+    const obj = { ...(container as Record<string, unknown>) }
+    if (obj.token === MASKED_SECRET) delete obj.token
+    delete obj.tokenSet
+    return obj
+  }
+  if (copy.bridge !== undefined) copy.bridge = cleanToken(copy.bridge)
+  if (copy.ui !== undefined) {
+    const ui = typeof copy.ui === 'object' && copy.ui !== null
+      ? { ...(copy.ui as Record<string, unknown>) }
+      : copy.ui
+    if (typeof ui === 'object' && ui !== null && (ui as Record<string, unknown>).sendToAgent !== undefined) {
+      ;(ui as Record<string, unknown>).sendToAgent = cleanToken((ui as Record<string, unknown>).sendToAgent)
+    }
+    copy.ui = ui
+  }
+  if (copy.git !== undefined && typeof copy.git === 'object' && copy.git !== null) {
+    const git = { ...(copy.git as Record<string, unknown>) }
+    const storedRemote = typeof current.git?.remote === 'string' ? current.git.remote : ''
+    if (typeof git.remote === 'string' && storedRemote.length > 0 && git.remote === redactRemoteUrl(storedRemote)) {
+      delete git.remote
+    }
+    copy.git = git
+  }
+  return copy as T
+}
+
 export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: AdminDeps): () => void {
   const handleState = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -317,7 +397,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         server: { ...view, logs: redactLogLines(view.logs) },
         info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [] },
         catalog,
-        config: deps.config.get(),
+        config: maskConfigSecrets(deps.config.get()),
         git,
       })
     } catch (err) {
@@ -343,6 +423,10 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       const catalog = await bundledCatalog(deps.twRoot())
       const known = new Set([...catalog.plugins, ...catalog.themes].map((c) => c.name))
       const knownLangs = new Set(catalog.languages.map((c) => c.name))
+      /** Snapshot for the no-op guard below (JSON compare is enough here). */
+      const beforeInfo = JSON.stringify(info)
+      /** Set only when the request carried a themes array with a resolvable active pick. */
+      let activatedTheme: string | undefined
       const applyList = (field: 'plugins' | 'themes', raw: unknown): string[] => {
         if (!Array.isArray(raw)) return info[field]
         const next: string[] = []
@@ -367,45 +451,58 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         }
         return next
       }
-      info.plugins = applyList('plugins', body.plugins)
-      // Activate the chosen theme: load its full dependency chain AND set
-      // `$:/theme` so the browser's themeManager actually applies it (the
-      // `themes` array alone only makes the plugin available).
-      let activatedTheme: string | undefined
-      if (Array.isArray(body.themes)) {
-        const themeDeps: Record<string, string[]> = {}
-        for (const theme of catalog.themes) {
-          if (theme.dependents && theme.dependents.length > 0) themeDeps[theme.name] = theme.dependents
-        }
-        let selected = applyList('themes', body.themes)
-        // Explicit active-theme pick (new two-layer UI): validate and auto-add
-        // it to the loaded set so its dependency closure is loaded. Without an
-        // explicit pick, activate the deepest loaded overlay (old single-radio).
-        const explicitActive = typeof body.themeActive === 'string' && body.themeActive.length > 0
-        if (explicitActive) {
-          const activeName = body.themeActive as string
-          if (known.has(activeName) || info.themes.includes(activeName)) {
-            if (!selected.includes(activeName)) selected.push(activeName)
-            activatedTheme = activeName
+      // Validation + in-memory mutation only: a rejected name must NOT touch
+      // tiddlywiki.info (400 straight out), while a failure of the write/restart
+      // below is an internal error (500) — the old code reported both as 400.
+      try {
+        info.plugins = applyList('plugins', body.plugins)
+        // Activate the chosen theme: load its full dependency chain AND set
+        // `$:/theme` so the browser's themeManager actually applies it (the
+        // `themes` array alone only makes the plugin available).
+        if (Array.isArray(body.themes)) {
+          const themeDeps: Record<string, string[]> = {}
+          for (const theme of catalog.themes) {
+            if (theme.dependents && theme.dependents.length > 0) themeDeps[theme.name] = theme.dependents
           }
+          const selected = applyList('themes', body.themes)
+          // Explicit active-theme pick (new two-layer UI): validate and auto-add
+          // it to the loaded set so its dependency closure is loaded. Without an
+          // explicit pick, activate the deepest loaded overlay (old single-radio).
+          const explicitActive = typeof body.themeActive === 'string' && body.themeActive.length > 0
+          if (explicitActive) {
+            const activeName = body.themeActive as string
+            if (known.has(activeName) || info.themes.includes(activeName)) {
+              if (!selected.includes(activeName)) selected.push(activeName)
+              activatedTheme = activeName
+            }
+          }
+          info.themes = normalizeThemes(selected, themeDeps)
+          if (activatedTheme === undefined && info.themes.length > 0) {
+            activatedTheme = info.themes[info.themes.length - 1]
+          }
+        } else {
+          info.themes = applyList('themes', body.themes)
         }
-        info.themes = normalizeThemes(selected, themeDeps)
-        if (activatedTheme === undefined && info.themes.length > 0) {
-          activatedTheme = info.themes[info.themes.length - 1]
-        }
-      } else {
-        info.themes = applyList('themes', body.themes)
+        if (Array.isArray(body.languages)) info.languages = applyLanguages(body.languages)
+      } catch (err) {
+        json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 400)
+        return
       }
-      if (Array.isArray(body.languages)) info.languages = applyLanguages(body.languages)
-      await writeWikiInfo(wikiPath, info)
-      await deps.server.restart()
+      // NO-OP GUARD (v0.19.3): a body that changes nothing (e.g. `{}`, or the
+      // same lists re-sent) used to rewrite tiddlywiki.info + restart TW — a
+      // visible TW interruption for a request that asked for nothing.
+      const changed = JSON.stringify(info) !== beforeInfo
+      if (changed) {
+        await writeWikiInfo(wikiPath, info)
+        await deps.server.restart()
+      }
       // Activate the chosen theme tiddler (mirrors TW's own Control Panel).
-      if (activatedTheme !== undefined) {
+      if (Array.isArray(body.themes) && activatedTheme !== undefined) {
         const client = deps.getClient()
         if (client !== undefined) {
           await client
             .put({ title: '$:/theme', text: `$:/themes/${activatedTheme}`, type: 'text/vnd.tiddlywiki', tags: [] })
-            .catch(() => undefined)
+            .catch((err) => { console.warn('[dsh-tiddlywiki] activating theme failed:', err) })
         }
       }
       // After a languages change, pin the active language tiddler: first
@@ -416,7 +513,8 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         if (client !== undefined) {
           const langs = info.languages ?? []
           const active = langs.length > 0 ? `$:/languages/${langs[0]}` : '$:/languages/en-GB'
-          await client.put({ title: '$:/language', text: active, type: 'text/plain', tags: [] }).catch(() => undefined)
+          await client.put({ title: '$:/language', text: active, type: 'text/plain', tags: [] })
+            .catch((err) => { console.warn('[dsh-tiddlywiki] pinning $:/language failed:', err) })
           // Keep the startup auto-apply hint (config uiLanguage) consistent with
           // the active language, so a later dsh-web restart doesn't re-enable
           // a language the user just disabled here.
@@ -426,9 +524,9 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
           }
         }
       }
-      json(res, { ok: true, info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [] } })
+      json(res, { ok: true, changed, info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [] } })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 400)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
   }
 
@@ -441,8 +539,10 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
       }
-      await deps.config.set(client, body)
-      json(res, { ok: true, config: deps.config.get() })
+      // Never persist the masked placeholders the page read back from /state
+      // (v0.19.3): saving an untouched form must not clobber a real token.
+      await deps.config.set(client, stripMaskedSecrets(body as Record<string, unknown>, deps.config.get()) as PluginConfigShape)
+      json(res, { ok: true, config: maskConfigSecrets(deps.config.get()) })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 400)
     }
@@ -552,14 +652,15 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     }
   }
 
+  // Same rejection safety net as routes.ts (v0.19.3).
   const disposers = [
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/state`, handler: (req, res) => { void handleState(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/info`, handler: (req, res) => { void handleInfo(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/config`, handler: (req, res) => { void handleConfig(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/restart`, handler: (req, res) => { void handleRestart(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds`, handler: (req, res) => { void handleSeeds(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds/run`, handler: (req, res) => { void handleSeedsRun(req, res) } }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds/remove`, handler: (req, res) => { void handleSeedsRemove(req, res) } }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/state`, handler: guardHandler(handleState) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/info`, handler: guardHandler(handleInfo) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/config`, handler: guardHandler(handleConfig) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/restart`, handler: guardHandler(handleRestart) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds`, handler: guardHandler(handleSeeds) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds/run`, handler: guardHandler(handleSeedsRun) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/seeds/remove`, handler: guardHandler(handleSeedsRemove) }),
   ]
   return () => {
     for (const dispose of disposers) dispose()

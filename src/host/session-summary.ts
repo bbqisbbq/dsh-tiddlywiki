@@ -204,7 +204,7 @@ function scanSnapshot(snap: SessionLogSnapshot | undefined, subagent: boolean, c
               title: args.newTitle,
               action: 'produced',
               time: t,
-              detail: old !== undefined ? `重命名自「${old}」` : undefined,
+              detail: old !== undefined && isPlausibleTitle(old) ? `重命名自「${old}」` : undefined,
               subagent,
             })
           }
@@ -243,12 +243,29 @@ function scanSnapshot(snap: SessionLogSnapshot | undefined, subagent: boolean, c
   }
 }
 
+/**
+ * 内联文本净化（v0.19.3）：汇总 wikitext 会被 TW 渲染成 HTML 片段再注入 DSH 页面，
+ * 而 TW 的解析器**原样透传 HTML**。凡是来自会话日志/请求体的字符串（sessionId、
+ * rename 的旧标题、检索词）都要先转义 HTML 元字符并去掉控制字符，别指望上层净化。
+ */
+export function escapeInline(text: string, max = 200): string {
+  return text
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/[[\]|]/g, ' ')
+    .slice(0, max)
+}
+
 /** 当前状态（存在？标签？修改时间？摘要）。 */
 interface TitleState {
   exists: boolean
   tags: string[]
   modified?: string
   snippet?: string
+  /** 查询失败（非 404）：状态未知，不能报「已删除/不存在」。 */
+  unknown?: boolean
 }
 
 /** 并发（8 路）查询每篇笔记的当前状态（404 → 不存在/已删除）。 */
@@ -266,7 +283,10 @@ async function enrichTitles(client: TiddlyWebClient, titles: string[]): Promise<
         snippet: flat.length > 48 ? `${flat.slice(0, 48)}…` : flat,
       }]
     } catch {
-      return [title, { exists: false, tags: [] }]
+      // 只有 404 才算「不存在」（tw-api 的 get 只在 404 返回 undefined）：
+      // 超时/5xx/服务重启中的查询失败必须报「状态未知」，否则一篇还在的笔记
+      // 会被标成「已删除」——正是项目里反复强调的「读取失败 ≠ 条目不存在」。
+      return [title, { exists: false, tags: [], unknown: true }]
     }
   }
   // Bounded batches: parallel within a batch, insertion order preserved across
@@ -305,7 +325,7 @@ function buildWikitext(
   lines.push('! 会话相关 wiki 汇总')
   lines.push('')
   lines.push(
-    `本页列出会话 \`${sessionId}\`（含其后代子代理）在本会话中产生 / 读取 / 检索过的知识库笔记。`,
+    `本页列出会话 \`${escapeInline(sessionId, 120)}\`（含其后代子代理）在本会话中产生 / 读取 / 检索过的知识库笔记。`,
   )
   lines.push('')
   const producedCount = producedTitles.length
@@ -332,16 +352,18 @@ function buildWikitext(
 
   const entryLine = (title: string, state: TitleState | undefined, entry: NoteEntry): string => {
     const bits: string[] = [`[[${title}]]`]
-    if (state === undefined || !state.exists) {
+    if (state !== undefined && state.unknown === true) {
+      bits.push('⚠️ 状态未知（查询失败）')
+    } else if (state === undefined || !state.exists) {
       bits.push('⚠️ 已删除/不存在')
     } else {
-      if (state.tags.length > 0) bits.push(`标签 ${state.tags.slice(0, 6).join('、')}${state.tags.length > 6 ? '…' : ''}`)
+      if (state.tags.length > 0) bits.push(`标签 ${state.tags.slice(0, 6).map((tag) => escapeInline(tag, 40)).join('、')}${state.tags.length > 6 ? '…' : ''}`)
       const mod = fmtModified(state.modified)
       if (mod.length > 0) bits.push(`修改 ${mod}`)
     }
     const t = fmtTime(entry.time)
     if (t.length > 0) bits.push(`会话内 ${t}`)
-    if (entry.detail !== undefined) bits.push(entry.detail)
+    if (entry.detail !== undefined) bits.push(escapeInline(entry.detail, 200))
     if (entry.subagent) bits.push('（子代理）')
     return `* ${bits.join(' · ')}`
   }
@@ -367,8 +389,8 @@ function buildWikitext(
     for (const r of collected.searches) {
       const bits: string[] = []
       if (r.kind === 'search') {
-        bits.push(`\`tiddlywiki_search\` query=「${r.query.length > 0 ? r.query : '(空)'}」`)
-        if (r.tags.length > 0) bits.push(`tags ${r.tags.join('、')}`)
+        bits.push(`\`tiddlywiki_search\` query=「${r.query.length > 0 ? escapeInline(r.query, 120) : '(空)'}」`)
+        if (r.tags.length > 0) bits.push(`tags ${r.tags.map((tag) => escapeInline(tag, 40)).join('、')}`)
       } else {
         bits.push('`tiddlywiki_recent`（最近修改）')
       }

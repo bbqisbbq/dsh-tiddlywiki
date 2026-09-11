@@ -267,13 +267,13 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   const sendToAgent = (ui.sendToAgent ?? {}) as Record<string, unknown>
   checkField('ui.sendToAgent.enabled', '启用「发送给 Agent」（TW 笔记 → DSH 会话注入）', sendToAgent.enabled !== false)
   textField('ui.sendToAgent.endpoint', 'TW 端请求基址（空=自动取当前 DSH origin）', typeof sendToAgent.endpoint === 'string' ? sendToAgent.endpoint : '')
-  textField('ui.sendToAgent.token', '共享 token（非空时路由校验 x-send-to-agent-token 头）', typeof sendToAgent.token === 'string' ? sendToAgent.token : '')
+  textField('ui.sendToAgent.token', '共享 token（非空时路由校验 x-send-to-agent-token 头；已设置时显示为 ********，原样保存=不改，清空=删除）', typeof sendToAgent.token === 'string' ? sendToAgent.token : '')
   const allArticles = (ui.allArticles ?? {}) as Record<string, unknown>
   numField('ui.allArticles.pageSize', '「所有文章」每页条数', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10)
   const bridge = (config.bridge ?? {}) as Record<string, unknown>
   checkField('bridge.enabled', '启用「本地剪藏桥」（书签小工具后端监听 127.0.0.1 端口，保存后立即生效）', bridge.enabled === true)
   numField('bridge.port', '剪藏桥端口（改端口需重启 dsh web 生效）', typeof bridge.port === 'number' && bridge.port > 0 ? bridge.port : 8618)
-  textField('bridge.token', '剪藏桥 token（非空时校验书签的 x-clip-token 头；强烈建议设置）', typeof bridge.token === 'string' ? bridge.token : '')
+  textField('bridge.token', '剪藏桥 token（非空时校验书签的 x-clip-token 头；强烈建议设置。已设置时显示为 ********，原样保存=不改，清空=删除）', typeof bridge.token === 'string' ? bridge.token : '')
   textField('bridge.tag', '剪藏笔记默认 tag', typeof bridge.tag === 'string' && bridge.tag.trim().length > 0 ? bridge.tag.trim() : 'clip')
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
   // 注意：uiLanguage 目前只影响 TW 侧语言，客户端插件文案（FAB/快速笔记/侧边栏/本页）

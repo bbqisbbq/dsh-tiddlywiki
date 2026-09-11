@@ -1,7 +1,7 @@
 {
   "name": "dsh-tiddlywiki",
   "description": "TiddlyWiki 5 as the DSH persistent knowledge base: fifteen tiddlywiki_* agent tools (filtered search/recent/tags/batch/rewrite/trash/lint + git sync & conflict resolve), a full TiddlyWiki editor embedded in the GUI center column (same-origin proxy, works over Tailscale/LAN/domain), a right-side wiki tab, a per-session summary tab, a quick-note card with draft auto-save behind a single knowledge FAB, an optional clip bookmarklet that also saves selected images as attachments, and git-based sync with auto-commit. Mounts via the official dsh plugin system — no DSH source changes.",
-  "version": "0.19.2",
+  "version": "0.19.3",
   "type": "module",
   "keywords": [
     "dsh",
@@ -85,7 +85,7 @@
     "smoke:client": "node scripts/smoke-client.mjs",
     "selftest": "node scripts/selftest.mjs",
     "verify:static": "node scripts/verify-send-to-agent-bundle.mjs && node scripts/verify-render-bundle.mjs && node scripts/verify-package-contents.mjs && node scripts/verify-version-consistency.mjs",
-    "verify:unit": "node scripts/verify-clip-bridge.mjs && node scripts/verify-seed-error-policy.mjs && node scripts/verify-render-sanitizer.mjs",
+    "verify:unit": "node scripts/verify-clip-bridge.mjs && node scripts/verify-seed-error-policy.mjs && node scripts/verify-render-sanitizer.mjs && node scripts/verify-secret-masking.mjs",
     "verify:e2e": "node scripts/verify-auth.mjs && node scripts/verify-tools.mjs && node scripts/verify-git-resolve.mjs && node scripts/verify-resilience.mjs",
     "verify:large": "node scripts/verify-large-wiki.mjs",
     "verify": "npm run verify:static && npm run verify:unit && npm run verify:e2e",
