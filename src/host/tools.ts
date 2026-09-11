@@ -345,21 +345,32 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_list_tags ─────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_list_tags',
-    description: '列出 TiddlyWiki 知识库现有的非系统标签及各自计数（按使用次数降序），方便决定给笔记打什么 tag。',
-    parameters: {},
+    description: '列出 TiddlyWiki 知识库现有的非系统标签及各自计数（按使用次数降序），方便决定给笔记打什么 tag。默认最多返回 200 个（`limit` 可调，上限 1000），被截断时结果里会带 total/truncated。',
+    parameters: {
+      limit: { type: 'integer', description: '可选：最多返回多少个标签（按使用次数降序），默认 200，上限 1000。' },
+    },
     output: {
       schema: { type: 'json' },
       render: (_args, value: TagListResult) => {
         if (value.tags.length === 0) return [{ type: 'text', text: '知识库暂无标签。' }]
-        const lines = [`现有标签（${value.tags.length} 个，按使用次数降序）：`]
+        const lines = [
+          value.truncated
+            ? `现有标签（共 ${value.total} 个，仅列出使用最多的 ${value.tags.length} 个，按使用次数降序）：`
+            : `现有标签（${value.total} 个，按使用次数降序）：`,
+        ]
         for (const t of value.tags) lines.push(`- ${t.tag} × ${t.count}`)
+        if (value.truncated) lines.push(`（其余 ${value.total - value.tags.length} 个较少使用的标签未列出；需要时可提高 limit 重试）`)
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (): Promise<TagListResult> => {
+    execute: async (args: { limit?: number }): Promise<TagListResult> => {
       const wiki = requireWiki()
-      const tags = await wiki.listTags()
-      return { count: tags.length, tags }
+      const stats = await wiki.tagStats()
+      const limit = typeof args.limit === 'number' && Number.isFinite(args.limit)
+        ? Math.max(1, Math.min(Math.floor(args.limit), 1000))
+        : 200
+      const tags = stats.tags.slice(0, limit)
+      return { count: tags.length, total: stats.total, truncated: tags.length < stats.total, tags }
     },
   }))
 
@@ -1100,7 +1111,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
 interface SearchHit { title: string; tags: string[]; modified: string | null; snippet: string }
 interface SearchResult { query: string; tags: string[]; since: string | null; type: string | null; field: string | null; value: string | null; total: number; results: SearchHit[] }
 interface RecentResult { since: string | null; results: SearchHit[] }
-interface TagListResult { count: number; tags: Array<{ tag: string; count: number }> }
+interface TagListResult { count: number; total: number; truncated: boolean; tags: Array<{ tag: string; count: number }> }
 interface GetResult {
   notFound: boolean
   title: string

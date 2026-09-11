@@ -456,8 +456,19 @@ export class TiddlyWebClient {
   /**
    * Distinct non-system tags with their tiddler counts, most-used first then
    * zh-locale. One skinny listing request (no text payloads).
+   *
+   * `limit` (v0.19.4) caps the returned array after sorting; the caller loses
+   * the tail count unless it also asks `tagStats()`.
    */
-  async listTags(): Promise<Array<{ tag: string; count: number }>> {
+  async listTags(limit?: number): Promise<Array<{ tag: string; count: number }>> {
+    const tags = (await this.tagStats()).tags
+    if (limit === undefined) return tags
+    return tags.slice(0, Math.max(1, Math.min(Math.floor(limit), 1000)))
+  }
+
+  /** Full tag vocabulary + its size, so callers that cap can still report the
+   *  total ("showing 200 of N") — one listing request either way. */
+  async tagStats(): Promise<{ total: number; tags: Array<{ tag: string; count: number }> }> {
     // TEXT_LIST_FILTER (server-side, whitelist self-healed) so a tag that only
     // hangs off binary attachments is not counted as a knowledge-base tag
     // (v0.19.0 — the unfiltered skinny listing included image/book-page tags).
@@ -470,9 +481,10 @@ export class TiddlyWebClient {
         map.set(tag, (map.get(tag) ?? 0) + 1)
       }
     }
-    return [...map.entries()]
+    const tags = [...map.entries()]
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh'))
       .map(([tag, count]) => ({ tag, count }))
+    return { total: tags.length, tags }
   }
 }
 

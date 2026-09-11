@@ -84,7 +84,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 |---|---|
 | `tiddlywiki_search` | 检索（`query` + 可选 `tags[]/tag/since/type/field/value/limit`），**按相关度排序**（标题命中 > 标签 > 正文命中次数），摘要取自**命中处上下文**而不是正文开头 |
 | `tiddlywiki_recent` | 最近修改的笔记（倒序），开工快速了解动态 |
-| `tiddlywiki_list_tags` | 现有非系统 tag 及计数（已排除只挂在二进制附件上的 tag） |
+| `tiddlywiki_list_tags` | 现有非系统 tag 及计数（已排除只挂在二进制附件上的 tag）；默认列使用最多的 200 个（`limit` 可调、上限 1000），截断时返回 `total`/`truncated` |
 | `tiddlywiki_get` | 读单个 tiddler 全文（`modified` 以 ISO 返回，可直接用作 `expectedModified`） |
 | `tiddlywiki_put` | 写/覆盖；未指定类型时自动默认 `text/markdown`（`$:/` 系统条目除外）；`expectedModified` + `force` 提供乐观并发保护 |
 | `tiddlywiki_batch_put` | 批量写入（`overwrite=false` 跳过已存在；单条失败不影响其余，逐条报错） |
@@ -242,7 +242,7 @@ node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/<样式.css>' … src/host/
 | 路由 | 方法 | 用途 |
 |---|---|---|
 | `/dsh-tiddlywiki/status` | GET | 面板健康（service/url/git/tag/ui） |
-| `/dsh-tiddlywiki/note` `/edit` `/tags` `/recent` `/get` `/search` | POST/GET | 快速笔记、打开编辑器、tag/最近/单个/搜索 |
+| `/dsh-tiddlywiki/note` `/edit` `/tags` `/recent` `/get` `/search` | POST/GET | 快速笔记、打开编辑器、tag/最近/单个/搜索（列表路由都支持 `limit`；`/tags` 另支持 `sort=alpha\|count` 与 `total`/`truncated`，v0.19.4） |
 | `/dsh-tiddlywiki/render` | POST | TW 片段渲染（host 净化后返回，回复流卡片/会话汇总用，v0.19.1） |
 | `/dsh-tiddlywiki/sync` `/upload` `/restart` | POST | 一键同步、文件上传、重启 TW |
 | `/dsh-tiddlywiki/session/summary` | POST | 会话「知识库」Tab 汇总 |
@@ -292,6 +292,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.19.4**（2026-09-11）：**标签列表全面「有界」——最后一个没有上限的列表接口**。`GET /dsh-tiddlywiki/tags` 此前会把**每一个**去重标签（大 wiki 上千个）连同计数全量回给浏览器，而回复流工具卡只是展示前 60 个；`tiddlywiki_list_tags` 更严重——同样全量灌进**模型上下文**。现在：① `/tags` 支持 `limit`（1–500，缺省仍是全量，快速笔记的标签自动补全保留完整词表）与 `sort=alpha|count`（默认 `alpha`，`count` 按使用次数降序），回包新增 `total`（去重后的真实总数）与 `truncated`；② 工具 `tiddlywiki_list_tags` 新增可选 `limit`（默认 200、上限 1000），截断时 render 明说「共 N 个，仅列出最多的 M 个」，不再让模型以为那就是全部；③ 客户端 `TagsCard` 改为直接请求 `?limit=60&sort=count`（不再下载上千条再丢掉），并用 `total` 显示「共 N 个 · …另有 M 个」；④ 顺手消掉重复实现：路由与工具现在共用 `TiddlyWebClient.tagStats()` 一份计数逻辑（此前路由自己遍历一遍，且不跳过 `$:/` 系统标题，两侧口径可能不一致），`/recent`、`/search`、`/tags` 的 limit 解析收进 `readLimit()`/`readOptionalLimit()` 两个助手。守门：selftest 增 6 条断言（截断/`total` 不丢分母/`tags` 与 `items` 同集同序/上限 500/`sort=count` 单调递减/无 limit 时 `truncated=false`），`verify-tools` 增 `list_tags` 的 limit 用例。
 
 - **v0.19.3**（2026-09-11）：**清掉审计清单里剩下的中优先级项**（安全面 / 健壮性 / 正确性）。**密钥不再外泄**：`bridge.token` / `ui.sendToAgent.token` 会被 `GET /admin/state` 与 `POST /admin/config` 的回包替换成 `********`（并给 `tokenSet` 标记），设置页原样保存不会把真 token 覆盖成掩码、清空即删除；`git.remote` 里的 PAT 同时打码，回填同值也被丢弃。更要紧的是**代理旁路**：`/get` 早先禁止读插件配置 tiddler，但 `/tw` 与 `/api` 会把任意路径转发给 TW 子进程，而它的 TiddlyWeb REST 对 `$:/…` 标题照答不误——`GET /dsh-tiddlywiki/tw/recipes/default/tiddlers/%24%3A%2Fplugins%2Fdsh-tiddlywiki%2Fconfig` 实测能拿到配置正文。现在两个代理都拦截 `$:/plugins/dsh-tiddlywiki/` 命名空间（selftest 有回归断言）。**健壮性**：所有路由统一经 `guardHandler` 包装——此前每个注册都是 `void handleX(req,res)`，而宿主没有 `unhandledRejection` 处理器，任何一次 rejection（含代理里 try 之外的 `new URL()`）都会**直接结束 dsh web 进程**、请求挂死；剪藏桥 listen 之后补上**常驻 `error` 监听**（此前移除唯一监听后，运行期 server error 就是未处理事件 → 崩进程），`stop()` 用 `closeAllConnections()` + 1s 上限，keep-alive 不再是卸载时的死等；`/tw` 代理在客户端断连时**中止上游 fetch 并销毁流**（此前会一直拉到 30s 超时）。**正确性**：会话汇总不再把查询失败（超时/5xx）报成「已删除/不存在」（只有 404 才算不存在），来自请求体/会话日志的 sessionId、rename 旧标题、检索词一律 HTML 转义（TW 会原样透传 HTML，汇总片段又会被注入 DSH 页面），sessionId 还加了字符集白名单；`/upload` 改**原子写**（`wx` + 仅对 EEXIST 走后缀链，修掉 TOCTOU 与「任何 access 错误都当名字可用」）、文件名末尾点/空格先规范化（`evil.html.` 此前能绕过可执行扩展名黑名单）；SSRF 白名单补上多播 `224/4`、保留 `240/4`（含 `255.255.255.255`）、`192.0.2.0/24`、`198.51.100.0/24`、`203.0.113.0/24`、`192.88.99.0/24`；`readWikiInfo` 对顶层 `null`/数组给出可读错误而不是 `TypeError`；`/admin/info` 空操作不再重写 `tiddlywiki.info` + 重启 TW，校验失败 400 / 内部失败 500 分开；`/agent/create` 先校验工作模式再建目录（此前未知模式会留下孤儿目录）；body 超限统一 413。
 

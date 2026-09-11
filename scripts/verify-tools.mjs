@@ -238,6 +238,21 @@ try {
     assert.ok(r.tags.some((x) => x.tag === 'human'), '文本笔记的标签仍应被统计')
   })
 
+  // ── list_tags：limit 有界（v0.19.4） ─────────────────────────────────────
+  await test('list_tags：limit 截断但保留 total/truncated', async () => {
+    const full = await call('tiddlywiki_list_tags', {})
+    assert.equal(full.truncated, false, `默认限额内不应标记截断：${JSON.stringify({ total: full.total, count: full.count })}`)
+    assert.equal(full.count, full.total, 'count 应等于 total（未截断时）')
+    assert.ok(full.total >= 2, `测试 wiki 应有多个标签：${full.total}`)
+    const one = await call('tiddlywiki_list_tags', { limit: 1 })
+    assert.equal(one.tags.length, 1, `limit=1 只返回 1 个：${JSON.stringify(one.tags)}`)
+    assert.equal(one.total, full.total, 'total 仍是全量标签数（截断不丢分母）')
+    assert.equal(one.truncated, true, 'limit < total 时必须标记 truncated')
+    assert.equal(one.tags[0].tag, full.tags[0].tag, '截断取的是使用最多的那个（排序不变）')
+    const clamped = await call('tiddlywiki_list_tags', { limit: 99999 })
+    assert.equal(clamped.truncated, false, 'limit 超过 1000 被夹到上限，仍不虚报截断')
+  })
+
   // ── get：自定义字段必须摊平（v0.19.1） ───────────────────────────────────
   await test('get：单条 GET 的嵌套 fields 被摊平给模型（不再 fields=[object Object]）', async () => {
     await api.put({ title: 'FlattenProbe', text: 'x', type: 'text/markdown', tags: ['human'], q: 'q1', due: '2026-12-31' })

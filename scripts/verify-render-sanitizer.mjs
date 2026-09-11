@@ -154,5 +154,11 @@ test('每个 dangerouslySetInnerHTML 所在文件都走净化端点', () => {
   }
 })
 
+// v0.19.4: /tags 的大 payload 是「先下载上千条再丢掉」——工具卡必须带 limit。
+test('标签工具卡请求 /tags 时必须带 limit', () => {
+  const src = fs.readFileSync(path.join(repoRoot, 'src/client/tool-views.ts'), 'utf8')
+  assert.ok(/TAGS_ENDPOINT\}\?limit=/.test(src), 'tool-views.ts 的 TagsCard 必须请求 `${TAGS_ENDPOINT}?limit=…`（否则大 wiki 会全量下载标签）')
+})
+
 console.log(failures === 0 ? '\nRENDER SANITIZER OK' : `\nRENDER SANITIZER FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)

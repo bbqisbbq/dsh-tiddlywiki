@@ -678,7 +678,7 @@ try {
 
   // /search: keyword search backend for the reply-stream tool card (mirrors
   // tools.ts tiddlywiki_search — local match, AND tags, limit clamp).
-  await routeApi.put({ title: 'SearchProbe', text: 'probe text 唯一关键词', tags: ['probe-tag'] })
+  await routeApi.put({ title: 'SearchProbe', text: 'probe text 唯一关键词', tags: ['probe-tag', 'probe-tag-extra'] })
   const searchRes = await callRoute(routeHandlers.get('/dsh-tiddlywiki/search'), makeReq('/dsh-tiddlywiki/search?query=' + encodeURIComponent('唯一关键词') + '&tag=probe-tag'), makeRes())
   assert(searchRes.ok === true && Array.isArray(searchRes.items) && searchRes.items.some((i) => i.title === 'SearchProbe'), `search route returns hits (${JSON.stringify(searchRes.items?.[0]?.title)})`)
   assert(typeof searchRes.items[0].snippet === 'string' && searchRes.items[0].snippet.length > 0, 'search route returns a snippet per hit')
@@ -693,6 +693,20 @@ try {
   assert(tagsRes.ok === true && Array.isArray(tagsRes.tags) && tagsRes.tags.includes('probe-tag'), 'tags route lists distinct non-system tags')
   const probeCount = (tagsRes.items ?? []).find((i) => i.tag === 'probe-tag')
   assert(typeof probeCount?.count === 'number' && probeCount.count >= 1, 'tags route counts tiddlers per tag')
+  // v0.19.4: `?limit=` bounds the payload (absent = every tag, so the quick-note
+  // autocomplete keeps its full vocabulary) and `sort=count` orders by usage.
+  assert(tagsRes.truncated === false && tagsRes.total === tagsRes.tags.length, 'tags route without limit returns every tag and reports no truncation')
+  assert(tagsRes.total >= 2, `tags route counts distinct tags (${tagsRes.total})`)
+  const tagsLimited = await callRoute(routeHandlers.get('/dsh-tiddlywiki/tags'), makeReq('/dsh-tiddlywiki/tags?limit=1&sort=count'), makeRes())
+  assert(tagsLimited.ok === true && tagsLimited.tags.length === 1, `tags route honours limit (${tagsLimited.tags?.length})`)
+  assert(tagsLimited.items.length === 1 && tagsLimited.items[0].tag === tagsLimited.tags[0], 'tags route keeps tags/items parallel in the same order under limit')
+  assert(tagsLimited.total === tagsRes.total, 'tags route reports the FULL distinct-tag count as total even when truncated')
+  assert(tagsLimited.truncated === true, 'tags route flags truncation when limit < total')
+  const tagsClamp = await callRoute(routeHandlers.get('/dsh-tiddlywiki/tags'), makeReq('/dsh-tiddlywiki/tags?limit=99999'), makeRes())
+  assert(tagsClamp.tags.length <= 500, 'tags route clamps limit to 500')
+  const tagsByCount = await callRoute(routeHandlers.get('/dsh-tiddlywiki/tags'), makeReq('/dsh-tiddlywiki/tags?sort=count'), makeRes())
+  const countSeq = tagsByCount.items.map((i) => i.count)
+  assert(countSeq.every((c, i) => i === 0 || countSeq[i - 1] >= c), `tags route sort=count is descending (${countSeq.slice(0, 5).join(',')})`)
   await routeApi.delete('SearchProbe')
 
   // /tw same-origin proxy: the embedded editor's whole frontend is served to

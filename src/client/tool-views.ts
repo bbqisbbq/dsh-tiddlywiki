@@ -470,18 +470,22 @@ function BatchCard(props: { toolName: string; args: Record<string, unknown>; tex
 
 /* ── tags card ── */
 
+/** How many chips the card renders, and therefore how many the route returns
+ *  (v0.19.4: `?limit=&sort=count` — a big wiki no longer ships every tag to
+ *  the browser just so we can throw most of them away). */
+const TAGS_CARD_LIMIT = 60
+
 function TagsCard(props: { toolName: string; text: string }): React.ReactElement {
-  const data = useAsync(() => fetchJson(TAGS_ENDPOINT), [])
+  const data = useAsync(() => fetchJson(`${TAGS_ENDPOINT}?limit=${TAGS_CARD_LIMIT}&sort=count`), [])
   const payload = data.data
   const items = Array.isArray(payload?.items) ? (payload.items as Record<string, unknown>[]) : []
   const chips = items.map((item) => ({
     tag: str(item.tag),
     count: typeof item.count === 'number' ? (item.count as number) : 0,
   }))
-  // 大 wiki 可能有上千个标签：一次全量渲染会塞进上千个 DOM 节点，把回复流拖死
-  // （v0.19.1）。与 ListCard 一样截断展示，只提示总数。
-  const MAX_CHIPS = 60
-  const shown = chips.slice(0, MAX_CHIPS)
+  // 服务端已按 limit 截断（并按使用次数排序），这里只兜底防御。
+  const shown = chips.slice(0, TAGS_CARD_LIMIT)
+  const total = typeof payload?.total === 'number' ? (payload.total as number) : chips.length
   let body: React.ReactNode
   if (chips.length === 0) {
     body = React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, '暂无标签')
@@ -496,12 +500,12 @@ function TagsCard(props: { toolName: string; text: string }): React.ReactElement
           `${chip.tag} · ${chip.count}`,
         ),
       ),
-      ...(chips.length > shown.length
-        ? [React.createElement('span', { className: 'dsh-tw-toolcard-tag-more', key: '__more' }, `…另有 ${chips.length - shown.length} 个`)]
+      ...(total > shown.length
+        ? [React.createElement('span', { className: 'dsh-tw-toolcard-tag-more', key: '__more' }, `…另有 ${total - shown.length} 个`)]
         : []),
     )
   }
-  return React.createElement(ToolCardShell, { toolName: props.toolName, title: '标签', subtitle: `共 ${chips.length} 个` }, body)
+  return React.createElement(ToolCardShell, { toolName: props.toolName, title: '标签', subtitle: `共 ${total} 个` }, body)
 }
 
 /* ── git / delete cards (no native render — show the model-visible text) ── */

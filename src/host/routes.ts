@@ -25,7 +25,7 @@ import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { TiddlyWebClient } from './tw-api.ts'
-import { TEXT_LIST_FILTER, isBinaryType, toIsoDateString } from './tw-api.ts'
+import { isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import type { GitFace } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
@@ -296,6 +296,28 @@ function pad(n: number): string {
 function snippetOf(text: string, max = 120): string {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length <= max ? flat : `${flat.slice(0, max)}…`
+}
+
+/** Max `limit` accepted by the list routes (bounded payloads, v0.19.4). */
+const MAX_LIST_LIMIT = 200
+
+/** Max `limit` accepted by `/tags` — the tag list is a small wrapper around one
+ *  full listing, so a larger cap is fine while still bounding the payload. */
+const MAX_TAGS_LIMIT = 500
+
+/** Clamp a `limit` query param. `fallback` covers absent/unparsable values. */
+function readLimit(url: URL, fallback: number, max = MAX_LIST_LIMIT): number {
+  const raw = Number(url.searchParams.get('limit') ?? fallback)
+  return Number.isFinite(raw) ? Math.max(1, Math.min(Math.floor(raw), max)) : fallback
+}
+
+/** Optional `limit` query param: `undefined` when absent/unparsable (= no cap). */
+function readOptionalLimit(url: URL, max: number): number | undefined {
+  const raw = url.searchParams.get('limit')
+  if (raw === null || raw.trim().length === 0) return undefined
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return undefined
+  return Math.max(1, Math.min(Math.floor(parsed), max))
 }
 
 /** Default note title: `YYYY-MM-DD HH:mm` (design doc D6). */
@@ -882,7 +904,12 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   /** Distinct non-system tags for the quick-note tag autocomplete. The flat
    *  `tags` array feeds note-widget's chip autocomplete; the parallel `items`
    *  (tag → tiddler count) feeds the reply-stream `tiddlywiki_list_tags` tool
-   *  card, so both consumers share one endpoint. */
+   *  card, so both consumers share one endpoint.
+   *
+   *  Query params (v0.19.4): `limit` caps the payload (absent = every tag, so
+   *  the autocomplete keeps its full vocabulary), `sort=count` orders by usage
+   *  (default `alpha`). `tags`/`items` are always the same set in the same
+   *  order, plus `total`/`truncated` so a capped caller can say "N of M". */
   const handleTags = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
     const client = deps.getClient()
@@ -891,20 +918,20 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       return
     }
     try {
-      // Text-bearing tiddlers only (server-side filter): tags that exist solely
-      // on binary attachments must not show up in the autocomplete / tool card.
-      const items = await client.list(TEXT_LIST_FILTER, false)
-      const counts = new Map<string, number>()
-      for (const item of items) {
-        for (const tag of item.tags ?? []) {
-          if (tag.length > 0 && !tag.startsWith('$:/')) counts.set(tag, (counts.get(tag) ?? 0) + 1)
-        }
-      }
-      const tags = [...counts.keys()].sort((a, b) => a.localeCompare(b, 'zh'))
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const limit = readOptionalLimit(url, MAX_TAGS_LIMIT)
+      const byCount = (url.searchParams.get('sort') ?? 'alpha') === 'count'
+      // Text-bearing tiddlers only (server-side filter) — the same counting the
+      // `tiddlywiki_list_tags` tool uses, so the card and the model agree.
+      const { total, tags: all } = await client.tagStats()
+      const ordered = byCount ? all : [...all].sort((a, b) => a.tag.localeCompare(b.tag, 'zh'))
+      const picked = limit === undefined ? ordered : ordered.slice(0, limit)
       json(res, {
         ok: true,
-        tags,
-        items: tags.map((tag) => ({ tag, count: counts.get(tag) ?? 0 })),
+        tags: picked.map((t) => t.tag),
+        items: picked,
+        total,
+        truncated: picked.length < total,
       })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
@@ -921,8 +948,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-      const limitRaw = Number(url.searchParams.get('limit') ?? 15)
-      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(Math.floor(limitRaw), 200)) : 15
+      const limit = readLimit(url, 15)
       const items = await client.recent(limit)
       json(res, {
         ok: true,
@@ -1011,8 +1037,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const tag = url.searchParams.get('tag') ?? undefined
       const since = url.searchParams.get('since') ?? undefined
       const type = url.searchParams.get('type') ?? undefined
-      const limitRaw = Number(url.searchParams.get('limit') ?? 30)
-      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(Math.floor(limitRaw), 200)) : 30
+      const limit = readLimit(url, 30)
       const { items, total } = await client.search(query, { tags, tag, since, type, limit })
       json(res, {
         ok: true,

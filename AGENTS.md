@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.19.3`（git tag `v0.19.3`；npm 上 0.19.1 曾被 staged 且不含后续修复，以最新 tag 为准） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
+| **插件版本** | `0.19.4`（git tag `v0.19.4`；npm 上 0.19.1 曾被 staged 且不含后续修复，以最新 tag 为准） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` + `scripts/verify-render-bundle.mjs`（v0.19.0 新增逐字节守门） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
@@ -129,6 +129,7 @@ node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 - **检索/最近跳过二进制附件**（v0.16.20）：`search`/`recent` 的列表在**服务端**用外部 filter 只取文本 tiddler（无 `type` 或 `text/*`，见 `tw-api.ts` 的 `TEXT_LIST_FILTER`），图片等二进制 tiddler（base64 正文）完全不参与检索/不出现在结果（含标题命中，防同名书页图刷屏）；`get` 对二进制 tiddler 只回元数据（`binary=true`/`binaryType`/`binaryChars` + 链接）。403 时自动 PUT `$:/config/Server/ExternalFilters/<filter>`="yes" 自愈重试；**显式 filter 仍 403 就抛错**（不再偷换成默认列表），只有插件自用的 `TEXT_LIST_FILTER` 会降级瘦身列表。带正文的列表有 **2s TTL + in-flight 合并缓存**（写后失效）。**filter 串必须保持短**（白名单 tiddler 文件名 = 整个 filter，见 §8）。
 - **检索质量（v0.19.0）**：`search` 按 `标题命中 6 > 标签命中 3 > 正文命中次数` 打分排序，片段取**命中处上下文**（`snippetAround`），支持 `field`/`value` 自定义字段过滤，`limit` 统一 clamp 到 200。⚠️ TW 的 listing 返回的 `modified` 是**紧凑格式**（`YYYYMMDDhhmmssSSS`），必须走 `parseTiddlerDate`，用 `new Date()` 会让 `since` 过滤恒为空。
 - **软删除 / 回收站（v0.19.0）**：`delete` 默认把条目移入 `$:/dsh-tiddlywiki/trash/<ISO>/<原标题>`（系统标题 ⇒ 自动不出现在 search/recent/listTags），并用 `$:/dsh-tiddlywiki/trash-index`（JSON）做**索引**；`trash` 工具 list/restore/empty。⚠️ 不能靠 filter 列回收站：新 wiki 的 `$:/config/SyncSystemTiddlersFromServer` 默认 `"no"`，`get-tiddlers-json.js` 会给**每个** filter 追加 `+[!is[system]]`，`$:/` 条目永远列不出来（实测）。
+- **标签列表有界（v0.19.4）**：`GET /tags` 支持 `limit`（1–500，**缺省仍是全量**——快速笔记的标签自动补全需要完整词表）与 `sort=alpha|count`（默认 `alpha`），回包带 `total`/`truncated`；工具 `tiddlywiki_list_tags` 的 `limit` 默认 200、上限 1000，截断时 render 必须写明「共 N 个，仅列出最多的 M 个」，别让模型以为那就是全部。两侧共用 **`TiddlyWebClient.tagStats()`** 一份计数逻辑（此前路由自己遍历一遍且不跳过 `$:/` 标题，两侧口径可能漂），`/recent`、`/search`、`/tags` 的 limit 解析统一走 `readLimit()`/`readOptionalLimit()`。客户端 `TagsCard` 直接请求 `?limit=60&sort=count`（不再下载上千条再丢掉）。
 - **新增工具（v0.19.0）**：`append`（append/prepend/按 `heading` 定位段落，写日志批注不必读全文）、`backlinks`（`[[标题]]`/`{{标题}}`/标签归属）、`attach`（本机绝对路径或公网 URL → 二进制附件，复用 `downloadClipImage` 的 SSRF 守卫）、`lint`（垃圾标签/死链/空笔记/缺内容类型）。
 
 ### 提示词注入（src/index.ts `PROMPT_TEXT`）
@@ -249,6 +250,7 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **async 路由 handler 的 rejection 会挂死请求（v0.19.3）**：宿主 webserver 只调 handler 不 await，未捕获的 rejection 既不回包也不回收连接。所有注册点统一包 `guardHandler(fn)`（`http.ts`）：已发头就 `res.end()`，否则按 `errorStatus(err)` 回 413（超限）/500 JSON。新增路由忘了包 → 一个 await 抛错就是一个永久挂起的请求。
 - **`/upload` 的"存在即改后缀"要原子（v0.19.3）**：先 `existsSync` 再 `writeFile` 是 TOCTOU，两个并发上传会互相覆盖。改成 `writeFile(..., {flag:'wx'})` 并用 **EEXIST-only** 判定重试（其它 errno 直接抛），重试有上界。文件名也会先去掉结尾的 `.`/空格（Windows 会把 `x.html.` 规范化成 `x.html`，判重与落盘名字不一致）。
 - **剪藏桥 listen 之后必须常驻 `error` 监听（v0.19.3）**：只在 `listen()` 那一次挂一次性 error handler，之后任何 socket 级错误都是 `unhandledRejection`/进程级 uncaught——桥是长驻服务，`server.on('error')` 要永久挂着；`stop()` 用 `closeAllConnections()` 收掉 keep-alive 连接（1s 兜底），否则 `close()` 回调可能永远不触发。
+- **列表接口都必须有 `limit`（v0.19.4）**：`GET /tags` 曾是**唯一没有上限**的列表路由（大 wiki 上千个标签连计数全量回给浏览器，客户端只是展示前 60 个就丢掉），工具 `tiddlywiki_list_tags` 更严重——同样全量灌进**模型上下文**。现在两者都能截断并报告 `total`/`truncated`；**标签计数只有 `TiddlyWebClient.tagStats()` 一处实现**（路由曾自己遍历一遍且不跳 `$:/` 标题，与工具口径不一致），新加「标签/最近/搜索」类接口时套 `readLimit()`/`readOptionalLimit()`，别再造第四份 clamp。
 - **`$:/` 条目无法通过 recipe listing 枚举（v0.19.0 实测）**：新 wiki 的 `$:/config/SyncSystemTiddlersFromServer` 默认 `"no"`，`get-tiddlers-json.js` 于是给每个 filter 追加 `+[!is[system]]`。要靠 listing 找 `$:/` 条目（如回收站）必须另建**非系统索引 tiddler** 并用 `get` 读（回收站就是这么做的）。
 - **TW 的日期字段是紧凑格式（v0.19.0）**：listing 返回 `modified` 形如 `20260101000000000`（UTC），`new Date()` 会得到 Invalid Date——`since` 过滤曾因此恒为空。统一用 `parseTiddlerDate()` / `toIsoDateString()`（`tw-api.ts` 导出）。
 - **新装的 wiki 没有 markdown 插件（v0.19.0）**：`--init server` 只带 tiddlyweb/filesystem/highlight，而插件把每篇笔记都写成 `text/markdown`。`ensurePlugin(wikiPath, twRoot, 'tiddlywiki/markdown')` 在启动时幂等补齐并在变更后重启一次；作者本机 wiki 因历史导入流程早有该插件，所以这个坑长期没暴露。
