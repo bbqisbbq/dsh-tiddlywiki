@@ -256,7 +256,7 @@ const PROMPT_TEXT = `## TiddlyWiki 持久知识库
 - \`tiddlywiki_recent\`（limit?, since?）看最近修改的笔记（不含图片等二进制附件）；\`tiddlywiki_list_tags\` 看现有 tag 及计数。
 - \`tiddlywiki_git_sync\`（pull|push|sync）做 git 同步；\`tiddlywiki_git_resolve\`（files, strategy=keep-local|keep-remote|list）在 pull 冲突后按 tiddler 二选一解决。
 
-**不要覆盖人类正在编辑的笔记**：覆盖一篇已有笔记前先 \`tiddlywiki_get\`，把读到的 \`revision\`（或 \`modified\`）作为 \`expectedRevision\`（或 \`expectedModified\`）传入写回；若期间有人（在 TW 编辑器里）改过，写入会被拒绝并告诉你当前值——此时重新读一遍再决定，不要用 \`force\` 硬覆盖。纯增量内容优先用 \`tiddlywiki_append\`。覆盖已有条目时**不传 tags 就保留原有标签与自定义字段**（只改正文），显式传 tags 才整体替换标签。
+**不要覆盖人类正在编辑的笔记**：覆盖一篇已有笔记前先 \`tiddlywiki_get\`，把读到的 \`revision\`（或 \`modified\`）作为 \`expectedRevision\`（或 \`expectedModified\`）传入写回；若期间有人（在 TW 编辑器里）改过，写入会被拒绝并告诉你当前值——此时重新读一遍再决定，不要用 \`force\` 硬覆盖。纯增量内容优先用 \`tiddlywiki_append\`。覆盖已有条目时**不传 tags 就保留原有标签、自定义字段与内容类型**（只改正文），显式传 tags 才整体替换标签；要改内容类型用 \`fields.type\`。\`tiddlywiki_append\` 与 \`tiddlywiki_put\` 共用同一套写策略（同样保留原类型/tags/字段，也支持 \`fields\`）。
 
 知识库同步纪律（三条）：
 1. 开工先 pull：\`tiddlywiki_git_sync action=pull\`（rebase + autostash；真冲突会自动 abort 并报冲突文件）。
@@ -273,7 +273,7 @@ pull 冲突后：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep
 
 **Agent 笔记标签约定**：\`tiddlywiki_put\` / \`tiddlywiki_batch_put\` 新建笔记时，插件会自动补打 \`agent-written\` 标签（标记「由 Agent 撰写」），无需手动添加，也不要手动移除它（除非用户明确要求）。首页会把 Agent 笔记单独列在「Agent 区块」，主标签列表只统计人类笔记。若某篇 Agent 笔记后续被人类编辑过，请在该笔记上补打 \`human-edited\` 标签，首页会把它归入「Agent + 人工」档。覆盖写入已有的（人类）笔记时不会自动加 agent-written，请保持笔记原本的归属。
 
-**内容类型约定**：agent 笔记正文默认用 **Markdown** 写；\`tiddlywiki_put\` / \`tiddlywiki_batch_put\` 未指定内容类型时自动按 \`text/markdown\` 写入（\`$:/\` 系统条目除外），无需手动指定。要写 TW 原生 wikitext 才需要在 fields 里显式传 \`{"type":"text/vnd.tiddlywiki"}\`。⚠️ \`fields.type\` 是 TW 的**内容类型**保留字段——不要把业务分类值（如 \`"meeting"\`）写进去（会破坏渲染），业务分类请放 \`tags\`。
+**内容类型约定**：agent 笔记正文默认用 **Markdown** 写；**只有新建**条目且未指定内容类型时工具才自动按 \`text/markdown\` 写入（\`$:/\` 系统条目除外）——**覆盖或追加既有条目时保留它原有的 \`type\`**（\`text/css\`、\`text/vnd.tiddlywiki\`、JS 等都不会被改掉；类型真的变了回执会明说）。要改内容类型就显式传 \`fields: {"type": "text/vnd.tiddlywiki"}\`。⚠️ \`fields.type\` 是 TW 的**内容类型**保留字段——不要把业务分类值（如 \`"meeting"\`）写进去（会破坏渲染），业务分类请放 \`tags\`。
 
 **引用 wiki 笔记用可点击链接**：在回复流中引用某篇笔记时，用格式 \`[标题](/dsh-tiddlywiki/tw/#标题)\` 输出（标题含空格/特殊字符时做 URL 编码，如 \`A%20B\`；中文标题可直接写）。这类链接会被界面自动接管：点击后打开中央 TW 面板并跳转到该笔记的原生页面。回复里也优先用这个链接格式代替纯文本标题，让用户能一键跳到 wiki。`
 

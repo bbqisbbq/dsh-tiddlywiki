@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.20.0`（git tag `v0.20.0`；npm 上 0.19.1 曾被 staged 且不含后续修复，以最新 tag 为准） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
+| **插件版本** | `0.20.1`（git tag `v0.20.1`；v0.20.0 = 第四轮审计修复版；npm 上 0.19.1 曾被 staged 且不含后续修复，以最新 tag 为准） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
 | **「发送给 Agent」bundle 版本** | `0.3.5`（v0.20.0 修复 `notify()`：TW 的 notifier 只认**已存在的 tiddler 标题**，传自由文本＝静默无提示；现在先写 `$:/temp/dsh/send-to-agent/notice` 再 display。提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs`（含外层 version 守门） |
 | **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` + `scripts/verify-render-bundle.mjs`（v0.19.0 新增逐字节守门） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
@@ -76,7 +76,7 @@ npm run selftest      # headless：spawn TW → REST 读写 → git → 15 个�
 npm run smoke:client  # client bundle 的 module-loader 形状冒烟（wrap-client 之外的第二道）
 npm run verify        # = verify:static + verify:unit + verify:e2e + verify:large（本地一键）
 npm run verify:static # send-to-agent bundle 逐字节 / render bundle 逐字节 / 发布包内容 / 版本一致性 / 静态常量（TEXT_LIST_FILTER 长度预算）
-npm run verify:unit   # 剪藏桥（含 IPv6/保留网段 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器 / 配置密钥遮掩（含 auth.password，v0.20.0）/ 客户端 status-cache 合并（tsx 直跑源码）
+npm run verify:unit   # 剪藏桥（含 IPv6/保留网段 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器 / 配置密钥遮掩（含 auth.password，v0.20.0）/ **写策略纯函数（type 保留，v0.20.1）** / 客户端 status-cache 合并（tsx 直跑源码）
 npm run verify:e2e    # auth 模式 / 工具层 / **审计回归 verify-audit-fixes**（attach 覆盖保护 / 草稿类型 / 回收站索引 / delete 并发 / rename 部分失败 / 汇总未探测 / batch_put 并发顺序）/ git 冲突解决 / 崩溃自愈+并发写 / seed 两个 E2E
 npm run verify:large  # 3000+ 条目大 wiki：检索耗时、二进制零出现、真跑 commit（约 1–3 分钟）
 # 另有（不进 CI，依赖本机 Chrome / 线上 wiki）：
@@ -122,7 +122,7 @@ node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 
 15 个 `tiddlywiki_*` 工具，列表式注册。输出有 `render` 契约：模型看到的只是 render 后的文本，必须携带完整事实（标题/标签/摘要/git 状态），别写"UI 摘要"。
 
-- **内容类型默认**（v0.16.15）：`put`/`batch_put` 对未指定 `type` 的条目自动补 `text/markdown`（`$:/` 系统条目除外；显式 `fields.type` 优先）；`fields.type` 是 TW 内容类型**保留字段**，工具描述/提示词都明确警告勿放业务分类值。
+- **内容类型：默认只给新建，覆盖一律保留**（v0.16.15 引入默认 / **v0.20.1 修正**）：`text/markdown` 默认值**只适用于新建条目**（`$:/` 系统条目除外）。覆盖/追加既有条目时 `type` 必须原样保留——`cleanTiddler()` 曾把 `type` 当跳过字段，导致 `put` 把 `text/css` 改成 `text/markdown`（CSS 被当 Markdown 渲染）、`append` 干脆不写 type（TW 回落 `text/vnd.tiddlywiki`，`.md + .meta` 变 `.tid`）。现在 `cleanTiddler()` 保留 `type`、`finalTypeForWrite(title, tiddler, isNew)` 只在 `isNew` 时套默认；`append` 与 `put` 共用 `buildWriteTiddler`（并补了 `fields` 参数）。**改内容类型是显式动作**：`fields.type`（`fields.type` 是 TW 内容类型**保留字段**，业务分类值请放 tags）。
 - **读取错误策略**（v0.18.0）：`put`/`batch_put` 判「是否新条目」的 `wiki.get()` **不得吞错**——只有 404 才算新条目，否则网络故障会把人类笔记误判为新建并补打 `agent-written`。`fields` 也不能覆盖 `title`/`text`/`tags`/`created`/`modified`（`type` 例外，那是改内容类型的正规入口）；`batch_put` 逐条 try/catch，单条失败不影响其余，结果含 `failed` 与逐条 `error`（`items[].title/text` **故意不是 required**，否则参数预校验会在逐条容错之前整批抛错）。
 - **写入保留字段（v0.19.0 / 抽成共享策略 v0.19.1，数据安全）**：写策略住在 **`src/host/write-policy.ts`**（`cleanTiddler`/`buildWriteTiddler`/`assertNoConflict`/`flattenTiddlerFields`），**agent 工具与 `/note`、`/edit` 人类路由共用同一份实现**——v0.19.0 只在工具层修了「不丢 tags/自定义字段」，HTTP 路由仍在盲覆盖（同名保存会清掉人类笔记的标签与 `q`/`due`）。`buildWriteTiddler()` 以**已有条目为基底**构造 PUT：不传 `tags` 就保留原标签/自定义字段/内容类型，显式传 `tags` 才整体替换；`agentTag: false`（人类路由）不补 `agent-written`。⚠️ 单条 GET 的自定义字段是**嵌套在 `fields` 里**的（`get-tiddler.js` 把 knownFields 之外的字段收进 `fields`），必须摊平，否则 put/append/rename/trash 会静默丢字段，`tiddlywiki_get` 也会渲染成 `fields=[object Object]`。
 - **`tiddlywiki_lint` 的两个坑（v0.19.1 修复）**：① 死链检查的标题集合必须取**全部**标题（瘦列表），只取文本列表会把每条指向图片/附件的 `[[x.png]]`/`{{x}}` 误报成死链；② 「缺 type」不能用响应里的 `type` 判断——TW 服务端会给无 type 的条目补 `text/vnd.tiddlywiki`，只能靠 `MISSING_TYPE_FILTER`（`[all[tiddlers]!is[system]!has[type]]`，服务端按真实字段求值）列标题，再回文本列表取正文。
@@ -134,6 +134,7 @@ node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 - **软删除 / 回收站（v0.19.0）**：`delete` 默认把条目移入 `$:/dsh-tiddlywiki/trash/<ISO>/<原标题>`（系统标题 ⇒ 自动不出现在 search/recent/listTags），并用 `$:/dsh-tiddlywiki/trash-index`（JSON）做**索引**；`trash` 工具 list/restore/empty。⚠️ 不能靠 filter 列回收站：新 wiki 的 `$:/config/SyncSystemTiddlersFromServer` 默认 `"no"`，`get-tiddlers-json.js` 会给**每个** filter 追加 `+[!is[system]]`，`$:/` 条目永远列不出来（实测）。
 - **标签列表有界（v0.19.4）**：`GET /tags` 支持 `limit`（1–500，**缺省仍是全量**——快速笔记的标签自动补全需要完整词表）与 `sort=alpha|count`（默认 `alpha`），回包带 `total`/`truncated`；工具 `tiddlywiki_list_tags` 的 `limit` 默认 200、上限 1000，截断时 render 必须写明「共 N 个，仅列出最多的 M 个」，别让模型以为那就是全部。两侧共用 **`TiddlyWebClient.tagStats()`** 一份计数逻辑（此前路由自己遍历一遍且不跳过 `$:/` 标题，两侧口径可能漂），`/recent`、`/search`、`/tags` 的 limit 解析统一走 `readLimit()`/`readOptionalLimit()`。客户端 `TagsCard` 直接请求 `?limit=60&sort=count`（不再下载上千条再丢掉）。
 - **新增工具（v0.19.0）**：`append`（append/prepend/按 `heading` 定位段落，写日志批注不必读全文）、`backlinks`（`[[标题]]`/`{{标题}}`/标签归属）、`attach`（本机绝对路径或公网 URL → 二进制附件，复用 `downloadClipImage` 的 SSRF 守卫）、`lint`（垃圾标签/死链/空笔记/缺内容类型）。
+- **写路径的内容类型守门（v0.20.1）**：`scripts/verify-write-policy.mjs`（纯函数，7 条：cleanTiddler 保留 type / 覆盖 css 与 wikitext / 新建才默认 + 补 agent-written / `$:/` 不默认 / `fields.type` 改类型 / human 路径）+ `verify-audit-fixes.mjs` 的 6 条 E2E（css、wikitext、markdown 追加、新建默认、`fields.type` 回执、rename 与回收站恢复保类型）。回执里类型变化必须显式写出（`⚠️ 内容类型已从 X 改为 Y`）。
 - **`batch_put` 有界并发（v0.19.5）**：4 路 worker 共享一个 client，**结果按入参下标回填**（顺序与逐条容错是契约，别改成 push）；`autoCommit()` 在循环外只调一次。顺序实现会为 N 条发 2N 次 REST（GET+PUT）。
 - **客户端 `/status` 只有一个入口（v0.19.5）**：`src/client/status-cache.ts` 的 `fetchStatus()`（2s TTL + 在途合并，失败不缓存）。面板/tw-frame/sync-button/ui-config/FAB/sidebar-entry 原先各有一份 `fetchStatus`，加载瞬间会重复请求，而 host 每处理一次 `/status` 最多起 5 个 git 进程。新增客户端面一律用它。
 
@@ -277,6 +278,7 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **Tw 的 notifier 只认「已存在的 tiddler 标题」（v0.20.0 教训）**：`$tw.notifier.display(x)` 在 `$tw.wiki.getTiddler(x)` 为空时**什么都不做**（core/modules/utils/dom/notifier.js）。send-to-agent 的 `notify()` 曾把自由文本当标题传，于是按钮的成功/失败提示**全部静默**（用户点完毫无反馈）。要提示就先写一个 `$:/temp/...` 提示 tiddler 再 display 它；bundle 改动后必须重跑 §4 流水线并 bump 版本。
 - **`/render` 也必须挡插件命名空间（v0.20.0 安全）**：`/get`、`/tw`、`/api` 都挡了 `$:/plugins/dsh-tiddlywiki/`，唯独 `POST /render` 漏了——TW 侧 `render.js` 的 `{title}` 分支对任意 tiddler 都渲染，于是打码与代理拦截被整体绕过（实测：返回的 `<pre><code>` 里含 `bridge.token` 与带 PAT 的 `git.remote`）。新增任何「调用方给标题、TW 出正文」的路径都要过 `isBlockedProxyTitle()`，selftest 有 `/render` 403 断言。
 - **`/edit` 的草稿永远不许覆盖既有草稿（v0.19.5 回归 / v0.20.0 修复）**：v0.19.5 的「先单条 GET 规范草稿名」重构把分支写反了——规范草稿**已存在**时反而直接写进去（覆盖用户未保存的编辑），而扫描到的异构草稿被改名成新条目（留孤儿）。正确语义是 `free ? canonical : (复用扫描到的草稿 ?? canonical+时间戳)`，重排时务必保留这个方向。
+- **覆盖写入绝不能「顺手」改内容类型（v0.20.1 教训）**：TW 的解析方式完全由 `type` 决定，改错类型不会报错、只会静默换一个 parser——CSS 被当 Markdown（样式失效）、Markdown 被当 wikitext（`##` 字面量）。两个易踩点：① 任何「跳过字段」白名单都别把 `type` 放进去（`cleanTiddler()` 就是这么坑的）；② `append` 这类「只是加一段文字」的路径也必须走共享写策略，手写 PUT body 会漏字段（连 type 都没写 → TW 补默认 wikitext）。
 - **`tsconfig.json` 已开 `noUnusedLocals`（v0.20.0）**：审计发现的 16 处死 import / 死类型（`index.ts` 的 12 个 re-export 冗余 import、`tw-frame.ts` 重复的 `StatusPayload` 等）正是它没开时积累的。删引用时**别只 grep `*.ts`**——`AutoCommitter.onCommit` 就是被 `scripts/selftest.mjs`（.mjs）使用的，只查 .ts 会把它误判成死代码（selftest 当场红了）。
 - Windows 下 git 的 LF→CRLF 警告无害。
 - **TiddlyWeb 外部 filter 的坑（v0.16.20 教训）**：① 非默认 filter 一律 403，除非 `$:/config/Server/ExternalFilters/<filter串>` = "yes"（白名单 tiddler 文件名 = **整个 filter 串**——filter 必须短：此前 180 字符版在 Windows 上文件名顶到 217 字符，撑爆 MAX_PATH，`git add` 报 "Filename too long"、自动 commit 失效；86 字符版文件名 ~123 字符安全。selftest 的 git 段就是这个回归的守门员）；② `prefix`/`match` 只匹配 **title**，字段匹配用 `regexp:type[...]`/`field:type[...]`；③ `[has[type]]`=有 type 字段，`[has:type[]]` 是另一种调用（suffix+空 operand，匹配一切）；④ 空格分隔=**并集**、`+`=交集；⑤ 取反的 `regexp:type`/`field:type` 会**丢掉无 type 字段**的 tiddler——「排除二进制」必须写成正向并集（无 type OR `text/*`），见 `tw-api.ts` 的 `TEXT_LIST_FILTER`。

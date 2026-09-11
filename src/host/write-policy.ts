@@ -29,8 +29,19 @@ export const HUMAN_EDITED_TAG = 'human-edited'
 /** Agent / 人类笔记的默认内容类型（TW 对无 type 的条目按 wikitext 解析）。 */
 export const DEFAULT_NOTE_TYPE = 'text/markdown'
 
-/** 构造 PUT body 时跳过的字段（身份/内容/TW 自己的时间戳）。 */
-const CLEAN_SKIP_FIELDS = new Set(['title', 'text', 'tags', 'type', 'created', 'modified', 'fields'])
+/**
+ * 构造 PUT body 时跳过的字段（身份/内容/TW 自己的时间戳）。
+ *
+ * ⚠️ `type` **不在**这里（v0.20.1 修复）：它曾被误列为跳过字段，于是
+ * `cleanTiddler(existing)` 把条目的内容类型丢掉，`finalTypeForWrite()` 随后又
+ * 补上默认的 `text/markdown`（或干脆不写 type → TW 回落 `text/vnd.tiddlywiki`）。
+ * 结果：任何「覆盖已有条目」的路径都会静默改掉类型——
+ *   - `text/css` 的样式条目被改成 `text/markdown` → 整篇 CSS 被当 Markdown 渲染；
+ *   - `text/markdown` 笔记被改成 `text/vnd.tiddlywiki` → `##`/`**粗体**`/表格全按
+ *     wikitext 解析（磁盘上 `.md` + `.meta` 也变成 `.tid`）。
+ * 内容类型是条目的解析方式，必须与 tags/自定义字段一样按「以已有条目为基底」保留。
+ */
+const CLEAN_SKIP_FIELDS = new Set(['title', 'text', 'tags', 'created', 'modified', 'fields'])
 
 /**
  * 调用方**不得**通过 `fields` 覆盖的保留字段：它们是条目的身份/内容，时间戳
@@ -129,9 +140,17 @@ export function finalTagsForWrite(title: string, existing: Tiddler | undefined, 
   return [...tags, AGENT_WRITTEN_TAG]
 }
 
-/** 计算最终内容类型（原地改 tiddler）：显式 type 优先，`$:/` 保持 TW 默认，其余默认 Markdown。 */
-export function finalTypeForWrite(title: string, tiddler: Tiddler): { defaulted: boolean } {
+/**
+ * 计算最终内容类型（原地改 tiddler）：显式 type 优先；**只有新建条目**才回落
+ * Markdown，`$:/` 条目保持 TW 默认。
+ *
+ * v0.20.1：`isNew=false`（覆盖既有条目）时**绝不**发明类型——基底里有什么就是
+ * 什么；基底没有 type（极少数情况）也保持「没有」，让 TW 继续按 wikitext 处理，
+ * 而不是把它升级成 Markdown。改类型是调用方的显式动作（`fields.type`）。
+ */
+export function finalTypeForWrite(title: string, tiddler: Tiddler, isNew = true): { defaulted: boolean } {
   if (typeof tiddler.type === 'string' && tiddler.type.length > 0) return { defaulted: false }
+  if (!isNew) return { defaulted: false }
   if (title.startsWith('$:/')) return { defaulted: false }
   tiddler.type = DEFAULT_NOTE_TYPE
   return { defaulted: true }
@@ -153,9 +172,9 @@ export interface BuildWriteOptions {
 /**
  * 构造一次写要 PUT 的 tiddler。
  *
- * - 已有条目 → 以其为基底（标签、自定义字段、内容类型全部保留）；
+ * - 已有条目 → 以其为基底（标签、自定义字段、**内容类型**全部保留）；
  * - 新条目 → `{title, text}` + 默认/显式标签（`$:/` 不带 agent 标签）；
- * - `fields` 逐个覆盖；`type` 未指定时补 Markdown（`$:/` 除外）。
+ * - `fields` 逐个覆盖；`type` 未指定时**仅新建条目**补 Markdown（`$:/` 除外）。
  */
 export function buildWriteTiddler(
   title: string,
@@ -175,7 +194,9 @@ export function buildWriteTiddler(
     if (finalTags.length > 0) tiddler.tags = finalTags
   }
   applyCustomFields(tiddler, fields)
-  const { defaulted } = finalTypeForWrite(title, tiddler)
+  // v0.20.1: the Markdown default is for NEW tiddlers only — an overwrite keeps
+  // the content type it was read with (see finalTypeForWrite).
+  const { defaulted } = finalTypeForWrite(title, tiddler, existing === undefined)
   return { tiddler, typeDefaulted: defaulted }
 }
 

@@ -176,6 +176,69 @@ try {
     assert.equal(draft.type, 'text/markdown', `新笔记草稿应为 markdown，实际 ${draft.type}`)
   })
 
+  // 2c ── 内容类型保留（v0.20.1）────────────────────────────────────────────
+  // 旧实现把 `type` 当成「构造 PUT body 时跳过的字段」，于是 cleanTiddler() 丢掉
+  // 既有条目的内容类型，finalTypeForWrite() 再补默认值：put 把 text/css 改成
+  // text/markdown（CSS 被当 Markdown 渲染、样式静默失效），append 干脆不写 type
+  // （TW 回落 text/vnd.tiddlywiki，磁盘上 .md+.meta 变 .tid，Markdown 全按 wikitext 解析）。
+  await test('put：覆盖 text/css 条目不得重置内容类型', async () => {
+    await api.put({ title: 'KeepCss', text: '.a { color: red; }', type: 'text/css', tags: ['$:/tags/Stylesheet'], q: 'keep' })
+    const r = await call('tiddlywiki_put', { title: 'KeepCss', text: '.a { color: blue; }' })
+    assert.equal(r.type, 'text/css', `回执类型应为 text/css，实际 ${r.type}`)
+    assert.equal(r.typeChanged, undefined, `不该报类型变化：${JSON.stringify(r.typeChanged)}`)
+    const t = await api.get('KeepCss')
+    assert.equal(t.type, 'text/css', `类型必须保持 text/css，实际 ${t.type}（旧实现变成 text/markdown → 整篇 CSS 被当 Markdown 渲染）`)
+    assert.deepEqual(t.tags, ['$:/tags/Stylesheet'], `tags 必须保留：${JSON.stringify(t.tags)}`)
+    assert.equal(fieldOf(t, 'q'), 'keep', '自定义字段必须保留')
+  })
+
+  await test('put：覆盖 wikitext 笔记不得被默认成 markdown', async () => {
+    await api.put({ title: 'KeepWiki', text: "! 标题\n\n''粗体''", type: 'text/vnd.tiddlywiki' })
+    const r = await call('tiddlywiki_put', { title: 'KeepWiki', text: "!! 新标题\n\n''更粗''" })
+    const t = await api.get('KeepWiki')
+    assert.equal(t.type, 'text/vnd.tiddlywiki', `类型必须保持 wikitext，实际 ${t.type}`)
+    assert.equal(r.typeDefaulted, undefined, '覆盖既有条目不属于「默认 markdown」场景')
+    assert.equal(r.typeChanged, undefined, `类型没变就不该报变化：${JSON.stringify(r.typeChanged)}`)
+  })
+
+  await test('append：追加到 markdown 笔记不得把类型降级成 wikitext', async () => {
+    await api.put({ title: 'KeepMd', text: '# 标题\n\n**粗体**', type: 'text/markdown', tags: ['human'], q: 'md' })
+    const r = await call('tiddlywiki_append', { title: 'KeepMd', text: '追加的一行' })
+    assert.equal(r.created, false, '应是追加而不是新建')
+    const t = await api.get('KeepMd')
+    assert.equal(t.type, 'text/markdown', `类型必须保持 text/markdown，实际 ${t.type}（旧实现在磁盘上把 .md + .meta 变成 .tid，## 与 ** 全按 wikitext 解析）`)
+    assert.ok((t.text ?? '').includes('追加的一行'), '追加内容应写入正文')
+    assert.deepEqual(t.tags, ['human'], `tags 必须保留：${JSON.stringify(t.tags)}`)
+    assert.equal(fieldOf(t, 'q'), 'md', '自定义字段必须保留')
+    assert.equal(r.typeChanged, undefined, `类型没变就不该报变化：${JSON.stringify(r.typeChanged)}`)
+  })
+
+  await test('append：新建条目仍默认 markdown 且补 agent-written', async () => {
+    const r = await call('tiddlywiki_append', { title: 'AppendFresh', text: '第一条' })
+    assert.equal(r.created, true, '条目不存在时应新建')
+    assert.equal(r.typeDefaulted, true, '新建且未指定类型应标记 typeDefaulted')
+    const t = await api.get('AppendFresh')
+    assert.equal(t.type, 'text/markdown', `新建条目应默认 markdown，实际 ${t.type}`)
+    assert.ok((t.tags ?? []).includes('agent-written'), `新建应补 agent-written：${JSON.stringify(t.tags)}`)
+  })
+
+  await test('append：fields.type 可显式改类型且回执报出变化', async () => {
+    await api.put({ title: 'AppendType', text: '正文', type: 'text/vnd.tiddlywiki' })
+    const r = await call('tiddlywiki_append', { title: 'AppendType', text: '追加', fields: { type: 'text/markdown' } })
+    assert.deepEqual(r.typeChanged, { from: 'text/vnd.tiddlywiki', to: 'text/markdown' }, `回执必须报出类型变化：${JSON.stringify(r.typeChanged)}`)
+    assert.equal((await api.get('AppendType')).type, 'text/markdown', 'fields.type 是改类型的正规入口')
+  })
+
+  await test('rename 与回收站恢复都不得丢掉内容类型', async () => {
+    await api.put({ title: 'TypedRename', text: 'x', type: 'text/css' })
+    await call('tiddlywiki_rename', { oldTitle: 'TypedRename', newTitle: 'TypedRenamed', updateRefs: false })
+    assert.equal((await api.get('TypedRenamed')).type, 'text/css', 'rename 后类型必须保留')
+    await api.put({ title: 'TypedTrash', text: 'y', type: 'text/css' })
+    await call('tiddlywiki_delete', { title: 'TypedTrash' })
+    await call('tiddlywiki_trash', { action: 'restore', title: 'TypedTrash' })
+    assert.equal((await api.get('TypedTrash')).type, 'text/css', '回收站恢复后类型必须保留')
+  })
+
   // 3 ── 回收站索引 ────────────────────────────────────────────────────────
   await test('delete：回收站索引损坏时必须中止，绝不重建为空索引', async () => {
     await api.put({ title: 'HumanTrashBase', text: 'base', tags: ['human'] })

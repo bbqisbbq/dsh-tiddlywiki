@@ -27,8 +27,6 @@ import {
   assertNoConflict,
   buildWriteTiddler,
   cleanTiddler,
-  finalTagsForWrite,
-  finalTypeForWrite,
   flattenTiddlerFields,
   normalizeTagArg,
 } from './write-policy.ts'
@@ -207,6 +205,19 @@ function pickFields(t: Tiddler): Record<string, unknown> {
   const out = flattenTiddlerFields(t)
   if (t.revision !== undefined) out.revision = t.revision
   return out
+}
+
+/**
+ * 覆盖写入前后内容类型的差异（v0.20.1）。内容类型决定 TW 用哪个 parser，静默变化
+ * 会让 CSS 被当 Markdown、Markdown 笔记被当 wikitext，所以覆盖路径必须把这个差异
+ * 回执给模型。只有两边都拿得到 `type` 且不同才报告（新建 → 无 from）。
+ */
+function typeChangeOf(existing: Tiddler | undefined, next: Tiddler): { typeChanged?: { from: string; to: string } } {
+  if (existing === undefined) return {}
+  const from = typeof existing.type === 'string' && existing.type.length > 0 ? existing.type : undefined
+  const to = typeof next.type === 'string' && next.type.length > 0 ? next.type : undefined
+  if (from === undefined || to === undefined || from === to) return {}
+  return { typeChanged: { from, to } }
 }
 
 /**
@@ -447,12 +458,12 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_put ───────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_put',
-    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；**覆盖已有条目时，未传的 tags / 自定义字段会原样保留**（不会静默丢掉笔记原有的标签与字段），显式传 tags 才整体替换标签。写入后触发防抖自动 commit（默认 60s；手动同步用 tiddlywiki_git_sync）。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。未指定内容类型时自动默认 text/markdown（$:/ 系统条目除外）；要写原生 wikitext 需显式在 fields 传 {"type":"text/vnd.tiddlywiki"}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
+    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；**覆盖已有条目时，未传的 tags / 自定义字段 / 内容类型都会原样保留**（不会静默丢掉笔记原有的标签、字段或 type；显式传 tags 才整体替换标签）。写入后触发防抖自动 commit（默认 60s；手动同步用 tiddlywiki_git_sync）。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加。内容类型：**只有新建**条目且未指定时才默认 text/markdown（$:/ 系统条目除外）——覆盖 text/css、wikitext 等既有条目时保持原类型；要改类型用 fields 传 {"type":"..."}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配，覆盖同名）', required: true },
       text: { type: 'string', description: 'tiddler 全文（默认按 Markdown 解析）', required: true },
       tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）' },
-      fields: { type: 'json', description: '附加自定义字段，如 {"date":"2026-09-02"}（可选）。注意：fields.type 是 TW 内容类型（保留字段，默认已自动补 text/markdown），不要写业务分类值' },
+      fields: { type: 'json', description: '附加自定义字段，如 {"date":"2026-09-02"}（可选）。fields.type 是**改内容类型的正规入口**（如 {"type":"text/css"}）：新建条目未指定时默认 text/markdown，覆盖既有条目时保留原类型。注意不要把业务分类值（如 "meeting"）写进 type——业务分类请放 tags' },
       expectedModified: { type: 'string', description: '可选：乐观并发保护。传 tiddlywiki_get 读到的 modified 值，若该条目已被他人改动则拒绝写入（避免覆盖人类在 TW 编辑器里的修改）' },
       expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——传 tiddlywiki_get 返回字段里的 revision（刚写入、还没落盘的条目没有 modified，此时用 revision）' },
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制覆盖（默认 false）' },
@@ -461,7 +472,10 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       render: (_args, value: PutResult) => {
         const lines = [`已写入 tiddler「${value.title}」`]
         if (value.tags.length > 0) lines.push(`标签: ${value.tags.join(', ')}`)
-        if (value.type !== null) lines.push(`类型: ${value.type}${value.typeDefaulted === true ? '（未指定，已默认 markdown）' : ''}`)
+        if (value.type !== null) lines.push(`类型: ${value.type}${value.typeDefaulted === true ? '（新建且未指定，已默认 markdown）' : ''}`)
+        // 覆盖时若类型真的变了，必须说出来（v0.20.1）——内容类型决定解析方式，
+        // 静默变化会让 CSS/JS 被当 Markdown、Markdown 笔记被当 wikitext。
+        if (value.typeChanged !== undefined) lines.push(`⚠️ 内容类型已从 ${value.typeChanged.from} 改为 ${value.typeChanged.to}（覆盖前请确认这是你要的）`)
         if (value.fields !== null) {
           const entries = Object.entries(value.fields)
           if (entries.length > 0) lines.push(`字段: ${entries.map(([k, v]) => `${k}=${String(v)}`).join(', ')}`)
@@ -485,14 +499,22 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const { tiddler, typeDefaulted } = buildWriteTiddler(args.title, args.text, { existing, tags, fields: args.fields })
       await wiki.put(tiddler)
       deps.autoCommit()
-      return { ok: true, title: args.title, tags: tiddler.tags ?? [], type: typeof tiddler.type === 'string' ? tiddler.type : null, ...(typeDefaulted ? { typeDefaulted: true } : {}), fields: args.fields ?? null }
+      return {
+        ok: true,
+        title: args.title,
+        tags: tiddler.tags ?? [],
+        type: typeof tiddler.type === 'string' ? tiddler.type : null,
+        ...(typeDefaulted ? { typeDefaulted: true } : {}),
+        ...typeChangeOf(existing, tiddler),
+        fields: args.fields ?? null,
+      }
     },
   }))
 
   // ── tiddlywiki_batch_put ─────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_batch_put',
-    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果（单条失败不影响其余条目，失败原因逐条列出）。写入后触发防抖自动 commit（默认 60s）。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。未指定内容类型（fields.type）的条目自动默认 text/markdown（$:/ 系统条目除外）。',
+    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果（单条失败不影响其余条目，失败原因逐条列出）。写入后触发防抖自动 commit（默认 60s）。新建（title 不存在）的条目会自动补打 agent-written 标签，无需手动添加。内容类型：只有**新建**条目未指定 fields.type 时才默认 text/markdown（$:/ 系统条目除外）；**覆盖既有条目时保留其原有 type/tags/自定义字段**。',
     parameters: {
       items: {
         type: 'array',
@@ -768,22 +790,25 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_append ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_append',
-    description: '向已有 tiddler 追加/前插文本，或写入指定标题段落的末尾（无需先读全文、不会整篇覆盖）——适合日志、批注、清单的增量写入。条目不存在时默认新建（createIfMissing=false 则报错）。',
+    description: '向已有 tiddler 追加/前插文本，或写入指定标题段落的末尾（无需先读全文、不会整篇覆盖）——适合日志、批注、清单的增量写入。条目不存在时默认新建（createIfMissing=false 则报错）。**写入既有条目走与 tiddlywiki_put 同一套写策略**：原有 tags、自定义字段与**内容类型**全部保留（不会把 Markdown 笔记改成 wikitext、也不会把 CSS 改成 Markdown）；可用 fields 显式覆盖字段/类型。新建条目未指定内容类型时才默认 text/markdown。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题', required: true },
-      text: { type: 'string', description: '要追加/前插的文本（Markdown）', required: true },
+      text: { type: 'string', description: '要追加/前插的文本（默认按 Markdown 写；既有条目保持它自己的内容类型）', required: true },
       mode: { type: 'string', enum: ['append', 'prepend'], description: '可选：append（默认，追加到末尾）/ prepend（插到开头）' },
       heading: { type: 'string', description: '可选：append 时改为插入到该标题（Markdown # 或 wikitext ! 标题，按标题文本匹配）对应段落的末尾' },
       createIfMissing: { type: 'boolean', description: '可选：条目不存在时是否新建（默认 true）' },
-      tags: { type: 'array', items: { type: 'string' }, description: '可选：仅新建时使用的标签' },
+      tags: { type: 'array', items: { type: 'string' }, description: '可选：标签（不传则保留既有条目的原标签；新建条目会额外自动补 agent-written）' },
+      fields: { type: 'json', description: '可选：显式覆盖的自定义字段（如 {"type":"text/css"}）。不传则保留既有条目的原字段与内容类型' },
     },
     output: {
-      render: (_args, value: AppendResult) => [{
-        type: 'text',
-        text: `${value.created ? '已新建并写入' : '已增量写入'} tiddler「${value.title}」（${value.mode}${value.heading !== null ? ` · 段落「${value.heading}」` : ''}）：新增 ${value.added} 字符，现共 ${value.total} 字符。`,
-      }],
+      render: (_args, value: AppendResult) => {
+        const lines = [`${value.created ? '已新建并写入' : '已增量写入'} tiddler「${value.title}」（${value.mode}${value.heading !== null ? ` · 段落「${value.heading}」` : ''}）：新增 ${value.added} 字符，现共 ${value.total} 字符。`]
+        if (value.type !== null) lines.push(`类型: ${value.type}${value.typeDefaulted === true ? '（新建且未指定，已默认 markdown）' : ''}`)
+        if (value.typeChanged !== undefined) lines.push(`⚠️ 内容类型已从 ${value.typeChanged.from} 改为 ${value.typeChanged.to}`)
+        return [{ type: 'text', text: lines.join('\n') }]
+      },
     },
-    execute: async (args: { title: string; text: string; mode?: 'append' | 'prepend'; heading?: string; createIfMissing?: boolean; tags?: string[] }): Promise<AppendResult> => {
+    execute: async (args: { title: string; text: string; mode?: 'append' | 'prepend'; heading?: string; createIfMissing?: boolean; tags?: string[]; fields?: Record<string, unknown> }): Promise<AppendResult> => {
       const wiki = requireWiki()
       const title = args.title.trim()
       if (title.length === 0) throw new Error('tiddlywiki_append: title 不能为空')
@@ -802,17 +827,31 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       } else {
         next = base.trim().length === 0 ? addition : `${base.replace(/\s+$/, '')}\n\n${addition}`
       }
-      if (existing !== undefined) {
-        await wiki.put({ ...cleanTiddler(existing), text: next })
-      } else {
-        const tags = finalTagsForWrite(title, undefined, Array.isArray(args.tags) ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0) : [], true)
-        const tiddler: Tiddler = { title, text: next }
-        if (tags.length > 0) tiddler.tags = tags
-        finalTypeForWrite(title, tiddler)
-        await wiki.put(tiddler)
-      }
+      // v0.20.1: ONE write policy for every write path. The old append built its
+      // PUT by hand, which (a) dropped the existing tiddler's `type` and
+      // (b) ignored `fields` entirely — appending a paragraph to a Markdown note
+      // silently downgraded it to wikitext. buildWriteTiddler preserves
+      // tags/custom fields/type for an existing tiddler and only defaults the
+      // type when creating.
+      const { tiddler, typeDefaulted } = buildWriteTiddler(title, next, {
+        existing,
+        tags: normalizeTagArg(args.tags),
+        fields: args.fields,
+      })
+      await wiki.put(tiddler)
       deps.autoCommit()
-      return { ok: true, title, mode, heading: typeof args.heading === 'string' && args.heading.trim().length > 0 ? args.heading.trim() : null, created: existing === undefined, added: addition.length, total: next.length }
+      return {
+        ok: true,
+        title,
+        mode,
+        heading: typeof args.heading === 'string' && args.heading.trim().length > 0 ? args.heading.trim() : null,
+        created: existing === undefined,
+        added: addition.length,
+        total: next.length,
+        type: typeof tiddler.type === 'string' ? tiddler.type : null,
+        ...(typeDefaulted ? { typeDefaulted: true } : {}),
+        ...typeChangeOf(existing, tiddler),
+      }
     },
   }))
 
@@ -1223,14 +1262,14 @@ interface GetResult {
   binaryType?: string
   binaryChars?: number
 }
-interface PutResult { ok: boolean; title: string; tags: string[]; type: string | null; typeDefaulted?: boolean; fields: Record<string, unknown> | null }
+interface PutResult { ok: boolean; title: string; tags: string[]; type: string | null; typeDefaulted?: boolean; /** 覆盖时内容类型真的变了（v0.20.1）。 */ typeChanged?: { from: string; to: string }; fields: Record<string, unknown> | null }
 interface BatchItemResult { title: string; written: boolean; skipped: boolean; failed: boolean; error?: string }
 interface BatchResult { ok: boolean; written: number; skipped: number; failed: number; items: BatchItemResult[] }
 interface RenameResult { ok: boolean; from: string; to: string; refsUpdated: number; refsTiddlers: number; warning?: string }
 interface DeleteResult { ok: boolean; title: string; /** true = moved to the trash (recoverable). */ trashed?: boolean; trashTitle?: string }
 interface TrashItem { title: string; at?: string; of?: string }
 interface TrashResult { action: string; message: string; items?: TrashItem[] }
-interface AppendResult { ok: boolean; title: string; mode: 'append' | 'prepend'; heading: string | null; created: boolean; added: number; total: number }
+interface AppendResult { ok: boolean; title: string; mode: 'append' | 'prepend'; heading: string | null; created: boolean; added: number; total: number; type?: string | null; typeDefaulted?: boolean; typeChanged?: { from: string; to: string } }
 interface BacklinkHit { title: string; refs: number; via: 'link' | 'tag'; modified: string | null }
 interface BacklinkResult { title: string; total: number; linkCount: number; tagCount: number; items: BacklinkHit[] }
 interface AttachResult { ok: boolean; title: string; mime: string; bytes: number; chars: number; source: string | null; embedInto: string | null }
