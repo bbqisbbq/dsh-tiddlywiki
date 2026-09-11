@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.19.1`（npm latest = 0.18.0；git tag `v0.19.1`） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
+| **插件版本** | `0.19.2`（npm：0.19.1 曾被 npm staged 但缺少 flush 修复，以 0.19.2 为准；git tag `v0.19.2`） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
 | **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
 | **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` + `scripts/verify-render-bundle.mjs`（v0.19.0 新增逐字节守门） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
@@ -238,6 +238,7 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **SSRF 守卫要按字节判 IPv6（v0.19.0）**：字符串前缀法漏掉 `0:0:0:0:0:0:0:1`、`::0:1`、`::ffff:7f00:1`（都是回环）。`isPrivateAddress` 现在用 `ipv6ToBytes` 展开成 16 字节，并处理 IPv4-mapped / 6to4 / NAT64；下载用 `lookup` **pin 住已校验的 IP**，避免 DNS rebinding 在 check 与 connect 之间换答案。
 - **TW REST 的 PUT 是整体替换（v0.19.0 数据安全）**：只发 `{title, text}` 会抹掉既有 tags 与自定义字段。所有「基于已有条目改写」的路径都要走 `buildWriteTiddler()`；而单条 GET 返回的自定义字段**嵌套在 `fields` 下**，`cleanTiddler()` 必须摊平（否则 rename/append/trash 一样会丢字段）。
 - **任何重启 TW 之前都要 `flushPendingWrites()`（v0.19.1 补漏）**：REST PUT 返回 204 时 syncer 还握着这条写入（~250ms 定时器），此时重启会**直接吞掉它**（v0.19.0 只在 seed 路径做了，`/sync` 与工具 `git_sync` 漏了 → agent 连续 `put → git_sync` 时可能丢笔记）。两条路径现在都先写哨兵再重启。
+- **flush 哨兵的两个静默陷阱（v0.19.1 实测）**：① **扩展名**——TW 的文件系统适配器按内容类型决定扩展名（`text/plain` → `.txt` + `.txt.meta`、`application/json` → `.json`、默认 wikitext → `.tid`），旧实现写 `text/plain` 却等 `.tid`，永远等不到；② **mtime**——哨兵是紧接在等待之前写的，Windows 上新文件的 mtime 可能落在同一/前一个时钟刻，`mtime >= startedAt` 永不成立。两者都会让 `flushPendingWrites` **每次都超时返回 false，而调用方只当 warning**（v0.19.0 的「排干 syncer」实际没生效）。现在按「文件名含 `dsh-tiddlywiki_flush-probe` + 文件内容含本次随机戳」判定，与扩展名/时钟无关。
 - **Host 侧注入浏览器的 TW 片段必须净化（v0.19.1 安全）**：回复流卡片与会话汇总用 `dangerouslySetInnerHTML` 把 TW 渲染结果插进 **DSH 同源页面**，而 TW 的解析器只剥 `on*`——`<iframe src="javascript:…">`、`<a href="javascript:…">`、`<form action="javascript:…">` 全部原样通过（实测）。客户端一律走 **`POST /dsh-tiddlywiki/render`**（`src/host/sanitize.ts` 的 `sanitizeTwFragment` 净化后返回），不要直连 TW 的 `/tw/render`；新增注入点时 `verify-render-sanitizer.mjs` 会断言它引用 `RENDER_ENDPOINT`。
 - **重启是有状态的，必须单飞（v0.19.1）**：`WikiServer.restart()` 内部串行（routes 层的 `beginMutation` 只覆盖 `/restart` 与 `/sync`，`/admin/*` 那三处够不着——并发重启会留下孤儿 TW 进程）。启动任务（`apply()` 里的 fire-and-forget IIFE）与 teardown 也要靠 `disposed` 标志握手：先置位再 await，否则「disposer 先跑完、startup 后 spawn」同样留孤儿。
 - **`$:/` 条目无法通过 recipe listing 枚举（v0.19.0 实测）**：新 wiki 的 `$:/config/SyncSystemTiddlersFromServer` 默认 `"no"`，`get-tiddlers-json.js` 于是给每个 filter 追加 `+[!is[system]]`。要靠 listing 找 `$:/` 条目（如回收站）必须另建**非系统索引 tiddler** 并用 `get` 读（回收站就是这么做的）。

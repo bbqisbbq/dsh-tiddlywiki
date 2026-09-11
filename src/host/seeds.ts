@@ -31,7 +31,7 @@
  * @module dsh-tiddlywiki/host/seeds
  */
 import type { TiddlyWebClient } from './tw-api.ts'
-import { existsSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { seedDocNote, unseedDocNote, DOC_NOTE_TITLE } from './seed-notes.ts'
 import { seedStarterDocs, unseedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE } from './seed-starter-docs.ts'
@@ -120,17 +120,47 @@ export const RESTART_REQUIRED_SEED_IDS = ['render-route'] as const
  * order.
  */
 export const FLUSH_PROBE_TITLE = '$:/plugins/dsh-tiddlywiki/flush-probe'
+/**
+ * 哨兵 tiddler 落盘后的**文件名片段**（用 `includes` 匹配，不写死扩展名）。
+ *
+ * 为什么不写死 `.tid`：TW 的文件系统适配器按内容类型决定扩展名——`text/plain`
+ * 写成 `.txt` + `.txt.meta`，`application/json` 写成 `.json`，只有
+ * `text/vnd.tiddlywiki` 才是 `.tid`。v0.19.0 的实现传了 `type: 'text/plain'`
+ * 却去等 `.tid`，于是**永远等不到**，而所有调用方都只把返回值当 warning ——
+ * 「排干 syncer」其实一直没生效（v0.19.1 的 selftest 断言把它抓了出来）。
+ * 现在哨兵用默认 wikitext（落 `.tid`），判定再按「文件名含本片段 + 内容含本次
+ * 随机戳」来做，扩展名怎么变都不会静默失效。
+ */
+export const FLUSH_PROBE_FILE_HINT = 'dsh-tiddlywiki_flush-probe'
+/** @deprecated 用 FLUSH_PROBE_FILE_HINT 匹配；保留仅为兼容旧引用。 */
 export const FLUSH_PROBE_FILE = '$__plugins_dsh_tiddlywiki_flush-probe.tid'
 
-/** Write the flush sentinel and wait for its file; true when the queue drained. */
+/** Write the flush sentinel and wait for ITS CONTENT to reach the file. */
 export async function flushPendingWrites(client: TiddlyWebClient, tiddlersDir: string, timeoutMs = 8_000): Promise<boolean> {
-  const startedAt = Date.now()
+  // ⚠️ 判定不能靠 mtime（v0.19.1 教训之二）：哨兵是在等待**紧接**它之前写的，
+  // Windows 上新文件的 mtime 可能落在 `Date.now()` 同一/前一个时钟刻，
+  // `mtime >= startedAt` 于是永远不成立、轮询到超时返回 false。改成写一段唯一
+  // 内容、轮询文件里是否出现它：内容一致才算真的落盘，与时钟精度无关。
+  const stamp = `flush ${Date.now()} ${Math.random().toString(36).slice(2)}`
   try {
-    await client.put({ title: FLUSH_PROBE_TITLE, text: new Date().toISOString(), type: 'text/plain', tags: [] })
+    // 不传 type → TW 按默认 wikitext 存成 .tid。
+    await client.put({ title: FLUSH_PROBE_TITLE, text: stamp })
   } catch {
     return false
   }
-  return waitForFileWrite(join(tiddlersDir, FLUSH_PROBE_FILE), timeoutMs, 150, startedAt)
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      for (const name of readdirSync(tiddlersDir)) {
+        if (!name.includes(FLUSH_PROBE_FILE_HINT)) continue
+        try {
+          if (readFileSync(join(tiddlersDir, name), 'utf8').includes(stamp)) return true
+        } catch { /* transient read failure */ }
+      }
+    } catch { /* tiddlers dir not readable yet */ }
+    if (Date.now() >= deadline) return false
+    await new Promise<void>((r) => setTimeout(r, 150))
+  }
 }
 
 /** Did one of the RESTART_REQUIRED seeds actually write something? */

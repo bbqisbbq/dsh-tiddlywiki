@@ -1001,13 +1001,22 @@ try {
   // are registered at boot). Wait out TW's async filesystem flush first — a
   // bounded poll for the bundle actually landing on disk (title $:/plugins/dsh/render
   // is path-escaped to tiddlers/, .tid or .json depending on the adaptor).
-  await waitFor(async () => {
+  //
+  // v0.19.1: the poll result used to be IGNORED and the restart ran anyway — on a
+  // slow CI runner the file had not landed, TW rebooted from a stale snapshot and
+  // every /render assertion 404'd (the first-ever CI selftest run caught it).
+  // Drain the syncer deterministically with the flush sentinel (ordered queue)
+  // and ASSERT it before restarting.
+  const fileSeen = await waitFor(async () => {
     const dir = join(wikiDir, 'tiddlers')
     const files = await readdir(dir).catch(() => [])
     const file = files.find((name) => name.includes('plugins_dsh_render'))
     if (file === undefined) return false
     return (await readFile(join(dir, file), 'utf8').catch(() => '')).includes('server-routes')
   })
+  if (!fileSeen) console.warn('  (warn) render bundle file not seen by the polling probe — draining the syncer anyway')
+  const renderDrained = await flushPendingWrites(seedApi, join(wikiDir, 'tiddlers'), 30_000)
+  assert(renderDrained, 'render bundle reached disk before the TW restart (flush sentinel drained the syncer)')
   await server.restart()
   const renderUrl = `${server.url}/render`
   const postJson = async (url, body) => {

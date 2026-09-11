@@ -186,6 +186,11 @@ const MANAGED_GITIGNORE_LINES = [
   'tiddlers/$__StoryList*',
   'tiddlers/$__HistoryList*',
   '*.meta.tmp',
+  // flush 哨兵（每次「重启前排干 syncer」都会重写，内容是时间戳）：不进 git，
+  // 否则每次同步/播种都会给用户仓库塞一个无意义的 diff（v0.19.1）。
+  'tiddlers/$__plugins_dsh-tiddlywiki_flush-probe.tid',
+  'tiddlers/$__plugins_dsh-tiddlywiki_flush-probe.txt',
+  'tiddlers/$__plugins_dsh-tiddlywiki_flush-probe.txt.meta',
 ]
 
 async function writeGitignore(wikiPath: string): Promise<void> {
