@@ -41,9 +41,8 @@ import { get as httpsGet } from 'node:https'
 import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import type { AddressInfo, LookupFunction } from 'node:net'
-import { createHash, timingSafeEqual } from 'node:crypto'
 import type { Tiddler } from './tw-api.ts'
-import { readBody } from './http.ts'
+import { readBody, safeTokenEqual } from './http.ts'
 
 /** Effective bridge config (resolved from the plugin config store). */
 export interface BridgeConfig {
@@ -107,17 +106,6 @@ export interface ClipImageResult {
   title?: string
   /** Human-readable failure reason (when !ok). */
   error?: string
-}
-
-/**
- * Constant-time token compare: hash both sides first, so neither the content
- * nor the LENGTH of the expected token leaks through timing (v0.19.0 — the
- * previous loop returned early on a length mismatch).
- */
-function safeEqual(a: string, b: string): boolean {
-  const ha = createHash('sha256').update(a, 'utf8').digest()
-  const hb = createHash('sha256').update(b, 'utf8').digest()
-  return timingSafeEqual(ha, hb)
 }
 
 /** Loopback-only Host header whitelist (DNS-rebinding defense). */
@@ -250,38 +238,16 @@ export function isPrivateAddress(address: string): boolean {
  * the user's browser, so it must never become a proxy into the local network
  * (or a cloud metadata endpoint). Rejects non-http(s) schemes, loopback/LAN
  * hostnames, literal private addresses, and public names that RESOLVE to a
- * private address. Redirects are re-validated per hop by the caller
- * (`redirect: 'manual'` in index.ts), so a redirect cannot escape the check.
+ * private address. Redirects are re-validated per hop by the caller.
+ *
+ * v0.20.0: this used to be a second, hand-maintained copy of the policy inside
+ * `resolvePublicTarget` (the two had to be kept in sync by hand). It now simply
+ * performs the same resolve-and-validate step and discards the pinned target;
+ * `downloadClipImage` still pins the approved address, so the check is not
+ * duplicated at connect time either.
  */
 export async function assertPublicImageUrl(rawUrl: string): Promise<void> {
-  let url: URL
-  try {
-    url = new URL(rawUrl)
-  } catch {
-    throw new Error('图片地址不是合法 URL')
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`不支持的图片协议 ${url.protocol}`)
-  }
-  const host = url.hostname.toLowerCase()
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa')) {
-    throw new Error('拒绝下载内网主机名的图片')
-  }
-  const literal = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
-  if (isIP(literal) !== 0) {
-    if (isPrivateAddress(literal)) throw new Error('拒绝下载内网地址的图片')
-    return
-  }
-  let addresses: Array<{ address: string }>
-  try {
-    addresses = await lookup(host, { all: true })
-  } catch {
-    throw new Error(`图片主机无法解析：${host}`)
-  }
-  if (addresses.length === 0) throw new Error(`图片主机无法解析：${host}`)
-  if (addresses.some((entry) => isPrivateAddress(entry.address))) {
-    throw new Error('拒绝下载解析到内网地址的图片')
-  }
+  await resolvePublicTarget(rawUrl)
 }
 
 /** One hop's outcome: either a redirect target, or the downloaded bytes. */
@@ -757,7 +723,7 @@ export class ClipBridge {
     }
     if (cfg.token.length > 0) {
       const got = req.headers['x-clip-token']
-      if (typeof got !== 'string' || !safeEqual(got, cfg.token)) {
+      if (typeof got !== 'string' || !safeTokenEqual(got, cfg.token)) {
         this.respond(res, { ok: false, error: 'token 校验失败' }, 401)
         return
       }

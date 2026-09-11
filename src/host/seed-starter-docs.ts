@@ -208,7 +208,7 @@ export const STARTER_DOCS_ITEMS: StarterDocItem[] = [
  * present are NEVER overwritten — user data stays user data). Marker-gated
  * ONE-SHOT; with `opts.force` the tiddlers are (re)written and the marker
  * (re)recorded — the settings page uses this for "重新初始化".
- * Returns whether anything was written this call. Never throws.
+ * Returns whether anything was written this call. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function seedStarterDocs(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
@@ -230,7 +230,7 @@ export async function seedStarterDocs(client: TiddlyWebClient, opts?: { force?: 
 
 /**
  * Un-seed (反初始化): remove the starter docs and their marker. Deletion is
- * idempotent — a tiddler already gone is not listed. Never throws.
+ * idempotent — a tiddler already gone is not listed. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function unseedStarterDocs(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []

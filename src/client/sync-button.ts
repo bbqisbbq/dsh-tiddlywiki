@@ -18,8 +18,8 @@
  */
 import { toast } from './toast.ts'
 
+import { SYNC_ENDPOINT } from './endpoints.ts'
 import { fetchStatus, type StatusPayload } from './status-cache.ts'
-const SYNC_ENDPOINT = '/dsh-tiddlywiki/sync'
 const POLL_MS = 30_000
 
 /** Public git summary shape (mirrors GitStatusViewPublic on the host). */

@@ -69,14 +69,8 @@ jobs:
             exit 1
           fi
           echo "ok: lib/ 无 @deepseek-ai 运行时 import"
-      - name: verify-send-to-agent-bundle（源件 ↔ bundle 逐字节一致）
-        run: node scripts/verify-send-to-agent-bundle.mjs
-      - name: verify-render-bundle（bundle ↔ seed-render.ts 逐字节一致）
-        run: node scripts/verify-render-bundle.mjs
-      - name: verify-package-contents（npm pack 必需/禁止路径）
-        run: node scripts/verify-package-contents.mjs
-      - name: verify-version-consistency（package.json / AGENTS §1 / README 版本记录）
-        run: node scripts/verify-version-consistency.mjs
+      - name: verify-static（bundle 逐字节 / 发布包内容 / 版本一致性 / 静态常量）
+        run: npm run verify:static
 
   # ── 慢：headless 核心路径 + client 冒烟 ───────────────────────────────────
   selftest:
@@ -103,7 +97,7 @@ jobs:
 
   # ── 慢：单元/组件级 verify（不依赖完整 e2e 会话） ─────────────────────────
   verify-unit:
-    name: verify-unit（剪藏桥 + seed 错误策略）
+    name: verify-unit（剪藏桥 / seed 错误策略 / 净化器 / 密钥遮掩 / status 缓存）
     needs: static
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -119,14 +113,11 @@ jobs:
         run: npm ci
       - name: 构建 lib/
         run: npm run build
-      - name: verify-clip-bridge（剪藏桥 headless 验收）
-        run: node scripts/verify-clip-bridge.mjs
-      - name: verify-seed-error-policy（读取失败 ≠ 条目不存在）
-        run: node scripts/verify-seed-error-policy.mjs
-      - name: verify-render-sanitizer（渲染片段净化 + 注入点接线）
-        run: node scripts/verify-render-sanitizer.mjs
-      - name: verify-secret-masking（配置 token 遮掩 + 汇总文本转义）
-        run: node scripts/verify-secret-masking.mjs
+      # 直接调用 npm 聚合脚本：CI 与 package.json 各维护一份清单必然漂移
+      # （v0.20.0 审计实测：verify-status-cache / verify-audit-fixes 两个套件
+      # 在 CI 里从来没跑过，而本地 npm run verify 会跑 —— 双向不一致）。
+      - name: verify:unit（剪藏桥 / seed 读失败策略 / 渲染净化 / 密钥遮掩 / status 缓存）
+        run: npm run verify:unit
 
   # ── 慢：端到端（都要 spawn 真实 TW / 真实 git，逐条单列 step 便于定位） ──
   verify-e2e:
@@ -146,17 +137,8 @@ jobs:
         run: npm ci
       - name: 构建 lib/
         run: npm run build
-      - name: verify-auth（auth 模式端到端 + 口令不进日志）
-        run: node scripts/verify-auth.mjs
-      - name: verify-tools（工具层断言：写入策略 / 逐条容错 / 检索 / 乐观并发 …）
-        run: node scripts/verify-tools.mjs
-      - name: verify-git-resolve（真冲突 keep-local / keep-remote）
-        run: node scripts/verify-git-resolve.mjs
-      - name: verify-resilience（SIGKILL 自愈 + 并发写入）
-        run: node scripts/verify-resilience.mjs
-      - name: verify-large-wiki（3000 文本 + 100 二进制，3 分钟预算）
-        run: node scripts/verify-large-wiki.mjs
-      - name: verify-seed-send-to-agent（全新 wiki 上的按钮 seed）
-        run: node scripts/verify-seed-send-to-agent.mjs
-      - name: verify-seeds-admin（/admin/seeds 状态与 run）
-        run: node scripts/verify-seeds-admin.mjs
+      # 同上：调用 npm 聚合脚本，CI 不再维护第二份清单。
+      - name: verify:e2e（auth / tools / 审计回归 / git 冲突 / 自愈 / seed）
+        run: npm run verify:e2e
+      - name: verify:large（3000 文本 + 100 二进制，3 分钟预算）
+        run: npm run verify:large

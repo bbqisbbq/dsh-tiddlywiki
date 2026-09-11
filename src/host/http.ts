@@ -7,6 +7,19 @@
  * @module dsh-tiddlywiki/host/http
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { createHash, timingSafeEqual } from 'node:crypto'
+
+/**
+ * Constant-time string comparison for shared tokens: both sides are hashed
+ * first, so neither the content nor the LENGTH of the expected token leaks
+ * through timing (v0.19.0). One implementation for every caller — routes.ts
+ * and clip-bridge.ts each carried a private copy (v0.20.0).
+ */
+export function safeTokenEqual(a: string, b: string): boolean {
+  const ha = createHash('sha256').update(a, 'utf8').digest()
+  const hb = createHash('sha256').update(b, 'utf8').digest()
+  return timingSafeEqual(ha, hb)
+}
 
 /** Default cap for small JSON bodies (note/restart/config…). */
 export const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024

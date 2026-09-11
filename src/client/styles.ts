@@ -609,7 +609,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 /* ── 会话「知识库」Tab（conversation.view 槽位）────────────────────
    根节点是 shell 的 viewArea（flex column）的直接 flex 子项，用
    flex:1 + min-height:0 撑满会话体；内容区（.dsh-tw-summary-native）再 flex:1
-   并自行滚动（v0.16.19 起为 /tw/render 原生片段，不再有 iframe）。
+   并自行滚动（v0.16.19 起为 host /render 原生片段，不再有 iframe）。
    主题沿用 --dsw-alias-* 设计令牌。 */
 .dsh-tw-summary {
   flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;

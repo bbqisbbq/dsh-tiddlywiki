@@ -126,7 +126,7 @@ export const ALL_ARTICLES_TEXT = `\\whitespace trim
  * Seed the 所有文章 page exactly once per wiki (mirrors the doc-note one-shot
  * policy). With `opts.force` the page is overwritten with the built-in content
  * and the marker is (re)written — the settings page uses this for
- * "重新初始化". Returns whether the page was written this call. Never throws.
+ * "重新初始化". Returns whether the page was written this call. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function seedAllArticles(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
@@ -147,7 +147,7 @@ export async function seedAllArticles(client: TiddlyWebClient, opts?: { force?: 
 /**
  * Un-seed (反初始化): remove the 所有文章 page and its one-shot marker.
  * Deletion is idempotent — a tiddler that was already gone is not listed.
- * Never throws.
+ * Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function unseedAllArticles(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []

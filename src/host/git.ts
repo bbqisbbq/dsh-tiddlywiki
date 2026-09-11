@@ -229,6 +229,8 @@ export interface AutoCommitterOptions {
   debounceMs: number
   message: () => string
   onError?: (err: unknown) => void
+  /** Observability hook: fired after each flush attempt (used by selftest to
+   *  assert the debounce really committed). */
   onCommit?: (info: { committed: boolean; message: string }) => void
 }
 

@@ -156,7 +156,6 @@ export interface DefineToolOptions<A, V> {
   readonly description: string
   readonly parameters: Readonly<Record<string, ParameterSpec>>
   readonly output: {
-    readonly schema: { readonly type: 'json' }
     render(args: A, value: V): Array<{ type: 'text'; text: string }>
   }
   execute(args: A, exec: unknown): Promise<V>
@@ -188,6 +187,10 @@ export function defineTool<A extends Record<string, unknown>, V>(options: Define
     description: options.description,
     parameters,
     output: {
+      // The registry's render contract only consumes `render()`; the declared
+      // `schema` is kept as the empty raw node it always effectively was (the
+      // per-tool `schema: {type:'json'}` literals were never read — removed in
+      // v0.20.0 so the option list matches what the code does).
       schema: {},
       render(args, value) {
         return options.output.render(args, value)

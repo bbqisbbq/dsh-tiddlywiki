@@ -24,10 +24,23 @@ import { fileURLToPath } from 'node:url'
 const execP = promisify(exec)
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-const REQUIRED = ['lib/index.js', 'lib/client.js', 'cordis.patch.yml', 'LICENSE', 'README.md']
+const REQUIRED = [
+  'lib/index.js',
+  'lib/client.js',
+  'cordis.patch.yml',
+  'LICENSE',
+  'README.md',
+  // AGENTS §6 documents the published shape as lib/ + src/ + docs/: `src` is
+  // what makes `npm run verify*` (and reading the real implementation) possible
+  // from an installed copy, `docs/` carries the seed-initialization design doc.
+  'src/index.ts',
+  'docs/seed-initialization.md',
+]
 const FORBIDDEN = ['lib/client.bundle.js']
 /** package.json `files` 里声明的 lib/ 白名单。 */
 const LIB_WHITELIST = ['lib/index.js', 'lib/index.js.map', 'lib/client.js']
+/** 发布包必须**不含**的目录前缀（构建/校验脚本只服务于 git 仓库）。 */
+const FORBIDDEN_PREFIXES = ['scripts/']
 
 let failures = 0
 async function test(name, fn) {
@@ -87,6 +100,11 @@ await test('发布包不含中间产物 lib/client.bundle.js', () => {
   for (const bad of FORBIDDEN) {
     assert.ok(!files.includes(bad), `发布包混入了中间产物 ${bad}（它是 tsdown 的 cjs+minify 中间件，应由 wrap-client.mjs 包成 lib/client.js 后丢弃）`)
   }
+})
+
+await test('发布包不含 scripts/（构建与校验脚本只服务于 git 仓库）', () => {
+  const stray = files.filter((f) => FORBIDDEN_PREFIXES.some((prefix) => f.startsWith(prefix)))
+  assert.deepEqual(stray.slice(0, 10), [], `发布包混入了 ${stray.length} 个 scripts/ 文件（package.json files 白名单被改？）`)
 })
 
 await test('lib/ 下只有 package.json files 白名单里的三个文件', () => {

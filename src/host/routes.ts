@@ -1,14 +1,37 @@
 /**
  * DSH webserver routes for dsh-tiddlywiki (design doc §10).
  *
- * | route                     | method | purpose                                  |
- * |---------------------------|--------|------------------------------------------|
- * | /dsh-tiddlywiki/status    | GET    | panel health (service / url / git / tag) |
- * | /dsh-tiddlywiki/note      | POST   | quick-note → independent tiddler         |
- * | /dsh-tiddlywiki/restart   | POST   | one-click retry/restart of the TW child  |
- * | /dsh-tiddlywiki/search    | GET    | keyword search (reply-stream tool card)  |
- * | /dsh-tiddlywiki/api/*     | any    | passthrough to the TW service (JSON)     |
- * | /dsh-tiddlywiki/tw/*      | any    | SAME-ORIGIN TW proxy (index + files + TiddlyWeb API) |
+ * Every route is registered with an explicit method whitelist and wrapped in
+ * `guardHandler` (see the registration block at the bottom of this file); the
+ * authoritative list, including the admin routes registered in admin.ts:
+ *
+ * | route                            | method | purpose                                  |
+ * |----------------------------------|--------|------------------------------------------|
+ * | /dsh-tiddlywiki/status           | GET    | panel health (service / url / git / tag) |
+ * | /dsh-tiddlywiki/note             | POST   | quick-note → independent tiddler         |
+ * | /dsh-tiddlywiki/edit             | POST   | save + open in TW's native editor (draft)|
+ * | /dsh-tiddlywiki/tags             | GET    | tag vocabulary + counts (limit/sort)     |
+ * | /dsh-tiddlywiki/recent           | GET    | recently modified notes                  |
+ * | /dsh-tiddlywiki/get              | GET    | one tiddler for the quick-note picker    |
+ * | /dsh-tiddlywiki/search           | GET    | keyword search (reply-stream tool card)  |
+ * | /dsh-tiddlywiki/render           | POST   | TW render → sanitized HTML fragment      |
+ * | /dsh-tiddlywiki/sync             | POST   | pull → commit → push (mutex)             |
+ * | /dsh-tiddlywiki/upload           | POST   | upload into wiki/files/                  |
+ * | /dsh-tiddlywiki/restart          | POST   | one-click retry/restart of the TW child  |
+ * | /dsh-tiddlywiki/session/summary  | POST   | per-session wiki summary (§「知识库」Tab)  |
+ * | /dsh-tiddlywiki/agent/sessions   | GET    | send-to-agent session picker             |
+ * | /dsh-tiddlywiki/agent/modes      | GET    | agent / permission preset rosters        |
+ * | /dsh-tiddlywiki/agent/send       | POST   | deliver a note into a session            |
+ * | /dsh-tiddlywiki/agent/create     | POST   | create session (+workspace) and deliver  |
+ * | /dsh-tiddlywiki/api/*            | any    | passthrough to the TW service (JSON)     |
+ * | /dsh-tiddlywiki/tw/*             | any    | SAME-ORIGIN TW proxy (index + files + API)|
+ * | /dsh-tiddlywiki/admin/state      | GET    | settings page: info + catalog + config   |
+ * | /dsh-tiddlywiki/admin/info       | POST   | write tiddlywiki.info plugins/themes     |
+ * | /dsh-tiddlywiki/admin/config     | POST   | write the config tiddler                 |
+ * | /dsh-tiddlywiki/admin/restart    | POST   | restart the TW child                     |
+ * | /dsh-tiddlywiki/admin/seeds      | GET    | seed status                              |
+ * | /dsh-tiddlywiki/admin/seeds/run  | POST   | run seeds (include force re-init)        |
+ * | /dsh-tiddlywiki/admin/seeds/remove| POST  | 反初始化 (remove non-core seeds)          |
  *
  * Matching is exact-over-prefix, so the exact routes win and the `/api` /
  * `/tw` prefixes catch the rest. Client calls are same-origin (the DSH web
@@ -17,22 +40,26 @@
  * origin (see TW_PROXY_PATH in wiki.ts), so the embedded editor works no
  * matter which host/domain the user reaches DSH on.
  *
+ * Titles under `$:/plugins/dsh-tiddlywiki/` are NEVER served to a caller
+ * (`isBlockedProxyTitle`): that namespace holds the shared tokens and the git
+ * remote, and every caller-supplied title must pass through the predicate.
+ *
  * @module dsh-tiddlywiki/host/routes
  */
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http'
-import { createHash, timingSafeEqual } from 'node:crypto'
 import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { TiddlyWebClient } from './tw-api.ts'
 import { isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
-import type { GitFace } from './git.ts'
+import type { GitFace, GitStatusView } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
-import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
+import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 import { sanitizeTwFragment } from './sanitize.ts'
 import { flushPendingWrites } from './seeds.ts'
+import { snippetOf } from './text-util.ts'
 import { WriteConflictError, assertNoConflict, buildWriteTiddler, flattenTiddlerFields } from './write-policy.ts'
 
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
@@ -278,24 +305,8 @@ export function redactLogLines(logs: readonly string[]): string[] {
     .replace(/(authorization:\s*basic\s+)[A-Za-z0-9+/=]+/gi, '$1***'))
 }
 
-/**
- * Constant-time string comparison: both sides are hashed first, so neither the
- * content nor the LENGTH of the expected token leaks through timing.
- */
-function safeTokenEqual(a: string, b: string): boolean {
-  const ha = createHash('sha256').update(a, 'utf8').digest()
-  const hb = createHash('sha256').update(b, 'utf8').digest()
-  return timingSafeEqual(ha, hb)
-}
-
 function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n)
-}
-
-/** Flat one-line snippet for the recent-notes picker. */
-function snippetOf(text: string, max = 120): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
-  return flat.length <= max ? flat : `${flat.slice(0, max)}…`
 }
 
 /** Max `limit` accepted by the list routes (bounded payloads, v0.19.4). */
@@ -369,19 +380,29 @@ export async function openInTwEditor(
   // Draft lookup. The canonical TW name is probed with a single GET first — the
   // old code always pulled the ENTIRE listing (megabytes on a big wiki) just to
   // find a draft; the listing stays as the fallback for a differently-named one.
+  //
+  // NEVER CLOBBER AN EXISTING DRAFT (v0.20.0): the v0.19.5 refactor inverted
+  // this branch — when the canonical `Draft of "X"` already existed it wrote
+  // straight into it, destroying whatever the user had typed in TW's editor,
+  // and when it found a differently-named draft it discarded that title and
+  // minted a fresh timestamped one (leaving an orphan). The pre-refactor code
+  // was `free ? canonical : canonical+timestamp`; that is restored below, plus
+  // reuse of any existing draft title found in the fallback listing.
   const canonical = `Draft of "${title}"`
   let draftTitle: string | undefined
-  let canonicalProbe: boolean | undefined
+  let canonicalFree: boolean | undefined
   try {
-    canonicalProbe = (await client.get(canonical)) === undefined
+    canonicalFree = (await client.get(canonical)) === undefined
   } catch {
-    canonicalProbe = undefined
+    canonicalFree = undefined
   }
-  if (canonicalProbe === false) {
-    // The canonical name is free → use it (TW's own "save draft" bookkeeping
-    // lines up). Only a TAKEN canonical name needs the listing scan.
+  if (canonicalFree === true) {
+    // Free canonical name → use it, so TW's own "save draft" bookkeeping lines up.
     draftTitle = canonical
-  } else if (canonicalProbe === true) {
+  } else {
+    // Canonical draft exists (or the probe failed): reuse an existing draft of
+    // this note when there is one, otherwise take a timestamped name so the
+    // existing draft is preserved.
     try {
       const items = await client.list(undefined, false)
       for (const item of items) {
@@ -393,13 +414,7 @@ export async function openInTwEditor(
     } catch {
       /* fall back to a fresh draft */
     }
-    // Prefer TW's CANONICAL draft name so the embedded editor's own "save
-    // draft" bookkeeping lines up; fall back to a timestamped name when it is
-    // taken (or the probe failed) so an existing draft is never clobbered.
-    if (draftTitle === undefined) draftTitle = canonical
-    else if (draftTitle !== canonical) draftTitle = `${canonical} ${Date.now()}`
-  } else {
-    draftTitle = `${canonical} ${Date.now()}`
+    if (draftTitle === undefined) draftTitle = `${canonical} ${Date.now()}`
   }
   await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: draftType })
   return { title, draftTitle }
@@ -481,6 +496,44 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     return true
   }
   const endMutation = (): void => { mutationInFlight = undefined }
+
+  /**
+   * Titles the browser-facing TW surfaces must never serve (v0.19.3 / v0.20.0).
+   *
+   * `$:/plugins/dsh-tiddlywiki/config` holds the shared tokens and the git
+   * remote (possibly with a PAT); `/tw` and `/api` forward ANY path to the
+   * loopback TW child, whose TiddlyWeb REST answers for `$:/…` titles — a
+   * route-level guard on `/get` was therefore trivially bypassed by
+   * `GET /dsh-tiddlywiki/tw/recipes/default/tiddlers/%24%3A%2Fplugins%2F…`
+   * (verified). The whole plugin namespace is blocked: nothing under it is
+   * needed by the TW frontend, and the host itself talks to TW directly.
+   *
+   * v0.20.0: the SAME predicate now also guards `POST /render`, which had been
+   * left open — TW's `/render` route renders ANY tiddler by title, so
+   * `{"title":"$:/plugins/dsh-tiddlywiki/config"}` returned the raw config
+   * (tokens + PAT in plain text inside `<pre><code>`, where the fragment
+   * sanitizer keeps it). Verified end-to-end against a scratch wiki before the
+   * fix. Every route that turns a caller-supplied title into TW output must use
+   * `isBlockedProxyTitle`.
+   */
+  const BLOCKED_PROXY_TITLE_PREFIXES = ['$:/plugins/dsh-tiddlywiki/']
+
+  /** True when a caller-supplied tiddler title addresses the secret namespace. */
+  const isBlockedProxyTitle = (title: string): boolean =>
+    BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix))
+
+  /** True when a proxied pathname addresses a blocked (secret-bearing) tiddler. */
+  const isBlockedProxyPath = (pathname: string): boolean => {
+    const marker = '/tiddlers/'
+    const at = pathname.indexOf(marker)
+    if (at < 0) return false
+    const raw = pathname.slice(at + marker.length)
+    let title = raw
+    try {
+      title = decodeURIComponent(raw)
+    } catch { /* malformed encoding: check the raw form */ }
+    return isBlockedProxyTitle(title)
+  }
 
   const handleStatus = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
@@ -968,7 +1021,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           title: t.title,
           tags: t.tags ?? [],
           modified: toIsoDateString(t.modified),
-          snippet: snippetOf(t.text ?? ''),
+          snippet: snippetOf(t.text ?? '', 120),
         })),
       })
     } catch (err) {
@@ -1048,8 +1101,14 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const tag = url.searchParams.get('tag') ?? undefined
       const since = url.searchParams.get('since') ?? undefined
       const type = url.searchParams.get('type') ?? undefined
+      // Custom-field filter (v0.20.0): the agent tool has always accepted
+      // field/value, and the reply-stream card echoes the tool's arguments —
+      // without these params the card listed UNFILTERED hits, contradicting the
+      // model-visible result.
+      const field = url.searchParams.get('field') ?? undefined
+      const value = url.searchParams.get('value') ?? undefined
       const limit = readLimit(url, 30)
-      const { items, total } = await client.search(query, { tags, tag, since, type, limit })
+      const { items, total } = await client.search(query, { tags, tag, since, type, field, value, limit })
       json(res, {
         ok: true,
         query,
@@ -1057,13 +1116,15 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         tag: tag ?? null,
         since: since ?? null,
         type: type ?? null,
+        field: field ?? null,
+        value: value ?? null,
         limit,
         total,
         items: items.map((t) => ({
           title: t.title,
           tags: t.tags ?? [],
           modified: toIsoDateString(t.modified),
-          snippet: snippetOf(t.text ?? ''),
+          snippet: snippetOf(t.text ?? '', 120),
         })),
       })
     } catch (err) {
@@ -1276,6 +1337,15 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'body must provide "title" or "text"' }, 400)
         return
       }
+      // SECURITY (v0.20.0): TW's /render answers for ANY title, including
+      // `$:/plugins/dsh-tiddlywiki/config` (bridge/send-to-agent tokens + the
+      // git remote, possibly with a PAT). This is the same secret the `/get`,
+      // `/tw` and `/api` guards protect — /render was simply missed. Verified:
+      // before this guard the rendered fragment contained both secrets verbatim.
+      if (isBlockedProxyTitle(title)) {
+        json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
+        return
+      }
       const request = title.length > 0
         ? { title }
         : {
@@ -1300,32 +1370,6 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       json(res, { ok: false, error: message }, 502)
     }
-  }
-
-  /**
-   * Titles the browser-facing TW proxies must never serve (v0.19.3).
-   *
-   * `$:/plugins/dsh-tiddlywiki/config` holds the shared tokens and the git
-   * remote (possibly with a PAT); both `/tw` and `/api` forward ANY path to the
-   * loopback TW child, whose TiddlyWeb REST answers for `$:/…` titles — a
-   * route-level guard on `/get` was therefore trivially bypassed by
-   * `GET /dsh-tiddlywiki/tw/recipes/default/tiddlers/%24%3A%2Fplugins%2F…`
-   * (verified). The whole plugin namespace is blocked: nothing under it is
-   * needed by the TW frontend, and the host itself talks to TW directly.
-   */
-  const BLOCKED_PROXY_TITLE_PREFIXES = ['$:/plugins/dsh-tiddlywiki/']
-
-  /** True when a proxied pathname addresses a blocked (secret-bearing) tiddler. */
-  const isBlockedProxyPath = (pathname: string): boolean => {
-    const marker = '/tiddlers/'
-    const at = pathname.indexOf(marker)
-    if (at < 0) return false
-    const raw = pathname.slice(at + marker.length)
-    let title = raw
-    try {
-      title = decodeURIComponent(raw)
-    } catch { /* malformed encoding: check the raw form */ }
-    return BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix))
   }
 
   /** Passthrough /dsh-tiddlywiki/api/<rest> → TW root /<rest>. */
@@ -1484,14 +1528,6 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   }
 }
 
-/** Public shape of the git status summary sent to the panel. */
-export interface GitStatusViewPublic {
-  exists: boolean
-  branch: string
-  dirty: boolean
-  dirtyFiles: string[]
-  remote: string
-  lastCommit?: string
-  ahead?: number
-  behind?: number
-}
+/** Public shape of the git status summary sent to the panel.
+ *  Single declaration lives in git.ts (v0.20.0 — this file used to repeat it). */
+export type GitStatusViewPublic = GitStatusView

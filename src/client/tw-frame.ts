@@ -19,6 +19,7 @@
  * @module dsh-tiddlywiki/client/tw-frame
  */
 import * as React from 'react'
+import { RESTART_ENDPOINT } from './endpoints.ts'
 import { fetchStatus } from './status-cache.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
@@ -26,8 +27,6 @@ import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 export const ACTIVATE_EVENT = 'dsh-panel-activate'
 /** The "知识库" FAB's reload event; side frames reload with the center one. */
 export const PANEL_RELOAD_EVENT = 'dsh-tw-panel-reload'
-
-const RESTART_ENDPOINT = '/dsh-tiddlywiki/restart'
 
 /** Tab chip / + menu / guide copy default (label refreshed from `/status` ui.tabLabel). */
 let tabLabel = '知识库'
@@ -43,10 +42,7 @@ export function getTabLabel(): string {
   return tabLabel
 }
 
-import type { StatusPayload } from './status-cache.ts'
-
-async function requestRestart(): Promise<boolean> {
-  try {
+async function requestRestart(): Promise<boolean> {  try {
     const res = await fetch(RESTART_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(8_000) })
     return res.ok
   } catch {

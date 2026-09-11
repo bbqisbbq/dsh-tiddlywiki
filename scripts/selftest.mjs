@@ -6,30 +6,17 @@
  * Requires a prior `npm run build` (imports the public host exports).
  */
 import { EventEmitter } from 'node:events'
-import { createServer } from 'node:http'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, flushPendingWrites, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensurePlugin, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
+import { createRouteServer, waitFor } from './lib/tw-harness.mjs'
 
 const assert = (cond, label) => {
   if (!cond) throw new Error(`ASSERT FAILED: ${label}`)
   console.log(`  ok - ${label}`)
 }
 
-/** Poll `cond` every 100ms until it is truthy (or the 10s cap passes) — a
- *  bounded replacement for fixed sleeps: continue the moment the awaited state
- *  lands, never wait longer than the cap. Returns whether it was hit. */
-async function waitFor(cond, timeoutMs = 10_000, stepMs = 100) {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    let hit = false
-    try { hit = await cond() } catch { hit = false }
-    if (hit) return true
-    if (Date.now() >= deadline) return false
-    await new Promise((r) => setTimeout(r, stepMs))
-  }
-}
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'dsh-tw-selftest-'))
 console.log(`selftest root: ${tempRoot}`)
@@ -762,30 +749,9 @@ try {
   // dsh-host-webserver's exact-then-longest-prefix match, driving the real
   // route handlers over real sockets — the browser view of the proxy
   // (status codes, content-type, served index HTML) rather than direct calls.
-  const mini = createServer((req, res) => {
-    const pathname = new URL(req.url ?? '/', 'http://x').pathname
-    let handler
-    const exact = registered.find((r) => r.kind === 'exact' && r.path === pathname)
-    if (exact !== undefined) handler = exact.handler
-    else {
-      let best
-      for (const r of registered) {
-        if (r.kind !== 'prefix') continue
-        if (pathname !== r.path && !pathname.startsWith(`${r.path}/`)) continue
-        if (best === undefined || r.path.length > best.path.length) best = r
-      }
-      handler = best?.handler
-    }
-    if (handler === undefined) { res.writeHead(404); res.end(); return }
-    Promise.resolve(handler(req, res)).catch((err) => {
-      if (!res.headersSent) { res.writeHead(400); res.end(String(err)) }
-      else res.destroy()
-    })
-  })
-  const miniPort = await new Promise((resolveP) => {
-    mini.listen(0, '127.0.0.1', () => resolveP(mini.address().port))
-  })
-  const miniBase = `http://127.0.0.1:${miniPort}`
+  const miniHarness = createRouteServer(registered)
+  const miniBase = await miniHarness.listen()
+  const mini = miniHarness.server
   const indexRes = await fetch(`${miniBase}/dsh-tiddlywiki/tw/`)
   const indexHtml = await indexRes.text()
   assert(indexRes.status === 200 && (indexRes.headers.get('content-type') ?? '').includes('text/html'), `proxy serves the TW index as html (${indexRes.status} ${indexRes.headers.get('content-type')})`)
@@ -1102,6 +1068,20 @@ try {
   const cleanGet = makeRes()
   await callRaw(hostRenderHandler, makeReq('/dsh-tiddlywiki/render'), cleanGet)
   assert(cleanGet._status === 405, `GET /dsh-tiddlywiki/render is 405 (got ${cleanGet._status})`)
+  // SECURITY REGRESSION (v0.20.0): the host /render route must refuse the
+  // plugin's own namespace. TW's /render renders ANY title, so
+  // `{title:'$:/plugins/dsh-tiddlywiki/config'}` used to return the raw config
+  // (bridge/send-to-agent tokens + the git remote PAT) inside the fragment,
+  // bypassing the `/get`, `/tw` and `/api` guards. Verified on a scratch wiki
+  // before the fix: the fragment contained both secrets verbatim.
+  const renderSecret = makeRes()
+  await callRaw(
+    hostRenderHandler,
+    makeReq('/dsh-tiddlywiki/render', Buffer.from(JSON.stringify({ title: '$:/plugins/dsh-tiddlywiki/config' })), 'POST'),
+    renderSecret,
+  )
+  assert(renderSecret._status === 403, `host /render refuses the plugin config tiddler (got ${renderSecret._status})`)
+  assert(String(renderSecret._payload).includes('not exposed'), `host /render 403 body names the refusal (${String(renderSecret._payload).slice(0, 120)})`)
   await renderTid.delete('RenderMe')
   await seedApi.delete(RENDER_PLUGIN_TITLE)
   await seedApi.delete(RENDER_MARKER_TITLE)

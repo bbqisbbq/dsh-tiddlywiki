@@ -40,6 +40,7 @@ const stored = {
   bridge: { enabled: true, port: 8618, token: SECRET, tag: 'clip' },
   ui: { sendToAgent: { enabled: true, token: 'agent-token' }, tabLabel: '知识库' },
   git: { remote: PAT_REMOTE, branch: 'main' },
+  auth: { username: 'admin', password: 'p@ssw0rd' },
   note: { tag: 'inbox' },
 }
 
@@ -54,6 +55,30 @@ test('token 被替换成掩码且带 tokenSet 标记', () => {
   assert.ok(!JSON.stringify(masked).includes(SECRET), '掩码后的配置里不得出现原文')
   assert.ok(!JSON.stringify(masked).includes('ghp_abcdef'), 'git remote 里的 PAT 必须打码')
   assert.ok(masked.git.remote.includes('***@github.com'), `remote 应保留主机名：${masked.git.remote}`)
+})
+
+test('auth.password 被替换成掩码且带 passwordSet 标记（v0.20.0）', () => {
+  const masked = maskConfigSecrets(stored)
+  assert.equal(masked.auth.password, MASKED_SECRET)
+  assert.equal(masked.auth.passwordSet, true)
+  assert.equal(masked.auth.username, 'admin', '用户名不是密钥，保持可读')
+  assert.ok(!JSON.stringify(masked).includes('p@ssw0rd'), '掩码后的配置里不得出现明文口令')
+})
+
+test('未设置口令 → 空串 + passwordSet:false', () => {
+  const masked = maskConfigSecrets({ auth: {} })
+  assert.equal(masked.auth.password, '')
+  assert.equal(masked.auth.passwordSet, false)
+})
+
+test('回填掩码口令被丢弃，passwordSet 不落库（v0.20.0）', () => {
+  const dropped = stripMaskedSecrets({ auth: { password: MASKED_SECRET, passwordSet: true } }, stored)
+  assert.equal('password' in dropped.auth, false, `掩码口令必须丢弃：${JSON.stringify(dropped.auth)}`)
+  assert.equal('passwordSet' in dropped.auth, false, 'passwordSet 是展示字段，不得持久化')
+  const changed = stripMaskedSecrets({ auth: { password: 'new-pass' } }, stored)
+  assert.equal(changed.auth.password, 'new-pass', '新口令正常写入')
+  const cleared = stripMaskedSecrets({ auth: { password: '' } }, stored)
+  assert.equal(cleared.auth.password, '', '空串表示清除')
 })
 
 test('空 token → 空串 + tokenSet:false（不再伪装成已设置）', () => {

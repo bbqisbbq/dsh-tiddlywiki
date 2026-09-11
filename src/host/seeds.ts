@@ -34,7 +34,7 @@ import type { TiddlyWebClient } from './tw-api.ts'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { seedDocNote, unseedDocNote, DOC_NOTE_TITLE } from './seed-notes.ts'
-import { seedStarterDocs, unseedStarterDocs, STARTER_DOCS_ITEMS, STARTER_DOCS_MARKER_TITLE } from './seed-starter-docs.ts'
+import { seedStarterDocs, unseedStarterDocs, STARTER_DOCS_ITEMS } from './seed-starter-docs.ts'
 import { seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE } from './seed-send-to-agent.ts'
 import { seedHomeIndex, unseedHomeIndex, HOME_INDEX_ITEMS } from './seed-home.ts'
 import { seedAllArticles, unseedAllArticles, ALL_ARTICLES_TITLE } from './seed-all-articles.ts'
@@ -132,8 +132,6 @@ export const FLUSH_PROBE_TITLE = '$:/plugins/dsh-tiddlywiki/flush-probe'
  * 随机戳」来做，扩展名怎么变都不会静默失效。
  */
 export const FLUSH_PROBE_FILE_HINT = 'dsh-tiddlywiki_flush-probe'
-/** @deprecated 用 FLUSH_PROBE_FILE_HINT 匹配；保留仅为兼容旧引用。 */
-export const FLUSH_PROBE_FILE = '$__plugins_dsh_tiddlywiki_flush-probe.tid'
 
 /** Write the flush sentinel and wait for ITS CONTENT to reach the file. */
 export async function flushPendingWrites(client: TiddlyWebClient, tiddlersDir: string, timeoutMs = 8_000): Promise<boolean> {

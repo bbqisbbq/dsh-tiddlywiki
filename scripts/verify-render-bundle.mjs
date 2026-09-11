@@ -111,9 +111,14 @@ await test('seed-render.ts 保留「do not hand-edit」提示（生成物标记�
 })
 
 await test('render 路由声明 POST /render 且链接改写为同源代理 hash', () => {
-  const text = bundle.tiddlers[ROUTE_TITLE].text
+  const tiddler = bundle.tiddlers[ROUTE_TITLE]
+  const text = tiddler.text
   assert.ok(text.includes('exports.methods'), 'bundle 路由没有 exports.methods')
-  assert.ok(text.includes('module-type'), 'bundle 路由没有 module-type 字段')
+  // `module-type` is a TIDDLER FIELD, not body text: the old check only matched
+  // the source file's own header comment, so dropping the field still passed
+  // (v0.20.0). Assert the fields TW's route loader actually reads.
+  assert.equal(tiddler['module-type'], 'route', `bundle 路由 tiddler 缺 module-type: route 字段（当前 ${JSON.stringify(tiddler['module-type'])}）`)
+  assert.equal(tiddler.type, 'application/javascript', `bundle 路由 tiddler 的 type 应为 application/javascript（当前 ${JSON.stringify(tiddler.type)}）`)
   assert.ok(text.includes('/render'), 'bundle 路由没有 /render 路径')
   assert.ok(text.includes('tv-wikilink-template') && text.includes('/dsh-tiddlywiki/tw/#$uri_encoded$'), 'bundle 路由没有把 wiki 链接改写成同源代理 hash')
 })

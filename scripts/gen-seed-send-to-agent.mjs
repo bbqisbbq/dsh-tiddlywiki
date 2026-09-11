@@ -69,7 +69,7 @@ export const SEND_TO_AGENT_BUNDLE_TEXT = ${literal}
  * edits are never overwritten. With \`opts.force\` the bundle is (re)written even
  * when it already exists and the marker is (re)written — the settings page uses
  * this for "重新初始化". Returns whether a bundle was written this call.
- * Never throws.
+ * Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function seedSendToAgent(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true

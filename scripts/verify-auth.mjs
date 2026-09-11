@@ -25,11 +25,11 @@
  * @module dsh-tiddlywiki/scripts/verify-auth
  */
 import assert from 'node:assert/strict'
-import { createServer } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WikiServer, TiddlyWebClient, GitFace, registerRoutes, TW_PROXY_PREFIX } from '../lib/index.js'
+import { createRouteServer } from './lib/tw-harness.mjs'
 
 const USER = 'alice'
 /** 故意用非 ASCII：base64(UTF-8) 与 base64(latin1) 不同，能抓编码漂移。 */
@@ -140,28 +140,10 @@ try {
     )
     // 迷你 HTTP 调度器：exact → 最长前缀（与 dsh-host-webserver 的匹配一致），
     // 走真实 socket 而不是直接调 handler —— 才能看到状态码与响应头。
-    mini = createServer((req, res) => {
-      const pathname = new URL(req.url ?? '/', 'http://x').pathname
-      let handler
-      const exact = registered.find((r) => r.kind === 'exact' && r.path === pathname)
-      if (exact !== undefined) handler = exact.handler
-      else {
-        let best
-        for (const r of registered) {
-          if (r.kind !== 'prefix') continue
-          if (pathname !== r.path && !pathname.startsWith(`${r.path}/`)) continue
-          if (best === undefined || r.path.length > best.path.length) best = r
-        }
-        handler = best?.handler
-      }
-      if (handler === undefined) { res.writeHead(404); res.end(); return }
-      Promise.resolve(handler(req, res)).catch((err) => {
-        if (!res.headersSent) { res.writeHead(400); res.end(String(err)) }
-        else res.destroy()
-      })
-    })
-    const miniPort = await new Promise((resolveP) => mini.listen(0, '127.0.0.1', () => resolveP(mini.address().port)))
-    const miniBase = `http://127.0.0.1:${miniPort}`
+    // 共享实现见 scripts/lib/tw-harness.mjs。
+    const miniHarness = createRouteServer(registered)
+    const miniBase = await miniHarness.listen()
+    mini = miniHarness.server
 
     await test('/tw 代理：匿名 401 并转发 WWW-Authenticate；带凭据 200', async () => {
       const anonRes = await fetch(`${miniBase}${TW_PROXY_PREFIX}/status`)

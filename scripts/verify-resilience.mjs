@@ -19,6 +19,7 @@ import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter } from '../lib/index.js'
+import { waitFor } from './lib/tw-harness.mjs'
 
 let failures = 0
 async function test(name, fn) {
@@ -31,17 +32,8 @@ async function test(name, fn) {
   }
 }
 
-/** 轮询直到条件成立（有上限），避免用固定 sleep 赌时序。 */
-async function waitFor(cond, timeoutMs = 15_000, stepMs = 150) {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    let hit = false
-    try { hit = await cond() } catch { hit = false }
-    if (hit) return true
-    if (Date.now() >= deadline) return false
-    await new Promise((r) => setTimeout(r, stepMs))
-  }
-}
+/** 本脚本的轮询节奏：15s / 150ms（共享实现见 scripts/lib/tw-harness.mjs）。 */
+const waitLong = (cond) => waitFor(cond, 15_000, 150)
 
 const root = await mkdtemp(join(tmpdir(), 'dsh-tw-verify-resilience-'))
 const wikiDir = join(root, 'main')
@@ -64,15 +56,14 @@ try {
   assert.ok(typeof pidBefore === 'number' && pidBefore > 0, `应拿到 TW 子进程 pid，实际 ${pidBefore}`)
 
   await api.put({ title: 'ResilienceNote', text: 'survives SIGKILL', tags: ['resilience'] })
-  const flushedBeforeKill = await waitFor(
+  const flushedBeforeKill = await waitLong(
     async () => (await readdir(tiddlersDir)).some((f) => f.includes('ResilienceNote')),
-    15_000,
   )
   assert.ok(flushedBeforeKill, '测试前提：ResilienceNote 应已落盘（TW 异步 flush）')
 
   await test('SIGKILL 子进程 → 自动重启、端口复用（url 不变）、数据仍在', async () => {
     process.kill(pidBefore, 'SIGKILL')
-    const restarted = await waitFor(() => {
+    const restarted = await waitLong(() => {
       const s = server.status()
       return s.status === 'running' && typeof s.pid === 'number' && s.pid !== pidBefore
     }, 30_000, 200)

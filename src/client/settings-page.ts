@@ -24,14 +24,16 @@
 import * as React from 'react'
 import { toast } from './toast.ts'
 import { invalidateUiConfig } from './ui-config.ts'
-
-const STATE_ENDPOINT = '/dsh-tiddlywiki/admin/state'
-const INFO_ENDPOINT = '/dsh-tiddlywiki/admin/info'
-const CONFIG_ENDPOINT = '/dsh-tiddlywiki/admin/config'
-const RESTART_ENDPOINT = '/dsh-tiddlywiki/admin/restart'
-const SEEDS_ENDPOINT = '/dsh-tiddlywiki/admin/seeds'
-const SEEDS_RUN_ENDPOINT = '/dsh-tiddlywiki/admin/seeds/run'
-const SYNC_ENDPOINT = '/dsh-tiddlywiki/sync'
+import {
+  ADMIN_CONFIG_ENDPOINT as CONFIG_ENDPOINT,
+  ADMIN_INFO_ENDPOINT as INFO_ENDPOINT,
+  ADMIN_RESTART_ENDPOINT as RESTART_ENDPOINT,
+  ADMIN_SEEDS_ENDPOINT as SEEDS_ENDPOINT,
+  ADMIN_SEEDS_REMOVE_ENDPOINT as SEEDS_REMOVE_ENDPOINT,
+  ADMIN_SEEDS_RUN_ENDPOINT as SEEDS_RUN_ENDPOINT,
+  ADMIN_STATE_ENDPOINT as STATE_ENDPOINT,
+  SYNC_ENDPOINT,
+} from './endpoints.ts'
 
 interface CatalogEntry {
   name: string
@@ -95,13 +97,15 @@ export function mountSettingsPage(container: HTMLElement): () => void {
   container.append(statusRow, body)
 
   const disposers: Array<() => void> = []
+  /** Config-section DOM + the server signature it was built from (see renderMain). */
+  const configState: ConfigRenderState = {}
 
   const refresh = async (): Promise<void> => {
     try {
       const state = await fetchJson<AdminState>(STATE_ENDPOINT)
       if (disposed) return
       renderStatus(statusRow, state, refresh)
-      renderMain(body, state, refresh, () => disposed)
+      renderMain(body, state, refresh, () => disposed, configState)
     } catch (err) {
       if (disposed) return
       body.replaceChildren()
@@ -499,7 +503,6 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
   const hint = make('div', 'dsh-tw-settings-muted', '这些是插件与 dsh 联动、需要在 wiki 里预置的 tiddler/配置。「发送给 Agent 按钮」和「TW 前端 API 基址」是功能必需项，启动时自动写入（只写缺失，不覆盖你的改动）；其余为可选项，默认不自动写入、也不会强绑定——需要时点「重新初始化」写入，不想要了可随时「反初始化」移除。')
   const wrap = make('div', 'dsh-tw-settings-list')
   const statusLine = make('div', 'dsh-tw-settings-muted')
-  const SEEDS_REMOVE_ENDPOINT = '/dsh-tiddlywiki/admin/seeds/remove'
 
   const load = async (): Promise<void> => {
     // 与 refresh() 相同的卸载守卫：本函数由组件挂载时触发、也可能在卸载后由
@@ -654,9 +657,29 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
   void load()
 }
 
-function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean): void {
+/** Per-mount memory of the config section: the DOM plus the server-side config
+ *  signature it was built from, so an unchanged refresh never rebuilds the
+ *  inputs (and never discards the user's unsaved edits). */
+interface ConfigRenderState {
+  signature?: string
+  host?: HTMLElement
+}
+
+function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState): void {
   body.replaceChildren()
-  renderConfigSection(body, state.config ?? {}, refresh)
+  // Config section: only rebuild when the server-side config actually changed.
+  // Otherwise the status row's 同步/重启 buttons (and the catalog apply buttons)
+  // call refresh() and would silently discard whatever the user had typed into
+  // a field (v0.20.0). The host element is re-appended as-is, so its inputs and
+  // their pending values survive.
+  const signature = JSON.stringify(state.config ?? {})
+  if (configState.host === undefined || configState.signature !== signature) {
+    const host = make('div', 'dsh-tw-settings-confighost')
+    renderConfigSection(host, state.config ?? {}, refresh)
+    configState.host = host
+    configState.signature = signature
+  }
+  body.append(configState.host)
   renderCatalogSection(body, state.info, state.catalog, refresh)
   renderSeedsSection(body, isDisposed)
 }

@@ -7,15 +7,16 @@
  * wiki content in its NATIVE form:
  *
  *   title (from block.call.argsRaw) → GET /dsh-tiddlywiki/get (full tiddler)
- *                                   → POST /dsh-tiddlywiki/tw/render (native
- *                                     HTML fragment, links rewritten to the
+ *                                   → POST /dsh-tiddlywiki/render (native HTML
+ *                                     fragment, links rewritten to the
  *                                     same-origin proxy hash) → card body
  *
  * The whole component is plain React (`React.createElement`, no JSX — the
  * client bundle is not transpiled); `react` is never bundled and resolves from
  * the web app at runtime. The native fragment is injected via
- * `dangerouslySetInnerHTML` — acceptable because the HTML comes from the LOCAL
- * wiki (same trust as the embedded center-column editor).
+ * `dangerouslySetInnerHTML`; it comes from the HOST render route
+ * (`RENDER_ENDPOINT`, never TW's raw `/tw/render`), which runs every fragment
+ * through the whitelist sanitizer first (v0.19.1) — see src/host/sanitize.ts.
  *
  * The render fragment + the agent's `[标题](/dsh-tiddlywiki/tw/#标题)` markdown
  * links are handled by a document-level click interceptor → openTiddler()
@@ -25,14 +26,7 @@
  */
 import * as React from 'react'
 import { openTiddler } from './panel.ts'
-import { GET_ENDPOINT, RENDER_ENDPOINT } from './endpoints.ts'
-
-/** Same-origin TW proxy base (mirrors host TW_PROXY_PATH, client can't import it). */
-const TW_PROXY_BASE = '/dsh-tiddlywiki/tw/'
-
-const SEARCH_ENDPOINT = '/dsh-tiddlywiki/search'
-const RECENT_ENDPOINT = '/dsh-tiddlywiki/recent'
-const TAGS_ENDPOINT = '/dsh-tiddlywiki/tags'
+import { GET_ENDPOINT, RECENT_ENDPOINT, RENDER_ENDPOINT, SEARCH_ENDPOINT, TAGS_ENDPOINT, TW_PROXY_BASE } from './endpoints.ts'
 
 /** Chinese label for each tool (card badge). */
 const TOOL_LABELS: Record<string, string> = {
@@ -77,15 +71,12 @@ interface ContentBlockLike {
   text?: unknown
 }
 
-/** Owner props the shell passes to a keyed tool view (verified via Inspect). */
+/** Owner props the shell passes to a keyed tool view (verified via Inspect).
+ *  Only `block` + `toolName` are read; the shell passes more (callId, cwd,
+ *  home, openFile, inspect) but nothing here uses them. */
 interface ToolCallOwnerProps {
-  callId: string
   toolName: string
   block: RunningCallLike | SettledLike
-  cwd?: string
-  home?: string
-  openFile: (path: string) => void
-  inspect?: () => void
 }
 
 function isSettled(block: RunningCallLike | SettledLike): block is SettledLike {
@@ -134,6 +125,14 @@ function str(value: unknown): string {
 async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
+    // 404 is a NORMAL answer on `/get` (missing tiddler) and carries the
+    // `{notFound:true}` body the card needs — returning null here made the
+    // notFound branch below unreachable and mislabelled a missing note as
+    // "wiki 服务不可用" (v0.20.0, fixed).
+    if (res.status === 404) {
+      const missing = (await res.json().catch(() => null)) as unknown
+      return typeof missing === 'object' && missing !== null ? (missing as Record<string, unknown>) : { notFound: true }
+    }
     if (!res.ok) return null
     const data = (await res.json()) as unknown
     return typeof data === 'object' && data !== null ? (data as Record<string, unknown>) : null
@@ -247,7 +246,7 @@ function ToolCardShell(props: {
 
 /**
  * 卡片正文的小 LRU 缓存（title → {get, html}）：长会话里滚动历史会让同一张卡
- * 反复挂载，每次都成对打 GET /get + POST /tw/render。容量 ~50、TTL 5 分钟；
+ * 反复挂载，每次都成对打 GET /get + POST RENDER_ENDPOINT。容量 ~50、TTL 5 分钟；
  * 命中即复用。写入类工具（put/batch_put/rename/delete）挂载时先失效对应标题，
  * 所以写后的卡片仍会取到最新内容。
  */
@@ -398,7 +397,7 @@ function ListCard(props: {
   return React.createElement(ToolCardShell, { toolName: props.toolName, title: props.title, subtitle: props.subtitle }, body)
 }
 
-function SearchCard(props: { toolName: string; args: Record<string, unknown>; text: string }): React.ReactElement {
+function SearchCard(props: { toolName: string; args: Record<string, unknown> }): React.ReactElement {
   const query = str(props.args.query)
   const params = new URLSearchParams()
   if (query.length > 0) params.set('query', query)
@@ -408,6 +407,10 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown>; te
   if (typeof props.args.tag === 'string' && props.args.tag.length > 0) params.set('tag', props.args.tag)
   if (typeof props.args.since === 'string' && props.args.since.length > 0) params.set('since', props.args.since)
   if (typeof props.args.type === 'string' && props.args.type.length > 0) params.set('type', props.args.type)
+  // Custom-field filter (v0.20.0): must be forwarded, otherwise the card lists
+  // unfiltered hits while the tool actually filtered by `field`/`value`.
+  if (typeof props.args.field === 'string' && props.args.field.length > 0) params.set('field', props.args.field)
+  if (typeof props.args.value === 'string' && props.args.value.length > 0) params.set('value', props.args.value)
   if (typeof props.args.limit === 'number') params.set('limit', String(props.args.limit))
   const paramsKey = params.toString()
   const data = useAsync(() => fetchJson(`${SEARCH_ENDPOINT}?${paramsKey}`), [paramsKey])
@@ -429,7 +432,7 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown>; te
   })
 }
 
-function RecentCard(props: { toolName: string; args: Record<string, unknown>; text: string }): React.ReactElement {
+function RecentCard(props: { toolName: string; args: Record<string, unknown> }): React.ReactElement {
   const params = new URLSearchParams()
   if (typeof props.args.limit === 'number') params.set('limit', String(props.args.limit))
   if (typeof props.args.since === 'string' && props.args.since.length > 0) params.set('since', props.args.since)
@@ -451,7 +454,7 @@ function RecentCard(props: { toolName: string; args: Record<string, unknown>; te
   })
 }
 
-function BatchCard(props: { toolName: string; args: Record<string, unknown>; text: string }): React.ReactElement {
+function BatchCard(props: { toolName: string; args: Record<string, unknown> }): React.ReactElement {
   const rawItems = Array.isArray(props.args.items) ? (props.args.items as unknown[]) : []
   const rows = rawItems
     .map((item): string | null => (typeof item === 'object' && item !== null && typeof (item as Record<string, unknown>).title === 'string' ? str((item as Record<string, unknown>).title) : null))
@@ -475,7 +478,7 @@ function BatchCard(props: { toolName: string; args: Record<string, unknown>; tex
  *  the browser just so we can throw most of them away). */
 const TAGS_CARD_LIMIT = 60
 
-function TagsCard(props: { toolName: string; text: string }): React.ReactElement {
+function TagsCard(props: { toolName: string }): React.ReactElement {
   const data = useAsync(() => fetchJson(`${TAGS_ENDPOINT}?limit=${TAGS_CARD_LIMIT}&sort=count`), [])
   const payload = data.data
   const items = Array.isArray(payload?.items) ? (payload.items as Record<string, unknown>[]) : []
@@ -528,7 +531,7 @@ function DeleteCard(props: { toolName: string; title: string; text: string }): R
 
 /* ── top-level dispatcher ── */
 
-/** A title for the card header, where the tool has one. */
+/** A title for the card header, where the tool has one (empty = no title). */
 function headerTitle(toolName: string, args: Record<string, unknown>): string {
   switch (toolName) {
     case 'tiddlywiki_get':
@@ -542,14 +545,6 @@ function headerTitle(toolName: string, args: Record<string, unknown>): string {
       return str(args.newTitle)
     case 'tiddlywiki_search':
       return str(args.query)
-    case 'tiddlywiki_recent':
-    case 'tiddlywiki_list_tags':
-    case 'tiddlywiki_batch_put':
-    case 'tiddlywiki_trash':
-    case 'tiddlywiki_lint':
-    case 'tiddlywiki_git_sync':
-    case 'tiddlywiki_git_resolve':
-      return ''
     default:
       return ''
   }
@@ -604,13 +599,13 @@ export function TiddlywikiToolView(props: ToolCallOwnerProps): React.ReactNode {
       // 删除类卡片只展示工具文本，没有 body 缓存；旧标题的残留缓存由 TTL 兜底。
       return React.createElement(DeleteCard, { toolName: name, title: str(args.title), text })
     case 'tiddlywiki_batch_put':
-      return React.createElement(BatchCard, { toolName: name, args, text })
+      return React.createElement(BatchCard, { toolName: name, args })
     case 'tiddlywiki_search':
-      return React.createElement(SearchCard, { toolName: name, args, text })
+      return React.createElement(SearchCard, { toolName: name, args })
     case 'tiddlywiki_recent':
-      return React.createElement(RecentCard, { toolName: name, args, text })
+      return React.createElement(RecentCard, { toolName: name, args })
     case 'tiddlywiki_list_tags':
-      return React.createElement(TagsCard, { toolName: name, text })
+      return React.createElement(TagsCard, { toolName: name })
     case 'tiddlywiki_git_sync':
     case 'tiddlywiki_git_resolve':
       return React.createElement(GitCard, { toolName: name, text })
@@ -682,6 +677,8 @@ export function registerToolViews(slots: {
  * the DSH page. Returns a disposer.
  */
 export function installWikiLinkInterceptor(): () => void {
+  // Derived from the one proxy-base literal so the route can never drift.
+  const proxyHash = new RegExp(`^${TW_PROXY_BASE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}#(.+)$`)
   const onDocumentClick = (event: MouseEvent): void => {
     // 只接管「普通左键点击」：中键 / Ctrl(⌘)·Shift·Alt+点击是浏览器的新标签页、
     // 新窗口、下载等语义，一律放行（否则无法新标签页打开、无法复制链接）。
@@ -691,7 +688,7 @@ export function installWikiLinkInterceptor(): () => void {
     const anchor = target.closest('a')
     if (anchor === null) return
     const href = anchor.getAttribute('href') ?? ''
-    const match = href.match(/^\/dsh-tiddlywiki\/tw\/#(.+)$/)
+    const match = href.match(proxyHash)
     if (match === null || match[1] === undefined) return
     event.preventDefault()
     event.stopPropagation()

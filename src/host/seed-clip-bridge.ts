@@ -148,7 +148,7 @@ curl -X POST http://127.0.0.1:8618/clip ^
  * Seed the instruction tiddler once per wiki (mirrors seed-notes one-shot
  * policy: marker = offered; from then on the doc is user-owned and never
  * re-created). force re-writes doc + marker (settings page「重新初始化」).
- * Never throws.
+ * Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function seedClipBridge(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true

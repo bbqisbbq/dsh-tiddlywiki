@@ -29,14 +29,9 @@
 import { toast } from './toast.ts'
 import { openEditorPopup, isEditorPopupOpen } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
-
-const NOTE_ENDPOINT = '/dsh-tiddlywiki/note'
-const EDIT_ENDPOINT = '/dsh-tiddlywiki/edit'
 import { fetchStatus } from './status-cache.ts'
-const TAGS_ENDPOINT = '/dsh-tiddlywiki/tags'
-const RECENT_ENDPOINT = '/dsh-tiddlywiki/recent'
-const GET_ENDPOINT = '/dsh-tiddlywiki/get'
-const UPLOAD_ENDPOINT = '/dsh-tiddlywiki/upload'
+import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, TAGS_ENDPOINT, UPLOAD_ENDPOINT } from './endpoints.ts'
+
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 /**
@@ -189,7 +184,10 @@ async function fetchUiOptions(): Promise<UiOptions> {
 /** Multi-tag chip editor with autocomplete from the wiki's existing tags. */
 function buildTagEditor(opts: { onChange?: () => void } = {}): {
   el: HTMLDivElement
+  /** Commits any pending input first, then returns the chips (user actions). */
   getTags: () => string[]
+  /** Pure read of the committed chips — never commits pending input. */
+  peekTags: () => string[]
   setDefault: (tag: string) => void
   setTags: (tags: string[]) => void
   /** Remove the document-level outside-click listener (unmount must not leak). */
@@ -321,6 +319,7 @@ function buildTagEditor(opts: { onChange?: () => void } = {}): {
       commitInput()
       return [...chips]
     },
+    peekTags: () => [...chips],
     setDefault: (tag: string) => {
       // Only pre-fill when nothing is chosen yet; never steal focus.
       if (chips.length === 0) {
@@ -510,9 +509,13 @@ export function createNoteWidget(): NoteWidgetHandle {
     // （v0.19.1）：保存成功后清草稿，但编辑器内容还在，随后任何一个 change 事件
     // （哪怕内容没变）都会把整篇重新持久化成草稿，下次打开弹「已恢复未保存草稿」，
     // 用户会以为保存失败。
-    const signature = draftSignature(title, text, ui.tagEditor.getTags())
+    // v0.20.0: use the PURE read. `getTags()` commits the pending input as a
+    // side effect, and this debounce fires on ANY editor/title change — so a
+    // half-typed tag ("meet", no Enter) used to be promoted to a chip and the
+    // input cleared 500ms later.
+    const signature = draftSignature(title, text, ui.tagEditor.peekTags())
     if (persistedSignature !== null && signature === persistedSignature) return
-    persistDraft({ text, title, tags: ui.tagEditor.getTags(), savedAt: Date.now() })
+    persistDraft({ text, title, tags: ui.tagEditor.peekTags(), savedAt: Date.now() })
   }
 
   /** Debounced draft auto-save (500ms after the last change). */

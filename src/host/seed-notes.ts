@@ -67,7 +67,7 @@ export const DOC_NOTE_TEXT = `! dsh-tiddlywiki 插件说明
  *
  * With `opts.force` the note is (re)written even when it already exists and
  * the marker is (re)written — the settings page uses this for
- * "重新初始化". Returns whether a note was written this call. Never throws.
+ * "重新初始化". Returns whether a note was written this call. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
@@ -95,7 +95,7 @@ export async function seedDocNote(client: TiddlyWebClient, opts?: { force?: bool
 /**
  * Un-seed (反初始化): remove the doc note and its one-shot marker, returning
  * the wiki to the "never offered" state. Deletion is idempotent — a tiddler
- * that was already gone is simply not listed. Never throws.
+ * that was already gone is simply not listed. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function unseedDocNote(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []

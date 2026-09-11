@@ -16,7 +16,7 @@
  * @module dsh-tiddlywiki/client/ui-config
  */
 
-import { fetchStatus } from './status-cache.ts'
+import { fetchStatus, invalidateStatus } from './status-cache.ts'
 
 export interface UiConfig {
   /** 聊天输入框上方的「快速笔记」快捷按钮是否显示（默认 true）。 */
@@ -42,19 +42,23 @@ let cache: { at: number; value: Promise<UiConfig> } | undefined
  * Drop the cached config: the settings page calls this right after a successful
  * `POST /admin/config` so the next read picks up the saved `ui.*` values
  * immediately instead of waiting out the TTL (up to 15s).
+ *
+ * It also drops the shared `/status` probe underneath (v0.20.0): otherwise the
+ * next read could still be answered from status-cache's own 2s window and the
+ * FAB/dock/tab label kept the pre-save values.
  */
 export function invalidateUiConfig(): void {
   cache = undefined
+  invalidateStatus()
 }
 
 /** Read /status once and project the ui.* fields (backward compatible: a host
  *  that predates a field simply falls back to the default). Cached for
  *  `CACHE_TTL_MS`, with concurrent callers sharing one in-flight request;
- *  callers that need a fresh value (settings just saved) may pass
- *  `{ force: true }`. */
-export function fetchUiConfig(opts: { force?: boolean } = {}): Promise<UiConfig> {
+ *  callers that need a fresh value call `invalidateUiConfig()` first. */
+export function fetchUiConfig(): Promise<UiConfig> {
   const now = Date.now()
-  if (!opts.force && cache !== undefined && now - cache.at < CACHE_TTL_MS) return cache.value
+  if (cache !== undefined && now - cache.at < CACHE_TTL_MS) return cache.value
   const pending = (async (): Promise<UiConfig> => {
     const status = await fetchStatus()
     const ui = status?.ui

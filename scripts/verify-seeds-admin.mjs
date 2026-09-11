@@ -8,7 +8,7 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createServer } from 'node:http'
+import { createRouteServer } from './lib/tw-harness.mjs'
 import {
   WikiServer,
   TiddlyWebClient,
@@ -53,26 +53,10 @@ const deps = {
 }
 
 // Real HTTP dispatcher: exact then longest-prefix (mirrors host webserver).
-const mini = createServer((req, res) => {
-  const pathname = new URL(req.url ?? '/', 'http://x').pathname
-  let handler
-  const exact = registered.find((r) => r.kind === 'exact' && r.path === pathname)
-  if (exact !== undefined) handler = exact.handler
-  else {
-    let best
-    for (const r of registered) {
-      if (r.kind !== 'prefix') continue
-      if (pathname !== r.path && !pathname.startsWith(`${r.path}/`)) continue
-      if (best === undefined || r.path.length > best.path.length) best = r
-    }
-    handler = best?.handler
-  }
-  if (handler === undefined) { res.writeHead(404); res.end(); return }
-  Promise.resolve(handler(req, res)).catch((err) => {
-    if (!res.headersSent) { res.writeHead(400); res.end(String(err)) }
-    else res.destroy()
-  })
-})
+// Shared with selftest/verify-auth — see scripts/lib/tw-harness.mjs.
+const miniHarness = createRouteServer(registered)
+const miniBase = await miniHarness.listen()
+const mini = miniHarness.server
 
 const post = async (url, body) => {
   const res = await fetch(url, {
@@ -88,7 +72,7 @@ try {
   clientRef = new TiddlyWebClient(view.url)
   const dispose = registerAdminRoutes({ webServer }, deps)
 
-  const base = `http://127.0.0.1:${await new Promise((resolveP) => mini.listen(0, '127.0.0.1', () => resolveP(mini.address().port)))}`
+  const base = miniBase
 
   // 1. GET statuses on a FRESH wiki: all ten seeds missing.
   let res = await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)

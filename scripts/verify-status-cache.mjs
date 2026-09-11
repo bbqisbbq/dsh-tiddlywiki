@@ -10,7 +10,7 @@
  *   2. 失败（网络错误 / 非 2xx / 返回 null）不进缓存——下一次必须重试；
  *   3. `invalidateStatus()` 立即失效（设置页保存后马上读新值）。
  *
- *   node scripts/verify-status-cache.mjs
+ *   npx tsx scripts/verify-status-cache.mjs
  *
  * @module dsh-tiddlywiki/scripts/verify-status-cache
  */
@@ -106,6 +106,23 @@ await test('invalidateStatus() 立即失效缓存', async () => {
   const second = await fetchStatus()
   assert.equal(calls, 2, `失效后必须重新请求：实际 ${calls} 次`)
   assert.equal(second?.ui?.tabLabel, '新', '应读到新值')
+})
+
+// v0.20.0: the settings page only ever calls invalidateUiConfig(); before this
+// wiring the underlying /status probe survived, so the FAB/dock/tab label could
+// keep the pre-save values for up to 2s after "配置已保存".
+await test('invalidateUiConfig() 同时清掉底层 /status 缓存', async () => {
+  const ui = await import(pathToFileURL(path.join(repoRoot, 'src/client/ui-config.ts')).href)
+  invalidateStatus()
+  ui.invalidateUiConfig()
+  calls = 0
+  payload = { ok: true, status: 'running', ui: { tabLabel: '保存前' } }
+  assert.equal((await ui.fetchUiConfig()).tabLabel, '保存前', '首次读取旧值')
+  payload = { ok: true, status: 'running', ui: { tabLabel: '保存后' } }
+  ui.invalidateUiConfig()
+  assert.equal((await ui.fetchUiConfig()).tabLabel, '保存后', '失效后必须读到新值')
+  assert.equal(calls, 2, `invalidateUiConfig 必须同时失效 /status 缓存：实际 ${calls} 次请求`)
+  ui.invalidateUiConfig()
 })
 
 globalThis.fetch = originalFetch

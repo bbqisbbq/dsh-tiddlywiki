@@ -37,7 +37,7 @@ export const HOME_INDEX_ITEMS: HomeIndexItem[] = [{"title":"🏠 主页","tags":
  * one-shot policy). Also writes $:/DefaultTiddlers → [[🏠 主页]] so the
  * new home opens by default. With `force` the tiddlers are overwritten with the
  * built-in content and the marker is (re)written — the settings page uses this
- * for "重新初始化". Returns whether anything was written this call. Never throws.
+ * for "重新初始化". Returns whether anything was written this call. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function seedHomeIndex(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
@@ -70,7 +70,7 @@ export async function seedHomeIndex(client: TiddlyWebClient, opts?: { force?: bo
  * Un-seed (反初始化): remove the home tiddlers and their marker, restoring the
  * wiki's default home only when it still points at the seeded 🏠 主页
  * (a user-customised $:/DefaultTiddlers is left alone). Deletion is idempotent —
- * a tiddler already gone is not listed. Never throws.
+ * a tiddler already gone is not listed. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function unseedHomeIndex(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []

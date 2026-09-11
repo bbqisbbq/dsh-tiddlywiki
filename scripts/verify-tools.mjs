@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * `tiddlywiki_*` 工具层断言（真实 TW 子进程 + 真实 git 仓库）。覆盖 v0.18.0 的
- * 10 个核心工具（新增工具不会让本脚本误报 —— 工具集只做子集断言）：
+ * 15 个核心工具（新增工具不会让本脚本误报 —— 工具集只做子集断言）：
  *
  * 通过对 `registerTiddlywikiTools(ctx, deps)` 捕获注册对象、再逐个
  * `tool.execute(args, undefined)` 的**函数式**调用，覆盖工具层的契约（不是 HTTP
@@ -31,7 +31,6 @@ import {
   TiddlyWebClient,
   GitFace,
   registerTiddlywikiTools,
-  TEXT_LIST_FILTER,
 } from '../lib/index.js'
 
 /** 新建条目自动补打的约定标签（tools.ts 导出，这里用字面量）。 */
@@ -378,10 +377,6 @@ try {
     assert.ok(list.status !== undefined && typeof list.status.branch === 'string', 'list 应返回 git status')
   })
 
-  // ── 兜底：TEXT_LIST_FILTER 长度（Windows MAX_PATH 回归的另一处守门） ──────
-  await test('TEXT_LIST_FILTER 长度 ≤ 100（Windows 白名单文件名不能撑爆 MAX_PATH）', () => {
-    assert.ok(TEXT_LIST_FILTER.length <= 100, `TEXT_LIST_FILTER 长度 ${TEXT_LIST_FILTER.length} > 100：白名单 tiddler 的文件名 = 整个 filter 串，过长会让 git add 报 Filename too long`)
-  })
 } catch (err) {
   failures++
   console.error('FAIL  工具层验收框架异常')

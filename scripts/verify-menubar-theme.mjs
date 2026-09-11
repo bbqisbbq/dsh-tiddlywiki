@@ -6,8 +6,7 @@
 // NOT part of CI (.github/workflows/ci.yml): needs a LIVE wiki (TW_URL, no
 // default — a baked-in URL could mutate someone else's wiki) plus a local
 // Chrome/Edge. Run it manually against your own running wiki.
-import { createRequire } from 'node:module'
-import { existsSync } from 'node:fs'
+import { findChrome, loadPuppeteer } from './lib/browser-env.mjs'
 
 // TW_URL is REQUIRED — no default. This script drives a REAL, live wiki in a
 // browser, so a baked-in author URL could silently mutate someone else's wiki.
@@ -17,28 +16,14 @@ if (!TW_URL) {
   console.error('TW_URL is required (no default): point it at the TW server to drive.')
   process.exit(2)
 }
-const require = createRequire(import.meta.url)
-let puppeteer
-try {
-  puppeteer = require('puppeteer-core')
-} catch {
-  try {
-    puppeteer = require('D:/npm-global/node_modules/puppeteer-core')
-  } catch {
-    console.log('SKIP - puppeteer-core not installed')
-    process.exit(0)
-  }
+const puppeteer = loadPuppeteer()
+if (puppeteer === null) {
+  console.log('SKIP - puppeteer-core not installed（可用 PUPPETEER_CORE_PATH 指定）')
+  process.exit(0)
 }
-const CHROME_CANDIDATES = [
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-]
-const executablePath = CHROME_CANDIDATES.find((p) => existsSync(p))
-if (!executablePath) {
-  console.log('SKIP - no Chrome/Edge binary found')
+const executablePath = findChrome()
+if (executablePath === null) {
+  console.log('SKIP - no Chrome/Edge binary found（可用 CHROME_PATH 指定）')
   process.exit(0)
 }
 let failures = 0

@@ -25,28 +25,17 @@ import { createRequire } from 'node:module'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { existsSync } from 'node:fs'
 import { WikiServer, TiddlyWebClient, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_BOOKMARKLET } from '../lib/index.js'
+import { findChrome, loadPuppeteer } from './lib/browser-env.mjs'
 
-const require = createRequire(import.meta.url)
-let puppeteer
-try {
-  puppeteer = require('puppeteer-core')
-} catch {
-  try {
-    puppeteer = require('D:/npm-global/node_modules/puppeteer-core')
-  } catch {
-    console.log('SKIP - puppeteer-core not installed')
-    process.exit(0)
-  }
+const puppeteer = loadPuppeteer()
+if (puppeteer === null) {
+  console.log('SKIP - puppeteer-core not installed（可用 PUPPETEER_CORE_PATH 指定）')
+  process.exit(0)
 }
-const chrome = [
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-  'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-].find((p) => existsSync(p))
-if (!chrome) {
-  console.log('SKIP - no Chrome/Edge binary found')
+const chrome = findChrome()
+if (chrome === null) {
+  console.log('SKIP - no Chrome/Edge binary found（可用 CHROME_PATH 指定）')
   process.exit(0)
 }
 

@@ -18,8 +18,8 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.19.5`（git tag `v0.19.5`；npm 上 0.19.1 曾被 staged 且不含后续修复，以最新 tag 为准） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
-| **「发送给 Agent」bundle 版本** | `0.3.4`（提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs` |
+| **插件版本** | `0.20.0`（git tag `v0.20.0`；npm 上 0.19.1 曾被 staged 且不含后续修复，以最新 tag 为准） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
+| **「发送给 Agent」bundle 版本** | `0.3.5`（v0.20.0 修复 `notify()`：TW 的 notifier 只认**已存在的 tiddler 标题**，传自由文本＝静默无提示；现在先写 `$:/temp/dsh/send-to-agent/notice` 再 display。提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs`（含外层 version 守门） |
 | **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` + `scripts/verify-render-bundle.mjs`（v0.19.0 新增逐字节守门） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
 | **Seed 注册表（10 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（首次安装默认写、可移除）：`doc-note`、`starter-docs`；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge`（剪藏桥使用说明，真功能在 `clip-bridge.ts` 运行时代码里）。文档类内容统一打 `dsh-docs` 标签（进首页「📚 插件文档」栏） | `src/host/seeds.ts` 的 `SEED_DEFS` |
@@ -39,7 +39,7 @@ src/
 │   ├── tw-api.ts       # TiddlyWeb REST 客户端（/recipes/default/tiddlers/...，回环）
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
 │   ├── routes.ts       # 全部 DSH 路由（见 §1 路由表）+ agent-send/create/modes/sessions + session/summary
-│   ├── http.ts         # 共用 HTTP 助手：readBody/readBodyBuffer（带大小上限）+ json() 响应 + rejectCrossSiteWrite（写路由的同源/CSRF 守卫）
+│   ├── http.ts         # 共用 HTTP 助手：readBody/readBodyBuffer（带大小上限）+ json() 响应 + guardHandler + rejectCrossSiteWrite/rejectNonRead（方法 + 同源守卫）+ safeTokenEqual（常数时间比较，v0.20.0 起 routes/clip-bridge 共用）
 │   ├── sanitize.ts     # 渲染片段白名单净化器（v0.19.1）：丢 script/iframe/object/embed/form/svg…、丢 on*/srcdoc、URL 只放行 http(s)/相对路径/栅格 data:image
 │   ├── write-policy.ts # 共享写策略（v0.19.1）：cleanTiddler/buildWriteTiddler/assertNoConflict/flattenTiddlerFields —— agent 工具与 /note /edit 路由共用
 │   ├── clip-bridge.ts  # 本地剪藏桥（v0.16.25 图片 / v0.18.0 SSRF 守卫）：只监听 127.0.0.1 的 HTTP 桥，POST /clip 把书签剪藏写进 wiki；「浮层选图」——桥下载所选图片字节存为二进制附件 tiddler（type image/* + base64，笔记 [img[标题]] 内嵌，失败降级链接）；Host 校验防 DNS rebinding + 可选 token + CORS/PNA preflight；端口按 **effective config** 绑定一次（改端口需重启 dsh web），enabled/token/tag 每请求读 effective config；`assertPublicImageUrl` 只放行公网 http(s)（逐跳校验重定向）
@@ -48,6 +48,7 @@ src/
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层（tiddler 优先；读失败保留缓存、set 先读回再合并）
 │   ├── seeds.ts        # 统一 seed 注册表 SEED_DEFS（check/run(force)/remove，三层：核心/起步/可选）+ waitForFileWrite / needsRestartAfterSeeds
 │   ├── seed-util.ts    # seed 共用助手：readSeedTiddler（**只有 404 才算缺失**）/ writeSeedMarker（失败只 warn）
+│   ├── text-util.ts    # 共享文本助手 snippetOf（v0.20.0：原先 tools.ts / routes.ts 各一份）
 │   ├── tools.ts        # 15 个 tiddlywiki_* 工具（列表式注册）
 │   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量由脚本生成，勿手改；starter-docs/menubar-theme/clip-bridge 为手工维护的净化常量）
 ├── client/             # 浏览器半部：panel/theme-sync/note-widget/knowledge-fab/tool-views/settings-page…
@@ -58,6 +59,7 @@ src/
 │   ├── tw-frame.ts     # 共享 TW iframe 机制（v0.16.23）：lazy-load/status 轮询/主题同步/hash 导航/互斥 + live-frame 链接路由注册表
 │   ├── session-summary.ts # 会话「知识库」Tab（conversation.view 槽位）：POST 生成 → /dsh-tiddlywiki/render 原生片段注入（host 净化后返回，不走 story view，见 §1 客户端 Slot）
 scripts/                # 构建/校验/再生成脚本（见 §4）；bundle/versions.mjs = bundle 版本唯一来源
+scripts/lib/            # 脚本共享助手：tw-harness.mjs（waitFor / matchRoute / createRouteServer）+ browser-env.mjs（puppeteer / Chrome 发现）
 docs/seed-initialization.md  # seed 机制详解（权威）
 cordis.patch.yml        # 插件行插入 web profile（dsh.bundle.patch）
 lib/                    # 预构建产物（发布只含 lib/index.js + lib/index.js.map + lib/client.js；零 @deepseek-ai 运行时 import）
@@ -66,25 +68,23 @@ lib/                    # 预构建产物（发布只含 lib/index.js + lib/inde
 ## 3. 构建 / 校验 / 自测
 
 ```bash
-npm run typecheck     # tsc --noEmit
+npm run typecheck     # tsc --noEmit（noUnusedLocals 已开：新增死 import/死变量会直接红）
 npm run build         # clean-lib → build:host(tsdown→lib/index.js, esm) → build:client(tsdown→lib/client.bundle.js cjs+minify → wrap-client.mjs→lib/client.js)
 npm run build:host    # 只重建 host（改 src/index.ts / src/host/** 时用）
 npm run build:client  # 只重建 client（改 src/client/** 时用）
 npm run selftest      # headless：spawn TW → REST 读写 → git → 15 个工具 → seed → 退出回收（改核心路径后跑；失败也会 stop 子进程）
 npm run smoke:client  # client bundle 的 module-loader 形状冒烟（wrap-client 之外的第二道）
-npm run verify        # = verify:static + verify:unit + verify:e2e（本地一键；CI 同款分档）
-npm run verify:static # send-to-agent bundle 逐字节 / render bundle 逐字节 / 发布包内容 / 版本一致性
-npm run verify:unit   # 剪藏桥（含 IPv6/保留网段 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器 / 配置密钥遮掩（v0.19.1–3）/ 客户端 status-cache 合并（tsx 直跑源码）
-npm run verify:e2e    # auth 模式 / 工具层 / **审计回归 verify-audit-fixes**（attach 覆盖保护 / 草稿类型 / 回收站索引 / delete 并发 / rename 部分失败 / 汇总未探测 / batch_put 并发顺序）/ git 冲突解决 / 崩溃自愈+并发写
-npm run verify:large  # 3000+ 条目大 wiki：filter 长度、检索耗时、二进制零出现、真跑 commit（约 1 分钟）
+npm run verify        # = verify:static + verify:unit + verify:e2e + verify:large（本地一键）
+npm run verify:static # send-to-agent bundle 逐字节 / render bundle 逐字节 / 发布包内容 / 版本一致性 / 静态常量（TEXT_LIST_FILTER 长度预算）
+npm run verify:unit   # 剪藏桥（含 IPv6/保留网段 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器 / 配置密钥遮掩（含 auth.password，v0.20.0）/ 客户端 status-cache 合并（tsx 直跑源码）
+npm run verify:e2e    # auth 模式 / 工具层 / **审计回归 verify-audit-fixes**（attach 覆盖保护 / 草稿类型 / 回收站索引 / delete 并发 / rename 部分失败 / 汇总未探测 / batch_put 并发顺序）/ git 冲突解决 / 崩溃自愈+并发写 / seed 两个 E2E
+npm run verify:large  # 3000+ 条目大 wiki：检索耗时、二进制零出现、真跑 commit（约 1–3 分钟）
 # 另有（不进 CI，依赖本机 Chrome / 线上 wiki）：
-node scripts/verify-seed-send-to-agent.mjs  # E2E：全新 wiki 上验证按钮 seed
-node scripts/verify-seeds-admin.mjs         # E2E：/admin/seeds 状态与 run（force → 落盘 → 重启 → 内容仍在）
-node scripts/verify-clip-bridge-browser.mjs # 真实无头 Chrome：书签 href 保留 / 执行弹浮层
+node scripts/verify-clip-bridge-browser.mjs # 真实无头 Chrome：书签 href 保留 / 执行弹浮层（可用 PUPPETEER_CORE_PATH / CHROME_PATH 指定）
 node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 ```
 
-**CI**：`.github/workflows/ci.yml`（v0.19.0 起）4 个 job——`static`（typecheck + build + `git diff --exit-code -- lib/` + 静态 verify）、`selftest`、`verify-unit`、`verify-e2e`；后三者 `needs: static`。浏览器类脚本不进 CI（会静默 SKIP，等于假绿）。
+**CI**：`.github/workflows/ci.yml` 4 个 job——`static`（typecheck + build + `git diff --exit-code -- lib/` + `npm run verify:static`）、`selftest`（+`smoke:client`）、`verify-unit`（`npm run verify:unit`）、`verify-e2e`（`npm run verify:e2e` + `npm run verify:large`）；后三者 `needs: static`。**CI 只调用 npm 聚合脚本，不再各自维护第二份脚本清单**（v0.20.0 审计：两边清单漂移导致 `verify-status-cache`/`verify-audit-fixes` 从未在 CI 跑过）。浏览器类脚本不进 CI（会静默 SKIP，等于假绿）。
 
 **⚠️ 行尾必须 LF（v0.19.1 教训）**：仓库根有 **`.gitattributes`（`* text=auto eol=lf`）**。`lib/index.js.map` 内嵌源文件原文（`sourcesContent`），Windows 工作区若是 CRLF，生成的 map 里就是 `\r\n` 转义，而 GitHub runner 检出为 LF → 重建出的 map 与提交版不同 → `static` 的 `git diff --exit-code -- lib/` 必失败，且它一挂其余三个 job（`needs: static`）**根本不会跑**（v0.19.0 的 CI 实际就是这个状态）。改完 src 一律 `npm run build` 后提交 lib/；不要绕开 `.gitattributes` 的 LF 约定。
 
@@ -157,8 +157,8 @@ node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 - 同源守卫：`Sec-Fetch-Site: cross-site` 或 `Origin` 与 `Host` 不同源即 403；GET/HEAD/OPTIONS 一律放行（跨站导航要能打开 `/tw/`），无这两个头的调用方（curl/服务端）也放行——这是 CSRF 硬化，不是鉴权边界（网络暴露由宿主认证负责）。
 - 重活路由（`/restart`、`/sync`）有 **in-flight 互斥**：并发调用返回 429，不再叠加重启/拉取。
 - `auth.username/password` 非空时：TW 子进程带 `readers`/`writers` 启动，因此**内置 `TiddlyWebClient` 与 `WikiServer.waitReady()` 都必须带 preemptive Basic 头**（否则全站 401、启动 20s 后 failed）；`/tw` 与 `/api` 代理由此都要转发 `authorization`（`forwardHeaders`）并回传 `WWW-Authenticate`，浏览器才会弹登录框。spawn 日志会**打码 `password=`**（日志经无需认证的 `/status` 返回）。
-- **配置密钥只出「打码」形态（v0.19.3）**：`/admin/state` 与 `/status` 一样是**只读、无鉴权的读路由**，v0.19.2 之前它把 `config` 原样回给浏览器（设置页需要读），于是任何同源请求都能取到 `bridge.token`、`auth.password`、`git.remote`（可能带凭据的 URL）。现在 `admin.ts` 的 `maskConfigSecrets()` 把密钥替换成 `********`（`MASKED_SECRET`），`/admin/config` 收到回传的 `********` 用 `stripMaskedSecrets()` 丢弃（表示"未修改"）——**新增返回 config 的接口必须过这道打码**，回归在 `scripts/verify-secret-masking.mjs`。设置页的密钥输入框也据此显示占位语义。
-- **`$:/plugins/dsh-tiddlywiki/` 命名空间不给代理（v0.19.3）**：`/tw/*` 与 `/api/*` 是同源代理，此前能直接 `GET /dsh-tiddlywiki/tw/tiddlers/$:/plugins/dsh-tiddlywiki/config` 拿到**未打码**的配置 tiddler（密钥暴露的第二条路）。`BLOCKED_PROXY_TITLE_PREFIXES` + `isBlockedProxyPath()` 现在对**插件自身命名空间**返回 403（selftest 断言 `tw`/`api` 两条路径都是 403）；插件配置只能经 `/admin/state`（已打码）读写。TW 自身系统 tiddler（`$:/config/...` 等）不受影响。
+- **配置密钥只出「打码」形态（v0.19.3）**：`/admin/state` 与 `/status` 一样是**只读、无鉴权的读路由**，v0.19.2 之前它把 `config` 原样回给浏览器（设置页需要读），于是任何同源请求都能取到 `bridge.token`、`auth.password`、`git.remote`（可能带凭据的 URL）。现在 `admin.ts` 的 `maskConfigSecrets()` 把密钥替换成 `********`（`MASKED_SECRET`；v0.20.0 起 **`auth.password` 也一并打码**并附 `passwordSet` 展示位——此前只有文档声称遮了 auth，代码实际只遮 token 与 remote，回归见 verify-secret-masking），`/admin/config` 收到回传的 `********` 用 `stripMaskedSecrets()` 丢弃（表示"未修改"）——**新增返回 config 的接口必须过这道打码**，回归在 `scripts/verify-secret-masking.mjs`。设置页的密钥输入框也据此显示占位语义。
+- **`$:/plugins/dsh-tiddlywiki/` 命名空间不给代理（v0.19.3）**：`/tw/*` 与 `/api/*` 是同源代理，此前能直接 `GET /dsh-tiddlywiki/tw/tiddlers/$:/plugins/dsh-tiddlywiki/config` 拿到**未打码**的配置 tiddler（密钥暴露的第二条路）。`BLOCKED_PROXY_TITLE_PREFIXES` + `isBlockedProxyPath()` 现在对**插件自身命名空间**返回 403（selftest 断言 `tw`/`api` 两条路径都是 403）；v0.20.0 把同一谓词抽成 `isBlockedProxyTitle()` 并套到 **`POST /render`**——TW 的 `/render` 对任意标题都作答，实测能把配置 tiddler 连 token 与 git PAT 一起渲染出来（渲染片段净化器只管标签，管不住正文）。**任何把调用方标题变成 TW 输出的路由都必须过 `isBlockedProxyTitle()`**。插件配置只能经 `/admin/state`（已打码）读写。TW 自身系统 tiddler（`$:/config/...` 等）不受影响。
 - **每个路由 handler 都要包 `guardHandler`（v0.19.3）**：宿主 webserver 拿到 `async` handler 的 rejection 时既不回包也不回收，路由层的 `await` 抛错会变成**挂死请求**（此前几十个注册点全靠手写 try/catch）。`http.ts` 的 `guardHandler(fn)` 统一兜住 rejection → 已发头就 `res.end()`、否则按 `errorStatus(err)` 回 413/500 JSON；**新增路由注册一律 `guardHandler(...)` 包裹**。`errorStatus()` 把 `/body too large/i` 映射成 413，其余 500。
 
 ### 配置双层
@@ -274,6 +274,10 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **`$:/temp` 条目在 iframe 的 story view 里永远无法正常显示**（「汇总显示成源码」的完整机理，v0.16.11–19 的教训）：① 浏览器端 TW 同步天生排除 `$:/temp`——服务端 recipe 列表默认 `[all[tiddlers]!is[system]]`（`get-tiddlers-json.js`）排除一切 `$:/` 条目，tiddlyweb adaptor 的请求过滤器又显式 `-[prefix[$:/temp/]]`（`tiddlywebadaptor.js getSkinnyTiddlers`），lazyLoad 只补「已知 skinny」不拉「完全缺失」——所以 iframe 里的 TW 拿不到 volatile 条目，`#<标题>` hash 直达必然渲染「佚失条目」；② 即便客户端把条目注入 iframe store（v0.16.14–18 的 `addTiddler` 注入 + 原生 hash 导航），TW 5.4.1 核心的视图模板级联（`$:/config/ViewTemplateBodyFilters/system` 的 system 规则）仍把所有 `$:/temp/` 前缀 tiddler 一律按**代码块**渲染（`$:/core/ui/ViewTemplate/body/code` → `<pre><code>`，headless $tw 实测），整页 wikitext 源码、像包在代码标签里——与 tiddler 的 `type` 字段无关。**因此 v0.16.19 起汇总 Tab 完全不用 iframe / story view**，改走与回复流工具卡同一条 `/tw/render` 原生片段管线（服务端 renderText 块解析 wikitext → HTML 片段，链接重写为 `/dsh-tiddlywiki/tw/#标题`）。排查「汇总显示源码」：先在 headless $tw 里渲染 `$:/core/ui/ViewTemplate/body`（currentTiddler=该标题）看是不是 `<pre><code>`；再查 TW 日志有没有「…的草稿」save 任务（v0.16.16 的 ✏️ 误编辑路径，现已被 v0.16.19 的片段渲染整体消除）。服务端直连 REST（tw-api）不受影响——单条 GET 一直能读到 `$:/temp`。
 - **bundle 是 ONE-SHOT、用户自有**：改了 bundle 源件后旧 wiki 不会自动更新，要手动覆盖 wiki tiddler + 用户重载 TW 面板。
 - **在「知识库」Tab 的汇总条目上点 ✏️ 编辑 → 整页显示 wikitext 源码、链接点不动**（v0.16.16 的坑）：TW 的编辑草稿 `Draft of '…'` 会**继承全文**并以编辑框（textarea）呈现，看起来就是「没正确渲染」；草稿还会被浏览器端同步回流服务端日志（`syncer-server-filesystem: Dispatching 'save' task: "…"的草稿`）甚至短暂落盘。根因不是渲染坏了（数据/类型/服务端 render 实测均正常；TW 5.4.1 也没有 `wiki.refreshTiddler`，强制重渲染要走 `$tw.rootWidget.refresh(changes)`）。v0.16.16 起插件在注入后对汇总条目做三层防误编辑：清残留草稿 + 吞 `draft.of` 指向汇总之新草稿（包 `wiki.addTiddler`，幂等 WeakSet）+ 禁用 ✏️ 按钮（本地化 tooltip 定位）。排查「汇总显示源码」类问题时先看 TW 日志有没有「…的草稿」save 任务。
+- **Tw 的 notifier 只认「已存在的 tiddler 标题」（v0.20.0 教训）**：`$tw.notifier.display(x)` 在 `$tw.wiki.getTiddler(x)` 为空时**什么都不做**（core/modules/utils/dom/notifier.js）。send-to-agent 的 `notify()` 曾把自由文本当标题传，于是按钮的成功/失败提示**全部静默**（用户点完毫无反馈）。要提示就先写一个 `$:/temp/...` 提示 tiddler 再 display 它；bundle 改动后必须重跑 §4 流水线并 bump 版本。
+- **`/render` 也必须挡插件命名空间（v0.20.0 安全）**：`/get`、`/tw`、`/api` 都挡了 `$:/plugins/dsh-tiddlywiki/`，唯独 `POST /render` 漏了——TW 侧 `render.js` 的 `{title}` 分支对任意 tiddler 都渲染，于是打码与代理拦截被整体绕过（实测：返回的 `<pre><code>` 里含 `bridge.token` 与带 PAT 的 `git.remote`）。新增任何「调用方给标题、TW 出正文」的路径都要过 `isBlockedProxyTitle()`，selftest 有 `/render` 403 断言。
+- **`/edit` 的草稿永远不许覆盖既有草稿（v0.19.5 回归 / v0.20.0 修复）**：v0.19.5 的「先单条 GET 规范草稿名」重构把分支写反了——规范草稿**已存在**时反而直接写进去（覆盖用户未保存的编辑），而扫描到的异构草稿被改名成新条目（留孤儿）。正确语义是 `free ? canonical : (复用扫描到的草稿 ?? canonical+时间戳)`，重排时务必保留这个方向。
+- **`tsconfig.json` 已开 `noUnusedLocals`（v0.20.0）**：审计发现的 16 处死 import / 死类型（`index.ts` 的 12 个 re-export 冗余 import、`tw-frame.ts` 重复的 `StatusPayload` 等）正是它没开时积累的。删引用时**别只 grep `*.ts`**——`AutoCommitter.onCommit` 就是被 `scripts/selftest.mjs`（.mjs）使用的，只查 .ts 会把它误判成死代码（selftest 当场红了）。
 - Windows 下 git 的 LF→CRLF 警告无害。
 - **TiddlyWeb 外部 filter 的坑（v0.16.20 教训）**：① 非默认 filter 一律 403，除非 `$:/config/Server/ExternalFilters/<filter串>` = "yes"（白名单 tiddler 文件名 = **整个 filter 串**——filter 必须短：此前 180 字符版在 Windows 上文件名顶到 217 字符，撑爆 MAX_PATH，`git add` 报 "Filename too long"、自动 commit 失效；86 字符版文件名 ~123 字符安全。selftest 的 git 段就是这个回归的守门员）；② `prefix`/`match` 只匹配 **title**，字段匹配用 `regexp:type[...]`/`field:type[...]`；③ `[has[type]]`=有 type 字段，`[has:type[]]` 是另一种调用（suffix+空 operand，匹配一切）；④ 空格分隔=**并集**、`+`=交集；⑤ 取反的 `regexp:type`/`field:type` 会**丢掉无 type 字段**的 tiddler——「排除二进制」必须写成正向并集（无 type OR `text/*`），见 `tw-api.ts` 的 `TEXT_LIST_FILTER`。
 - **筛选器操作数别用 `[[...]]` 双括号**（v0.16.22 首页快速记笔记 tags 变「筛选器错误」的坑）：`then` 等**操作符**的 operand 只接受普通 `[...]`（或 `{$var}`），`then[[todo]]` 会被解析器报 `Missing [ in filter expression`——`{{{...}}}` 求值失败后错误文本被当成 tags 写入（`Tiddler` 构造按空白切分 → 出现「筛选器错误: / Missing / [ / in ...」6 个 tag）。正确写法 `then[todo]`。selftest 已断言首页 seed 不含 `then[[`。

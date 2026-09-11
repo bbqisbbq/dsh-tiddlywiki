@@ -19,12 +19,11 @@ import { readFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { MISSING_TYPE_FILTER, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { TiddlyWebClient, Tiddler } from './tw-api.ts'
-import type { GitFace } from './git.ts'
+import type { GitFace, GitStatusView } from './git.ts'
 import { downloadClipImage } from './clip-bridge.ts'
 import { flushPendingWrites } from './seeds.ts'
+import { snippetOf } from './text-util.ts'
 import {
-  AGENT_WRITTEN_TAG,
-  HUMAN_EDITED_TAG,
   assertNoConflict,
   buildWriteTiddler,
   cleanTiddler,
@@ -53,11 +52,6 @@ export interface ToolsDeps {
    *  working tree, so the server drops its stale in-memory snapshot and the
    *  agent sees the pulled content. Optional — absent in headless contexts. */
   restartWiki?: () => Promise<void>
-}
-
-function snippetOf(text: string, max = 160): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
-  return flat.length <= max ? flat : `${flat.slice(0, max)}…`
 }
 
 /**
@@ -295,7 +289,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       limit: { type: 'integer', description: '可选：返回条数上限（默认 30，最大 200）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: SearchResult) => {
         const filters: string[] = []
         if (value.tags.length > 0) filters.push(`tags=${value.tags.join(',')}`)
@@ -348,7 +341,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       since: { type: 'string', description: '可选：只返回修改时间不早于该 ISO 时间的 tiddler' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: RecentResult) => {
         const lines = [`TiddlyWiki 最近修改（最近 ${value.results.length} 条${value.since !== null ? `，since=${value.since}` : ''}）：`]
         if (value.results.length === 0) lines.push('暂无笔记。')
@@ -378,7 +370,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       limit: { type: 'integer', description: '可选：最多返回多少个标签（按使用次数降序），默认 200，上限 1000。' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: TagListResult) => {
         if (value.tags.length === 0) return [{ type: 'text', text: '知识库暂无标签。' }]
         const lines = [
@@ -410,7 +401,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       title: { type: 'string', description: 'tiddler 标题（精确匹配）', required: true },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: GetResult) => {
         if (value.notFound) return [{ type: 'text', text: `tiddler「${value.title}」不存在。可用 tiddlywiki_search 检索，或用 tiddlywiki_put 新建。` }]
         if (value.binary === true) {
@@ -468,7 +458,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制覆盖（默认 false）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: PutResult) => {
         const lines = [`已写入 tiddler「${value.title}」`]
         if (value.tags.length > 0) lines.push(`标签: ${value.tags.join(', ')}`)
@@ -527,7 +516,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       overwrite: { type: 'boolean', description: '可选：true=覆盖同名（默认），false=跳过已存在的标题' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: BatchResult) => {
         const lines = [`批量写入完成：成功 ${value.written}，跳过 ${value.skipped}，失败 ${value.failed}，共 ${value.items.length} 条。`]
         for (const r of value.items) {
@@ -599,7 +587,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       updateRefs: { type: 'boolean', description: '可选：是否同步更新其他 tiddler 里的引用（默认 true）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: RenameResult) => {
         const lines = [`已重命名「${value.from}」→「${value.to}」`]
         lines.push(`更新了 ${value.refsUpdated} 处引用（${value.refsTiddlers} 个 tiddler）`)
@@ -667,7 +654,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制删除（默认 false）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: DeleteResult) => [{
         type: 'text',
         text: value.trashed === true
@@ -724,7 +710,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       limit: { type: 'integer', description: 'action=list 的返回上限（默认 30，最大 200）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: TrashResult) => {
         const lines = [`回收站 ${value.action}：${value.message}`]
         for (const item of value.items ?? []) lines.push(`- ${item.title}（删除于 ${item.at ?? '?'}${item.of !== undefined ? `，原名「${item.of}」` : ''}）`)
@@ -793,7 +778,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       tags: { type: 'array', items: { type: 'string' }, description: '可选：仅新建时使用的标签' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: AppendResult) => [{
         type: 'text',
         text: `${value.created ? '已新建并写入' : '已增量写入'} tiddler「${value.title}」（${value.mode}${value.heading !== null ? ` · 段落「${value.heading}」` : ''}）：新增 ${value.added} 字符，现共 ${value.total} 字符。`,
@@ -842,7 +826,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       limit: { type: 'integer', description: '可选：最多返回多少条（默认 30，最大 200）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: BacklinkResult) => {
         const lines = [`「${value.title}」的反向链接：${value.total} 条（引用 ${value.linkCount} · 标签 ${value.tagCount}）`]
         if (value.items.length === 0) lines.push('没有任何笔记引用它。')
@@ -891,7 +874,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision，允许覆盖同名 tiddler（默认 false；即便覆盖也会保留其 tags 与自定义字段）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: AttachResult) => {
         const lines = [`已保存附件「${value.title}」（${value.mime}，${value.bytes} 字节，base64 约 ${value.chars} 字符）`]
         if (value.source !== null) lines.push(`来源: ${value.source}`)
@@ -1000,7 +982,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       checks: { type: 'array', items: { type: 'string' }, description: '可选：只跑指定检查（junk-tags / broken-links / empty-notes / missing-type）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: LintResult) => {
         const lines = [`知识库体检：扫描 ${value.scanned} 条文本笔记，发现 ${value.issues.reduce((sum, i) => sum + i.count, 0)} 个问题。`]
         if (value.issues.length === 0) lines.push('没有发现问题。')
@@ -1106,7 +1087,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       message: { type: 'string', description: 'commit 信息（可选，仅 sync 的本地 commit 使用）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: SyncResult) => renderSync(value),
     },
     execute: async (args: { action: 'pull' | 'push' | 'sync'; message?: string }): Promise<SyncResult> => {
@@ -1171,7 +1151,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       files: { type: 'array', items: { type: 'string' }, description: '冲突文件名数组（来自 pull 返回的 conflictFiles；list 时忽略）' },
     },
     output: {
-      schema: { type: 'json' },
       render: (_args, value: ResolveResult) => {
         const lines = [`git resolve ${value.action}: ${value.ok ? '成功' : '失败'}`]
         lines.push(`  ${value.message}`)
@@ -1278,17 +1257,6 @@ interface ResolveResult {
   commit?: string
   hint?: string
   status?: GitStatusView
-}
-
-/** Shape of deps.git.status() as surfaced to the model (shared by renders). */
-interface GitStatusView {
-  branch: string
-  dirty: boolean
-  dirtyFiles: string[]
-  remote: string
-  lastCommit?: string
-  ahead?: number
-  behind?: number
 }
 
 /** One-line 状态 summary: 分支 … 领先 … 落后 … 工作区未提交 … 最近提交. */

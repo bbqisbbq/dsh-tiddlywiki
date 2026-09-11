@@ -4,9 +4,7 @@
  *
  * 场景：一次性写入 ~3000 条文本 tiddler + ~100 条 base64 二进制附件，然后验证
  * 大 wiki 上的关键不变量：
- *   1. `TEXT_LIST_FILTER` 字符串长度 ≤ 100 字符（Windows MAX_PATH 回归：外部 filter
- *      白名单 tiddler 的文件名 = 整个 filter 串，过长会让 `git add` 报
- *      "Filename too long"、自动 commit 静默失效）；
+ *   1. 检索/最近列表**不含**二进制 tiddler 的 base64 正文（外部 filter 生效）；
  *   2. `search` / `recent` 在阈值内返回（服务端只取文本 tiddler，不拉 base64 正文）；
  *   3. 二进制条目在 search / recent 里**零出现**（含标题命中）；
  *   4. 真跑一次 `git commit`，把全部文件吃下去（大 wiki 下 git 不炸、树干净）。
@@ -21,7 +19,8 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, TEXT_LIST_FILTER } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace } from '../lib/index.js'
+import { waitFor } from './lib/tw-harness.mjs'
 
 const BUDGET_MS = 180_000
 const TEXT_COUNT = 3000
@@ -43,16 +42,8 @@ async function test(name, fn) {
   }
 }
 
-async function waitFor(cond, timeoutMs, stepMs = 250) {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    let hit = false
-    try { hit = await cond() } catch { hit = false }
-    if (hit) return true
-    if (Date.now() >= deadline) return false
-    await new Promise((r) => setTimeout(r, stepMs))
-  }
-}
+/** 本脚本的轮询节奏：250ms（共享实现见 scripts/lib/tw-harness.mjs）。 */
+const waitForFiles = (cond, timeoutMs) => waitFor(cond, timeoutMs, 250)
 
 /** 有限并发的 pool：任何单条失败都被收集，不中断其余写入。 */
 async function runPool(items, limit, fn) {
@@ -91,13 +82,6 @@ try {
   await git.init(wikiDir, 'main')
   await git.initialCommit(wikiDir)
 
-  await test('TEXT_LIST_FILTER 长度 ≤ 100 字符（Windows MAX_PATH 回归守门）', () => {
-    assert.ok(
-      TEXT_LIST_FILTER.length <= 100,
-      `TEXT_LIST_FILTER 长度 ${TEXT_LIST_FILTER.length} > 100：白名单 tiddler 文件名 = 整个 filter 串，在 Windows 上会撞 MAX_PATH 让 git add 失败`,
-    )
-  })
-
   // ── 写入 3000 条文本 tiddler ──────────────────────────────────────────────
   const textTitles = Array.from({ length: TEXT_COUNT }, (_, i) => `Large-${String(i + 1).padStart(4, '0')}`)
   console.log(`写入 ${TEXT_COUNT} 条文本 tiddler（并发 ${WRITE_CONCURRENCY}）…`)
@@ -122,7 +106,7 @@ try {
   const countTiddlerFiles = async () =>
     (await readdir(tiddlersDir, { withFileTypes: true })).filter((e) => e.isFile()).length
   console.log(`等待 TW 异步落盘（目标 ≥ ${expectedFiles} 个文件）…`)
-  const flushed = await waitFor(async () => (await countTiddlerFiles()) >= expectedFiles, FLUSH_BUDGET_MS)
+  const flushed = await waitForFiles(async () => (await countTiddlerFiles()) >= expectedFiles, FLUSH_BUDGET_MS)
   await test('全部 tiddler 落盘（TW 同步队列吃下 3100 条）', async () => {
     const n = await countTiddlerFiles()
     assert.ok(flushed, `落盘超时：期望 ≥ ${expectedFiles}，实际 ${n}`)

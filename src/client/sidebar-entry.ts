@@ -90,19 +90,15 @@ function placeEntry(root: HTMLElement, entry: HTMLButtonElement): boolean {
   }
 }
 
-/** Debug counters (window.__twDebug) — evidence if the entry fails to appear. */
-interface TwDebug { attempts: number; found: boolean; placed: boolean }
-
 /**
  * Mount the sidebar entry, waiting for the shell and self-healing on later
- * re-renders. The row label starts at `initialLabel` and is refreshed from the
+ * re-renders. The row label starts at the default and is refreshed from the
  * live config (`ui.sidebarLabel`) as soon as /status answers.
  * @param state - the shared panel state the entry toggles.
- * @param initialLabel - default display name before config loads.
  * @returns disposer removing the entry and its observers.
  */
-export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'): () => void {
-  const { entry, labelEl } = createEntry(state, initialLabel)
+export function mountSidebarEntry(state: PanelState): () => void {
+  const { entry, labelEl } = createEntry(state, 'TiddlyWiki')
   // 自定义显示名：/status 返回 ui.sidebarLabel（设置页「侧边栏入口显示名称」），
   // 异步到达后原地更新，无需重建 DOM（旧 host 无该字段时保持默认名）。
   void (async () => {
@@ -113,11 +109,6 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
       entry.setAttribute('aria-label', label.trim())
     }
   })()
-  const debug: TwDebug = { attempts: 0, found: false, placed: false }
-  const host = globalThis.location?.hostname
-  if (host === 'localhost' || host === '127.0.0.1') {
-    ;(window as unknown as { __twDebug?: TwDebug }).__twDebug = debug
-  }
   let root: HTMLElement | undefined
   let placed = false
   /** 兜底轮询定时器：只在「尚未放置」或「shell 重建了 root」时运行。 */
@@ -140,7 +131,6 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
   }
 
   const tryPlace = (): void => {
-    debug.attempts++
     if (root !== undefined && !root.isConnected) {
       rootObserver.disconnect()
       root = undefined
@@ -157,9 +147,7 @@ export function mountSidebarEntry(state: PanelState, initialLabel = 'TiddlyWiki'
     }
     root ??= sidebarRoot()
     if (root === undefined) return
-    debug.found = newSessionButton(root) !== undefined
     placed = placeEntry(root, entry)
-    debug.placed = placed
     if (placed) {
       // 放置成功即停掉兜底轮询：后续自愈由 rootObserver/waitObserver 负责。
       stopRetry()

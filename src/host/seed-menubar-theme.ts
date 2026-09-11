@@ -88,7 +88,7 @@ nav.tc-menubar li.tc-menubar-item > button:focus-visible {
  * Seed the menubar theme override exactly once per wiki (mirrors the other
  * one-shot seeds). With `opts.force` the tiddler is overwritten with the
  * built-in content and the marker (re)written — the settings page uses this
- * for "重新初始化". Returns whether anything was written this call. Never throws.
+ * for "重新初始化". Returns whether anything was written this call. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function seedMenubarTheme(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
@@ -115,7 +115,7 @@ export async function seedMenubarTheme(client: TiddlyWebClient, opts?: { force?:
  * Un-seed (反初始化): remove the menubar override stylesheet and its marker,
  * returning the wiki to the pre-seed state (the tiddlywiki/menubar top bar
  * falls back to its original colour-mapping behaviour). Deletion is
- * idempotent — a tiddler already gone is not listed. Never throws.
+ * idempotent — a tiddler already gone is not listed. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function unseedMenubarTheme(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []

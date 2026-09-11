@@ -38,12 +38,27 @@ function baseEndpoint() {
 	return "/dsh-tiddlywiki";
 }
 
+/*
+Show a transient message.
+
+TW's notifier renders a TIDDLER by title and does **nothing at all** when that
+tiddler does not exist (core/modules/utils/dom/notifier.js: "Don't do anything
+if the tiddler doesn't exist"). Passing free text as the title — which is what
+this function used to do — therefore made every success/failure notice of the
+「发送给 Agent」 button invisible: the user clicked, chose a session, and saw
+nothing. Store the message in a $:/temp tiddler first (volatile: never synced,
+never written to disk) and display THAT title.
+*/
+var NOTICE_TITLE = "$:/temp/dsh/send-to-agent/notice";
 function notify(msg) {
-	if ($tw.notifier && typeof $tw.notifier.display === "function") {
-		$tw.notifier.display(msg);
-	} else if (typeof alert === "function") {
-		alert(msg);
-	}
+	try {
+		if ($tw.wiki && $tw.notifier && typeof $tw.notifier.display === "function" && typeof $tw.wiki.addTiddler === "function") {
+			$tw.wiki.addTiddler({ title: NOTICE_TITLE, text: String(msg), type: "text/vnd.tiddlywiki" });
+			$tw.notifier.display(NOTICE_TITLE);
+			return;
+		}
+	} catch (e) {}
+	if (typeof alert === "function") { alert(msg); }
 }
 
 function doSend(payload, sessionId, note) {

@@ -26,6 +26,10 @@ ok('startup doSend(note) signature', s.includes('function doSend(payload, sessio
 ok('startup note textarea', s.includes('附加说明（可选，随笔记一起发给 Agent）'))
 ok('startup permission select', s.includes('权限（权限预设）— 用于新建会话'))
 ok('startup handles permissions from modes', s.includes('parsed2.permissions'))
+// v0.20.0: $tw.notifier.display() renders a TIDDLER by title and silently does
+// nothing for a missing one — passing the free-text message (the old code) made
+// every notice of this button invisible. The message must be stored first.
+ok('startup notify stores the message in a $:/temp tiddler before display', s.includes('NOTICE_TITLE') && s.includes('$tw.wiki.addTiddler') && s.includes('$tw.notifier.display(NOTICE_TITLE)'))
 const pi = JSON.parse(T['$:/plugins/dsh/send-to-agent/plugin.info'].text)
 // Single source of truth: scripts/bundle/versions.mjs (imported by
 // build-send-to-agent-bundle.mjs). The inner plugin.info version must equal it.
@@ -87,6 +91,15 @@ if (literal !== null) {
     embeddedSeed !== null && norm(embeddedSeed) === norm(bundleRaw),
   )
 }
+
+// --- outer tiddler version gate (v0.20.0) -----------------------------------
+// The render pipeline asserted this from the start; send-to-agent did not, so
+// `src/host/seed-send-to-agent.ts`'s outer `version: '…'` could go stale (a
+// wiki would then show/badge the wrong plugin version) with every check green.
+// gen-seed-send-to-agent.mjs writes it from the bundle's plugin.info version.
+const outerVersion = seedRaw.match(/^\s*version:\s*'([^']+)'/m)
+ok('seed-send-to-agent.ts 外层 tiddler version === bundle plugin.info.version',
+  outerVersion !== null && outerVersion[1] === pi.version)
 
 let failed = false
 for (const [name, pass] of checks) {

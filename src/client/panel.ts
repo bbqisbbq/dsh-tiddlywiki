@@ -23,11 +23,8 @@
 import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
-// 事件名单一来源：两个协议常量由 tw-frame.ts 定义（panel/rightbar 共同依赖），
-// 这里再 re-export 以兼容既有 `import { PANEL_RELOAD_EVENT } from './panel.ts'`。
+// 事件名单一来源：两个协议常量由 tw-frame.ts 定义（panel/rightbar 共同依赖）。
 import { ACTIVATE_EVENT, openTiddlerInLiveTab, PANEL_RELOAD_EVENT } from './tw-frame.ts'
-
-export { ACTIVATE_EVENT, PANEL_RELOAD_EVENT }
 
 /**
  * Center-column targets, most-specific shell generation first. The official
@@ -60,8 +57,8 @@ const APP_OVERLAY_Z_INDEX = 20
 /** Safety re-measure cadence for shell layout changes CSS can't see. */
 const SYNC_INTERVAL_MS = 2_000
 
+import { RESTART_ENDPOINT } from './endpoints.ts'
 import { fetchStatus } from './status-cache.ts'
-const RESTART_ENDPOINT = '/dsh-tiddlywiki/restart'
 
 /**
  * Cross-module open request: the reply-stream tool cards and the document

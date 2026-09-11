@@ -81,7 +81,7 @@ export const UI_STYLE_ITEMS: UiStyleItem[] = ${literal(items)}
  * Seed the custom stylesheet tiddlers once per wiki (mirrors the one-shot
  * policy). With opts.force the tiddlers are overwritten with the built-in
  * content and the marker (re)written — the settings page uses this for
- * "重新初始化". Returns whether anything was written this call. Never throws.
+ * "重新初始化". Returns whether anything was written this call. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function seedUiStyles(client: TiddlyWebClient, opts?: { force?: boolean }): Promise<boolean> {
   const force = opts?.force === true
@@ -103,7 +103,7 @@ export async function seedUiStyles(client: TiddlyWebClient, opts?: { force?: boo
 
 /**
  * Un-seed (反初始化): remove the stylesheet tiddlers and their marker.
- * Deletion is idempotent — a tiddler already gone is not listed. Never throws.
+ * Deletion is idempotent — a tiddler already gone is not listed. Throws when a read fails (the seed registry reports it as `ok:false`).
  */
 export async function unseedUiStyles(client: TiddlyWebClient): Promise<{ removed: string[] }> {
   const removed: string[] = []

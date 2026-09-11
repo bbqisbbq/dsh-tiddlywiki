@@ -23,7 +23,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { ROUTE_PREFIX, redactLogLines, redactRemoteUrl, type WebServerFace } from './routes.ts'
-import { CONFIG_TIDDLER, type ConfigStore, type PluginConfigShape } from './config.ts'
+import { type ConfigStore, type PluginConfigShape } from './config.ts'
 import { readBody, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
 import { waitForFileWrite, needsRestartAfterSeeds, flushPendingWrites } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
@@ -315,15 +315,31 @@ export interface AdminDeps {
  */
 export const MASKED_SECRET = '********'
 
-/** Mask secrets (and credentials inside the git remote URL) for an HTTP caller. */
+/**
+ * Mask secrets (and credentials inside the git remote URL) for an HTTP caller.
+ *
+ * v0.20.0: `auth.password` is masked too. The v0.19.3 implementation (and the
+ * docs) claimed it was, but only `bridge.token` / `ui.sendToAgent.token` /
+ * `git.remote` were handled — a config tiddler carrying `auth.password` (the
+ * config tiddler is a wiki tiddler; a user can hand-edit it) was echoed in
+ * clear text by the unauthenticated `GET /admin/state`. `passwordSet` mirrors
+ * the `tokenSet` flag so the settings UI can show "a password is stored"
+ * without ever receiving it.
+ */
 export function maskConfigSecrets(config: PluginConfigShape): PluginConfigShape {
   const bridge = (config.bridge ?? {}) as Record<string, unknown>
   const ui = (config.ui ?? {}) as Record<string, unknown>
   const sendToAgent = (ui.sendToAgent ?? {}) as Record<string, unknown>
   const git = (config.git ?? {}) as Record<string, unknown>
+  const auth = (config.auth ?? {}) as Record<string, unknown>
   const maskToken = (value: unknown): string => (typeof value === 'string' && value.length > 0 ? MASKED_SECRET : '')
   return {
     ...config,
+    auth: {
+      ...auth,
+      password: maskToken(auth.password),
+      passwordSet: typeof auth.password === 'string' && auth.password.length > 0,
+    },
     git: { ...git, remote: typeof git.remote === 'string' ? redactRemoteUrl(git.remote) : git.remote },
     bridge: {
       ...bridge,
@@ -357,6 +373,14 @@ export function stripMaskedSecrets<T extends Record<string, unknown>>(patch: T, 
     return obj
   }
   if (copy.bridge !== undefined) copy.bridge = cleanToken(copy.bridge)
+  // v0.20.0: the same round-trip rule for auth.password (`passwordSet` is a
+  // display-only flag and must never be persisted).
+  if (copy.auth !== undefined && typeof copy.auth === 'object' && copy.auth !== null) {
+    const auth = { ...(copy.auth as Record<string, unknown>) }
+    if (auth.password === MASKED_SECRET) delete auth.password
+    delete auth.passwordSet
+    copy.auth = auth
+  }
   if (copy.ui !== undefined) {
     const ui = typeof copy.ui === 'object' && copy.ui !== null
       ? { ...(copy.ui as Record<string, unknown>) }

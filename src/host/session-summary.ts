@@ -25,7 +25,7 @@
  *
  * @module dsh-tiddlywiki/host/session-summary
  */
-import type { TiddlyWebClient } from './tw-api.ts'
+import { parseTiddlerDate, type TiddlyWebClient } from './tw-api.ts'
 
 /** 会话汇总 tiddler 的 $:/temp 命名空间前缀。 */
 export const SESSION_SUMMARY_PREFIX = '$:/temp/dsh/session-summary/'
@@ -306,11 +306,18 @@ function fmtTime(ms: number): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** TW modified ISO → 本地时间（解析失败则原样返回）。 */
-function fmtModified(iso: string | undefined): string {
-  if (iso === undefined || iso.length === 0) return ''
-  const ms = Date.parse(iso)
-  return Number.isNaN(ms) ? iso : fmtTime(ms)
+/**
+ * TW `modified` → 本地时间（解析失败则原样返回）。
+ *
+ * v0.20.0: the REST layer returns the COMPACT form (`20260101000000000`,
+ * YYYYMMDDhhmmssSSS UTC), which `Date.parse()` rejects with NaN — the summary
+ * therefore printed the raw 17-digit string. `parseTiddlerDate` handles both
+ * the compact and the ISO form (same rule as the rest of the host).
+ */
+function fmtModified(value: string | undefined): string {
+  if (value === undefined || value.length === 0) return ''
+  const ms = parseTiddlerDate(value)
+  return ms === undefined ? value : fmtTime(ms)
 }
 
 /** 组装分组 wikitext：产生 / 读取（未产生过的）/ 检索记录。 */

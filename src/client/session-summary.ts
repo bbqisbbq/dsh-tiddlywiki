@@ -34,24 +34,14 @@
  * @module dsh-tiddlywiki/client/session-summary
  */
 import * as React from 'react'
-import { GET_ENDPOINT, RENDER_ENDPOINT } from './endpoints.ts'
+import { GET_ENDPOINT, RENDER_ENDPOINT, SESSION_SUMMARY_ENDPOINT as SUMMARY_ENDPOINT } from './endpoints.ts'
 import { getTabLabel, setTabLabel } from './tw-frame.ts'
 
 export const SESSION_SUMMARY_VIEW_ID = 'dsh-tiddlywiki-summary'
-const SUMMARY_ENDPOINT = '/dsh-tiddlywiki/session/summary'
 /** 自愈探测周期：服务端 volatile 条目被清（TW 重启）→ 自动重新生成。 */
 const SELF_HEAL_MS = 30_000
 /** 连续多少次「生成后服务端仍缺失」后停止自动重试，交还手动「🔄 刷新」。 */
 const MAX_MISSES = 3
-
-/**
- * Tab 名写入共享标签（tw-frame.ts 的 `ui.tabLabel`）：/status 每次刷新都会调
- * 那里的 setTabLabel，labelThunk 直接读 getTabLabel()，所以设置页改
- * `ui.tabLabel` 后无需整页刷新（旧实现只在这里 mount 时缓存一次）。
- */
-export function setSessionSummaryTabLabel(label: string): void {
-  setTabLabel(label)
-}
 
 /** 槽位 label thunk：每次投影重读共享标签，配置变更即时生效。 */
 function labelThunk(): string {
@@ -66,7 +56,7 @@ interface SessionSummaryViewProps {
   completeViewRequest?: () => void
 }
 
-/** POST /tw/render：把汇总 tiddler 的 wikitext 块解析成原生 HTML 片段（失败返回 null）。 */
+/** POST RENDER_ENDPOINT（host 转 TW /render 并净化）：把汇总 tiddler 的 wikitext 块解析成原生 HTML 片段（失败返回 null）。 */
 async function fetchRenderFragment(title: string): Promise<string | null> {
   try {
     const res = await fetch(RENDER_ENDPOINT, {
@@ -97,7 +87,7 @@ async function tiddlerExists(title: string): Promise<boolean> {
   }
 }
 
-/** View 组件：生成汇总 → /tw/render 原生片段；顶栏带手动刷新。 */
+/** View 组件：生成汇总 → host /render 原生片段；顶栏带手动刷新。 */
 function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement {
   const { sessionId, viewRequest, completeViewRequest } = props
   const [phase, setPhase] = React.useState<'loading' | 'ready' | 'error'>('loading')
@@ -170,7 +160,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         }
         failuresRef.current++
         setPhase('error')
-        setError('渲染失败：wiki 渲染服务不可用（/tw/render）')
+        setError('渲染失败：wiki 渲染服务不可用（host /render）')
         return
       }
       failuresRef.current = 0
@@ -300,7 +290,7 @@ interface SlotsFace {
  */
 export function mountSessionSummaryView(slots: SlotsFace | undefined, cfg: { tabLabel: string; showSessionTab: boolean }): (() => void) | undefined {
   if (slots === undefined || cfg.showSessionTab === false) return undefined
-  setSessionSummaryTabLabel(cfg.tabLabel)
+  setTabLabel(cfg.tabLabel)
   return slots.inject('conversation.view', () =>
     slots.register(
       { name: 'conversation.view', id: SESSION_SUMMARY_VIEW_ID, order: 20, label: labelThunk },
