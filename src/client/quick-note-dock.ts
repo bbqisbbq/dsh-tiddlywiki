@@ -38,13 +38,21 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
     const wrapRef = React.useRef<HTMLDivElement | null>(null)
     const btnRef = React.useRef<HTMLButtonElement | null>(null)
     React.useEffect(() => {
+      // alive 守卫（v0.22.3）：卸载后不再 setState；fetchUiConfig 带 TTL 缓存但
+      // 首次调用会真的发请求，回调可能在组件卸载之后才 resolve。
+      let alive = true
       const onState = (event: Event): void => {
         const detail = (event as CustomEvent<{ open?: boolean }>).detail
         setOpen(detail?.open === true)
       }
       window.addEventListener(NOTE_STATE_EVENT, onState)
-      void fetchUiConfig().then((cfg) => setMode(cfg.quickNoteMode))
-      return () => window.removeEventListener(NOTE_STATE_EVENT, onState)
+      void fetchUiConfig().then((cfg) => {
+        if (alive) setMode(cfg.quickNoteMode)
+      })
+      return () => {
+        alive = false
+        window.removeEventListener(NOTE_STATE_EVENT, onState)
+      }
     }, [])
     React.useLayoutEffect(() => {
       const wrap = wrapRef.current

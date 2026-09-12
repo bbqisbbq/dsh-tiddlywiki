@@ -227,7 +227,9 @@ function ToolCardShell(props: {
           ? React.createElement(
               'span',
               { className: 'dsh-tw-toolcard-tags' },
-              ...props.tags.map((tag) => React.createElement('span', { className: 'dsh-tw-toolcard-tag', key: tag }, tag)),
+              // index in the key: a tiddler can carry the same tag twice (TW does
+              // not dedup), and duplicate keys make React drop/reshuffle chips.
+              ...props.tags.map((tag, index) => React.createElement('span', { className: 'dsh-tw-toolcard-tag', key: `${index}-${tag}` }, tag)),
             )
           : null,
       )

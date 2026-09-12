@@ -96,6 +96,13 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
   const [error, setError] = React.useState('')
   const genRef = React.useRef(0)
   /**
+   * 卸载守卫（v0.22.3）：genRef 只能识别「被更新的一次 generate 取代」，覆盖不到
+   * 卸载——组件卸载后 genRef 不再变化，在途的 fetch 一 resolve 就会 setState，并
+   * 在「条目缺失」分支里再递归触发一轮请求（clearInterval 挡不住已在途的那次）。
+   * 置 false 的效果排在同组件其它 effect 之前执行，所以清理顺序不影响它。
+   */
+  const mountedRef = React.useRef(true)
+  /**
    * 统一「连续失败计数」：任何一次 generate() 失败（HTTP 失败 / 缺标题 / 渲染
    * 服务不可用 / 条目缺失 / 抛错）都递增，任何一次成功归零。达到 MAX_MISSES 后
    * 彻底停止自动重试（此前 missesRef 与 autoRetriedRef 交替复位会形成无界自动
@@ -105,6 +112,8 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
 
   const generate = React.useCallback(async (): Promise<void> => {
     const gen = ++genRef.current
+    // 卸载后不再发起新一轮（含「条目缺失 → 自动重建」的递归调用）。
+    if (!mountedRef.current) return
     setPhase('loading')
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       setPhase('error')
@@ -125,7 +134,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         signal: AbortSignal.timeout(25_000),
       })
       const data = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; error?: string } | null
-      if (gen !== genRef.current) return
+      if (!mountedRef.current || gen !== genRef.current) return
       if (!res.ok || data?.ok !== true) {
         failuresRef.current++
         setPhase('error')
@@ -142,12 +151,12 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
       // 原生渲染：wikitext → HTML 片段（块解析，标题/表格/列表/引用齐全，
       // 链接已重写为 /dsh-tiddlywiki/tw/#标题，点击由全局拦截器接管）。
       const fragment = await fetchRenderFragment(data.title)
-      if (gen !== genRef.current) return
+      if (!mountedRef.current || gen !== genRef.current) return
       if (fragment === null) {
         // 区分「条目被清（TW 重启把 $:/temp 冲掉了）」与「渲染服务不可用」：
         // 前者自动重建（受 MAX_MISSES 约束，有界），后者直接报错交还手动重试。
         const exists = await tiddlerExists(data.title)
-        if (gen !== genRef.current) return
+        if (!mountedRef.current || gen !== genRef.current) return
         if (!exists) {
           failuresRef.current++
           if (failuresRef.current < MAX_MISSES) {
@@ -167,7 +176,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
       setHtml(fragment)
       setPhase('ready')
     } catch (err) {
-      if (gen !== genRef.current) return
+      if (!mountedRef.current || gen !== genRef.current) return
       failuresRef.current++
       setPhase('error')
       setError(err instanceof Error ? err.message : String(err))
@@ -175,8 +184,13 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
   }, [sessionId])
 
   // 进入 tab 自动触发生成；切走再切回会重新挂载 → 再次生成（总是最新）。
+  // 卸载时置 mountedRef=false：在途请求 resolve 后不再 setState / 不再递归重建。
   React.useEffect(() => {
+    mountedRef.current = true
     void generate()
+    return () => {
+      mountedRef.current = false
+    }
   }, [generate])
 
   // 自愈：汇总条目是 volatile 的 `$:/temp`，TW 重启即消失；若已就绪但条目

@@ -49,7 +49,7 @@ interface CatalogEntry {
 interface AdminState {
   ok?: boolean
   server?: { status?: string; url?: string; wikiPath?: string; error?: string }
-  info?: { plugins?: string[]; themes?: string[]; languages?: string[] }
+  info?: { plugins?: string[]; themes?: string[]; languages?: string[]; themeActive?: string }
   catalog?: { plugins?: CatalogEntry[]; themes?: CatalogEntry[]; languages?: CatalogEntry[] }
   config?: Record<string, unknown>
   git?: { exists?: boolean; branch?: string; dirty?: boolean; lastCommit?: string; remote?: string } | null
@@ -101,7 +101,6 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 /** Form controls registry for the config section (changed-only patch). */
 interface ConfigField {
   key: string
-  input: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
   initial: string | boolean | number
   read: () => string | boolean | number
   changed: () => boolean
@@ -224,7 +223,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     input.value = initial
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)
-    fields.push({ key, input, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
+    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
     section.append(wrap)
   }
   const checkField = (key: string, label: string, initial: boolean): void => {
@@ -233,7 +232,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     input.checked = initial
     const wrap = make('label', 'dsh-tw-settings-field dsh-tw-settings-field-check')
     wrap.append(input, make('span', 'dsh-tw-settings-label', label))
-    fields.push({ key, input, initial, read: () => input.checked, changed: () => input.checked !== initial })
+    fields.push({ key, initial, read: () => input.checked, changed: () => input.checked !== initial })
     section.append(wrap)
   }
   const numField = (key: string, label: string, initial: number): void => {
@@ -250,7 +249,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     }
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)
-    fields.push({ key, input, initial, read, changed: () => read() !== initial })
+    fields.push({ key, initial, read, changed: () => read() !== initial })
     section.append(wrap)
   }
   const selectField = (key: string, label: string, initial: string, options: Array<{ value: string; label: string }>): void => {
@@ -264,7 +263,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     }
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), select)
-    fields.push({ key, input: select, initial, read: () => select.value, changed: () => select.value !== initial })
+    fields.push({ key, initial, read: () => select.value, changed: () => select.value !== initial })
     section.append(wrap)
   }
   /**
@@ -279,7 +278,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     input.value = initial
     const wrap = make('label', 'dsh-tw-settings-field dsh-tw-settings-field-area')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)
-    fields.push({ key, input, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
+    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
     section.append(wrap)
     return input
   }
@@ -477,7 +476,18 @@ function renderCatalogSection(
     make('span', 'dsh-tw-settings-name', '主题'),
   )
   const themeList = info?.themes ?? []
-  let activeThemeName = themeList.length > 0 ? themeList[themeList.length - 1] : 'tiddlywiki/vanilla'
+  // The ACTIVE theme comes from the host (`$:/theme`, v0.22.3). Deriving it from
+  // the last loaded entry was a guess: with an explicitly activated non-last
+  // theme the wrong radio showed up checked, and one click on 应用主题 (without
+  // touching the radios) rewrote `$:/theme` to that wrong pick. Guessing stays
+  // as the fallback only when the host cannot tell (wiki down / no `$:/theme`).
+  const activeFromServer = info?.themeActive
+  let activeThemeName =
+    typeof activeFromServer === 'string' && themes.some((theme) => theme.name === activeFromServer)
+      ? activeFromServer
+      : themeList.length > 0
+        ? themeList[themeList.length - 1]
+        : 'tiddlywiki/vanilla'
   const themeWrap = make('div', 'dsh-tw-settings-list')
   for (const theme of themes) {
     const load = make('input', 'dsh-tw-settings-check')

@@ -155,6 +155,28 @@ export async function ensurePlugin(wikiPath: string, twRoot: string, name: strin
   return true
 }
 
+/**
+ * The theme the TW runtime is ACTUALLY showing, as a catalog-style name
+ * (`tiddlywiki/heavier`), or undefined when unknown (wiki down, no `$:/theme`).
+ *
+ * `$:/theme` holds the active theme title and is normally written as
+ * `$:/themes/<name>` (that is what this route's own POST writes), but a user
+ * who picked a theme in TW's Control Panel can leave the fully-qualified
+ * title there — strip the prefix so both shapes compare against the catalog.
+ * Without this the settings page could only guess "the last loaded theme"
+ * (v0.22.3), and one click on 应用主题 silently overwrote the real choice.
+ */
+export async function readActiveThemeName(client: TiddlyWebClient | undefined): Promise<string | undefined> {
+  try {
+    const tiddler = await client?.get('$:/theme')
+    const raw = typeof tiddler?.text === 'string' ? tiddler.text.trim() : ''
+    if (raw.length === 0) return undefined
+    return raw.startsWith('$:/themes/') ? raw.slice('$:/themes/'.length) : raw
+  } catch {
+    return undefined
+  }
+}
+
 /** Enumerate bundled official plugins + themes + languages of tiddlywiki. */
 export async function bundledCatalog(twRoot: string): Promise<Catalog> {
   // TW themes are SKINS layered on the vanilla base (which carries the full
@@ -443,11 +465,16 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         git = null
       }
       const view = deps.server.status()
+      // Which theme the runtime actually shows (v0.22.3): the settings page used
+      // to derive it from the LAST entry of info.themes, so a non-last active
+      // theme displayed the wrong radio — and re-applying it (even without
+      // touching the radios) rewrote `$:/theme` to that wrong pick.
+      const themeActive = await readActiveThemeName(deps.getClient())
       json(res, {
         ok: true,
         // Same redaction as GET /status: this route is unauthenticated too.
         server: { ...view, logs: redactLogLines(view.logs) },
-        info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [] },
+        info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [], themeActive },
         catalog,
         config: maskConfigSecrets(deps.config.get()),
         git,

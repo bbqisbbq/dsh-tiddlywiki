@@ -23,8 +23,9 @@
 import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
-// 事件名单一来源：两个协议常量由 tw-frame.ts 定义（panel/rightbar 共同依赖）。
-import { ACTIVATE_EVENT, openTiddlerInLiveTab, PANEL_RELOAD_EVENT } from './tw-frame.ts'
+// 事件名单一来源：两个协议常量与 frame 生命周期助手都由 tw-frame.ts 提供
+// （panel/rightbar 共同依赖）。requestRestart 也只此一份（v0.22.3 去重）。
+import { ACTIVATE_EVENT, loadableFrameUrl, openTiddlerInLiveTab, PANEL_RELOAD_EVENT, requestRestart } from './tw-frame.ts'
 
 /**
  * Center-column targets, most-specific shell generation first. The official
@@ -57,7 +58,6 @@ const APP_OVERLAY_Z_INDEX = 20
 /** Safety re-measure cadence for shell layout changes CSS can't see. */
 const SYNC_INTERVAL_MS = 2_000
 
-import { RESTART_ENDPOINT } from './endpoints.ts'
 import { fetchStatus } from './status-cache.ts'
 
 /**
@@ -97,15 +97,6 @@ function conversationColumn(): HTMLElement | undefined {
     if (el !== null) return el
   }
   return undefined
-}
-
-async function requestRestart(): Promise<boolean> {
-  try {
-    const res = await fetch(RESTART_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(8_000) })
-    return res.ok
-  } catch {
-    return false
-  }
 }
 
 export function mountPanel(state: PanelState): () => void {
@@ -310,8 +301,12 @@ export function mountPanel(state: PanelState): () => void {
   const fallbackLoad = (hash: string): void => {
     if (disposed || iframe === undefined) return // never drive a detached frame
     if (pendingHash === hash) pendingHash = null
-    const base = iframe.src.split('#')[0]
-    if (iframe.src !== `${base}${hash}`) iframe.src = `${base}${hash}`
+    // dataset.loaded（showFrame 只写这个）而不是 iframe.src：src 为空时读出来
+    // 是**DSH 页面自己的 URL**，赋 `'' + '#标题'` 会把 DSH 载进 iframe（v0.22.3）。
+    const base = loadableFrameUrl(iframe.dataset)
+    if (base === null) return
+    const next = `${base.split('#')[0]}${hash}`
+    if (iframe.src !== next) iframe.src = next
   }
 
   const onOpenTiddler = (event: Event): void => {
@@ -439,10 +434,13 @@ export function mountPanel(state: PanelState): () => void {
   // The "知识库" FAB's 重载面板 entry dispatches this event to reload the
   // iframe (the panel itself no longer owns a floating status/reload button).
   const onReloadRequest = (): void => {
-    // `!iframe.hidden` 在 showFrame 修正后仍然成立：iframe 只在「面板打开 + 服务
-    // running」时被显示，因此 !hidden ⇒ 面板开着且已加载真实 twProxy 地址（也避免
-    // 对尚未设置 src 的 iframe 赋值空串把 DSH 页面载进自身）。
-    if (iframe !== undefined && !iframe.hidden) iframe.src = iframe.src
+    // 只有真的载入过 TW 代理地址的 iframe 才允许重载：`!iframe.hidden` 已经不足
+    // 以证明这一点（showFrame 之外，iframe 也可能是「面板打开但首个 /status 还在
+    // 途」），而 `iframe.src = iframe.src` 在 src 为空串时会把 **DSH 页面**载进
+    // iframe（v0.22.3）。判据统一用 dataset.loaded（只由 showFrame 写）。
+    if (iframe === undefined) return
+    const loaded = loadableFrameUrl(iframe.dataset)
+    if (loaded !== null && !iframe.hidden) iframe.src = loaded
   }
   document.addEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
   document.addEventListener(OPEN_TIDDLER_EVENT, onOpenTiddler)

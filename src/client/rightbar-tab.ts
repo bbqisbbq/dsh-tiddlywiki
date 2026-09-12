@@ -112,7 +112,8 @@ export function TwRightbarTabBody(props: RightbarTabBodyProps): React.ReactEleme
     return () => document.removeEventListener(ACTIVATE_EVENT, onActivate)
   }, [visible, close])
 
-  return React.createElement('div', { ref: hostRef, className: 'dsh-tw-rightbar-tab', 'data-dsh-tw-rightbar': '' })
+  // 不再挂 `data-dsh-tw-rightbar`（v0.22.3）：没有任何选择器/代码消费它。
+  return React.createElement('div', { ref: hostRef, className: 'dsh-tw-rightbar-tab' })
 }
 
 /** The tab definition (stage 1): a page type opened by kind, with a guide entry box. */

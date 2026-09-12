@@ -356,7 +356,6 @@ interface BuiltUi {
   draftBanner: HTMLDivElement
   /** 草稿横幅文案（恢复「其它窗口草稿」时改写为带来源的提示）。 */
   bannerText: HTMLSpanElement
-  recentBtn: HTMLButtonElement
   recentWrap: HTMLDivElement
 }
 
@@ -820,7 +819,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     root.append(card, recentWrap)
     document.body.append(root)
 
-    const handle: BuiltUi = { root, card, editor, titleInput, tagEditor, saveBtn, editBtn, draftBanner, bannerText, recentBtn, recentWrap }
+    const handle: BuiltUi = { root, card, editor, titleInput, tagEditor, saveBtn, editBtn, draftBanner, bannerText, recentWrap }
     ui = handle
 
     const close = (): void => {
@@ -1067,8 +1066,10 @@ export function createNoteWidget(): NoteWidgetHandle {
       ui?.tagEditor.dispose()
       ui?.editor.view.destroy()
       ui?.root.remove()
-      const toastEl = document.querySelector<HTMLElement>('.dsh-tw-toast')
-      toastEl?.remove()
+      // NOTE: `.dsh-tw-toast` is deliberately NOT removed here (v0.22.3). It is a
+      // page-level singleton owned by toast.ts and shared with the settings page;
+      // deleting it on this widget's unmount killed a toast another surface was
+      // showing (toast.ts would only re-create it on the next call).
       ui = undefined
     },
   }

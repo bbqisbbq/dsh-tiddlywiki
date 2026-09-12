@@ -224,18 +224,33 @@ function syncColorScheme($tw: NonNullable<TwRuntime['$tw']>, frame: HTMLIFrameEl
   }
 }
 
-/** Apply the current DSH theme to one TW iframe (no-op until TW is ready). */
+/**
+ * Apply the current DSH theme to one TW iframe (no-op until TW is ready).
+ *
+ * Every path in here is best-effort and MUST NOT throw: `setThemeSyncConfig()`
+ * calls the registered appliers synchronously from inside `doRefresh()`'s
+ * `await` chain, so one exception becomes an unhandled rejection (and skips the
+ * rest of that refresh) for every caller — including the two surfaces that
+ * mount this on the frame's `load` event. The access below is the sharp edge:
+ * as soon as the frame navigates somewhere cross-origin (a link inside the
+ * embedded TW), reading `contentWindow.$tw` itself raises SecurityError — the
+ * inner helpers' try/catch blocks never get a chance to run.
+ */
 function applyToFrame(frame: HTMLIFrameElement): void {
-  const $tw = (frame.contentWindow as TwRuntime | null)?.$tw
-  if ($tw === undefined || $tw.wiki === undefined) return
-  installPaletteSaveGuard($tw)
-  if (syncEnabled) {
-    applyPalette($tw, readDshDark())
-  } else {
-    // Feature off → undo any palette we forced (leave the user's own choice).
-    applyPalette($tw, false)
+  try {
+    const $tw = (frame.contentWindow as TwRuntime | null)?.$tw
+    if ($tw === undefined || $tw.wiki === undefined) return
+    installPaletteSaveGuard($tw)
+    if (syncEnabled) {
+      applyPalette($tw, readDshDark())
+    } else {
+      // Feature off → undo any palette we forced (leave the user's own choice).
+      applyPalette($tw, false)
+    }
+    syncColorScheme($tw, frame)
+  } catch {
+    // Cross-origin frame, TW not booted, detached frame: the next pass retries.
   }
-  syncColorScheme($tw, frame)
 }
 
 /**

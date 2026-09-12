@@ -18,7 +18,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.22.2`（git tag `v0.22.2`；v0.22.2 = 修「主题汇总页·模板」seed 内容重复：删掉裸 `<$list>` 可选段，模板只留一个列表；v0.22.1 = 首页快速笔记标题日期 token 修复 + gen-seed-home 转义修复；v0.22.0 = 运行时切换知识库 + seed 内容哈希更新检测 + flush 真正排干；v0.21.0 = 注入提示词精简+可配置） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
+| **插件版本** | `0.22.3`（git tag `v0.22.3`；v0.22.3 = 第五轮审计的**客户端**修复（host 侧逐条对照零缺陷）：iframe 空 `src` 陷阱（FAB 重载 / hash 兜底加载改用 `dataset.loaded`）、`/admin/state` 回传真实活动主题 `info.themeActive`、`applyToFrame` 跨源 try/catch、卸载守卫与死标记清理 + `verify-frame-guards.mjs`；v0.22.2 = 修「主题汇总页·模板」seed 内容重复：删掉裸 `<$list>` 可选段，模板只留一个列表；v0.22.1 = 首页快速笔记标题日期 token 修复 + gen-seed-home 转义修复；v0.22.0 = 运行时切换知识库 + seed 内容哈希更新检测 + flush 真正排干；v0.21.0 = 注入提示词精简+可配置） | `package.json` `version`（三处版本一致性由 `scripts/verify-version-consistency.mjs` 守门） |
 | **「发送给 Agent」bundle 版本** | `0.3.5`（v0.20.0 修复 `notify()`：TW 的 notifier 只认**已存在的 tiddler 标题**，传自由文本＝静默无提示；现在先写 `$:/temp/dsh/send-to-agent/notice` 再 display。提示词注入消息：附加说明放**消息末尾**） | `scripts/bundle/versions.mjs` + `scripts/build-send-to-agent-bundle.mjs` + `scripts/verify-send-to-agent-bundle.mjs`（含外层 version 守门） |
 | **渲染路由 bundle 版本** | `0.2.0`（v0.18.0：`/render` 按 tiddler 自己的 `type` 渲染） | `scripts/bundle/versions.mjs` + `scripts/build-render-bundle.mjs` + `scripts/verify-render-bundle.mjs`（v0.19.0 新增逐字节守门） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册，加一个就是再加一条 `defineTool`；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
@@ -80,7 +80,7 @@ npm run selftest      # headless：spawn TW → REST 读写 → git → 15 个�
 npm run smoke:client  # client bundle 的 module-loader 形状冒烟（wrap-client 之外的第二道）
 npm run verify        # = verify:static + verify:unit + verify:e2e + verify:large（本地一键）
 npm run verify:static # send-to-agent bundle 逐字节 / render bundle 逐字节 / 发布包内容 / 版本一致性 / 静态常量（TEXT_LIST_FILTER 长度预算）
-npm run verify:unit   # 剪藏桥（含 IPv6/保留网段 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器 / 配置密钥遮掩（含 auth.password，v0.20.0）/ **写策略纯函数（type 保留，v0.20.1）** / **注入提示词（slim 无参数清单、full 与工具注册表逐项一致、治理约定不丢，v0.21.0）** / 客户端 status-cache 合并（tsx 直跑源码）
+npm run verify:unit   # 剪藏桥（含 IPv6/保留网段 SSRF 回归）/ seed 读失败策略 / 渲染片段净化器 / 配置密钥遮掩（含 auth.password，v0.20.0）/ **写策略纯函数（type 保留，v0.20.1）** / **注入提示词（slim 无参数清单、full 与工具注册表逐项一致、治理约定不丢，v0.21.0）** / **客户端 frame 守门（v0.22.3：空 src 陷阱、活动主题优先级、跨源 try/catch、共享 toast、死标记）** / 客户端 status-cache 合并（tsx 直跑源码）
 npm run verify:e2e    # auth 模式 / 工具层 / **审计回归 verify-audit-fixes**（attach 覆盖保护 / 草稿类型 / 回收站索引 / delete 并发 / rename 部分失败 / 汇总未探测 / batch_put 并发顺序）/ git 冲突解决 / 崩溃自愈+并发写 / seed 两个 E2E / **verify-wiki-switch（v0.22.0：真起两个 wiki，切换 / 回滚 / 指针文件 / 非法输入）**
 npm run verify:large  # 3000+ 条目大 wiki：检索耗时、二进制零出现、真跑 commit（约 1–3 分钟）
 # 另有（不进 CI，依赖本机 Chrome / 线上 wiki）：
@@ -273,6 +273,8 @@ cordis `config:` 块（基底） + 配置 tiddler `$:/plugins/dsh-tiddlywiki/con
 - **回收站索引读失败 ≠ 空索引（v0.19.5 教训）**：`readTrashIndex` 返回 `{readOk, corrupted, entries}`；`!readOk`（抛错）或 `corrupted`（JSON 坏）都必须**中止**操作。旧的 `catch → []` + 全量覆盖会把整个索引写成只剩一条，之前的 trashed tiddler 变成既列不出、也清不掉的孤儿（体积还留在 git 里）。
 - **删除也要乐观并发（v0.19.5）**：`delete` 与 `put` 一样接受 `expectedModified`/`expectedRevision`/`force`。「`get` → 人类在 TW 里改 → `delete`」此前会把人类的新改动直接丢进回收站；删除是不可逆操作，**比覆盖更该拒绝**。
 - **客户端不要再各自 `fetch('/dsh-tiddlywiki/status')`（v0.19.5）**：host 每处理一次 `/status` 最多起 5 个 git 进程，而同一页面有 6 个面在加载时读它。统一走 `src/client/status-cache.ts` 的 `fetchStatus()`（TTL + 在途合并）；新增客户端面时先看这里有没有现成读取器。
+- **iframe 没赋过 `src` 时，`iframe.src` 是宿主页面自己的 URL（v0.22.3 教训）**：`frame.src = frame.src` / `''.split('#')[0] + '#标题'` 这两类写法在「iframe 还没载入、但已经 `hidden = false`」（`setVisible(true)` 先于首个 `/status` 响应）时会把 **DSH 页面**载进 iframe——iframe 里再起一份 DSH，重复 FAB / 重复全局监听 / 白屏。判据只能是 `iframe.dataset.loaded`（只有 `showFrame` 写它），统一走 `tw-frame.ts` 的 `loadableFrameUrl()`；`tw-frame.ts` 与 `panel.ts` 两条整页重载路径都必须先取它。守门：`verify-frame-guards.mjs`（进 `verify:unit`）。
+- **设置页的「活动主题」与跨源 iframe（v0.22.3）**：`info.themes` 是**已加载**集合（多选），活动主题只在 `$:/theme`——拿前者末位猜不只是显示错：设置页点「应用主题」会显式带上 `themeActive`，**不动任何单选**也能把用户的活动主题改回末位那个。现在 host 用 `readActiveThemeName()` 读 `$:/theme`（去 `$:/themes/` 前缀）经 `/admin/state` 的 `info.themeActive` 回传，客户端优先用它且只在 catalog 里存在时才认。同类坑：`frame.contentWindow.$tw` 在 iframe 导航到跨源页面（TW 里点外链）时**属性访问本身就抛 `SecurityError`**，内层 try/catch 保护不到，而 `setThemeSyncConfig()` 是同步在 `doRefresh()` 的 await 链里调用各 applier 的——异常会变成未处理 rejection 并中断刷新；`applyToFrame()` 整段必须自己包 try/catch。
 - **`batch_put` 的结果必须按入参下标回填（v0.19.5）**：改成并发后若用 `push`，模型看到的逐条报告顺序就会和入参不一致（`items[i]` 与请求错位）。顺序与逐条容错是**契约**，`verify-audit-fixes.mjs` 有断言。
 - **`$:/` 条目无法通过 recipe listing 枚举（v0.19.0 实测）**：新 wiki 的 `$:/config/SyncSystemTiddlersFromServer` 默认 `"no"`，`get-tiddlers-json.js` 于是给每个 filter 追加 `+[!is[system]]`。要靠 listing 找 `$:/` 条目（如回收站）必须另建**非系统索引 tiddler** 并用 `get` 读（回收站就是这么做的）。
 - **TW 的日期字段是紧凑格式（v0.19.0）**：listing 返回 `modified` 形如 `20260101000000000`（UTC），`new Date()` 会得到 Invalid Date——`since` 过滤曾因此恒为空。统一用 `parseTiddlerDate()` / `toIsoDateString()`（`tw-api.ts` 导出）。

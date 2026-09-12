@@ -42,7 +42,9 @@ export function getTabLabel(): string {
   return tabLabel
 }
 
-async function requestRestart(): Promise<boolean> {  try {
+/** POST /restart; `false` on any failure. Shared by both TW surfaces (v0.22.3). */
+export async function requestRestart(): Promise<boolean> {
+  try {
     const res = await fetch(RESTART_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(8_000) })
     return res.ok
   } catch {
@@ -58,6 +60,30 @@ export function TwTabIcon({ size = 16, className }: { size?: number; className?:
     React.createElement('path', { d: 'M4 2.5h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z' }),
     React.createElement('path', { d: 'M6 6h4M6 8.5h2.5' }),
   )
+}
+
+/**
+ * The last URL a TW surface actually assigned to its iframe, or null when the
+ * frame never loaded one. Both surfaces cache it in `iframe.dataset.loaded`
+ * (only `showFrame` writes it), which keeps "is this frame pointing at the TW
+ * proxy?" answerable without trusting `src` — see `loadableFrameUrl`.
+ */
+export interface FrameLoadedState {
+  loaded?: string
+}
+
+/**
+ * Non-empty `dataset.loaded`, or null when the frame has no real URL yet
+ * (v0.22.3). NEVER read `iframe.src` for this: for an iframe whose `src`
+ * attribute was never assigned the property returns the EMBEDDING page's URL,
+ * and assigning it back to `src` makes the DSH GUI load itself inside the
+ * iframe (a second DSH instance: duplicate FAB, duplicated global listeners,
+ * blank white page). Both callers below drive a full reload, so they must
+ * refuse to touch a frame that has no loaded TW URL.
+ */
+export function loadableFrameUrl(dataset: FrameLoadedState): string | null {
+  const loaded = dataset.loaded
+  return loaded === undefined || loaded.length === 0 ? null : loaded
 }
 
 /** The plain-DOM TW frame controller owned by one surface body. */
@@ -236,8 +262,12 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
   const fallbackLoad = (hash: string): void => {
     if (disposed) return
     if (pendingHash === hash) pendingHash = null
-    const base = frame.src.split('#')[0]
-    if (frame.src !== `${base}${hash}`) frame.src = `${base}${hash}`
+    // Guard against the never-loaded frame: `frame.src` is '' before showFrame
+    // ran, and `'' + '#title'` resolves against the DSH page URL (v0.22.3).
+    const base = loadableFrameUrl(frame.dataset)
+    if (base === null) return
+    const next = `${base.split('#')[0]}${hash}`
+    if (frame.src !== next) frame.src = next
   }
 
   const doRefresh = async (): Promise<void> => {
@@ -282,7 +312,13 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
   }
 
   const onReloadRequest = (): void => {
-    if (!frame.hidden) frame.src = frame.src
+    // Reload = re-assign the URL the frame is ALREADY showing (full reload, so
+    // TW re-reads the wiki; `location.reload()` could be blocked mid-edit).
+    // `hidden` alone is not enough (v0.22.3): setVisible(true) reveals the frame
+    // before the first /status response sets its src, and `frame.src = frame.src`
+    // with `src === ''` loads the DSH page into the iframe.
+    const loaded = loadableFrameUrl(frame.dataset)
+    if (loaded !== null && !frame.hidden) frame.src = loaded
   }
   document.addEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
 
@@ -295,15 +331,17 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
       if (!started) {
         // Nothing loaded yet: stay hidden until the first show kicks the load.
         frame.hidden = true
-        view.dataset.visible = next ? '1' : '0'
         if (next) {
           started = true
           void doRefresh()
         }
         return
       }
+      // Revealing before the first /status response is harmless as long as
+      // every src-writing path checks `dataset.loaded` (onReloadRequest /
+      // fallbackLoad), which also keeps the surface visible while a switch to
+      // another wiki re-resolves its URL.
       frame.hidden = !next
-      view.dataset.visible = next ? '1' : '0'
       // 每次重新显示都重探一次状态：启动轮询是有界的（30×1.5s），首次打开时
       // 服务没起来就会把错误界面永久固定（切走再切回也不恢复）。doRefresh 自己
       // 会清旧 timer，不会重复轮询。
