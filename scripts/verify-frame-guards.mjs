@@ -1,20 +1,26 @@
 #!/usr/bin/env node
 /**
- * 客户端 TW iframe 生命周期守门（v0.22.3）。
+ * 客户端 TW iframe 生命周期守门（v0.22.3；v0.22.4 扩到「单一实现」）。
  *
  * 断的是 v0.22.3 修掉的两类真实缺陷，防止它们以同样的形状回归：
  *
  *  1. **空 src 陷阱**（P0）：`iframe` 从未赋过 `src` 时，`iframe.src` 读出来是
  *     **宿主页面自己的 URL**，把它写回 `src`（`frame.src = frame.src`）或拼上
  *     `'' + '#标题'` 都会让 DSH 把自己载进 iframe（iframe 里再起一份 DSH：重复
- *     FAB、重复全局监听、白屏）。所以两处「整页重载」路径（FAB 重载事件、
- *     hash 兜底加载）都必须以 `dataset.loaded`（只有 showFrame 写）为准，
- *     并且不得再直接读 `iframe.src` 当基准。
+ *     FAB、重复全局监听、白屏）。所以「整页重载」路径（FAB 重载事件、hash 兜底
+ *     加载）都必须以 `dataset.loaded`（只有 showFrame 写）为准，并且不得再直接
+ *     读 `iframe.src` 当基准。
  *  2. **活动主题靠猜**（P1）：`/admin/state` 必须回 `info.themeActive`（读
  *     `$:/theme`），设置页必须优先用它——旧代码用 `info.themes` 的最后一项冒充
  *     活动主题，用户显式激活过非末位主题时，点一次「应用主题」就会静默改回去。
  *
- * 另附两条同类回归（跨源 SecurityError、共享 toast 误删）与两个死标记检查；
+ * v0.22.4 增加第三类：**生命周期只有一份实现**。上面两个 bug 之所以出现，根因是
+ * `panel.ts` 与 `tw-frame.ts` 各抄了一份 showError/showStarting/showFrame/
+ * fallbackLoad/doRefresh——修 bug 时只改到其中一份（panel 拿到了空 src 守卫、
+ * tw-frame 没拿到）。现在这些函数只在 tw-frame.ts 的 `createTwFrameSurface()`
+ * 里各有一份，panel 只提供皮肤/构建点/可见性；本脚本会盯着「不许再抄第二份」。
+ *
+ * 另附同类回归（跨源 SecurityError、共享 toast 误删）与死标记检查；
  * `readActiveThemeName()` 走真实函数（host 侧纯逻辑，可直接从 lib 导入）。
  *
  *   node scripts/verify-frame-guards.mjs
@@ -127,41 +133,80 @@ const assertNo = (snippet, pattern, message) => {
   assert.ok(!pattern.test(snippet), `${message}\n      命中：${pattern}`)
 }
 
-console.log('空 src 守卫 —— dataset.loaded 是唯一判据')
+console.log('空 src 守卫 —— dataset.loaded 是唯一判据（内核唯一实现）')
 
-await test('tw-frame：loadableFrameUrl 只认非空 dataset.loaded', () => {
+await test('frame 内核：loadableFrameUrl 只认非空 dataset.loaded', () => {
   const body = bodyOf(twFrame, 'export function loadableFrameUrl(')
   assert.match(body, /loaded\s*=\s*dataset\.loaded/, 'loadableFrameUrl 必须读 dataset.loaded')
   assert.match(body, /undefined/, '必须把 undefined 判成「没有 URL」')
   assert.match(body, /length === 0/, '必须把空串判成「没有 URL」')
 })
 
-await test('tw-frame：onReloadRequest 不得再 `frame.src = frame.src`', () => {
+await test('frame 内核：onReloadRequest 不得再 `frame.src = frame.src`', () => {
   const body = bodyOf(twFrame, 'const onReloadRequest = ')
   assert.match(body, /loadableFrameUrl\(frame\.dataset\)/, '重载前必须取 dataset.loaded')
+  // 显式重载请求必须覆盖**关掉的** surface：加回 `frame.hidden` 判据会让「关掉
+  // 面板 → FAB 重载 → 再打开」看到旧资源（v0.22.4 的取舍，测试里也断言了）。
+  assertNo(body, /frame\.hidden/, '不得用可见性当重载门槛——判据只能是 dataset.loaded')
   assertNo(body, /frame\.src\s*=\s*frame\.src/, '`frame.src = frame.src` 在空 src 时会把 DSH 载进 iframe')
 })
 
-await test('tw-frame：fallbackLoad 不得以 frame.src 为基准', () => {
+await test('frame 内核：fallbackLoad 不得以 frame.src 为基准', () => {
   const body = bodyOf(twFrame, 'const fallbackLoad = ')
   assert.match(body, /loadableFrameUrl\(frame\.dataset\)/, 'hash 兜底加载必须取 dataset.loaded 当基准')
   assertNo(body, /frame\.src\.split/, "`frame.src.split('#')[0]` 在空 src 时得到宿主 URL")
 })
 
-await test('panel：onReloadRequest / fallbackLoad 同样以 dataset.loaded 为准', () => {
-  const reload = bodyOf(panel, 'const onReloadRequest = ')
-  assert.match(reload, /loadableFrameUrl\(iframe\.dataset\)/, '面板重载前必须取 dataset.loaded')
-  assertNo(reload, /iframe\.src\s*=\s*iframe\.src/, '`iframe.src = iframe.src` 在空 src 时会把 DSH 载进 iframe')
-  const fallback = bodyOf(panel, 'const fallbackLoad = ')
-  assert.match(fallback, /loadableFrameUrl\(iframe\.dataset\)/, '面板 hash 兜底加载必须取 dataset.loaded')
-  assertNo(fallback, /iframe\.src\.split/, '不得用 iframe.src 当基准')
+await test('frame 内核：setVisible 不得显示还没载入 TW 地址的 frame', () => {
+  // 签名不带函数体的 `{`：bodyOf() 自己找第一个代码花括号。
+  const body = bodyOf(twFrame, 'setVisible(next: boolean): void ')
+  assert.match(body, /loadableFrameUrl\(frame\.dataset\)/, '显示前必须确认 frame 已有 TW 地址')
+  assert.match(body, /frame\.hidden\s*=/, 'setVisible 必须同步 frame.hidden')
+  assert.match(body, /clearRetry\(\)/, '隐藏时必须停掉有界轮询')
 })
 
-await test('panel：requestRestart 只此一份（从 tw-frame 复用）', () => {
-  assert.match(panel, /import \{[^}]*requestRestart[^}]*\} from '\.\/tw-frame\.ts'/, 'panel 必须 import requestRestart')
-  assertNo(panel, /async function requestRestart/, 'panel 不得再留第二份实现')
+console.log('单一实现 —— 生命周期只在 tw-frame.ts 内核里各一份')
+
+/** 生命周期函数签名；`read()` 已剥掉整行注释，计数即代码出现次数。 */
+const LIFECYCLE = [
+  'const showError = ',
+  'const showStarting = ',
+  'const showFrame = ',
+  'const doRefresh = ',
+  'const applyPendingHash = ',
+  'const fallbackLoad = ',
+  'const onReloadRequest = ',
+]
+const countOf = (source, needle) => source.split(needle).length - 1
+
+await test('tw-frame：每个生命周期函数恰好一份', () => {
+  for (const signature of LIFECYCLE) {
+    assert.equal(countOf(twFrame, signature), 1, `tw-frame.ts 应有且仅有一份 \`${signature.trim()}\``)
+  }
+  assert.match(twFrame, /export function createTwFrameSurface\(skin: TwFrameSkin\)/, '内核必须是 createTwFrameSurface')
+})
+
+await test('panel：不得再自带第二份生命周期（v0.22.3 漂移的根因）', () => {
+  for (const signature of LIFECYCLE) {
+    assert.equal(countOf(panel, signature), 0, `panel.ts 不得定义 \`${signature.trim()}\`——用 tw-frame.ts 的内核`)
+  }
+  assert.match(panel, /createTwFrameSurface\(PANEL_SKIN\)/, 'panel 必须用共享内核建 surface')
+  assert.match(panel, /surface\.setVisible\(/, 'panel 的可见性必须交给内核')
+  assert.match(panel, /surface\.openTiddler\(/, 'panel 的 tiddler 导航必须交给内核')
+})
+
+await test('重试按钮：requestRestart 只有内核一份', () => {
+  assertNo(panel, /requestRestart/, 'panel 不再直接调 requestRestart（由内核的错误态重试按钮负责）')
   const defs = twFrame.match(/export async function requestRestart\(/g) ?? []
   assert.equal(defs.length, 1, `requestRestart 定义数应为 1，实际 ${defs.length}`)
+})
+
+await test('panel：链接打开必须先 openPanel() 再 surface.openTiddler()', () => {
+  const body = bodyOf(panel, 'const onOpenTiddler = ')
+  const iOpen = body.indexOf('state.openPanel()')
+  const iTiddler = body.indexOf('.openTiddler(')
+  assert.ok(iOpen >= 0, 'onOpenTiddler 必须调用 state.openPanel()')
+  assert.ok(iTiddler > iOpen, 'openPanel() 必须排在 openTiddler() 之前——内核以 visible=false 拒绝（链接会静默丢失）')
 })
 
 console.log('活动主题 —— $:/theme 优先，猜末位只作兜底')

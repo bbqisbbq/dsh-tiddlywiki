@@ -327,10 +327,11 @@ src/
     ├── markdown-editor.ts  # CodeMirror 6 Markdown 编辑器
     ├── session-summary.ts  # 会话「知识库」Tab（conversation.view 槽位）
     ├── tool-views.ts       # 回复流工具卡片（tool.call.toolview）
-    ├── theme-sync.ts / panel.ts / sidebar-entry.ts / sync-button.ts / rightbar-tab.ts
-    │                   # 共享 TW iframe 机制在 tw-frame.ts（v0.16.23：lazy-load/status/主题/互斥/live-frame 路由）；
-    │                   # TW tab 只注册在 DSH 原生右侧栏（rightbar-tab.ts）
-    └── settings-page.ts / ui-config.ts / state.ts / styles.ts / toast.ts
+    ├── theme-sync.ts / sidebar-entry.ts / sync-button.ts
+    │                   # 主题同步 / 侧边栏入口 / 同步按钮
+    ├── tw-frame.ts     # **TW frame 内核（v0.22.4 起唯一实现）**：createTwFrameSurface(skin) 管 lazy-load / status 轮询 /
+    │                   # 错误与启动态 / 主题同步 / FAB 重载 / hash 导航 / dispose；中央面板与右侧栏共用同一份
+    └── panel.ts / rightbar-tab.ts / settings-page.ts / ui-config.ts / state.ts / styles.ts / toast.ts
 scripts/                # 构建/校验/再生成脚本
 docs/seed-initialization.md  # seed 机制详解（权威）
 lib/                    # 预构建产物（发布含 lib/**，提交入库；零 @deepseek-ai 运行时 import）
@@ -341,6 +342,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.22.4**（2026-09-13）：**重构：把 TW frame 的生命周期收敛成唯一一份实现**（无功能变更，纯去重）。v0.22.3 那个「空 `src` 把 DSH 载进 iframe」的 P0 之所以发生，根因不是谁写错了某个判断，而是 `panel.ts`（中央列面板）与 `tw-frame.ts`（右侧栏 tab）**各自抄了一份** `showError` / `showStarting` / `showFrame` / `applyPendingHash` / `fallbackLoad` / `doRefresh`——修 bug 时守卫只补到 panel，tw-frame 那份照旧，同一个坑于是踩了两次（`panel.ts` 靠「`!hidden` ⇒ 已载入真实 twProxy」这个不成文不变量侥幸安全，tw-frame 连这个都没有）。现在这六个函数只在 `tw-frame.ts` 新增的 **`createTwFrameSurface(skin)`** 里各有一份，`createTwFrameController()` 退化成它的 rightbar 薄包装；一个 surface 只提供三样东西：**皮肤**（类名 + 可选内联样式）、**惰性构建点**（`build()` 返回 view，由调用方决定挂到哪里）、**可见性**（`setVisible()`）。`panel.ts` 因此从 469 行降到 280 行，只剩 rect 钉住 / 惰性构建 / 共存 chrome / 面板互斥。顺带三处行为改进（都是去重后的自然结果）：① 面板打开链接改为**先 `state.openPanel()` 再 `surface.openTiddler()`**（内核以 `visible=false` 拒绝隐藏 surface，顺序反了链接会静默丢失，脚本里有守门断言）；② `setVisible(false)` 现在会**隐藏 frame 并停掉有界轮询**（下次显示重新给满预算）；FAB「重载面板」刻意**不受可见性限制**（唯一判据是 `dataset.loaded`）——显式重载请求要能覆盖**关掉的**面板，否则「关掉面板 → 点重载 → 再打开」会看到旧资源，而展示陈旧内容比多一次重载更糟；③ 内核的 `build()` 会记住「DOM 还没建就被要求显示」的情况并在建好后补一次 `/status` —— 此前中心列若在面板挂载之后才出现，面板会停在空壳上直到用户再切一次。守门：`verify-frame-guards.mjs` 加了**计数去重断言**（panel 里出现任何一个生命周期函数就直接判红，反向验证过：植入回来必失败），并新增 **`scripts/verify-frame-surface.mjs`** —— 用 tsx 直跑源码 + 最小 DOM 打桩，真正执行 `createTwFrameSurface()` 跑 16 条行为断言（空 `src` 的两条重载路径、只显示真的载入过 TW 的 frame、同一 URL 不重复赋 `src`、启动/错误/重试恢复、同源 hash 导航与跨源兜底、共享 chip 标签、dispose 摘监听且幂等），已进 `verify:unit`。测试环境提示：本机沙箱里 node 再 spawn 孙进程会崩，`npm run` 偶发段错误，`verify-package-contents` 与 `verify-git-resolve` 的失败属环境问题（手动复核过断言全过），与本版无关。
 
 - **v0.22.3**（2026-09-12）：**第五轮代码审计的客户端修复版**（host 侧零缺陷：CSRF 门禁 / 片段净化 / SSRF 守卫 / 密钥打码 / 写策略 type 保留 / 乐观并发 / git 互斥 / seed 内容哈希 / 切换回滚逐条对照都成立；`tsc` 与 8 个 `verify-*` 全绿）。① **P0：iframe 空 `src` 被当成合法地址使用**。`tw-frame.ts` 的 FAB「重载面板」处理是 `frame.src = frame.src`、hash 兜底加载是 `frame.src.split('#')[0]` 拼 hash——而 `iframe` 从未赋过 `src` 时，**读 `iframe.src` 得到的是宿主 DSH 页面自己的 URL**。`setVisible(true)` 会在首个 `/status` 回来之前就取消 `hidden`（切走再切回即可命中），于是这两种写法会把 **DSH 页面载进 iframe**：iframe 里再起一份 DSH（重复 FAB、重复全局监听、白屏）。现在两处「整页重载」路径都只认 `dataset.loaded`（只有 `showFrame` 写它）并抽出共享的 `loadableFrameUrl()`，`panel.ts` 原本靠「`!hidden` ⇒ 已载入真实 twProxy」这个不成文不变量侥幸安全，现也改成显式判据。② **P1：主题「活动」单选预选错误，且会影响写入**。`/admin/state` 只回 `info.themes`（**已加载**集合），设置页就拿它的**最后一项**冒充「活动主题」；用户显式激活过非末位主题时，打开设置页显示错误选中项、**不动任何单选直接点「应用主题」也会静默把活动主题改回末位那个**。现在 host 读 `$:/theme` 并在 `/admin/state` 回 `info.themeActive`（去掉 `$:/themes/` 前缀归一），设置页优先用它、猜末位只作兜底，并且只在 catalog 里存在时才认。③ **P1：`applyToFrame` 缺 try/catch**。`setThemeSyncConfig()` 是**同步**遍历调用各 frame 的 applier 的（`doRefresh`/`load` 都在 await 链里），而 `frame.contentWindow.$tw` 这次属性访问在 iframe 导航到跨源页面（TW 里点外链）时**自身**就抛 `SecurityError`（内层各助手的 try/catch 还没轮到），异常直接变成未处理 rejection 并中断那次刷新；现在整段包住。④ **P2 清理**：会话汇总的挂载 effect 补 `mountedRef` 卸载守卫（`genRef` 只认「被更新取代」、覆盖不到卸载，在途请求 resolve 后仍会 setState 并递归再发一轮）、快速笔记按钮的 `fetchUiConfig().then(setMode)` 补 alive 守卫、`note-widget` 卸载不再删除**设置页也在用**的页面级 toast 单例（原来会掐掉别人正在显示的提示）；删掉三处无人消费的死标记/死字段（`view.dataset.visible`、`data-dsh-tw-rightbar`、`BuiltUi.recentBtn`、`ConfigField.input`），工具卡标签 key 补下标（同标签重复会撞 key），并把 `panel.ts` 里重复的 `requestRestart` 收敛为复用 `tw-frame.ts` 的那一份。守门：新增 `scripts/verify-frame-guards.mjs`（已进 `verify:unit`）——空 src 陷阱、活动主题优先级、跨源 try/catch、共享 toast、死标记共 13 条断言，其中 `readActiveThemeName()` 走真实函数（前缀 / 裸名 / 缺失 / 读失败），静态断言会剥掉注释行以免匹配到自己的说明文字。
 

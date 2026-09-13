@@ -10,10 +10,16 @@
  * Toggling rides the shared PanelState; cross-plugin exclusivity rides the
  * `dsh-panel-activate` event (same protocol as dsh-taskboard).
  *
+ * This module owns the overlay LAYOUT only (rect pinning, lazy build, chrome,
+ * exclusion). The iframe's whole lifecycle — `/status` polling, error/starting
+ * states, theme sync, FAB reload, tiddler-hash navigation — is the shared
+ * kernel in tw-frame.ts (v0.22.4), so the panel and the rightbar tab can no
+ * longer drift apart (the drift is what produced the v0.22.3 empty-src bug).
+ *
  * The iframe points at the SAME-ORIGIN TW proxy (`<origin>/dsh-tiddlywiki/tw/`,
  * remote-access mode R1): the browser only talks to the DSH origin — which it
  * already reaches over loopback, LAN, Tailscale, a domain or HTTPS — and DSH
- * proxies to the loopback TW child. The panel reads /status first and only
+ * proxies to the loopback TW child. The kernel reads /status first and only
  * sets iframe.src when the service is actually running. Because the proxy URL
  * is origin-relative and port-independent, a TW restart never reloads the
  * iframe, so an in-progress edit keeps its unsaved state.
@@ -22,10 +28,8 @@
  */
 import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
-import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
-// 事件名单一来源：两个协议常量与 frame 生命周期助手都由 tw-frame.ts 提供
-// （panel/rightbar 共同依赖）。requestRestart 也只此一份（v0.22.3 去重）。
-import { ACTIVATE_EVENT, loadableFrameUrl, openTiddlerInLiveTab, PANEL_RELOAD_EVENT, requestRestart } from './tw-frame.ts'
+// 事件名与 frame 生命周期助手都只有一份，住在 tw-frame.ts（内核）。
+import { ACTIVATE_EVENT, createTwFrameSurface, openTiddlerInLiveTab, type TwFrameSkin } from './tw-frame.ts'
 
 /**
  * Center-column targets, most-specific shell generation first. The official
@@ -58,7 +62,20 @@ const APP_OVERLAY_Z_INDEX = 20
 /** Safety re-measure cadence for shell layout changes CSS can't see. */
 const SYNC_INTERVAL_MS = 2_000
 
-import { fetchStatus } from './status-cache.ts'
+/**
+ * The panel's skin for the shared frame kernel. The inline flex chain is
+ * required because — unlike `.dsh-tw-rightbar-frame-wrap` — the panel's frame
+ * wrapper has no stylesheet rule; `data-dsh-tw-view` is what the stylesheet
+ * keys on to hide the conversation content the overlay covers.
+ */
+const PANEL_SKIN: TwFrameSkin = {
+  view: 'dsh-tw-view',
+  viewDataset: { dshTwView: '' },
+  frameWrap: 'dsh-tw-panel-frame-wrap',
+  frameWrapStyle: 'flex:1;min-height:0;display:flex;flex-direction:column',
+  frame: 'dsh-tw-panel-frame',
+  error: 'dsh-tw-panel-error',
+}
 
 /**
  * Cross-module open request: the reply-stream tool cards and the document
@@ -102,53 +119,13 @@ function conversationColumn(): HTMLElement | undefined {
 export function mountPanel(state: PanelState): () => void {
   let container: HTMLDivElement | undefined
   let columnEl: HTMLElement | undefined
-  let iframe: HTMLIFrameElement | undefined
-  let frameArea: HTMLDivElement | undefined
-  let errorArea: HTMLDivElement | undefined
-  let refreshTimer: number | undefined
-  /** In-flight hash-readiness retry timers (cancelled by dispose, v0.19.1). */
-  const hashWaitTimers = new Set<number>()
-  let refreshAttempts = 0
-  let themeSyncDispose: (() => void) | undefined
-  /** true once the iframe's document finished loading (hash navigation target ready). */
-  let frameLoaded = false
-  /** A tiddler-hash open request waiting for the frame to become ready. */
-  let pendingHash: string | null = null
   /** Set by the disposer: no timers/observers may touch DOM or the iframe after. */
   let disposed = false
   /** Last observed presence of the better-sidebar host layer (applyChrome cache). */
   let lastHasHost: boolean | undefined
 
-  const build = (): HTMLDivElement => {
-    const view = document.createElement('div')
-    view.dataset.dshTwView = ''
-    view.className = 'dsh-tw-view'
-
-    frameArea = document.createElement('div')
-    frameArea.className = 'dsh-tw-panel-frame-wrap'
-    frameArea.style.cssText = 'flex:1;min-height:0;display:flex;flex-direction:column'
-    iframe = document.createElement('iframe')
-    iframe.className = 'dsh-tw-panel-frame'
-    iframe.title = 'TiddlyWiki'
-    iframe.hidden = true
-    frameArea.append(iframe)
-    // Track load so a pending tiddler-hash navigation can target a ready
-    // document (setting contentWindow.location.hash before load is a no-op).
-    iframe.addEventListener('load', () => {
-      frameLoaded = true
-      applyPendingHash()
-    })
-    // Embedded TW follows the DSH light/dark theme (non-persisting palette
-    // swap inside the same-origin iframe; re-applied on load + theme change).
-    themeSyncDispose = attachThemeSync(iframe)
-
-    errorArea = document.createElement('div')
-    errorArea.className = 'dsh-tw-panel-error'
-    errorArea.hidden = true
-
-    view.append(frameArea, errorArea)
-    return view
-  }
+  /** iframe + /status lifecycle (shared with the rightbar tab, tw-frame.ts). */
+  const surface = createTwFrameSurface(PANEL_SKIN)
 
   /** Pin the overlay to the center column's current viewport rect. */
   const syncRect = (): void => {
@@ -193,176 +170,26 @@ export function mountPanel(state: PanelState): () => void {
     if (columnEl === undefined || !columnEl.isConnected) columnEl = conversationColumn()
     if (container !== undefined) return
     if (columnEl === undefined) return
-    container = build()
+    // 惰性构建：内核自己也记着可见性，晚于 setVisible(true) 建 DOM 时会自动补一次
+    // /status（否则面板会停在空壳上）。
+    container = surface.build()
     container.style.position = 'fixed'
     applyChrome(true)
     document.body.append(container)
     syncRect()
   }
 
-  const showError = (message: string): void => {
-    if (iframe === undefined || errorArea === undefined || frameArea === undefined) return
-    iframe.hidden = true
-    errorArea.hidden = false
-    errorArea.textContent = ''
-    const p = document.createElement('div')
-    p.textContent = 'TiddlyWiki 服务不可用'
-    const code = document.createElement('code')
-    code.textContent = message
-    const retry = document.createElement('button')
-    retry.type = 'button'
-    retry.textContent = '重试'
-    retry.addEventListener('click', () => {
-      retry.disabled = true
-      retry.textContent = '重启中…'
-      void requestRestart().finally(() => { void doRefresh() })
-    })
-    errorArea.append(p, code, retry)
-  }
-
-  const showStarting = (): void => {
-    if (iframe === undefined || errorArea === undefined || frameArea === undefined) return
-    iframe.hidden = true
-    errorArea.hidden = false
-    errorArea.textContent = ''
-    const p = document.createElement('div')
-    p.textContent = 'TiddlyWiki 服务正在启动…'
-    errorArea.append(p)
-  }
-
-  const showFrame = (url: string): void => {
-    if (iframe === undefined || errorArea === undefined) return
-    errorArea.hidden = true
-    // 只有面板打开时才显示 iframe（对照 tw-frame.ts 的 `frame.hidden = !visible`）：
-    // doRefresh() 在面板关闭后仍可能在途，无条件 hidden=false 会让已关闭的面板
-    // 被一个迟到的 /status 响应重新显示出来。
-    iframe.hidden = !state.isOpen()
-    // Set the src only when the url actually changed, so an editor in the
-    // iframe never loses unsaved state on a status refresh.
-    if (iframe.dataset.loaded !== url) {
-      iframe.dataset.loaded = url
-      frameLoaded = false
-      iframe.src = url
-    }
-  }
-
-  /**
-   * Apply a pending tiddler-hash navigation once the iframe document is ready.
-   * Preferred: same-origin `contentWindow.location.hash` — a hashchange INSIDE
-   * the frame (no reload), TW's story handler opens the tiddler. Fallback: a
-   * full `iframe.src` reload with the hash (TW auto-saves drafts, acceptable).
-   *
-   * TW registers its hashchange listener in a STARTUP module that runs after
-   * the iframe's `load` event, so setting `location.hash` right on load is a
-   * no-op (hash lost → TW stays on its home page). We therefore wait for TW to
-   * become ready inside the frame (the `$tw` global appears once boot settles)
-   * before setting the hash; if it never does (service down / slow boot) we
-   * fall back to a full reload with the hash, which TW processes at startup.
-   * A newer open request supersedes an in-flight wait.
-   */
-  const applyPendingHash = (): void => {
-    if (pendingHash === null || iframe === undefined || !frameLoaded) return
-    const hash = pendingHash
-    const win = iframe.contentWindow
-    if (win === null) {
-      fallbackLoad(hash)
-      return
-    }
-    const tryOnce = (attempt: number): void => {
-      if (disposed) return // unmounted: do not keep waiting or touch the iframe
-      if (pendingHash !== hash) return // superseded by a newer request
-      const frameTw = win as { $tw?: unknown }
-      if (typeof frameTw.$tw !== 'object' || frameTw.$tw === null) {
-        if (attempt < 40) {
-          // Track the retry timer so dispose() can cancel it (v0.19.1): an
-          // untracked 40×150ms chain kept the closure (and the iframe) alive up
-          // to ~6s after hot-reload/unmount.
-          const timer = window.setTimeout(() => {
-            hashWaitTimers.delete(timer)
-            tryOnce(attempt + 1)
-          }, 150)
-          hashWaitTimers.add(timer)
-          return
-        }
-        fallbackLoad(hash)
-        return
-      }
-      pendingHash = null
-      try {
-        if (win.location.hash === hash) return
-        win.location.hash = hash
-      } catch {
-        fallbackLoad(hash)
-      }
-    }
-    tryOnce(0)
-  }
-
-  const fallbackLoad = (hash: string): void => {
-    if (disposed || iframe === undefined) return // never drive a detached frame
-    if (pendingHash === hash) pendingHash = null
-    // dataset.loaded（showFrame 只写这个）而不是 iframe.src：src 为空时读出来
-    // 是**DSH 页面自己的 URL**，赋 `'' + '#标题'` 会把 DSH 载进 iframe（v0.22.3）。
-    const base = loadableFrameUrl(iframe.dataset)
-    if (base === null) return
-    const next = `${base.split('#')[0]}${hash}`
-    if (iframe.src !== next) iframe.src = next
-  }
-
   const onOpenTiddler = (event: Event): void => {
     const detail = (event as CustomEvent).detail as { title?: unknown } | undefined
     const title = typeof detail?.title === 'string' && detail.title.length > 0 ? detail.title : ''
     if (title.length === 0) return
-    // 侧边栏（rightbar）的 TW tab 可见时，链接直接在那里
-    // 打开（与聊天并排）；否则退回中央面板。互斥由 tw-frame.ts 共享的
-    // dsh-panel-activate 协议保证。
+    // 侧边栏（rightbar）的 TW tab 可见时，链接直接在那里打开（与聊天并排）；
+    // 否则退回中央面板。互斥由 tw-frame.ts 共享的 dsh-panel-activate 协议保证。
     if (openTiddlerInLiveTab(title)) return
-    pendingHash = `#${encodeURIComponent(title)}`
+    // 顺序有意义：applyActive 由 openPanel() 同步触发，先把内核切到可见，
+    // openTiddler() 才会被内核接受（否则内核以 visible=false 拒绝，链接丢失）。
     state.openPanel()
-    applyPendingHash()
-  }
-
-  const doRefresh = async (): Promise<void> => {
-    if (refreshTimer !== undefined) {
-      window.clearTimeout(refreshTimer)
-      refreshTimer = undefined
-    }
-    const payload = await fetchStatus()
-    if (disposed) return // unmounted while fetching: stop, don't touch DOM
-    if (payload === null) {
-      showError('无法访问 /dsh-tiddlywiki/status')
-      return
-    }
-    if (payload.status === 'running') {
-      refreshAttempts = 0
-      // Keep the embedded TW's theme adaption in step with the settings page.
-      setThemeSyncConfig({
-        enabled: payload.ui?.followDshTheme !== false,
-        darkPalette: payload.ui?.darkPalette,
-      })
-      // Same-origin proxy URL: build from the page's own origin so it works no
-      // matter which host/domain the user reached DSH on. Fall back to the
-      // legacy loopback `url` for older servers that do not send twProxy.
-      if (typeof payload.twProxy === 'string') {
-        showFrame(new URL(payload.twProxy, window.location.origin).href)
-      } else if (typeof payload.url === 'string') {
-        showFrame(payload.url)
-      } else {
-        showError('服务未返回编辑器地址')
-      }
-      return
-    }
-    if (payload.status === 'starting') {
-      showStarting()
-      // Auto-poll while starting (bounded).
-      if (refreshAttempts < 30) {
-        refreshAttempts++
-        refreshTimer = window.setTimeout(() => { void doRefresh() }, 1_500)
-      }
-      return
-    }
-    refreshAttempts = 0
-    showError(payload.error ?? `服务状态：${payload.status}`)
+    surface.openTiddler(title)
   }
 
   const applyActive = (): void => {
@@ -373,15 +200,12 @@ export function mountPanel(state: PanelState): () => void {
       // syncRect() 现在只在打开时测量（关闭状态早退），所以打开这一帧必须主动
       // 请求一次布局：否则容器要等到下一个 2s interval 才有 left/top/width/height。
       scheduleLayout()
-      void doRefresh()
     } else {
       document.documentElement.removeAttribute(ACTIVE_ATTR)
-      if (refreshTimer !== undefined) {
-        window.clearTimeout(refreshTimer)
-        refreshTimer = undefined
-      }
-      refreshAttempts = 0
     }
+    // 打开 = 首次加载 + 每次重探 /status；关闭 = 隐藏 frame 并停掉有界轮询
+    // （下次打开重新给满预算）。两种语义都在内核里。
+    surface.setVisible(state.isOpen())
   }
   const onOtherActivate = (event: Event): void => {
     const detail = (event as CustomEvent).detail
@@ -431,25 +255,13 @@ export function mountPanel(state: PanelState): () => void {
   ensure()
   applyActive()
 
-  // The "知识库" FAB's 重载面板 entry dispatches this event to reload the
-  // iframe (the panel itself no longer owns a floating status/reload button).
-  const onReloadRequest = (): void => {
-    // 只有真的载入过 TW 代理地址的 iframe 才允许重载：`!iframe.hidden` 已经不足
-    // 以证明这一点（showFrame 之外，iframe 也可能是「面板打开但首个 /status 还在
-    // 途」），而 `iframe.src = iframe.src` 在 src 为空串时会把 **DSH 页面**载进
-    // iframe（v0.22.3）。判据统一用 dataset.loaded（只由 showFrame 写）。
-    if (iframe === undefined) return
-    const loaded = loadableFrameUrl(iframe.dataset)
-    if (loaded !== null && !iframe.hidden) iframe.src = loaded
-  }
-  document.addEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
+  // 链接路由入口（回复流工具卡 / 文档点击拦截器派发，见 `openTiddler()`）。
+  // FAB 的「重载面板」事件由内核自己挂监听（含「只重载真的载入过 TW 的 frame」
+  // 这条判据），panel 不再参与。
   document.addEventListener(OPEN_TIDDLER_EVENT, onOpenTiddler)
 
   return () => {
     disposed = true
-    if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
-    for (const timer of hashWaitTimers) window.clearTimeout(timer)
-    hashWaitTimers.clear()
     if (layoutRaf !== undefined) window.cancelAnimationFrame(layoutRaf)
     layoutRaf = undefined
     window.clearInterval(syncInterval)
@@ -458,12 +270,11 @@ export function mountPanel(state: PanelState): () => void {
     resizeObserver.disconnect()
     document.removeEventListener('click', onClickSidebarRow, true)
     document.removeEventListener(ACTIVATE_EVENT, onOtherActivate)
-    document.removeEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
     document.removeEventListener(OPEN_TIDDLER_EVENT, onOpenTiddler)
     waitObserver.disconnect()
     unsubscribe()
-    themeSyncDispose?.()
     document.documentElement.removeAttribute(ACTIVE_ATTR)
+    surface.dispose()
     container?.remove()
   }
 }
