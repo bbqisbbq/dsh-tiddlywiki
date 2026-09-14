@@ -39,6 +39,15 @@ export interface PluginConfigShape {
   bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
   note?: { tag?: string }
   /**
+   * TW 子进程启动策略（v0.22.5）。`readyTimeoutMs` 是**软就绪窗口**（默认 60000，
+   * 夹在 5s–600s）：超过它只写一条「slow start」日志并继续等，硬上限 = 3×，
+   * 仍未就绪才判失败（失败后还会挂一个有界「迟到就绪」后台探测，TW 真起来时
+   * 立刻把状态改回 running）。大知识库冷启动（数千条目、5000+ 文件）实测可达
+   * 40s+，旧代码 20s 的硬超时会误报 `wiki server did not become ready in time`
+   * 并连带跳过播种/配置/剪藏桥。保存后对**下一次**启动/重启生效（无需重启 dsh web）。
+   */
+  startup?: { readyTimeoutMs?: number }
+  /**
    * 注入给每个会话的系统提示词（v0.21.0）。默认 `slim`：只保留工具 schema
    * 表达不了的治理约定（同步纪律 / 标签 / 链接格式），不再手抄工具参数；
    * `full` 额外附一份**由工具注册表实时生成**的参数索引（永不过期）。

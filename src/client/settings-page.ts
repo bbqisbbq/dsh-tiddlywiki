@@ -288,6 +288,10 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   numField('git.debounceMs', '自动 commit 防抖(ms)', typeof git.debounceMs === 'number' ? git.debounceMs : 60_000)
   textField('git.remote', 'git 远端（空=仅本地）', typeof git.remote === 'string' ? git.remote : '')
   textField('git.branch', 'git 分支', typeof git.branch === 'string' ? git.branch : 'main')
+  // 启动就绪窗口（v0.22.5）：大知识库冷启动（数千条目）可能 40s+。窗口内只等，
+  // 超过它只写日志，硬上限 = 3× 仍无响应才判失败。改动对下一次启动/重启生效。
+  const startup = (config.startup ?? {}) as Record<string, unknown>
+  numField('startup.readyTimeoutMs', 'TW 启动就绪等待(ms；默认 60000，范围 5000–600000，超时上限为其 3 倍，对下次启动/重启生效)', typeof startup.readyTimeoutMs === 'number' && startup.readyTimeoutMs > 0 ? startup.readyTimeoutMs : 60_000)
   checkField('ui.showQuickNote', '显示「知识库」按钮里的「快速笔记」入口', ui.showQuickNote !== false)
   checkField('ui.showQuickNoteDock', '显示聊天输入框上方的「快速笔记」快捷按钮', ui.showQuickNoteDock !== false)
   selectField('ui.quickNoteMode', '点击「快速笔记」的打开方式', typeof ui.quickNoteMode === 'string' && ui.quickNoteMode === 'card' ? 'card' : 'native', [

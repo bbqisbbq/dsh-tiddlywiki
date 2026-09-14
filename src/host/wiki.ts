@@ -26,6 +26,7 @@ import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
 import type { Readable } from 'node:stream'
+import { awaitReady, normalizeReadyTimeoutMs, readyHardTimeoutMs } from './ready-policy.ts'
 
 /** The DSH webserver route prefix (NOT a TW path-prefix; see module header). */
 export const PATH_PREFIX = '/dsh-tiddlywiki'
@@ -42,11 +43,18 @@ export const TW_PROXY_PREFIX = `${PATH_PREFIX}/tw`
 /** The proxy base path (trailing slash) handed to browsers / TW's frontend. */
 export const TW_PROXY_PATH = `${TW_PROXY_PREFIX}/`
 
-/** How long to wait for the wiki to answer /status. */
-const READY_TIMEOUT_MS = 20_000
+/*
+ * Readiness is POLICY, not a constant: `ready-policy.ts` owns the soft window
+ * (default 60s, configurable), the 3× hard deadline and the polling loop — see
+ * its module header for the incident (a 44s cold boot of a 5000-tiddler wiki
+ * was declared a failure after 20s and left the status stuck on 'failed').
+ */
 
-/** Poll cadence while waiting for readiness. */
-const READY_POLL_MS = 500
+/** Late-ready watch: cadence and lifetime after the hard deadline passed. */
+const LATE_READY_POLL_MS = 5_000
+
+/** How long the late-ready watch keeps probing a child that outlived the deadline. */
+const LATE_READY_WINDOW_MS = 10 * 60_000
 
 /** Backoff ceiling for crash restarts. */
 const MAX_RESTART_BACKOFF_MS = 30_000
@@ -70,6 +78,12 @@ export interface WikiServerOptions {
   /** Optional Basic Auth (loopback anonymous by default). */
   username?: string
   password?: string
+  /**
+   * Soft readiness window in ms (v0.22.5, default 60s, clamped 5s–600s): after
+   * this a still-loading child is only WARNED about; the attempt fails at 3×.
+   * Editable at runtime through {@link WikiServer.setReadyTimeout}.
+   */
+  readyTimeoutMs?: number
   logBufferLimit?: number
 }
 
@@ -115,11 +129,18 @@ export class WikiServer {
   /** Set by a successful readiness probe; a crash BEFORE readiness means the
    *  auto-chosen port may have been taken, so it is re-probed on restart. */
   private wasReady = false
+  /** Soft readiness window (ms, default 60s) — runtime-editable via {@link setReadyTimeout}. */
+  private readyTimeoutMs: number
+  /** Pending tick of the late-ready watch (v0.22.5), unref'ed. */
+  private lateReadyTimer: NodeJS.Timeout | undefined
+  /** End timestamp of the armed late-ready watch (undefined = not armed). */
+  private lateReadyWatchUntil: number | undefined
 
   constructor(private readonly options: WikiServerOptions) {
     this.wikiPath = resolve(options.wikiRoot, options.wiki)
     this.location = { root: options.wikiRoot, name: options.wiki }
     this.logLimit = options.logBufferLimit ?? LOG_BUFFER_LIMIT
+    this.readyTimeoutMs = normalizeReadyTimeoutMs(options.readyTimeoutMs)
   }
 
   /**
@@ -166,6 +187,26 @@ export class WikiServer {
   /** Base URL of the TW service, once a port is bound (root, no path prefix). */
   get url(): string | undefined {
     return this.port === undefined ? undefined : `http://127.0.0.1:${this.port}`
+  }
+
+  /**
+   * Update the readiness window (v0.22.5).
+   *
+   * Applies to the NEXT start()/restart(): the settings page saves
+   * `startup.readyTimeoutMs` and the host calls this on every config change, so
+   * a user with an even slower wiki can raise it without restarting dsh web.
+   * Values are clamped by ready-policy.ts (5s–600s; anything invalid → default).
+   */
+  setReadyTimeout(value: unknown): void {
+    const next = normalizeReadyTimeoutMs(value)
+    if (next === this.readyTimeoutMs) return
+    this.readyTimeoutMs = next
+    this.log(`ready timeout → ${next}ms (hard deadline ${readyHardTimeoutMs(next)}ms)`)
+  }
+
+  /** The soft readiness window currently in effect (settings page / diagnostics). */
+  get currentReadyTimeoutMs(): number {
+    return this.readyTimeoutMs
   }
 
   /** The currently bound port (undefined until first spawn). */
@@ -236,6 +277,10 @@ export class WikiServer {
   private async startOnce(): Promise<WikiStatusView> {
     this.stopping = false
     this.restartDelay = 1_000
+    // A new attempt supersedes any late-ready watch armed by the previous one
+    // (v0.22.5): it polls this.child by identity, but leaving it pending would
+    // keep a pointless timer around.
+    this.clearLateReadyWatch()
     // Clear a previous failure's message (v0.19.5): a self-healed restart left
     // `this.error` set forever, so `/status` (and the panel/FAB tooltip) kept
     // reporting a stale fault even though the wiki was healthy. A fresh attempt
@@ -309,41 +354,122 @@ export class WikiServer {
     return this.status()
   }
 
-  /** Poll /status until 200 or the deadline; throws only on deadline/crash. */
-  private async waitReady(): Promise<void> {
-    const deadline = Date.now() + READY_TIMEOUT_MS
-    // Locked-down mode (`username` configured) puts /status behind TW's
-    // `readers` list: an anonymous probe gets 401 forever and the wiki would
-    // never be reported ready. Authenticate preemptively, exactly like the
-    // REST client does.
-    const headers = this.options.username !== undefined && this.options.username.length > 0
-      ? { authorization: `Basic ${Buffer.from(`${this.options.username}:${this.options.password ?? ''}`, 'utf8').toString('base64')}` }
-      : undefined
-    for (;;) {
-      if (this.child === undefined) throw new Error('wiki process exited before ready')
-      try {
-        const res = await fetch(`${this.url}/status`, {
-          signal: AbortSignal.timeout(2_000),
-          ...(headers !== undefined ? { headers } : {}),
-        })
-        if (res.ok) {
-          this.health = 'running'
-          this.wasReady = true
-          this.error = undefined
-          this.log('ready: /status 200')
-          return
-        }
-      } catch {
-        /* not ready yet */
-      }
-      if (Date.now() > deadline) {
-        this.health = 'failed'
-        this.error = 'wiki server did not become ready in time'
-        this.log(this.error)
-        throw new Error(this.error)
-      }
-      await new Promise<void>((r) => setTimeout(r, READY_POLL_MS))
+  /**
+   * Preemptive Basic header for the readiness probe. Locked-down mode
+   * (`username` configured) puts /status behind TW's `readers` list: an
+   * anonymous probe gets 401 forever and the wiki would never be reported
+   * ready. Shared with the late-ready watch below.
+   */
+  private authHeaders(): Record<string, string> | undefined {
+    if (this.options.username === undefined || this.options.username.length === 0) return undefined
+    return { authorization: `Basic ${Buffer.from(`${this.options.username}:${this.options.password ?? ''}`, 'utf8').toString('base64')}` }
+  }
+
+  /** One /status probe: true = 200 OK. Never throws (a refused socket while TW
+   *  is still loading is "not ready yet", not an error). */
+  private async probeStatus(headers: Record<string, string> | undefined): Promise<boolean> {
+    if (this.port === undefined) return false
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.port}/status`, {
+        signal: AbortSignal.timeout(2_000),
+        ...(headers !== undefined ? { headers } : {}),
+      })
+      return res.ok
+    } catch {
+      return false
     }
+  }
+
+  /**
+   * Wait for readiness (v0.22.5 policy, see ready-policy.ts).
+   *
+   * Throws only when the child EXITED before ready, or when the HARD deadline
+   * (3× the soft window) passed with the child still silent. Passing the soft
+   * window is a warning, not a verdict: a 5000-tiddler wiki can legitimately
+   * need 40s+ on a cold cache, and failing there aborted seeding/config/clip
+   * bridge for a wiki that was about to serve. On a hard timeout the child is
+   * LEFT RUNNING and a bounded late-ready watch is armed, so `/status` stops
+   * reporting a fault the moment TW really answers.
+   */
+  private async waitReady(): Promise<void> {
+    const headers = this.authHeaders()
+    const outcome = await awaitReady({
+      probe: () => this.probeStatus(headers),
+      isAlive: () => this.child !== undefined,
+      softTimeoutMs: this.readyTimeoutMs,
+      onSlow: (elapsedMs, hardTimeoutMs) => {
+        // Still loading, not broken: keep the status honest ('starting') and
+        // never leave a stale error behind (the pre-v0.22.5 code set 'failed'
+        // here and nothing ever cleared it).
+        this.health = 'starting'
+        this.error = undefined
+        this.log(`slow start: /status not ready after ${Math.round(elapsedMs / 1000)}s — still loading (hard deadline ${Math.round(hardTimeoutMs / 1000)}s)`)
+      },
+    })
+    if (outcome === 'ready') {
+      this.health = 'running'
+      this.wasReady = true
+      this.error = undefined
+      this.log('ready: /status 200')
+      return
+    }
+    if (outcome === 'timeout') {
+      const hard = readyHardTimeoutMs(this.readyTimeoutMs)
+      this.health = 'failed'
+      this.error = `wiki server did not become ready in time (${Math.round(hard / 1000)}s)`
+      this.log(this.error)
+      this.armLateReadyWatch()
+      throw new Error(this.error)
+    }
+    throw new Error('wiki process exited before ready')
+  }
+
+  /**
+   * Keep a low-frequency probe on a child that outlived the readiness deadline
+   * (v0.22.5). Bounded and `unref`ed (never holds the process open); cancelled
+   * by stop() and superseded by the next start(). It only ever PROMOTES the
+   * status — it never spawns, kills, or writes anything.
+   */
+  private armLateReadyWatch(): void {
+    const child = this.child
+    if (child === undefined || this.stopping || this.lateReadyTimer !== undefined || this.lateReadyWatchUntil !== undefined) return
+    const deadline = Date.now() + LATE_READY_WINDOW_MS
+    this.lateReadyWatchUntil = deadline
+    const headers = this.authHeaders()
+    this.log(`late-ready watch armed (up to ${Math.round(LATE_READY_WINDOW_MS / 60_000)}min)`)
+    const tick = async (): Promise<void> => {
+      this.lateReadyTimer = undefined
+      if (this.stopping || this.child !== child || this.health === 'running') {
+        this.lateReadyWatchUntil = undefined
+        return
+      }
+      if (await this.probeStatus(headers)) {
+        this.health = 'running'
+        this.wasReady = true
+        this.error = undefined
+        this.lateReadyWatchUntil = undefined
+        this.log('ready (late): /status 200 — cleared the stale startup failure')
+        return
+      }
+      if (Date.now() >= deadline) {
+        this.lateReadyWatchUntil = undefined
+        this.log('late-ready watch gave up (child never answered /status)')
+        return
+      }
+      this.lateReadyTimer = setTimeout(() => { void tick() }, LATE_READY_POLL_MS)
+      this.lateReadyTimer.unref?.()
+    }
+    this.lateReadyTimer = setTimeout(() => { void tick() }, LATE_READY_POLL_MS)
+    this.lateReadyTimer.unref?.()
+  }
+
+  /** Cancel a pending late-ready watch (stop / new attempt / teardown). */
+  private clearLateReadyWatch(): void {
+    if (this.lateReadyTimer !== undefined) {
+      clearTimeout(this.lateReadyTimer)
+      this.lateReadyTimer = undefined
+    }
+    this.lateReadyWatchUntil = undefined
   }
 
   private scheduleRestart(): void {
@@ -392,6 +518,9 @@ export class WikiServer {
       clearTimeout(this.restartTimer)
       this.restartTimer = undefined
     }
+    // A late-ready watch would otherwise keep probing a child we are about to
+    // kill (and could resurrect 'running' during teardown).
+    this.clearLateReadyWatch()
     const child = this.child
     this.child = undefined
     if (child !== undefined && child.exitCode === null && child.signalCode === null) {

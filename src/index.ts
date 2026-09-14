@@ -44,6 +44,7 @@ import {
   type WikiLocationSource,
 } from './host/wiki-location.ts'
 import { switchWiki, type WikiSwitchResult } from './host/wiki-switch.ts'
+import { READY_TIMEOUT_DEFAULT_MS } from './host/ready-policy.ts'
 import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
 
@@ -116,6 +117,19 @@ export {
   type WikiLocationState,
 } from './host/wiki-location.ts'
 export { switchWiki, type WikiSwitchResult, type WikiSwitchDeps } from './host/wiki-switch.ts'
+export {
+  READY_TIMEOUT_DEFAULT_MS,
+  READY_TIMEOUT_MAX_MS,
+  READY_TIMEOUT_MIN_MS,
+  READY_HARD_FACTOR,
+  READY_POLL_MS,
+  READY_SLOW_POLL_MS,
+  awaitReady,
+  normalizeReadyTimeoutMs,
+  readyHardTimeoutMs,
+  type ReadyOutcome,
+  type ReadyProbeDeps,
+} from './host/ready-policy.ts'
 export { ClipBridge, buildClipTiddler, buildImageNoteTiddler, buildBinaryTiddler, downloadClipImage, hostAllowed, parseClipPayload, pickImageMime, imageExtensionForMime, isPrivateAddress, assertPublicImageUrl, resolveClipTitle, type BridgeConfig, type ClipBridgeDeps, type ClipImageDownload, type ClipImageResult } from './host/clip-bridge.ts'
 export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
@@ -135,6 +149,8 @@ export interface TiddlywikiConfig {
   bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
   /** 注入给每个会话的系统提示词（v0.21.0，见 host/prompt.ts）。 */
   prompt?: { enabled?: boolean; mode?: 'slim' | 'full'; extra?: string; override?: string }
+  /** TW 子进程启动策略（v0.22.5，见 host/ready-policy.ts）：软就绪窗口 ms。 */
+  startup?: { readyTimeoutMs?: number }
   ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
   /** 启动时自动启用的 TW 语言代码（如 "zh-Hans"），也受配置 tiddler 覆盖。 */
   uiLanguage?: string
@@ -160,6 +176,7 @@ interface ResolvedConfig {
   note: { tag: string }
   bridge: { enabled: boolean; port: number; token: string; tag: string }
   ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
+  startup: { readyTimeoutMs: number }
   uiLanguage: string
   auth: { username?: string; password?: string }
 }
@@ -181,6 +198,7 @@ const DEFAULTS: ResolvedConfig = {
   note: { tag: 'inbox' },
   bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip' },
   ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
+  startup: { readyTimeoutMs: READY_TIMEOUT_DEFAULT_MS },
   uiLanguage: '',
   auth: { username: '', password: '' },
 }
@@ -312,6 +330,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     },
     uiLanguage: typeof rawConfig.uiLanguage === 'string' ? rawConfig.uiLanguage.trim() : DEFAULTS.uiLanguage,
     auth: { ...DEFAULTS.auth, ...(rawConfig.auth ?? {}) },
+    startup: { ...DEFAULTS.startup, ...(rawConfig.startup ?? {}) },
   }
   // The location is MUTABLE since v0.22.0: the runtime pointer file (read below
   // in the startup task) and the settings page's「切换」both repoint it. Every
@@ -324,7 +343,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // Runtime-editable config (settings page): the cordis `config:` block is the
   // BASE; a config tiddler ($:/plugins/dsh-tiddlywiki/config) written by the
   // settings page overlays it. Effective values come from configStore.get().
-  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge } satisfies PluginConfigShape)
+  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge, startup: config.startup } satisfies PluginConfigShape)
   const eff = (): PluginConfigShape => configStore.get()
   const effectiveNoteTag = (): string => {
     const tag = eff().note?.tag
@@ -417,7 +436,18 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     port: config.port,
     username: config.auth.username,
     password: config.auth.password,
+    readyTimeoutMs: config.startup.readyTimeoutMs,
   })
+
+  /**
+   * Readiness window from the EFFECTIVE config (v0.22.5): the settings page
+   * saves `startup.readyTimeoutMs`, and this re-applies it to the running
+   * server — it takes effect on the next start()/restart() without a dsh web
+   * restart. Values are clamped by host/ready-policy.ts.
+   */
+  const applyServerTuning = (): void => {
+    server.setReadyTimeout(eff().startup?.readyTimeoutMs)
+  }
 
   // Lazy TW client. Rebuilt whenever the bound PORT changes (the wiki re-probes
   // a free port when a crash happened before readiness, so a cached client must
@@ -628,6 +658,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // The config tiddler may carry prompt.* overrides: rebuild the already
       // registered section so a saved preference applies without a restart.
       applyPrompt()
+      // …and startup.readyTimeoutMs: applies to the next start()/restart().
+      applyServerTuning()
       if (disposed) {
         await server.stop().catch(() => undefined)
         return
@@ -817,7 +849,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       config: configStore,
       // A settings-page save may change prompt.*: re-register the section (no
       // dsh web restart) and expose the built text for the preview panel.
-      onConfigChanged: () => applyPrompt(),
+      // startup.readyTimeoutMs is re-applied here too (next start/restart).
+      onConfigChanged: () => { applyPrompt(); applyServerTuning() },
       getPrompt: () => ({
         enabled: eff().prompt?.enabled !== false,
         mode: normalizePromptMode(eff().prompt?.mode),

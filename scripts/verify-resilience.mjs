@@ -79,6 +79,21 @@ try {
     assert.ok((got?.tags ?? []).includes('resilience'), `标签也应保留：${JSON.stringify(got?.tags)}`)
   })
 
+  await test('就绪策略（v0.22.5）：窗口可热改并按 5s–600s 夹取，真实重启仍判就绪', async () => {
+    server.setReadyTimeout(1) // 低于下限 → 夹到 5s
+    assert.equal(server.currentReadyTimeoutMs, 5_000, `下限应为 5s，实际 ${server.currentReadyTimeoutMs}`)
+    server.setReadyTimeout(120_000)
+    assert.equal(server.currentReadyTimeoutMs, 120_000)
+    server.setReadyTimeout('bogus') // 非法 → 回默认 60s
+    assert.equal(server.currentReadyTimeoutMs, 60_000, '非法值必须回默认窗口')
+    const view = await server.restart()
+    assert.equal(view.status, 'running', `重启后应判就绪，实际 ${view.status}（日志尾部：${JSON.stringify(view.logs.slice(-3))}）`)
+    assert.ok(view.logs.some((l) => l.includes('ready: /status 200')), '就绪必须留一条 ready 日志')
+    assert.ok(!view.logs.some((l) => l.includes('did not become ready')), '小 wiki 不该出现未就绪失败')
+    const got = await api.get('ResilienceNote')
+    assert.equal(got?.text, 'survives SIGKILL', '重启后数据仍在')
+  })
+
   await test('并发 50 次 put + 立即 touch()：零丢失且最终 git 干净', async () => {
     committer = new AutoCommitter({
       git,

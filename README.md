@@ -193,6 +193,8 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       branch: "main"
     note:
       tag: "inbox"                     # 快速笔记默认 tag
+    startup:
+      readyTimeoutMs: 60000            # TW 启动就绪窗口（v0.22.5，5s–600s；超出只警告并继续等，硬上限 = 3×，仍未就绪才判失败）
     prompt:
       enabled: true                    # false = 本插件不注入任何提示词
       mode: "slim"                     # slim（默认：只留约定）/ full（+ 由工具注册表实时生成的参数索引）
@@ -222,7 +224,7 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       password: ""                     # 非空时插件内置客户端/就绪探测/浏览器代理都带 Basic 认证（v0.18.0 起真正可用）
 ```
 
-> **运行时配置**：设置页写入的 `$:/plugins/dsh-tiddlywiki/config` tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki git 同步），改 note tag / git / ui 开关 / **注入提示词（`prompt.*`）** 都无需动 cordis；**提示词改动保存后立即生效**（section 即时重注册，当前会话下一步生效），剪藏桥端口改动仍需重启 dsh web 重新绑定监听。
+> **运行时配置**：设置页写入的 `$:/plugins/dsh-tiddlywiki/config` tiddler 是 `config:` 块之上的覆盖层（tiddler 优先、随 wiki git 同步），改 note tag / git / ui 开关 / **注入提示词（`prompt.*`）** 都无需动 cordis；**提示词改动保存后立即生效**（section 即时重注册，当前会话下一步生效），剪藏桥端口改动仍需重启 dsh web 重新绑定监听；**`startup.readyTimeoutMs` 对下一次 TW 启动/重启生效**（v0.22.5）。
 >
 > **知识库位置是三层**（v0.22.0）：指针文件 `$DSH_HOME/dsh-tiddlywiki/location.json` > `config:` 块的 `wikiRoot`/`wiki` > 内置默认（`$DSH_HOME/tiddlywiki` + `main`）。`wikiRoot`/`wiki` 因此是「默认位置」而不是「唯一位置」——设置页切过的位置存在指针文件里（一个在 wiki 之外的文件），所以要换回配置值就点「恢复为配置默认」。
 
@@ -342,6 +344,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.22.5**（2026-09-14）：**修「大知识库冷启动被误判为启动失败」**（用户实测报障：dsh 启动时 `[dsh-tiddlywiki] startup issue (self-healing is armed): Error: wiki server did not become ready in time`）。根因不是 TW 没起来，而是**就绪判定太急 + 判失败后再也没人复探**。证据来自 `/status` 的环形日志：`01:43:51 spawn … tiddlywiki.js … --listen` → `01:44:11 wiki server did not become ready in time` → `01:44:35 [out] Processing background action …` + `[out] Serving on http://127.0.0.1:52323`。也就是说这个 5099 个 tiddler / 26MB 的知识库在**冷文件缓存**下真的需要约 44 秒才打印 `Serving on`，而旧代码只有**一个 20 秒硬超时**，于是：① 抛错中断整条启动管线——配置 tiddler 没加载、核心 seed（发送给 Agent / 渲染路由 / 同源代理 / markdown 插件）没写、剪藏桥没起，全都会拖到下一次重启；② 写死 `health='failed'` + 一条粘性 error，而**超时后没有任何东西会再探测**，所以 TW 明明在正常服务，`/status`（面板 / FAB / 悬浮提示）却一直报故障。现在把「就绪」变成一条明确的三段策略（新的 `src/host/ready-policy.ts`，纯函数 + 注入时钟，可单测）：**软窗口**（默认 60s，可用 `startup.readyTimeoutMs` 在设置页调，夹在 5s–600s）之内安静等待；超过它只写一条 `slow start: /status not ready after Ns — still loading` 并**继续等**（状态保持 `starting`，不再粘住 error）；**硬上限 = 3× 软窗口**仍无响应才判失败——并且失败时**不杀子进程**，而是挂一个**有界（10 分钟）、`unref` 的「迟到就绪」后台探测**，TW 真起来的那一刻立刻把状态改回 `running` 并清掉那条旧错误（`ready (late): /status 200`），`stop()` 与新一次 `start()` 都会取消它。`startup.readyTimeoutMs` 走「cordis 配置 < 配置 tiddler」双层，设置页保存后对**下一次启动/重启**生效，无需重启 dsh web。守门：新增 `scripts/verify-ready-policy.mjs`（进 `verify:unit`，tsx 直跑源码 + 虚拟时钟）——归一化/夹取、**44s 冷启动必须判成功**（本次事故形状的回归断言）、慢启动只警告一次、子进程退出 → 立即 `exited`、始终不就绪 → 到硬上限才 `timeout`、轮询节奏有界（慢窗口降到 2s，不空转），外加源码级接线断言（`wiki.ts` 不得再出现 20s 硬编码、必须有 `awaitReady` / `armLateReadyWatch` / `clearLateReadyWatch`，config/index/client 三处链路都在）；`verify-resilience.mjs` 增加一条真实 TW 的重启断言（窗口热改 + 夹取 + 仍判就绪）。
 
 - **v0.22.4**（2026-09-13）：**重构：把 TW frame 的生命周期收敛成唯一一份实现**（无功能变更，纯去重）。v0.22.3 那个「空 `src` 把 DSH 载进 iframe」的 P0 之所以发生，根因不是谁写错了某个判断，而是 `panel.ts`（中央列面板）与 `tw-frame.ts`（右侧栏 tab）**各自抄了一份** `showError` / `showStarting` / `showFrame` / `applyPendingHash` / `fallbackLoad` / `doRefresh`——修 bug 时守卫只补到 panel，tw-frame 那份照旧，同一个坑于是踩了两次（`panel.ts` 靠「`!hidden` ⇒ 已载入真实 twProxy」这个不成文不变量侥幸安全，tw-frame 连这个都没有）。现在这六个函数只在 `tw-frame.ts` 新增的 **`createTwFrameSurface(skin)`** 里各有一份，`createTwFrameController()` 退化成它的 rightbar 薄包装；一个 surface 只提供三样东西：**皮肤**（类名 + 可选内联样式）、**惰性构建点**（`build()` 返回 view，由调用方决定挂到哪里）、**可见性**（`setVisible()`）。`panel.ts` 因此从 469 行降到 280 行，只剩 rect 钉住 / 惰性构建 / 共存 chrome / 面板互斥。顺带三处行为改进（都是去重后的自然结果）：① 面板打开链接改为**先 `state.openPanel()` 再 `surface.openTiddler()`**（内核以 `visible=false` 拒绝隐藏 surface，顺序反了链接会静默丢失，脚本里有守门断言）；② `setVisible(false)` 现在会**隐藏 frame 并停掉有界轮询**（下次显示重新给满预算）；FAB「重载面板」刻意**不受可见性限制**（唯一判据是 `dataset.loaded`）——显式重载请求要能覆盖**关掉的**面板，否则「关掉面板 → 点重载 → 再打开」会看到旧资源，而展示陈旧内容比多一次重载更糟；③ 内核的 `build()` 会记住「DOM 还没建就被要求显示」的情况并在建好后补一次 `/status` —— 此前中心列若在面板挂载之后才出现，面板会停在空壳上直到用户再切一次。守门：`verify-frame-guards.mjs` 加了**计数去重断言**（panel 里出现任何一个生命周期函数就直接判红，反向验证过：植入回来必失败），并新增 **`scripts/verify-frame-surface.mjs`** —— 用 tsx 直跑源码 + 最小 DOM 打桩，真正执行 `createTwFrameSurface()` 跑 16 条行为断言（空 `src` 的两条重载路径、只显示真的载入过 TW 的 frame、同一 URL 不重复赋 `src`、启动/错误/重试恢复、同源 hash 导航与跨源兜底、共享 chip 标签、dispose 摘监听且幂等），已进 `verify:unit`。测试环境提示：本机沙箱里 node 再 spawn 孙进程会崩，`npm run` 偶发段错误，`verify-package-contents` 与 `verify-git-resolve` 的失败属环境问题（手动复核过断言全过），与本版无关。
 
