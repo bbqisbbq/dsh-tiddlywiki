@@ -54,6 +54,8 @@ const admin = read('src/host/admin.ts')
 const themeSync = read('src/client/theme-sync.ts')
 const noteWidget = read('src/client/note-widget.ts')
 const rightbar = read('src/client/rightbar-tab.ts')
+const editorPopup = read('src/client/editor-popup.ts')
+const quickNoteDock = read('src/client/quick-note-dock.ts')
 
 let failures = 0
 async function test(name, fn) {
@@ -259,6 +261,35 @@ await test('note-widget 卸载不得删除共享 .dsh-tw-toast', () => {
 await test('死标记不再出现：dataset.visible / data-dsh-tw-rightbar', () => {
   assertNo(twFrame, /dataset\.visible/, 'view.dataset.visible 没有任何消费者')
   assertNo(rightbar, /data-dsh-tw-rightbar/, 'data-dsh-tw-rightbar 没有任何消费者')
+})
+
+console.log('空掉的编辑器弹窗 —— 删除笔记后必须能重新打开（v0.22.6）')
+
+await test('editor-popup：URL 相同但里面空了也必须重载；关闭要清掉已载入标记', () => {
+  assert.match(
+    editorPopup,
+    /frame\.dataset\.loaded !== url \|\| isEditorPopupBlank\(\)/,
+    'openEditorPopup 必须把「story 已经空了」也当成重载条件（否则删除笔记后永远白板）',
+  )
+  assert.match(editorPopup, /frame\.dataset\.loaded = ''/, 'closeEditorPopup 必须清掉已载入标记，关闭再打开 = 重新载入')
+  const blank = bodyOf(editorPopup, 'export function isEditorPopupBlank(')
+  assert.match(blank, /\.tc-story-river/, '空判据必须看 TW 的 story river')
+  assert.match(blank, /\.tc-tiddler-frame/, '空判据 = 一条 tiddler frame 都没有')
+  assert.match(blank, /readyState/, '文档仍在 loading 时不得判空')
+  assert.match(blank, /doc === null/, '跨源（读不到文档）时不得判空')
+})
+
+await test('空弹窗不得被当成「已打开」而吞掉点击', () => {
+  assert.match(
+    quickNoteDock,
+    /if \(isEditorPopupOpen\(\) && !isEditorPopupBlank\(\)\) closeEditorPopup\(\)/,
+    'dock 只在弹窗里确实有内容时才收起；空掉的弹窗要高重新打开编辑器',
+  )
+  assert.match(
+    noteWidget,
+    /if \(isEditorPopupOpen\(\) && !isEditorPopupBlank\(\)\) return/,
+    'openNative 的幂等守卫必须排除空弹窗（否则编辑器再也打不开）',
+  )
 })
 
 console.log('')

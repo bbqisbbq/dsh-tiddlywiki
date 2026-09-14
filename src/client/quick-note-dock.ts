@@ -17,7 +17,7 @@
 import * as React from 'react'
 import { NOTE_STATE_EVENT, type NoteWidgetHandle } from './note-widget.ts'
 import { fetchUiConfig } from './ui-config.ts'
-import { isEditorPopupOpen, closeEditorPopup } from './editor-popup.ts'
+import { isEditorPopupOpen, isEditorPopupBlank, closeEditorPopup } from './editor-popup.ts'
 
 /**
  * Build the dock entry component bound to one note-widget handle. Called once
@@ -158,7 +158,10 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
             // native 模式直接开/关 TW 原生编辑弹窗。配置实时读取（短缓存）。
             void fetchUiConfig().then((cfg) => {
               if (cfg.quickNoteMode === 'native') {
-                if (isEditorPopupOpen()) closeEditorPopup()
+                // 只有「开着且里面确实有内容」才收起；空掉的弹窗（在 TW 里删掉
+                // 正在编辑的笔记后 story 被清空，v0.22.6）要重新打开编辑器，
+                // 否则用户连点也只会把一块白板关了又开。
+                if (isEditorPopupOpen() && !isEditorPopupBlank()) closeEditorPopup()
                 else void note.openNative()
               } else if (note.isOpen()) {
                 note.close()

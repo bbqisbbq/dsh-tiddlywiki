@@ -40,7 +40,13 @@ export function openEditorPopup(url: string, label: string): void {
   // tiddler for a title, so re-opening the same draft yields the SAME url — and
   // assigning an identical src reloads the whole iframe (TW re-boots, losing
   // the draft/scroll/undo state). A same-base hash change is enough for TW.
-  if (frame.dataset.loaded !== url) {
+  //
+  // v0.22.6: URL 相同也必须重载的第二种情况 —— 弹窗**开着但里面已经空了**。
+  // TW 的 `tm-delete-tiddler`（编辑器的「删除」按钮）会把原 tiddler 和草稿一起删掉、
+  // 并把它们从 story 里移除，于是 iframe 里只剩一块白板；而此时再点快速笔记，
+  // 主机重建的草稿标题往往与删除前**完全相同**（时间戳精确到分钟、canonical
+  // `Draft of "…"` 也复用）→ URL 不变 → 不重载 → 弹窗永远白屏（用户实测报障）。
+  if (frame.dataset.loaded !== url || isEditorPopupBlank()) {
     frame.dataset.loaded = url
     frame.src = url
   }
@@ -51,6 +57,33 @@ export function openEditorPopup(url: string, label: string): void {
 /** Whether the popup is currently visible. */
 export function isEditorPopupOpen(): boolean {
   return root !== undefined && root.style.display !== 'none'
+}
+
+/**
+ * Whether the popup is visible but its TiddlyWiki story is EMPTY (v0.22.6).
+ *
+ * 这不是「没打开」：TW 里删除正在编辑的笔记（编辑器的「删除」按钮 →
+ * `tm-delete-tiddler` → `removeTitleFromStory`）之后，弹窗本身还在，但里面的
+ * story river 一条 tiddler frame 都不剩 —— 用户看到的就是一块白板。调用方用它
+ * 区分「收起一个正常工作的弹窗」和「重新打开一个已经空掉的弹窗」。
+ *
+ * 保守判定：读取不到文档（跨源 = 用户在 TW 里点了外链）、文档仍在加载、或
+ * 结构不像 TW 页面时都返回 false —— 宁可不动，也不要擅自重载一个可能有未保存
+ * 内容的编辑器。
+ */
+export function isEditorPopupBlank(): boolean {
+  if (frame === undefined) return true
+  let doc: Document | null = null
+  try {
+    doc = frame.contentDocument
+  } catch {
+    return false
+  }
+  if (doc === null) return false
+  if (doc.readyState === 'loading') return false
+  const river = doc.querySelector('.tc-story-river')
+  if (river === null) return true
+  return river.querySelector('.tc-tiddler-frame') === null
 }
 
 /**
@@ -68,6 +101,11 @@ function focusFirstInPopup(): void {
 /** Hide the popup (the ✕ button and the input-dock toggle call this). */
 export function closeEditorPopup(): void {
   if (root !== undefined) root.style.display = 'none'
+  // 关掉 = 下次打开重新载入（v0.22.6）：清掉「这个地址已经载入过」的标记，
+  // openEditorPopup 于是必定重新赋 src。关闭再打开应当是「重新打开编辑器」——
+  // 把上一次的 view 状态（可能已经过期，甚至是被删空的 story）原样摆回来正是
+  // 用户报障的那类白屏/陈旧画面。TW 自己会把草稿持续同步到服务端，重载不丢内容。
+  if (frame !== undefined) frame.dataset.loaded = ''
 }
 
 /** Remove the popup DOM entirely (plugin dispose). */

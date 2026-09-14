@@ -185,9 +185,24 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   border-color: var(--dsw-alias-brand-primary, #3e63dd);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 25%, transparent);
 }
-.dsh-tw-note-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.dsh-tw-note-foot-left, .dsh-tw-note-foot-right { display: flex; align-items: center; gap: 8px; }
-.dsh-tw-note-hint { font-size: 11px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 58%, transparent); }
+/* 底部操作条（v0.22.6）：340px 的卡片里本就不下 5 个控件，旧的 flex 收缩会把
+   「✏️ 在 TW 中编辑」这类按钮里的文字压成两行（用户实测报障）。现在按钮一律
+   nowrap + 不收缩，装不下时**整组换行**（右组落到第二行、仍贴右），
+   「Ctrl+Enter」提示留在左组并允许收缩让位——任何情况下都不再折断按钮文字。 */
+.dsh-tw-note-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap;
+}
+.dsh-tw-note-foot-left, .dsh-tw-note-foot-right {
+  display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap;
+}
+/* 换行后右组仍贴右缘（space-between 只对第一行生效）。 */
+.dsh-tw-note-foot-right { margin-left: auto; }
+.dsh-tw-note-foot button { white-space: nowrap; flex: 0 0 auto; }
+.dsh-tw-note-hint {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 58%, transparent);
+}
 .dsh-tw-note-upload {
   border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
   background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);

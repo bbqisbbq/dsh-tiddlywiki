@@ -27,7 +27,7 @@
  * @module dsh-tiddlywiki/client/note-widget
  */
 import { toast } from './toast.ts'
-import { openEditorPopup, isEditorPopupOpen } from './editor-popup.ts'
+import { openEditorPopup, isEditorPopupOpen, isEditorPopupBlank } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
 import { fetchStatus } from './status-cache.ts'
 import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, TAGS_ENDPOINT, UPLOAD_ENDPOINT } from './endpoints.ts'
@@ -1024,7 +1024,11 @@ export function createNoteWidget(): NoteWidgetHandle {
       // 互斥守卫（与 open() 的 opened 守卫等价）：dock 的点击回调要等
       // fetchUiConfig() 才分派，用户连点两次会各自走到这里 → 两个 POST /edit、
       // 两个草稿 tiddler。用「在途」标志 + 弹窗已打开判断挡住重复请求。
-      if (disposed || nativeOpening || isEditorPopupOpen()) return
+      // 「已打开」必须排除**空掉的**弹窗（v0.22.6）：在 TW 里删掉正在编辑的笔记
+      // 之后 story 会被清空，若把它当成「编辑器已开」直接返回，用户就再也打不开
+      // 编辑器了；空的弹窗按「需要重新打开」处理（openEditorPopup 会重载它）。
+      if (disposed || nativeOpening) return
+      if (isEditorPopupOpen() && !isEditorPopupBlank()) return
       nativeOpening = true
       try {
         const hit = loadDraft()
