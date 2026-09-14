@@ -308,7 +308,8 @@ src/
 ├── index.ts            # host 入口：装配 WikiServer/路由/工具/提示词/自动 commit
 ├── sdk.ts              # 自包含 defineTool + dshHomePath（零 @deepseek-ai 运行时依赖）
 ├── host/
-│   ├── wiki.ts         # WikiServer：spawn/kill/自愈/端口探测/就绪轮询；TW_PROXY_PATH 同源代理
+│   ├── wiki.ts         # WikiServer：spawn/kill/自愈/端口探测/就绪轮询（策略见 ready-policy.ts）+ 迟到就绪复探；TW_PROXY_PATH 同源代理
+│   ├── ready-policy.ts # TW 启动就绪策略（v0.22.5）：软窗口 60s（可配）/ 硬上限 3× / awaitReady 纯策略（注入时钟，可单测）
 │   ├── tw-api.ts       # TiddlyWeb REST 客户端
 │   ├── git.ts          # git init/commit/pull/push/sync/status + AutoCommitter
 │   ├── routes.ts       # 全部 DSH 路由 + agent-send/create/modes + session/summary
