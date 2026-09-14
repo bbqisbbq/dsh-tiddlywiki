@@ -27,7 +27,7 @@
 | 📍 **知识库位置可切换** | 设置页「知识库位置」可把插件切换到**任意本地文件夹**（不用改 cordis 配置、不用重装）：就地停/起 TW 子进程，目标目录没有 `tiddlywiki.info` 时自动 `--init server` 建一个全新知识库；选择记在 `$DSH_HOME/dsh-tiddlywiki/location.json`——一个**在 wiki 之外**的指针文件（所以切到新 wiki 后仍记得「我用的是哪个」），「恢复为配置默认」一键清除；**切换失败自动回滚**到原知识库并如实告知（v0.22.0） |
 | 🔄 **seed 更新检测** | seed 标记记录**内容哈希**：内置内容在本 wiki 预置之后更新过 → 设置页显示「⬆ 有更新」；被你改过 → 显示「✏️ 本地已修改」，且「重新初始化」前**二次确认**；两者都基于哈希判定，绝不猜（旧格式标记会明确显示「尚未启用更新检测」，不会误报为「你改过」，v0.22.0） |
 | 🎨 **自定义样式** | 「自定义样式」seed：编辑器美化 / 窄屏侧栏隐藏 / menubar 加高 / 批注弹窗等 5 张通用样式表，新 wiki 也能一键初始化（可选，v0.16.22） |
-| 📝 **可配置的注入提示词** | 插件注入每个会话的「TiddlyWiki 持久知识库」提示词可在设置页配置：**默认精简版**（~1.7KB，只保留工具 schema 表达不了的约定——同步纪律 / 标签约定 / 链接格式），可选**完整版**（额外附一份**由工具注册表实时生成**的参数索引，不会再过期）；`extra` 追加自定义规范、`override` 整段接管、可整体停用；**保存后无需重启 dsh web**（section 即时重注册，当前会话下一步即生效），设置页可**预览**即将注入的全文（v0.21.0） |
+| 📝 **可配置的注入提示词** | 插件注入每个会话的「TiddlyWiki 持久知识库」提示词可在设置页配置：**默认精简版**（~1.7KB，只保留工具 schema 表达不了的约定——同步纪律 / 标签约定 / 链接格式），可选**完整版**（额外附一份**由工具注册表实时生成**的参数索引，不会再过期）；`extra` 追加自定义规范、`override` 整段接管、可整体停用；**保存后无需重启 dsh web**（section 即时重注册，当前会话下一步即生效），设置页可**按表单当前值预览**即将注入的全文（未保存的形态切换也立刻可见，v0.21.0 / v0.22.7） |
 | 🤖 **Agent 工具** | 15 个 `tiddlywiki_*` 工具：检索（**相关度排序 + 命中处片段 + 字段过滤**）、读写、**增量追加**、批量、重命名、**软删除/回收站**、**反向链接**、**附件入库**、**知识库体检**、git 同步与冲突解决（v0.19.0；检索/最近仍在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
 | 🛡️ **不会被覆盖的写入** | 所有写入路径（agent 工具 **与** 快速笔记/编辑器路由）都**先读后写**：不传 tags 就保留原有标签、自定义字段与**内容类型**（`text/css`/wikitext 等不会被重置成 Markdown，v0.20.1）；`tiddlywiki_put(..., expectedModified/expectedRevision)` 与 `tiddlywiki_delete(..., expectedModified/expectedRevision)` 乐观并发——读取后若有人（在 TW 编辑器里）改过，写入/删除被拒绝（HTTP 409）而不是静默覆盖或丢进回收站；`tiddlywiki_attach` 的同名标题**默认拒绝**（要覆盖必须 `force: true`）；`tiddlywiki_delete` 默认**软删除进回收站**，`tiddlywiki_trash` 可恢复（v0.19.0 / v0.19.1 / v0.19.5） |
 | 🧼 **渲染片段净化** | 回复流卡片与会话汇总注入的 TW 片段先经 **host 白名单净化**（丢 `iframe`/`script`/`svg`/`on*`/`javascript:`/`data:text/html` 等）——TW 自己的解析器只剥 `on*`，`<iframe src="javascript:…">` 会原样通过并在 DSH 页面里执行（v0.19.1 修复的存储型 XSS） |
@@ -122,7 +122,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 | `prompt.extra` | 追加在末尾的自定义规范（团队 / 个人偏好），始终生效 |
 | `prompt.override` | 非空时整段取代内置文本（`extra` 仍会追加）——想完全自写提示词时用 |
 
-保存后**不用重启 dsh web**：host 会即时重新注册 prompt section，当前会话从**下一步**起就使用新文本（DSH 的 `system-prompt/change` 会更新历史里的系统消息）。设置页的「查看当前注入文本」按钮会读取 host 实时拼好的全文，所见即下一步实际注入的内容。
+保存后**不用重启 dsh web**：host 会即时重新注册 prompt section，当前会话从**下一步**起就使用新文本（DSH 的 `system-prompt/change` 会更新历史里的系统消息）。设置页的「预览注入文本（按表单当前值）」按钮会把**表单里此刻的值**（含还没保存的形态切换 / extra / override / 停用开关）发给 host 实时拼成全文——所见即「保存后会注入的内容」，顶部还会标注「含未保存的修改」；预览是只读的，不会替你保存（v0.22.7 之前它只读**已保存**的配置，所以切换形态后不点保存直接预览会看到逐字节相同的旧文本，容易被读成「两种形态没差别」）。
 
 > 为什么默认精简：v0.20.1 之前这段提示词里手抄了一份**工具参数清单**，最后一次同步停在 v0.19.0，而 v0.19.4 / v0.19.5 / v0.20.1 都改过工具参数——模型因此看到 6 处过期签名（`delete` 缺并发令牌、`append` 缺 `fields`、`attach` 缺覆盖保护、`batch_put` 缺 `overwrite`、`trash` 缺 `title`/`limit`、`list_tags` 缺 `limit`）。v0.21.0 起：默认形态不再复述参数（工具 description 才是唯一事实），`full` 形态的目录改为**运行时生成**，并新增 `scripts/verify-prompt.mjs` 守门（slim 不得出现参数清单 / full 的每个工具与每个参数都必须在场 / 两种形态都必须保留治理约定块）。
 
@@ -297,7 +297,7 @@ node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/<样式.css>' … src/host/
 | `/dsh-tiddlywiki/api/*` | any | 透传 TW 服务（JSON） |
 | `/dsh-tiddlywiki/tw/*` | any | 同源 TW 代理（远程访问核心） |
 | `/dsh-tiddlywiki/admin/seeds` `/run` `/remove` | GET/POST | seed 状态（v0.22.0 起含内容哈希的「有更新 / 本地已修改」）/ 运行 / 反初始化 |
-| `/dsh-tiddlywiki/admin/prompt` | GET | 当前注入提示词全文（设置页预览用，v0.21.0） |
+| `/dsh-tiddlywiki/admin/prompt` | GET/POST | 当前注入提示词全文（GET = 已保存的有效配置，v0.21.0）；POST 带 `{enabled,mode,extra,override}` 则按**草稿**渲染、写入零副作用，供设置页预览未保存的表单值（v0.22.7） |
 | `/dsh-tiddlywiki/admin/wiki/location` | GET | 当前知识库位置 + 来源（指针/配置/默认）+ 指针文件路径 + 同目录候选 wiki（v0.22.0） |
 | `/dsh-tiddlywiki/admin/wiki/switch` `/reset` | POST | 运行时切换知识库 / 恢复为配置默认（失败自动回滚并报告，v0.22.0） |
 
@@ -319,7 +319,7 @@ src/
 │   ├── admin.ts        # 设置页后台：tiddlywiki.info 读写 + /admin/*
 │   ├── config.ts       # ConfigStore：cordis config 基底 + 配置 tiddler 覆盖层
 │   ├── seeds.ts        # 统一 seed 注册表（10 项，三层：核心/起步/可选）
-│   ├── prompt.ts       # 系统提示词（v0.21.0）：slim/full 两种形态 + extra/override，full 的目录由工具注册表实时生成
+│   ├── prompt.ts       # 系统提示词（v0.21.0）：slim/full 两种形态 + extra/override，full 的目录由工具注册表实时生成；v0.22.7 起草稿预览（normalizePromptPreview/describePrompt，与保存路径同一份拼装）
 │   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量脚本生成；starter-docs/menubar/clip-bridge 手工维护）
 │   └── tools.ts        # 15 个 tiddlywiki_* 工具（列表式注册）
 └── client/             # 浏览器半部
@@ -345,6 +345,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.22.7**（2026-09-14）：**设置页「预览注入文本」改为按表单当前值渲染**（用户实测提问「两种内置文本形态差别是什么？为什么选了不同形态后查看当前注入文本显示的东西一样？」）。两种形态的差别其实只在 intro 一段：`slim`（默认）是一句能力概览（实测 1735 字符），`full` 换成由工具注册表实时生成的 15 行参数索引（2504 字符），三块治理约定（写入与并发 / 同步纪律 / 笔记约定）完全相同。但预览按钮此前只发 `GET /admin/prompt`，读的是 **host 已保存的有效配置**，而下拉框的值只活在浏览器 DOM 里——于是「切换形态 → 不点保存 → 点预览」看到的是逐字节相同的旧文本，用户自然以为两种形态没差别。现在：① `prompt.ts` 新增 `normalizePromptPreview()`（把不可信的 body 白名单化成 4 个字段，未知键/错类型丢弃并回落内置默认）+ `describePrompt()`（`applyPrompt()` 与预览**共用同一份拼装**，预览不可能与保存后的注入不一致）；② `POST /admin/prompt` 接收 `{enabled,mode,extra,override}` 草稿并渲染全文，**写入零副作用**（不落盘、不触发 `onConfigChanged`），同源守卫 + 畸形 JSON 400；GET 保留为「已保存/正在注入」的读取；③ 设置页按钮改名「预览注入文本（按表单当前值）」并 POST 草稿，标题栏在表单有未保存改动时标注「含未保存的修改，保存后才真正注入」。守门：`verify-prompt.mjs` 新增 3 条纯函数断言（白名单、`describePrompt` 与 `buildPromptText` 逐字节一致、两种形态在草稿里必须不同），`verify-seeds-admin.mjs` 第 8 段把「POST 必须 405」换成 7 条草稿断言（slim/full 草稿不同、extra 追加、`enabled:false` 为空、GET 仍是旧的已保存状态且 `onConfigChanged` 未触发、垃圾字段回落、畸形 JSON 400、跨站 403）。
 
 - **v0.22.6**（2026-09-14）：**修「快速笔记」两处用户实测报障**。① **原生编辑弹窗里删掉笔记后，弹窗变永久白板、再点「快速笔记」也回不来**。`ui.quickNoteMode=native` 的编辑器是**同一个 iframe 复用**的，而 `openEditorPopup()` 只在 **URL 变了**才给 iframe 赋 `src`（刻意如此：赋 `src` 即整页重载，会丢掉 TW 里未保存的草稿 / 滚动位置 / 撤销栈）。可 TW 编辑器的「删除」是 `tm-delete-tiddler`：它把**原 tiddler 与草稿一起删掉**、并用 `removeTitleFromStory` 把 story 清空——于是弹窗里剩一块白板；而此时主机重建的草稿标题往往与删除前**完全相同**（默认标题是分钟级时间戳 + canonical `Draft of "…"` 复用），URL 不变 → 不重载 → 白板永远摆在那儿，再点按钮也只是「收起/重新打开」同一个空 iframe。现在三处一起兜住：新增 `isEditorPopupBlank()`（同源读 iframe 文档里的 `.tc-story-river`，**一条 `.tc-tiddler-frame` 都没有**即判空；跨源 = TW 里点了外链、文档仍在 loading、读不到文档时**一律不判空**，绝不擅自重载一个可能正在编辑的编辑器），空掉的弹窗在 `openEditorPopup()` 里**强制重载**；`closeEditorPopup()` 同时清掉 `frame.dataset.loaded`，所以「关闭再打开」也一定是新的编辑器载入（关闭意味着丢掉上一次的 view 状态）；输入框上方的按钮与 `openNative()` 的「已打开」幂等守卫都改成 `isEditorPopupOpen() && !isEditorPopupBlank()`，用户再点一次就能拿回编辑器。② **card 模式底部操作条把按钮文字压成两行**（用户截图反馈的美化问题）。340px 的卡片里 5 个控件本就放不下，旧 CSS 让 flex 默认收缩，于是「📎 上传」「🕘 最近」「✏️ 在 TW 中编辑」「保存」**每个按钮里的文字都折成了两行**（无头 Chrome 实测：每个按钮 `textRects=2`、高 46px）。现在按钮一律 `white-space: nowrap` + `flex: 0 0 auto`（文字永不折行、永不被压扁），装不下时**整个右组换行**并用 `margin-left: auto` 继续贴右缘，「Ctrl+Enter」提示允许收缩让位——实测全部按钮恢复单行（高 30px），左下是「上传 / 最近 / Ctrl+Enter」、右下是「在 TW 中编辑 / 保存」两行布局。守门：新增 **`scripts/verify-editor-popup.mjs`**（进 `verify:unit`，tsx 直跑源码 + 最小 DOM 打桩，11 条行为断言——同 URL 有内容不重载 / story 被删空必须重载 / 关闭清 `dataset.loaded` / 关闭后重开必重载 / 空白判据的四种保守边界；**反向验证过**：把两处修复改回去会红 3 条），`verify-frame-guards.mjs` 另加 2 条接线断言（空弹窗不得被当成「已打开」）。真机复核：无头 Chrome 里确认「同一个 URL 再赋一次 `src` 确实会重新加载」「清空 story 后重载能恢复内容」，并用真实 CSS + 真实卡片结构对比修复前后的按钮排版。
 

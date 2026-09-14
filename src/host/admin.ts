@@ -9,10 +9,13 @@
  *   cordis `config:` block — future config fields just extend the shape.
  *
  * Routes (all under ROUTE_PREFIX/admin, JSON):
- *   GET  /admin/state   current info + catalog + effective config + status
- *   POST /admin/info    { plugins?, themes? } → write info → restart TW
- *   POST /admin/config  { ...patch }          → write config tiddler
- *   POST /admin/restart restart the TW child
+ *   GET  /admin/state    current info + catalog + effective config + status
+ *   POST /admin/info     { plugins?, themes? } → write info → restart TW
+ *   POST /admin/config   { ...patch }          → write config tiddler
+ *   GET  /admin/prompt   the prompt text injected right now (SAVED config)
+ *   POST /admin/prompt   { enabled?, mode?, extra?, override? } → the text for
+ *                        a DRAFT config (v0.22.7); writes nothing
+ *   POST /admin/restart  restart the TW child
  *
  * @module dsh-tiddlywiki/host/admin
  */
@@ -27,6 +30,7 @@ import { type ConfigStore, type PluginConfigShape } from './config.ts'
 import { readBody, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
 import { waitForFileWrite, needsRestartAfterSeeds, flushPendingWrites } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
+import { normalizePromptPreview, type PromptPreviewConfig } from './prompt.ts'
 import type { WikiLocationInfo } from './wiki-location.ts'
 import type { WikiSwitchResult } from './wiki-switch.ts'
 import { GitFace } from './git.ts'
@@ -326,10 +330,12 @@ export interface AdminDeps {
    */
   onConfigChanged?: () => void
   /**
-   * The system-prompt text that WOULD be injected right now, for the settings
-   * page preview (v0.21.0). Read-only; absent in headless contexts.
+   * The system-prompt text that WOULD be injected for a configuration, for the
+   * settings page preview (v0.21.0). Called with no argument → the SAVED
+   * effective config; called with a draft (v0.22.7) → those unsaved values.
+   * Read-only and side-effect free; absent in headless contexts.
    */
-  getPrompt?: () => { enabled: boolean; mode: string; text: string }
+  getPrompt?: (draft?: PromptPreviewConfig) => { enabled: boolean; mode: string; text: string }
   /**
    * Runtime wiki location (v0.22.0): where the wiki folder is, how that was
    * decided, and the two operations the settings page can perform. Absent in
@@ -742,18 +748,47 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
    * injected right now, with the effective mode/enabled flag (v0.21.0). The
    * settings page renders it verbatim so a prompt edit is never a black box.
    * Read-only + CSRF-hardened like every other admin read.
+   *
+   * POST /dsh-tiddlywiki/admin/prompt — same answer for a DRAFT config sent in
+   * the body (v0.22.7). The settings page previews what its form currently
+   * holds, before 保存配置: the dropdown's value lived only in the browser DOM,
+   * so switching 形态 and previewing used to show the still-SAVED text
+   * (byte-identical) and read as "the two modes are the same". Nothing is
+   * persisted here — `enabled/mode/extra/override` go through the same builder
+   * `applyPrompt()` uses, so the draft cannot disagree with a later save.
    */
   const handlePrompt = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      const draft = (req.method ?? 'GET').toUpperCase() === 'POST'
+      if (draft) {
+        if (rejectCrossSiteWrite(req, res, ['POST'])) return
+        const raw = (await readBody(req)).trim()
+        let body: unknown = {}
+        if (raw.length > 0) {
+          try {
+            body = JSON.parse(raw) as unknown
+          } catch {
+            json(res, { ok: false, error: 'invalid JSON body' }, 400)
+            return
+          }
+        }
+        const prompt = deps.getPrompt?.(normalizePromptPreview(body))
+        if (prompt === undefined) {
+          json(res, { ok: false, error: 'prompt preview is not available' }, 503)
+          return
+        }
+        json(res, { ok: true, draft: true, enabled: prompt.enabled, mode: prompt.mode, length: prompt.text.length, text: prompt.text })
+        return
+      }
       if (rejectNonRead(req, res)) return
       const prompt = deps.getPrompt?.()
       if (prompt === undefined) {
         json(res, { ok: false, error: 'prompt preview is not available' }, 503)
         return
       }
-      json(res, { ok: true, enabled: prompt.enabled, mode: prompt.mode, length: prompt.text.length, text: prompt.text })
+      json(res, { ok: true, draft: false, enabled: prompt.enabled, mode: prompt.mode, length: prompt.text.length, text: prompt.text })
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
   }
 

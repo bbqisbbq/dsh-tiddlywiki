@@ -25,6 +25,12 @@
  * asserts every block survives in both (a re-write may not silently drop a
  * rule the user relies on).
  *
+ * v0.22.7 — DRAFT PREVIEW: `normalizePromptPreview()` + `describePrompt()`
+ * let the settings page render the text for the values currently in its form
+ * (before 保存配置). Until then the preview could only read the SAVED config, so
+ * switching 形态 and hitting 预览 showed the old text — byte-identical, which
+ * read as "the two modes are the same".
+ *
  * @module dsh-tiddlywiki/host/prompt
  */
 
@@ -63,6 +69,60 @@ export interface PromptToolSummary {
   name: string
   /** Parameter names in declaration order, with their required flag. */
   params: Array<{ name: string; required: boolean }>
+}
+
+/**
+ * The four fields the settings page can preview BEFORE saving (v0.22.7).
+ *
+ * The same shape describes a saved `prompt.*` block, so one builder serves both
+ * the live section and the preview — see `describePrompt()`.
+ */
+export interface PromptPreviewConfig {
+  enabled?: boolean
+  mode?: PromptMode
+  extra?: string
+  override?: string
+}
+
+/**
+ * Whitelist an untrusted preview body (`POST /admin/prompt`) down to the four
+ * prompt fields, with type checks. Unknown keys and wrong types are DROPPED
+ * (so a malformed body degrades to the built-in defaults instead of throwing),
+ * and `mode` is only accepted when it is a known value — the same
+ * "unknown falls back to slim" rule `normalizePromptMode()` applies later.
+ */
+export function normalizePromptPreview(input: unknown): PromptPreviewConfig {
+  const src = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>
+  const out: PromptPreviewConfig = {}
+  if (typeof src.enabled === 'boolean') out.enabled = src.enabled
+  if (src.mode === 'slim' || src.mode === 'full') out.mode = src.mode
+  if (typeof src.extra === 'string') out.extra = src.extra
+  if (typeof src.override === 'string') out.override = src.override
+  return out
+}
+
+/** What the preview endpoint (and `applyPrompt()`) reports for one config. */
+export interface PromptDescription {
+  enabled: boolean
+  mode: PromptMode
+  text: string
+}
+
+/**
+ * Describe ONE prompt configuration: the built text plus the effective
+ * `enabled`/`mode` the settings page labels it with.
+ *
+ * Both the saved config (`GET /admin/prompt`, `applyPrompt()`) and the settings
+ * form's unsaved draft (`POST /admin/prompt`) go through here, so a preview can
+ * never disagree with what a save would inject (v0.22.7).
+ */
+export function describePrompt(config: PromptPreviewConfig, tools: readonly PromptToolSummary[]): PromptDescription {
+  const enabled = config.enabled !== false
+  return {
+    enabled,
+    mode: normalizePromptMode(config.mode),
+    text: buildPromptText({ enabled, mode: config.mode, extra: config.extra, override: config.override, tools }),
+  }
 }
 
 /** Normalise a config value to a known mode (unknown values fall back to slim). */

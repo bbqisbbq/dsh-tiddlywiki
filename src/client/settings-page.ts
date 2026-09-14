@@ -226,7 +226,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
     section.append(wrap)
   }
-  const checkField = (key: string, label: string, initial: boolean): void => {
+  const checkField = (key: string, label: string, initial: boolean): HTMLInputElement => {
     const input = make('input', 'dsh-tw-settings-check')
     input.type = 'checkbox'
     input.checked = initial
@@ -234,6 +234,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     wrap.append(input, make('span', 'dsh-tw-settings-label', label))
     fields.push({ key, initial, read: () => input.checked, changed: () => input.checked !== initial })
     section.append(wrap)
+    return input
   }
   const numField = (key: string, label: string, initial: number): void => {
     const input = make('input', 'dsh-tw-settings-input')
@@ -252,7 +253,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     fields.push({ key, initial, read, changed: () => read() !== initial })
     section.append(wrap)
   }
-  const selectField = (key: string, label: string, initial: string, options: Array<{ value: string; label: string }>): void => {
+  const selectField = (key: string, label: string, initial: string, options: Array<{ value: string; label: string }>): HTMLSelectElement => {
     const select = make('select', 'dsh-tw-settings-input')
     for (const opt of options) {
       const option = document.createElement('option')
@@ -265,6 +266,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     wrap.append(make('span', 'dsh-tw-settings-label', label), select)
     fields.push({ key, initial, read: () => select.value, changed: () => select.value !== initial })
     section.append(wrap)
+    return select
   }
   /**
    * Multi-line free text (v0.21.0: `prompt.extra` / `prompt.override`).
@@ -313,20 +315,22 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   const allArticles = (ui.allArticles ?? {}) as Record<string, unknown>
   numField('ui.allArticles.pageSize', '「所有文章」每页条数', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10)
 
-  // ── 系统提示词（v0.21.0）────────────────────────────────────────────────
+  // ── 系统提示词（v0.21.0；草稿预览 v0.22.7）────────────────────────────────
   const prompt = (config.prompt ?? {}) as Record<string, unknown>
   section.append(make('h3', 'dsh-tw-settings-h', '系统提示词（注入每个会话）'))
   section.append(make('div', 'dsh-tw-settings-muted', '插件把自己的约定（同步纪律 / 标签约定 / 链接格式等）注入每个会话的系统提示词。保存后**无需重启 dsh web**：section 会即时重新注册，当前会话从下一步起就使用新文本。'))
-  checkField('prompt.enabled', '注入 TiddlyWiki 提示词（关闭后本插件不再注入任何文本）', prompt.enabled !== false)
-  selectField('prompt.mode', '内置文本形态', prompt.mode === 'full' ? 'full' : 'slim', [
+  const promptEnabled = checkField('prompt.enabled', '注入 TiddlyWiki 提示词（关闭后本插件不再注入任何文本）', prompt.enabled !== false)
+  const promptMode = selectField('prompt.mode', '内置文本形态', prompt.mode === 'full' ? 'full' : 'slim', [
     { value: 'slim', label: '精简（默认）：只保留工具 schema 表达不了的约定' },
     { value: 'full', label: '完整：额外附一份由工具注册表实时生成的参数索引' },
   ])
-  areaField('prompt.extra', '附加说明（永远追加在末尾，可放团队/个人规范）', typeof prompt.extra === 'string' ? prompt.extra : '', 5)
-  areaField('prompt.override', '整段替换（非空时取代上面的内置文本，附加说明仍会追加）', typeof prompt.override === 'string' ? prompt.override : '', 8)
-  const preview = make('button', 'dsh-tw-settings-btn', '查看当前注入文本')
+  const promptExtra = areaField('prompt.extra', '附加说明（永远追加在末尾，可放团队/个人规范）', typeof prompt.extra === 'string' ? prompt.extra : '', 5)
+  const promptOverride = areaField('prompt.override', '整段替换（非空时取代上面的内置文本，附加说明仍会追加）', typeof prompt.override === 'string' ? prompt.override : '', 8)
+  /** Any prompt.* field differs from what /admin/state returned (unsaved). */
+  const promptDirty = (): boolean => fields.some((f) => f.key.startsWith('prompt.') && f.changed())
+  const preview = make('button', 'dsh-tw-settings-btn', '预览注入文本（按表单当前值）')
   preview.type = 'button'
-  preview.title = '读取 host 端实时生成的提示词全文（保存后即为下一步注入的内容）'
+  preview.title = '按表单当前值渲染注入文本（不用先保存）；点「保存配置」后这就是实际注入的内容'
   const previewOut = make('pre', 'dsh-tw-settings-prompt-preview')
   previewOut.hidden = true
   preview.addEventListener('click', () => {
@@ -338,11 +342,23 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     preview.disabled = true
     void (async () => {
       try {
-        const data = await fetchJson<{ ok?: boolean; enabled?: boolean; mode?: string; length?: number; text?: string; error?: string }>(PROMPT_ENDPOINT)
+        // Send the DRAFT (v0.22.7): the host builds the text from these values
+        // without saving them, so the preview follows the dropdown immediately
+        // instead of showing the still-saved mode until 保存配置 is clicked.
+        const data = await fetchJson<{ ok?: boolean; draft?: boolean; enabled?: boolean; mode?: string; length?: number; text?: string; error?: string }>(PROMPT_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            enabled: promptEnabled.checked,
+            mode: promptMode.value,
+            extra: promptExtra.value,
+            override: promptOverride.value,
+          }),
+        })
         if (data.ok !== true) throw new Error(data.error ?? '获取失败')
         previewOut.textContent = data.enabled === false
           ? '（已关闭：不会注入任何提示词）'
-          : `# 形态 ${data.mode ?? ''} · ${data.length ?? 0} 字符\n\n${data.text ?? ''}`
+          : `# 形态 ${data.mode ?? ''} · ${data.length ?? 0} 字符${promptDirty() ? '（含未保存的修改，保存后才真正注入）' : ''}\n\n${data.text ?? ''}`
         previewOut.hidden = false
       } catch (err) {
         toast(`读取提示词失败：${err instanceof Error ? err.message : String(err)}`)

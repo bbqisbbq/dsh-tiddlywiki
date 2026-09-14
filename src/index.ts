@@ -30,7 +30,7 @@ import { RENDER_PLUGIN_FILE } from './host/seed-render.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
 import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps } from './host/tools.ts'
-import { buildPromptText, normalizePromptMode, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig } from './host/prompt.ts'
+import { describePrompt, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig, type PromptPreviewConfig } from './host/prompt.ts'
 import {
   clearLocationState,
   defaultLocationStateFile,
@@ -89,8 +89,10 @@ export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUna
 export { tiddlywikiToolSummary } from './host/tools.ts'
 export {
   buildPromptText,
+  describePrompt,
   escapePromptBraces,
   normalizePromptMode,
+  normalizePromptPreview,
   toolSignatureLines,
   PROMPT_GOVERNANCE_BLOCKS,
   PROMPT_MODES,
@@ -98,7 +100,9 @@ export {
   PROMPT_SECTION_ORDER,
   DEFAULT_PROMPT_MODE,
   type PromptConfig,
+  type PromptDescription,
   type PromptMode,
+  type PromptPreviewConfig,
   type PromptToolSummary,
 } from './host/prompt.ts'
 export {
@@ -402,19 +406,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // unchanged, so saving an unrelated setting never churns the prompt.
   let disposePromptSection: (() => void) | undefined
   let currentPromptText: string | undefined
-  /** Built text for the current effective config (also the preview endpoint). */
-  const promptText = (): string => {
-    const p = (eff().prompt ?? {}) as PromptConfig
-    return buildPromptText({
-      enabled: p.enabled !== false,
-      mode: normalizePromptMode(p.mode),
-      extra: typeof p.extra === 'string' ? p.extra : '',
-      override: typeof p.override === 'string' ? p.override : '',
-      // Signature catalogue for `full` mode comes from the live tool registry,
-      // never from hand-written prose (v0.21.0 — the old copy had drifted).
-      tools: tiddlywikiToolSummary(),
-    })
-  }
+  /**
+   * Built text for the current effective config (also the saved-state preview).
+   * The signature catalogue for `full` mode comes from the live tool registry,
+   * never from hand-written prose (v0.21.0 — the old copy had drifted).
+   */
+  const promptText = (): string => describePrompt((eff().prompt ?? {}) as PromptConfig, tiddlywikiToolSummary()).text
   const applyPrompt = (): void => {
     const next = promptText()
     if (next === currentPromptText) return
@@ -851,11 +848,10 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // dsh web restart) and expose the built text for the preview panel.
       // startup.readyTimeoutMs is re-applied here too (next start/restart).
       onConfigChanged: () => { applyPrompt(); applyServerTuning() },
-      getPrompt: () => ({
-        enabled: eff().prompt?.enabled !== false,
-        mode: normalizePromptMode(eff().prompt?.mode),
-        text: promptText(),
-      }),
+      // No draft → the SAVED config (what is injected right now); with a draft →
+      // the settings form's unsaved values (v0.22.7), through the same builder.
+      getPrompt: (draft?: PromptPreviewConfig) =>
+        describePrompt(draft ?? (eff().prompt ?? {}) as PromptConfig, tiddlywikiToolSummary()),
       // Runtime wiki location (v0.22.0): read the current folder + how it was
       // decided, switch to another one, or drop back to the cordis default.
       wiki: {

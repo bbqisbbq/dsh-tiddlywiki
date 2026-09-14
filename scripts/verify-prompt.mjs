@@ -13,7 +13,9 @@
  *   3. 三种形态都必须保留治理约定块（同步纪律 / 标签 / 链接格式）—— rewrite
  *      时不许悄悄丢掉用户依赖的规则；
  *   4. 用户文本里的 `{{…}}` 必须被转义（DSH 对未知变量直接抛错，会让整个
- *      系统提示词装配失败）。
+ *      系统提示词装配失败）；
+ *   5. `describePrompt()`（草稿预览，v0.22.7）必须与 `buildPromptText()` 逐字节
+ *      一致 —— 设置页「按表单当前值预览」与保存后的真实注入不能是两套拼装。
  *
  *   node scripts/verify-prompt.mjs
  *
@@ -22,8 +24,10 @@
 import assert from 'node:assert/strict'
 import {
   buildPromptText,
+  describePrompt,
   escapePromptBraces,
   normalizePromptMode,
+  normalizePromptPreview,
   registerTiddlywikiTools,
   tiddlywikiToolSummary,
   PROMPT_GOVERNANCE_BLOCKS,
@@ -138,6 +142,36 @@ test('用户文本里的 {{…}} 被转义（DSH 未知变量会抛错并炸掉�
   const text = buildPromptText({ mode: 'slim', extra: '示例：{{tiddler}} 与 {{a b}}', tools })
   assert.ok(!text.includes('{{'), '注入文本不得残留 {{（会让 DSH 装配失败）')
   assert.ok(text.includes('cwd') === false && text.includes('tiddler'), '转义不得吃掉用户文本')
+})
+
+// v0.22.7 — 草稿预览（设置页 POST /admin/prompt）的两个纯函数。
+test('normalizePromptPreview 只放行 4 个字段，未知键/错类型被丢弃', () => {
+  assert.deepEqual(normalizePromptPreview({ enabled: false, mode: 'full', extra: 'e', override: 'o' }), { enabled: false, mode: 'full', extra: 'e', override: 'o' })
+  assert.deepEqual(normalizePromptPreview({ mode: 'nonsense', extra: 42, enabled: 'yes', nope: 'x' }), {}, '未知形态/错类型必须被丢弃（回落内置默认）')
+  assert.deepEqual(normalizePromptPreview(undefined), {})
+  assert.deepEqual(normalizePromptPreview('not-an-object'), {})
+  assert.deepEqual(normalizePromptPreview(null), {})
+})
+
+test('describePrompt 与 buildPromptText 同一份实现（预览 = 将来保存后的注入）', () => {
+  for (const mode of ['slim', 'full']) {
+    const d = describePrompt({ mode }, tools)
+    assert.equal(d.mode, mode)
+    assert.equal(d.enabled, true)
+    assert.equal(d.text, buildPromptText({ mode, tools }), 'describePrompt 必须与保存路径逐字节一致')
+  }
+  assert.equal(describePrompt({ mode: 'full', extra: '附加。' }, tools).text, buildPromptText({ mode: 'full', extra: '附加。', tools }))
+})
+
+test('草稿预览：形态差别可见、enabled=false 为空、未知形态回落 slim', () => {
+  const draftSlim = describePrompt(normalizePromptPreview({ enabled: true, mode: 'slim' }), tools)
+  const draftFull = describePrompt(normalizePromptPreview({ enabled: true, mode: 'full' }), tools)
+  assert.notEqual(draftSlim.text, draftFull.text, '切换形态后草稿预览必须不同（这是被修掉的 bug）')
+  assert.ok(draftFull.text.includes('tiddlywiki_search'))
+  assert.equal(describePrompt(normalizePromptPreview({ enabled: false, mode: 'full' }), tools).text, '')
+  assert.equal(describePrompt(normalizePromptPreview({ enabled: false, mode: 'full' }), tools).enabled, false)
+  assert.equal(describePrompt(normalizePromptPreview({ mode: 'nonsense' }), tools).mode, 'slim')
+  assert.equal(describePrompt(normalizePromptPreview({ mode: 'nonsense' }), tools).text, draftSlim.text)
 })
 
 if (failures > 0) {

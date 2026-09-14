@@ -14,7 +14,8 @@ import {
   TiddlyWebClient,
   ConfigStore,
   TW_PROXY_PATH,
-  buildPromptText,
+  describePrompt,
+  normalizePromptPreview,
   docNoteText,
   hashText,
   registerAdminRoutes,
@@ -63,20 +64,11 @@ const deps = {
   // v0.21.0: the settings page save must notify the plugin so it can
   // re-register its prompt section without a dsh web restart.
   onConfigChanged: () => { configChanged += 1 },
-  getPrompt: () => {
-    const p = deps.config.get().prompt ?? {}
-    const enabled = p.enabled !== false
-    return {
-      enabled,
-      mode: p.mode === 'full' ? 'full' : 'slim',
-      text: buildPromptText({
-        enabled,
-        mode: p.mode,
-        extra: typeof p.extra === 'string' ? p.extra : '',
-        override: typeof p.override === 'string' ? p.override : '',
-        tools: tiddlywikiToolSummary(),
-      }),
-    }
+  getPrompt: (draft) => {
+    // v0.22.7: no draft = the SAVED effective config; a draft = the settings
+    // form's unsaved values (whitelisted by the route, exactly like index.ts).
+    const cfg = draft === undefined ? (deps.config.get().prompt ?? {}) : normalizePromptPreview(draft)
+    return describePrompt(cfg, tiddlywikiToolSummary())
   },
   seeds: {
     checkAll: async (c) => checkAllSeeds({ client: c, tools: tiddlywikiToolSummary() }),
@@ -209,10 +201,62 @@ try {
   console.log('prompt (disabled):', promptData.enabled, JSON.stringify(promptData.length))
   if (promptData.enabled !== false || promptData.text !== '') throw new Error('disabled prompt must render empty text')
 
-  // The preview is a READ route: a POST must be rejected by method check.
-  const promptPost = await post(`${base}${ROUTE_PREFIX}/admin/prompt`, {})
-  console.log('POST /admin/prompt:', promptPost.status)
-  if (promptPost.status !== 405) throw new Error(`POST /admin/prompt must be 405, got ${promptPost.status}`)
+  // 8b. v0.22.7 — 草稿预览：POST /admin/prompt 按**表单当前值**渲染，且不写任何东西。
+  //     旧行为是 405，页面只能读已保存的文本 —— 用户切换形态后不点保存就直接预览，
+  //     看到的是逐字节相同的 slim 文本，于是以为「两种形态没差别」。
+  const draftPost = async (body) => {
+    const r = await fetch(`${base}${ROUTE_PREFIX}/admin/prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return { status: r.status, json: await r.json().catch(() => null) }
+  }
+  // 此刻已保存的是 enabled:false（上一步）→ 正是「保存态与草稿不同」的场景。
+  const savedDisabled = await (await fetch(`${base}${ROUTE_PREFIX}/admin/prompt`)).json()
+  if (savedDisabled.enabled !== false || savedDisabled.text !== '') throw new Error('precondition: saved prompt is disabled here')
+
+  const draftSlim = await draftPost({ enabled: true, mode: 'slim', extra: '', override: '' })
+  console.log('POST /admin/prompt (draft slim):', draftSlim.status, draftSlim.json?.mode, draftSlim.json?.length)
+  if (draftSlim.status !== 200 || draftSlim.json?.ok !== true || draftSlim.json?.draft !== true) throw new Error(`draft preview must answer 200 ok draft=true: ${JSON.stringify(draftSlim.json)}`)
+  if (draftSlim.json.mode !== 'slim') throw new Error('draft mode must be echoed')
+  if (/tiddlywiki_[a-z_]+`（[a-z?]/u.test(draftSlim.json.text)) throw new Error('slim draft must not carry a parameter catalogue')
+
+  const draftFull = await draftPost({ enabled: true, mode: 'full', extra: '草稿附加。' })
+  console.log('POST /admin/prompt (draft full):', draftFull.json?.mode, draftFull.json?.length)
+  if (draftFull.json?.mode !== 'full') throw new Error('draft full mode must be echoed')
+  if (!draftFull.json.text.includes('tiddlywiki_search')) throw new Error('full draft must list the tool catalogue')
+  if (!draftFull.json.text.endsWith('草稿附加。')) throw new Error('draft extra must be appended at the end')
+  if (draftFull.json.length <= draftSlim.json.length) throw new Error('the two 形态 MUST differ in the draft preview (the reported bug)')
+
+  const draftOff = await draftPost({ enabled: false, mode: 'full' })
+  if (draftOff.json?.enabled !== false || draftOff.json.text !== '') throw new Error('draft enabled=false must render empty text')
+
+  // 草稿预览不得落盘：GET 仍是「已禁用/空」，也没有触发 onConfigChanged。
+  configChanged = 0
+  const afterDraft = await (await fetch(`${base}${ROUTE_PREFIX}/admin/prompt`)).json()
+  if (afterDraft.enabled !== false || afterDraft.text !== '') throw new Error('draft preview must not change the saved config')
+  if (configChanged !== 0) throw new Error('draft preview must not fire onConfigChanged')
+
+  // 未知键/错类型被丢弃 → 回落内置默认（slim、无 extra）；畸形 JSON 是 400。
+  const draftJunk = await draftPost({ mode: 'nonsense', extra: 42, nope: 'x' })
+  if (draftJunk.status !== 200 || draftJunk.json.mode !== 'slim' || draftJunk.json.text !== draftSlim.json.text) throw new Error('unknown draft fields must fall back to the built-in defaults')
+  const malformed = await fetch(`${base}${ROUTE_PREFIX}/admin/prompt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{oops',
+  })
+  console.log('POST /admin/prompt (malformed):', malformed.status)
+  if (malformed.status !== 400) throw new Error(`malformed draft JSON must be 400, got ${malformed.status}`)
+
+  // 跨站 POST 必须被同源守卫拒绝（草稿预览也不接受跨站调用）。
+  const crossSite = await fetch(`${base}${ROUTE_PREFIX}/admin/prompt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'http://evil.example' },
+    body: '{}',
+  })
+  console.log('POST /admin/prompt (cross-site):', crossSite.status)
+  if (crossSite.status !== 403) throw new Error(`cross-site draft preview must be 403, got ${crossSite.status}`)
 
   // 9. v0.22.0 — seed 内容哈希：区分「内置内容已更新」与「用户自己改过」，
   //    并证明文档正文是**生成**的（工具清单来自注册表，不会再过期）。
