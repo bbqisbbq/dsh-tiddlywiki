@@ -292,6 +292,34 @@ await test('空弹窗不得被当成「已打开」而吞掉点击', () => {
   )
 })
 
+console.log('v0.22.8 —— 设置页超时 / 隐藏 surface 轮询 / 幽灵草稿')
+
+await test('fetchJson 必须让调用方的 signal 生效（否则 120s 的切换/重启被 15s 掐断）', () => {
+  const body = bodyOf(settings, 'async function fetchJson<T>(')
+  assert.match(body, /init\?\.signal/, 'fetchJson 必须优先使用调用方传入的 signal')
+  assertNo(
+    body,
+    /\.\.\.init,\s*signal:\s*AbortSignal\.timeout/,
+    '展开 init 后又硬编码 signal 会把调用方的 120s 预算丢掉（切换/重启会假报失败）',
+  )
+})
+
+await test('tw-frame：doRefresh 在 await 之后必须重新检查可见性', () => {
+  const body = bodyOf(twFrame, 'const doRefresh = ')
+  const iDisposed = body.indexOf('if (disposed) return')
+  const iVisible = body.indexOf('if (!visible) return')
+  assert.ok(iDisposed >= 0, 'doRefresh 必须检查 disposed')
+  assert.ok(iVisible > iDisposed, 'doRefresh 必须在 disposed 之后也检查 !visible（否则隐藏的面板会重新起一轮 30×1.5s 轮询）')
+})
+
+await test('note-widget：保存/丢弃后重置必须取消防抖并记录已定型签名', () => {
+  const body = bodyOf(noteWidget, 'const resetForNewNote = ')
+  assert.match(body, /clearTimeout\(draftTimer\)/, '重置前必须取消在途的防抖定时器')
+  assert.match(body, /persistedSignature\s*=/, '重置后必须把「空内容 + 新标题」记为已定型，否则会写出幽灵草稿')
+  const flush = bodyOf(noteWidget, 'const flushDraft = ')
+  assert.match(flush, /autoTitle/, 'flushDraft 必须识别「只有自动标题、正文为空」= 没有可恢复内容')
+})
+
 console.log('')
 if (failures > 0) {
   console.error(`verify-frame-guards: ${failures} 项失败`)

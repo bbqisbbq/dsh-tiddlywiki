@@ -34,10 +34,14 @@
  * @module dsh-tiddlywiki/client/session-summary
  */
 import * as React from 'react'
-import { GET_ENDPOINT, RENDER_ENDPOINT, SESSION_SUMMARY_ENDPOINT as SUMMARY_ENDPOINT } from './endpoints.ts'
+import { GET_ENDPOINT, SESSION_SUMMARY_ENDPOINT as SUMMARY_ENDPOINT } from './endpoints.ts'
+// The render call lives in ONE place (render-fetch.ts) — this module and
+// tool-views.ts used to carry near-identical copies (v0.22.8).
+import { fetchRenderFragment } from './render-fetch.ts'
 import { getTabLabel, setTabLabel } from './tw-frame.ts'
 
-export const SESSION_SUMMARY_VIEW_ID = 'dsh-tiddlywiki-summary'
+/** conversation.view 槽位注册 id（模块私有，v0.22.8：只有本文件的 mount 用）。 */
+const SESSION_SUMMARY_VIEW_ID = 'dsh-tiddlywiki-summary'
 /** 自愈探测周期：服务端 volatile 条目被清（TW 重启）→ 自动重新生成。 */
 const SELF_HEAL_MS = 30_000
 /** 连续多少次「生成后服务端仍缺失」后停止自动重试，交还手动「🔄 刷新」。 */
@@ -56,26 +60,13 @@ interface SessionSummaryViewProps {
   completeViewRequest?: () => void
 }
 
-/** POST RENDER_ENDPOINT（host 转 TW /render 并净化）：把汇总 tiddler 的 wikitext 块解析成原生 HTML 片段（失败返回 null）。 */
-async function fetchRenderFragment(title: string): Promise<string | null> {
-  try {
-    const res = await fetch(RENDER_ENDPOINT, {
-      method: 'POST',
-      // TW 服务器对 POST 一律走 writers + CSRF（X-Requested-With）门禁，与
-      // tool-views 相同；同源请求可自由携带该头，缺了会 403。
-      headers: { 'content-type': 'application/json', 'x-requested-with': 'TiddlyWiki' },
-      body: JSON.stringify({ title }),
-      signal: AbortSignal.timeout(15_000),
-    })
-    if (!res.ok) return null
-    const text = await res.text()
-    return text.length > 0 ? text : null
-  } catch {
-    return null
-  }
-}
-
-/** GET /get：确认 volatile 汇总条目是否还在（404/notFound = 已被清掉）。 */
+/**
+ * GET /get：汇总条目是否还在（404/notFound = 已被清掉）。
+ *
+ * The self-heal probe below reuses THIS function (v0.22.8) — the same 404 /
+ * `notFound` interpretation used to be written out a second time in the
+ * interval, and the two disagreed on what a transport error means.
+ */
 async function tiddlerExists(title: string): Promise<boolean> {
   try {
     const res = await fetch(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`, { signal: AbortSignal.timeout(8_000) })
@@ -204,14 +195,9 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
     const timer = window.setInterval(() => {
       void (async () => {
         if (!alive) return
-        let serverHas = false
-        try {
-          const res = await fetch(`${GET_ENDPOINT}?title=${encodeURIComponent(summaryTitle)}`, { signal: AbortSignal.timeout(8_000) })
-          const data = (await res.json().catch(() => null)) as { notFound?: boolean } | null
-          serverHas = res.status !== 404 && data?.notFound !== true
-        } catch {
-          return // 探测失败保持现状，下个周期再试
-        }
+        // Reuse the shared interpretation rather than a second copy of the
+        // 404/`notFound` logic (v0.22.8).
+        const serverHas = await tiddlerExists(summaryTitle)
         if (!alive) return
         if (!serverHas) {
           failuresRef.current++

@@ -47,3 +47,40 @@ export const ADMIN_SEEDS_REMOVE_ENDPOINT = `${ROUTE_PREFIX}/admin/seeds/remove`
 export const ADMIN_WIKI_LOCATION_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/location`
 export const ADMIN_WIKI_SWITCH_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/switch`
 export const ADMIN_WIKI_RESET_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/reset`
+
+/** The subset of the `/sync` JSON body both client callers report on. */
+export interface SyncResultPayload {
+  ok?: boolean
+  message?: string
+  error?: string
+  push?: string
+  changed?: boolean
+  restarted?: boolean
+  restartError?: string
+}
+
+/**
+ * Turn one `/sync` response into the `{ ok, message }` pair a toast shows.
+ *
+ * One implementation (v0.22.8): the FAB's sync controller and the settings
+ * page's 同步 button each built this string by hand, including the identical
+ * 「，TW 已重启 / ，TW 未自动重启（err）」 construction — and they had already
+ * drifted (only the FAB one reported the `push` detail).
+ */
+export function describeSyncResult(
+  payload: SyncResultPayload | null,
+  httpStatus: number,
+): { ok: true; message: string } | { ok: false; message: string } {
+  if (payload === null || payload.ok !== true) {
+    return { ok: false, message: payload?.error ?? payload?.message ?? `HTTP ${httpStatus}` }
+  }
+  let detail = ''
+  if (typeof payload.push === 'string' && payload.push.length > 0 && payload.push !== 'nothing to commit') {
+    detail = `（${payload.push}）`
+  }
+  if (payload.changed === true) {
+    detail += payload.restarted === true ? '，TW 已重启' : '，TW 未自动重启'
+    if (typeof payload.restartError === 'string' && payload.restartError.length > 0) detail += `（${payload.restartError}）`
+  }
+  return { ok: true, message: `${payload.message ?? 'OK'}${detail}` }
+}

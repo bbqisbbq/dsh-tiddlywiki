@@ -10,7 +10,7 @@
  * @module dsh-tiddlywiki/client/sidebar-entry
  */
 import type { PanelState } from './state.ts'
-import { fetchStatus } from './status-cache.ts'
+import { fetchUiConfig, subscribeUiConfig } from './ui-config.ts'
 
 /** Stable data attribute identifying this entry row. */
 export const ENTRY_SELECTOR = '[data-dsh-tw-entry]'
@@ -99,16 +99,21 @@ function placeEntry(root: HTMLElement, entry: HTMLButtonElement): boolean {
  */
 export function mountSidebarEntry(state: PanelState): () => void {
   const { entry, labelEl } = createEntry(state, 'TiddlyWiki')
-  // 自定义显示名：/status 返回 ui.sidebarLabel（设置页「侧边栏入口显示名称」），
-  // 异步到达后原地更新，无需重建 DOM（旧 host 无该字段时保持默认名）。
-  void (async () => {
-    const status = await fetchStatus()
-    const label = status?.ui?.sidebarLabel
-    if (typeof label === 'string' && label.trim().length > 0) {
-      labelEl.textContent = label.trim()
-      entry.setAttribute('aria-label', label.trim())
-    }
-  })()
+  let disposed = false
+  /**
+   * 自定义显示名：/status 返回 ui.sidebarLabel（设置页「侧边栏入口显示名称」）。
+   * 挂载时读一次，并在设置页保存后（invalidateUiConfig 会通知订阅者）重读——
+   * 旧实现只读一次，改完设置要刷新整页才生效（v0.22.8）。
+   */
+  const applyLabel = async (): Promise<void> => {
+    const cfg = await fetchUiConfig()
+    // 卸载后不再改 DOM；旧 host 无该字段时保持默认名。
+    if (disposed || cfg.sidebarLabel.length === 0) return
+    labelEl.textContent = cfg.sidebarLabel
+    entry.setAttribute('aria-label', cfg.sidebarLabel)
+  }
+  void applyLabel()
+  const unsubscribeLabel = subscribeUiConfig(() => { void applyLabel() })
   let root: HTMLElement | undefined
   let placed = false
   /** 兜底轮询定时器：只在「尚未放置」或「shell 重建了 root」时运行。 */
@@ -183,10 +188,12 @@ export function mountSidebarEntry(state: PanelState): () => void {
   tryPlace()
 
   return () => {
+    disposed = true
     clearInterval(retry)
     waitObserver.disconnect()
     rootObserver.disconnect()
     unsubscribe()
+    unsubscribeLabel()
     entry.remove()
   }
 }

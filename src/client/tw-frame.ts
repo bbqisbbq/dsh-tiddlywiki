@@ -275,6 +275,14 @@ export function createTwFrameSurface(skin: TwFrameSkin): TwFrameSurface {
     clearRetry()
     const payload = await fetchStatus()
     if (disposed) return // unmounted while fetching: stop, don't touch DOM
+    // Re-check VISIBILITY after the await (v0.22.8). setVisible(false) clears the
+    // pending retry and resets refreshAttempts — but a /status call already in
+    // flight could land afterwards and take the `starting` branch below, arming a
+    // BRAND NEW 30×1.5s budget on a hidden surface (and revealing the starting
+    // panel on it). That contradicts setVisible's own contract and re-creates the
+    // /status polling load (each call can spawn up to five host git processes)
+    // that status-cache exists to bound.
+    if (!visible) return
     if (payload === null) {
       showError('无法访问 /dsh-tiddlywiki/status')
       return

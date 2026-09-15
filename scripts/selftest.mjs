@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, flushPendingWrites, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensurePlugin, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, ensureTwWebHost, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, flushPendingWrites, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensurePlugin, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
 import { createRouteServer, waitFor } from './lib/tw-harness.mjs'
 
 const assert = (cond, label) => {
@@ -53,8 +53,8 @@ try {
   assert(byType.total >= 1, 'search honors type filter')
   const recent = await api.recent(5)
   assert(recent.some((t) => t.title === 'Hello' || t.title === '第二篇'), 'recent lists newest tiddlers')
-  const tagList = await api.listTags()
-  assert(tagList.some((x) => x.tag === 'inbox' && x.count >= 1), 'listTags returns tag counts')
+  const tagStats = await api.tagStats()
+  assert(tagStats.tags.some((x) => x.tag === 'inbox' && x.count >= 1), 'tagStats returns tag counts')
   const listed = await api.list()
   assert(listed.some((t) => t.title === '第二篇'), 'recipe list contains new tiddler')
 
@@ -733,16 +733,18 @@ try {
   await callRaw(apiHandler, makeReq(`/dsh-tiddlywiki/api/recipes/default/tiddlers/${encodeURIComponent(configTitle)}`), apiConfigRes)
   assert(apiConfigRes._status === 403, `api passthrough answers 403 for the config tiddler (got ${apiConfigRes._status})`)
 
-  // ensureTwWebHost: TW's frontend API base must point at the same-origin
-  // proxy; a missing/legacy-default tiddler is replaced, a user override kept.
-  await ensureTwWebHost(api)
+  // tw-web-host (the seed is now the ONE implementation; `ensureTwWebHost()` was
+  // a production-dead duplicate removed in v0.22.8): TW's frontend API base must
+  // point at the same-origin proxy; a missing/legacy-default tiddler is
+  // replaced, a user override kept.
+  await runSeedById({ client: api }, 'tw-web-host', false)
   const hostTid = await api.get(TW_WEB_HOST_TIDDLER)
   assert(hostTid?.text === TW_PROXY_PATH, `tiddlyweb/host points at the same-origin proxy (${JSON.stringify(hostTid?.text)})`)
   await api.put({ title: TW_WEB_HOST_TIDDLER, text: '$protocol$//$host$/', type: 'text/plain', tags: [] })
-  await ensureTwWebHost(api)
+  await runSeedById({ client: api }, 'tw-web-host', false)
   assert((await api.get(TW_WEB_HOST_TIDDLER))?.text === TW_PROXY_PATH, 'legacy default host replaced by the proxy path')
   await api.put({ title: TW_WEB_HOST_TIDDLER, text: 'https://custom.example/', type: 'text/plain', tags: [] })
-  await ensureTwWebHost(api)
+  await runSeedById({ client: api }, 'tw-web-host', false)
   assert((await api.get(TW_WEB_HOST_TIDDLER))?.text === 'https://custom.example/', 'custom tiddlyweb/host override is honored')
 
   // Real-HTTP end-to-end: a mini node:http server replicating
@@ -1207,7 +1209,7 @@ try {
   // (首次安装默认: 插件说明 + 示例与文档). The remaining optional seeds (首页 /
   // 所有文章 / 自定义样式 / menubar 顶栏主题自适应 / 剪藏桥说明) are never forced.
   // Earlier sections left mixed state: doc-note's marker stays while its
-  // tiddler was deleted, and the earlier ensureTwWebHost test left a CUSTOM
+  // tiddler was deleted, and the earlier tw-web-host seed test left a CUSTOM
   // host override. Clear the core markers + bundles so send-to-agent,
   // tw-web-host and render-route are genuinely missing here; also clear the
   // starter markers so doc-note + starter-docs are re-seeded by startup.

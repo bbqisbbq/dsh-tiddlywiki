@@ -9,7 +9,9 @@
  * @module dsh-tiddlywiki/client/styles
  */
 
-export const STYLE_ID = 'dsh-tiddlywiki-styles'
+/** Stable <style> id so HMR/teardown can find the tag it injected (module-private:
+ *  only injectStyles() below uses it — v0.22.8). */
+const STYLE_ID = 'dsh-tiddlywiki-styles'
 
 const CSS_TEXT = `
 /* ── sidebar entry ───────────────────────────────────────────── */
@@ -628,17 +630,24 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-toolcard-native blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--dsw-alias-border-l2, rgba(0,0,0,.25)); color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 70%, transparent); }
 .dsh-tw-toolcard-native img { max-width: 100%; height: auto; border-radius: 6px; }
 .dsh-tw-toolcard-native .tc-error { color: var(--dsw-alias-state-error-primary, #c0392b); }
-/* List rows (search / recent / batch). */
+/* List rows (search / recent / batch). A row is title/tags/meta on the first
+   line plus the match snippet on a second (the route has shipped a context
+   snippet since v0.19.0; the card drops it and the row shows only a title). */
 .dsh-tw-toolcard-list { display: flex; flex-direction: column; gap: 2px; }
 .dsh-tw-toolcard-row {
-  display: flex; align-items: baseline; gap: 8px; padding: 4px 6px; border-radius: 6px;
+  display: flex; flex-direction: column; gap: 1px; padding: 4px 6px; border-radius: 6px;
   color: inherit; text-decoration: none; font-size: 12px;
 }
 .dsh-tw-toolcard-row:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 7%, transparent); }
+.dsh-tw-toolcard-row-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .dsh-tw-toolcard-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary, #222); }
 .dsh-tw-toolcard-row:hover .dsh-tw-toolcard-row-title { color: var(--dsw-alias-brand-primary, #3e63dd); }
 .dsh-tw-toolcard-row-tags { flex: none; font-size: 10px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
 .dsh-tw-toolcard-row-meta { flex: none; font-size: 10px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 40%, transparent); }
+.dsh-tw-toolcard-row-snippet {
+  font-size: 11px; line-height: 1.45; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 62%, transparent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .dsh-tw-toolcard-tags-wrap { display: flex; flex-wrap: wrap; gap: 4px; }
 
 /* ── 会话「知识库」Tab（conversation.view 槽位）────────────────────

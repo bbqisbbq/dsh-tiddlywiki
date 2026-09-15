@@ -55,17 +55,25 @@ const ALLOWED_SCHEMES = new Set(['http', 'https', 'mailto', 'tel'])
 /** 允许的 data: 图片 MIME（栅格；SVG 可携带脚本，拒绝）。 */
 const ALLOWED_DATA_IMAGE = /^data:image\/(png|jpe?g|gif|webp|avif|bmp|x-icon|vnd\.microsoft\.icon)[;,]/i
 
+/**
+ * 数字实体 → 字符，**越界一律丢弃**。
+ *
+ * ⚠️ 不能只判 `code > 0`（v0.22.8）：`&#1114112;`（= 0x110000，比 Unicode 上限
+ * 0x10FFFF 多 1）和 `&#x110000;` 都会让 `String.fromCodePoint()` 抛 `RangeError`，
+ * 而调用链在 `sanitizeTwFragment()` 里**没有 try** —— 一条正文形如
+ * `<a href="&#1114112;javascript:…">` 的笔记就能让 `POST /render` 直接 500/502，
+ * 连带打坏回复流工具卡与会话「知识库」Tab（渲染片段是共用出口）。
+ * 上限必须显式判掉，任何非有限/越界的码点都返回空串（与既有「非法实体丢弃」一致）。
+ */
+function codePointToChar(code: number): string {
+  return Number.isFinite(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : ''
+}
+
 /** HTML 实体解码（只覆盖判定 scheme 需要的那些；数字实体 + 关键命名实体）。 */
 function decodeEntities(value: string): string {
   return value
-    .replace(/&#x([0-9a-f]+);?/gi, (_m, hex: string) => {
-      const code = Number.parseInt(hex, 16)
-      return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : ''
-    })
-    .replace(/&#(\d+);?/g, (_m, dec: string) => {
-      const code = Number.parseInt(dec, 10)
-      return Number.isFinite(code) && code > 0 ? String.fromCodePoint(code) : ''
-    })
+    .replace(/&#x([0-9a-f]+);?/gi, (_m, hex: string) => codePointToChar(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_m, dec: string) => codePointToChar(Number.parseInt(dec, 10)))
     .replace(/&(colon|tab|newline|sol|period);/gi, (m) => {
       const key = m.slice(1, -1).toLowerCase()
       return key === 'colon' ? ':' : key === 'tab' ? '\t' : key === 'newline' ? '\n' : key === 'sol' ? '/' : '.'
@@ -236,7 +244,10 @@ export function sanitizeTwFragment(html: string): string {
       safeAttrs.push(`${attr.name}="${escapeAttr(attr.value)}"`)
     }
     const attrText = safeAttrs.length > 0 ? ` ${safeAttrs.join(' ')}` : ''
-    out.push(VOID_ELEMENTS.has(name) || tag.selfClosing ? `<${name}${attrText}>` : `<${name}${attrText}>`)
+    // 开标签原样重排属性即可：闭合标签由输入里对应的 `</name>` 走到上面的分支。
+    // （旧写法是一个两支完全相同的三目——`VOID_ELEMENTS`/`selfClosing` 判了却
+    // 什么也不做，纯粹是噪声；void 元素本来就不带 `</…>`，语义已由这里一致。）
+    out.push(`<${name}${attrText}>`)
     i = tag.end
   }
   return out.join('')

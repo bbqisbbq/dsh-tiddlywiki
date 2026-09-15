@@ -72,7 +72,11 @@ export function isEditorPopupOpen(): boolean {
  * 内容的编辑器。
  */
 export function isEditorPopupBlank(): boolean {
-  if (frame === undefined) return true
+  // 弹窗尚未创建 = 没有「空掉的编辑器」可言，返回 false（与下面的保守判定一致）。
+  // 旧写法在这里返回 true，与函数自己的文档相矛盾；今天所有调用方都先过
+  // isEditorPopupOpen() 所以不可达，但一旦有新的调用点漏了那道守卫，
+  // 它就会去强制重载一个并不存在的弹窗（v0.22.8）。
+  if (frame === undefined) return false
   let doc: Document | null = null
   try {
     doc = frame.contentDocument

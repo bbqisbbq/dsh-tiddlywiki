@@ -34,7 +34,7 @@
 | 🔒 **写路由方法校验** | 每个写路由只接受自己的 HTTP 方法：跨站 `GET /sync`、`GET /restart`、`GET /upload` 一律 405 且无副作用（v0.19.0 修复了「任意网页一张 `<img>` 即可触发 pull/commit/push」的 CSRF 面） |
 | 🔑 **密钥不外泄** | `bridge.token` / `ui.sendToAgent.token` / **`auth.password`**（v0.20.0）在 `/admin/state`、`/admin/config` 的回包里是 `********`（设置页原样保存 ≠ 覆盖，清空即删除），`git.remote` 里的 PAT 打码；**`/tw`、`/api` 与 `POST /render` 都拒绝 `$:/plugins/dsh-tiddlywiki/` 命名空间**——此前 `/render` 能把配置 tiddler 连 token 与 PAT 一起渲染出来（v0.19.3 / v0.20.0） |
 | 🧯 **路由不会拖垮进程** | 所有路由经 `guardHandler` 包装：任何 rejection（含代理里 try 之外的 `new URL()`）都变成 413/500 响应，而不是宿主未处理的 promise rejection（那会**直接结束 dsh web 进程**并挂死请求）；剪藏桥 listen 后保留常驻 `error` 监听（v0.19.3） |
-| 📊 **回复流卡片** | 工具结果显示原生 TW 卡片（**按笔记自己的内容类型渲染**：Markdown 笔记就是 Markdown，v0.18.0）；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
+| 📊 **回复流卡片** | 工具结果显示原生 TW 卡片（**按笔记自己的内容类型渲染**：Markdown 笔记就是 Markdown，v0.18.0），检索/最近列表带**命中处摘要**（v0.22.8）；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明）；成功/失败会弹出提示（v0.20.0 修复：此前提示把自由文本当 tiddler 标题传给 TW notifier，全部静默） |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
 | 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
@@ -87,7 +87,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 | 工具 | 说明 |
 |---|---|
 | `tiddlywiki_search` | 检索（`query` + 可选 `tags[]/tag/since/type/field/value/limit`），**按相关度排序**（标题命中 > 标签 > 正文命中次数），摘要取自**命中处上下文**而不是正文开头 |
-| `tiddlywiki_recent` | 最近修改的笔记（倒序），开工快速了解动态 |
+| `tiddlywiki_recent` | 最近修改的笔记（倒序，支持 `limit`/`since`），开工快速了解动态 |
 | `tiddlywiki_list_tags` | 现有非系统 tag 及计数（已排除只挂在二进制附件上的 tag）；默认列使用最多的 200 个（`limit` 可调、上限 1000），截断时返回 `total`/`truncated` |
 | `tiddlywiki_get` | 读单个 tiddler 全文（`modified` 以 ISO 返回，可直接用作 `expectedModified`） |
 | `tiddlywiki_put` | 写/覆盖；**新建**未指定类型时默认 `text/markdown`（`$:/` 系统条目除外），**覆盖既有条目时保留原 `type`/tags/自定义字段**（v0.20.1，改类型要显式 `fields.type`）；`expectedModified` + `force` 提供乐观并发保护 |
@@ -129,7 +129,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 ### 🧑‍💻 界面操作
 
 - **📤 发送给 Agent**：TW 工具栏按钮（首次启动自动写入 wiki，ONE-SHOT）。弹层可选**附加说明**（位于消息末尾）、**工作模式**（Agent 预设）、**权限**（权限预设），按工作区分组选会话或新建。消息自带待办说明。
-- **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`）。
+- **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`，保存后即时生效，v0.22.8）。
 - **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过。
 - **🧩 Better Sidebar 共存**：装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 时，插件只做 UI 共存（中央 TW 面板的 z-index 自动压在其侧边栏展开/收起按钮之下，按钮始终可点）。**v0.17.0 起不再向 dsh-better-sidebar 注册「TiddlyWiki 知识库」tab**（旧版可用 `ui.showBetterSidebarTab` 关闭）——该 tab 的 kind 会与其它注册方冲突报 `tab kind "dsh-tiddlywiki" is already registered`。右侧边栏入口请用上面的 **右侧边栏 Tab**（DSH 原生 rightbar）。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。**v0.22.6**：原生编辑弹窗里用 TW 的「🗑 删除」把笔记删掉后不会再变成打不开的白板——再点一次「快速笔记」就会重新载入编辑器；card 模式底部操作条改成「按钮文字永不折行、放不下时整组换行」，窄卡片里不再把「✏️ 在 TW 中编辑」压成两行。
@@ -324,7 +324,10 @@ src/
 │   └── tools.ts        # 15 个 tiddlywiki_* 工具（列表式注册）
 └── client/             # 浏览器半部
     ├── index.ts        # client 入口（inject ['slots']，纯 DOM，永不 throw）
-    ├── endpoints.ts    # 客户端同源端点常量
+    ├── endpoints.ts    # 客户端同源端点常量 + describeSyncResult（同步回执唯一实现，v0.22.8）
+    ├── status-cache.ts # 共享 /status 读取器（2s TTL + 在途合并）
+    ├── ui-config.ts    # 共享 ui.* 投影 + invalidate/subscribeUiConfig（v0.22.8 扩到全部 FAB 开关）
+    ├── render-fetch.ts # **唯一**的 POST /render 调用（v0.22.8）
     ├── knowledge-fab.ts / quick-note-dock.ts / note-widget.ts / editor-popup.ts
     │                   # 知识库 FAB / 快捷按钮 / 快速笔记 / 原生编辑弹窗
     ├── markdown-editor.ts  # CodeMirror 6 Markdown 编辑器
@@ -334,7 +337,10 @@ src/
     │                   # 主题同步 / 侧边栏入口 / 同步按钮
     ├── tw-frame.ts     # **TW frame 内核（v0.22.4 起唯一实现）**：createTwFrameSurface(skin) 管 lazy-load / status 轮询 /
     │                   # 错误与启动态 / 主题同步 / FAB 重载 / hash 导航 / dispose；中央面板与右侧栏共用同一份
-    └── panel.ts / rightbar-tab.ts / settings-page.ts / ui-config.ts / state.ts / styles.ts / toast.ts
+    └── panel.ts / rightbar-tab.ts / settings-page.ts / state.ts / styles.ts / toast.ts
+
+> ⚠️ v0.22.8 起 `endpoints.ts` 的 `describeSyncResult()`、`render-fetch.ts`、`ui-config.ts` 各是**唯一实现**：
+> 同步回执、渲染调用、`ui.*` 投影都不要再在客户端面里各写一份（此前已因此漂移）。
 scripts/                # 构建/校验/再生成脚本
 docs/seed-initialization.md  # seed 机制详解（权威）
 lib/                    # 预构建产物（发布含 lib/**，提交入库；零 @deepseek-ai 运行时 import）
@@ -345,6 +351,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.22.8**（2026-09-15）：**第六轮代码审计修复**——host 与 client 各做一份只读审计，逐条核实后修 10 处真缺陷，并清掉一轮重复实现与死代码。① **数据丢失（P0）**：`/edit` 仍会把「调用方文本或笔记已保存正文」PUT 进**刚复用**的那个草稿，而那个草稿里装的是用户在 TW 原生编辑器里敲的**未保存内容**——触发路径极常见：打开快速笔记（标题精确到分钟）→ 写 → 关掉 → 同一分钟内再打开 → 草稿被覆盖。现在只有**我们创建的**草稿才由我们填充，复用的仅在调用方显式给了文本时才写。② **设置页超时（P0）**：`fetchJson` 展开 `init` 后又硬编码 `signal`，于是「知识库切换 / 恢复默认 / 重启 TW」的 120s 预算被 15s 掐断——宿主其实切成功了，用户却看到「切换失败」（大 wiki 冷启动实测 44s+），且重试会再走一遍停/启。③ **净化器崩服务**：`&#1114112;` 这类越界数字实体会让 `String.fromCodePoint()` 抛 `RangeError`，而净化器没有 try——一条笔记正文就能让 `POST /render` 502，打坏回复流工具卡与会话「知识库」Tab。④ **「幽灵草稿」**：保存/「丢弃」后重置编辑器会触发防抖，把「空正文 + 新时间戳标题」又写成草稿，下次打开误报「已恢复未保存草稿」并跳过默认 tag。⑤ `/recent` 一直丢掉 `since`（工具与卡片都发它），于是模型看到过滤结果、人看到未过滤列表——与 v0.20.0 修过的 `/search` 同类漂移。⑥ 隐藏的 TW 面板会因为一个在途 `/status` 响应重新起一轮 30×1.5s 轮询。⑦ `/tw` 代理补齐显式方法白名单。⑧ `/render` 的 404 改为结构化异常（原先按错误消息文本正则，改词即把「不存在」变 502）。⑨ `/get` 改用共享的 `isBlockedProxyTitle()`（原为硬编码字面量副本）。⑩ 侧边栏显示名改完设置即时生效（原只挂载时读一次）。**去重/死代码**：新增 `render-fetch.ts`（唯一渲染调用）、`describeSyncResult()`（同步回执）、`formatLocalMinute()`，`ui-config.ts` 承担全部 `ui.*` 投影；删除生产零调用的 `ensureTwWebHost()`（与 `tw-web-host` seed 重复）与 `listTags()`，多个仅供模块内部使用的 `export` 与「算了却从不显示」的字段一并清除。守门：`verify-render-sanitizer.mjs` +1、`verify-frame-guards.mjs` +3、`verify-audit-fixes.mjs` +3（草稿覆盖那条**已反向验证**：还原修复即红）。
 
 - **v0.22.7**（2026-09-14）：**设置页「预览注入文本」改为按表单当前值渲染**（用户实测提问「两种内置文本形态差别是什么？为什么选了不同形态后查看当前注入文本显示的东西一样？」）。两种形态的差别其实只在 intro 一段：`slim`（默认）是一句能力概览（实测 1735 字符），`full` 换成由工具注册表实时生成的 15 行参数索引（2504 字符），三块治理约定（写入与并发 / 同步纪律 / 笔记约定）完全相同。但预览按钮此前只发 `GET /admin/prompt`，读的是 **host 已保存的有效配置**，而下拉框的值只活在浏览器 DOM 里——于是「切换形态 → 不点保存 → 点预览」看到的是逐字节相同的旧文本，用户自然以为两种形态没差别。现在：① `prompt.ts` 新增 `normalizePromptPreview()`（把不可信的 body 白名单化成 4 个字段，未知键/错类型丢弃并回落内置默认）+ `describePrompt()`（`applyPrompt()` 与预览**共用同一份拼装**，预览不可能与保存后的注入不一致）；② `POST /admin/prompt` 接收 `{enabled,mode,extra,override}` 草稿并渲染全文，**写入零副作用**（不落盘、不触发 `onConfigChanged`），同源守卫 + 畸形 JSON 400；GET 保留为「已保存/正在注入」的读取；③ 设置页按钮改名「预览注入文本（按表单当前值）」并 POST 草稿，标题栏在表单有未保存改动时标注「含未保存的修改，保存后才真正注入」。守门：`verify-prompt.mjs` 新增 3 条纯函数断言（白名单、`describePrompt` 与 `buildPromptText` 逐字节一致、两种形态在草稿里必须不同），`verify-seeds-admin.mjs` 第 8 段把「POST 必须 405」换成 7 条草稿断言（slim/full 草稿不同、extra 追加、`enabled:false` 为空、GET 仍是旧的已保存状态且 `onConfigChanged` 未触发、垃圾字段回落、畸形 JSON 400、跨站 403）。
 

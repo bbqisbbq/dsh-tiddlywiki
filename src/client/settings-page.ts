@@ -37,6 +37,8 @@ import {
   ADMIN_WIKI_RESET_ENDPOINT as WIKI_RESET_ENDPOINT,
   ADMIN_WIKI_SWITCH_ENDPOINT as WIKI_SWITCH_ENDPOINT,
   SYNC_ENDPOINT,
+  describeSyncResult,
+  type SyncResultPayload,
 } from './endpoints.ts'
 
 interface CatalogEntry {
@@ -88,8 +90,19 @@ function make<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string,
   return node
 }
 
+/**
+ * Same-origin JSON fetch with a default timeout and a JSON error body.
+ *
+ * ⚠️ The caller's `signal` must WIN (v0.22.8). This used to be
+ * `fetch(url, { ...init, signal: AbortSignal.timeout(15_000) })` — spreading
+ * `init` first and then hardcoding the signal, so every caller-supplied budget
+ * was silently discarded. 知识库切换 / 恢复默认 pass 120s (the host stops TW,
+ * may `--init server`, bootstraps and restarts it — v0.22.5 documents 44s+
+ * cold starts), so the browser aborted at 15s and toasted「切换失败」 while the
+ * host kept going and DID switch; the same 15s cap hit the 重启 TW button.
+ */
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) })
+  const res = await fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(15_000) })
   const data = (await res.json().catch(() => ({}))) as T
   if (!res.ok) {
     const err = (data as { error?: string }).error ?? `HTTP ${res.status}`
@@ -106,7 +119,9 @@ interface ConfigField {
   changed: () => boolean
 }
 
-export function mountSettingsPage(container: HTMLElement): () => void {
+/** Mount the settings page into `container`; returns the disposer.
+ *  Module-private (v0.22.8) — only the `SettingsSection` slot component mounts it. */
+function mountSettingsPage(container: HTMLElement): () => void {
   let disposed = false
   container.classList.add('dsh-tw-settings')
 
@@ -169,16 +184,9 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
     void (async () => {
       try {
         const res = await fetch(SYNC_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
-        const payload = (await res.json().catch(() => null)) as { ok?: boolean; message?: string; error?: string; changed?: boolean; restarted?: boolean; restartError?: string } | null
-        if (!res.ok || payload?.ok !== true) toast(`同步失败：${payload?.error ?? payload?.message ?? `HTTP ${res.status}`}`)
-        else {
-          let detail = ''
-          if (payload.changed === true) {
-            detail += payload.restarted === true ? '，TW 已重启' : '，TW 未自动重启'
-            if (payload.restartError) detail += `（${payload.restartError}）`
-          }
-          toast(`同步完成：${payload.message ?? 'OK'}${detail}`)
-        }
+        const payload = (await res.json().catch(() => null)) as SyncResultPayload | null
+        const result = describeSyncResult(payload, res.status)
+        toast(result.ok ? `同步完成：${result.message}` : `同步失败：${result.message}`)
       } catch (err) {
         toast(`同步失败：${err instanceof Error ? err.message : String(err)}`)
       } finally {

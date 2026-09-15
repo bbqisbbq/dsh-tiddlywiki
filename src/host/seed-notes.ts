@@ -12,6 +12,7 @@
  */
 import type { TiddlyWebClient } from './tw-api.ts'
 import { readSeedTiddler, writeSeedMarker } from './seed-util.ts'
+import { DSH_DOCS_TAG } from './seed-starter-docs.ts'
 import { toolSignatureLines, type PromptToolSummary } from './prompt.ts'
 
 /** Note tiddler title (a normal, searchable note — not a system tiddler). */
@@ -22,9 +23,14 @@ export const DOC_NOTE_TAG = 'docs'
 
 /**
  * Shared tag that collects every plugin-seeded doc into the seeded home's
- *「📚 插件文档」tabs strip (see seed-starter-docs.ts DSH_DOCS_TAG).
+ *「📚 插件文档」tabs strip.
+ *
+ * Alias of `DSH_DOCS_TAG` (v0.22.8): this module used to declare its OWN copy of
+ * the same literal, so the doc note and the starter docs shared a tag only by
+ * coincidence — changing one spelled the home's tabs strip empty for the other.
+ * Kept as a named alias because it reads better at the call site below.
  */
-export const DOC_NOTE_DSH_DOCS_TAG = 'dsh-docs'
+export const DOC_NOTE_DSH_DOCS_TAG = DSH_DOCS_TAG
 
 /** One-time marker: its presence means "the note was offered once — hands off". */
 export const SEED_MARKER_TITLE = '$:/plugins/dsh-tiddlywiki/seed-doc-note'

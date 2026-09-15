@@ -31,12 +31,37 @@ export interface UiConfig {
   showSessionTab: boolean
   /** 是否在 DSH 右侧边栏提供 TiddlyWiki 入口/Tab（默认 true）。 */
   showRightbarTab: boolean
+  /** 「知识库」FAB 菜单里的「快速笔记」入口（默认 true）。 */
+  showQuickNote: boolean
+  /** 「知识库」FAB 菜单里的 TW 面板/重载入口与状态行（默认 true）。 */
+  showPanelStatus: boolean
+  /** 「知识库」FAB 菜单里的「同步」入口（默认 true）。 */
+  showSyncButton: boolean
 }
 
-const FALLBACK: UiConfig = { showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: '知识库', showSessionTab: true, showRightbarTab: true }
+const FALLBACK: UiConfig = {
+  showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: '知识库',
+  showSessionTab: true, showRightbarTab: true, showQuickNote: true, showPanelStatus: true, showSyncButton: true,
+}
 
 const CACHE_TTL_MS = 15_000
 let cache: { at: number; value: Promise<UiConfig> } | undefined
+
+/**
+ * Notified after the cache is dropped so live DOM labels can re-read.
+ *
+ * WHY (v0.22.8): `mountSidebarEntry` read `ui.sidebarLabel` exactly once, at
+ * mount. The FAB / dock / TW tab all refresh from `/status` on every poll, so
+ * changing「侧边栏 TW 入口显示名称」in Settings → 保存 took effect everywhere
+ * EXCEPT the sidebar entry, which kept the old name until a page reload.
+ */
+const listeners = new Set<() => void>()
+
+/** Subscribe to config invalidation; returns the unsubscribe function. */
+export function subscribeUiConfig(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
 
 /**
  * Drop the cached config: the settings page calls this right after a successful
@@ -50,6 +75,7 @@ let cache: { at: number; value: Promise<UiConfig> } | undefined
 export function invalidateUiConfig(): void {
   cache = undefined
   invalidateStatus()
+  for (const listener of [...listeners]) listener()
 }
 
 /** Read /status once and project the ui.* fields (backward compatible: a host
@@ -74,6 +100,9 @@ export function fetchUiConfig(): Promise<UiConfig> {
         : '知识库',
       showSessionTab: ui.showSessionTab !== false,
       showRightbarTab: ui.showRightbarTab !== false,
+      showQuickNote: ui.showQuickNote !== false,
+      showPanelStatus: ui.showPanelStatus !== false,
+      showSyncButton: ui.showSyncButton !== false,
     }
   })()
   cache = { at: Date.now(), value: pending }

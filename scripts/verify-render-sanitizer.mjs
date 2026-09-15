@@ -126,6 +126,23 @@ test('中文/文本/实体原样保留', () => {
   assert.equal(out, '<p>中文 &amp; <b>粗体</b> &lt;x&gt;</p>')
 })
 
+test('越界数字实体不得让净化器抛异常（v0.22.8 回归）', () => {
+  // 旧实现只判 `code > 0`：`&#1114112;`（0x110000，比 Unicode 上限多 1）会让
+  // String.fromCodePoint 抛 RangeError，而 sanitizeTwFragment 没有 try —— 一条
+  // 正文含该实体的笔记就能让 POST /render 500/502，打坏回复流工具卡与会话 Tab。
+  for (const html of [
+    '<a href="&#1114112;javascript:alert(1)">x</a>',
+    '<a href="&#x110000;javascript:alert(1)">x</a>',
+    '<img src="&#99999999999999999999;javascript:alert(1)">',
+    '<p>plain &#1114112; text</p>',
+  ]) {
+    let out
+    assert.doesNotThrow(() => { out = clean(html) }, `净化 ${html} 不得抛异常`)
+    assert.equal(typeof out, 'string')
+    assert.ok(!out.includes('javascript:'), `越界实体不得放行 javascript: 载荷：${out}`)
+  }
+})
+
 test('空输入与纯文本不炸', () => {
   assert.equal(clean(''), '')
   assert.equal(clean('a < b and c > d'), 'a &lt; b and c > d')
@@ -150,8 +167,25 @@ test('每个 dangerouslySetInnerHTML 所在文件都走净化端点', () => {
   for (const file of files) {
     const src = fs.readFileSync(path.join(repoRoot, 'src/client', file), 'utf8')
     if (!src.includes('dangerouslySetInnerHTML')) continue
-    assert.ok(/RENDER_ENDPOINT/.test(src), `${file} 用了 dangerouslySetInnerHTML，但没有引用 RENDER_ENDPOINT`)
+    // v0.22.8: the render call is centralised in render-fetch.ts (it used to be
+    // duplicated in tool-views.ts and session-summary.ts). An injection point
+    // must therefore either use the endpoint directly or import that one
+    // module — the point of the guard is "never TW's raw /tw/render", and
+    // render-fetch.ts is asserted below to keep using RENDER_ENDPOINT.
+    assert.ok(
+      /RENDER_ENDPOINT/.test(src) || /from '\.\/render-fetch\.ts'/.test(src),
+      `${file} 用了 dangerouslySetInnerHTML，但既没引用 RENDER_ENDPOINT 也没用 render-fetch.ts 的共享实现`,
+    )
   }
+})
+
+test('共享渲染实现只认 host 的 RENDER_ENDPOINT', () => {
+  const src = fs.readFileSync(path.join(repoRoot, 'src/client/render-fetch.ts'), 'utf8')
+  assert.ok(/RENDER_ENDPOINT/.test(src), 'render-fetch.ts 必须 POST host 的 RENDER_ENDPOINT')
+  assert.ok(/'x-requested-with': 'TiddlyWiki'/.test(src), 'render-fetch.ts 必须带 TW 的 CSRF 头（缺了整条链路 403）')
+  // 注释豁免：模块头解释了「不得直连 TW 的 /tw/render」，断言只看可执行代码。
+  const code = src.split('\n').filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line)).join('\n')
+  assert.ok(!/tw\/render/.test(code), 'render-fetch.ts 不得直连 TW 的 /tw/render（绕过 host 净化）')
 })
 
 // v0.19.4: /tags 的大 payload 是「先下载上千条再丢掉」——工具卡必须带 limit。

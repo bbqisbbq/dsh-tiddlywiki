@@ -26,7 +26,10 @@
  */
 import * as React from 'react'
 import { openTiddler } from './panel.ts'
-import { GET_ENDPOINT, RECENT_ENDPOINT, RENDER_ENDPOINT, SEARCH_ENDPOINT, TAGS_ENDPOINT, TW_PROXY_BASE } from './endpoints.ts'
+import { GET_ENDPOINT, RECENT_ENDPOINT, SEARCH_ENDPOINT, TAGS_ENDPOINT, TW_PROXY_BASE } from './endpoints.ts'
+// The render call lives in ONE place (render-fetch.ts): the tool card and the
+// session「知识库」tab used to carry byte-near-identical copies of it (v0.22.8).
+import { fetchRenderFragment } from './render-fetch.ts'
 
 /** Chinese label for each tool (card badge). */
 const TOOL_LABELS: Record<string, string> = {
@@ -142,22 +145,7 @@ async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
 }
 
 async function fetchRender(title: string): Promise<string | null> {
-  try {
-    const res = await fetch(RENDER_ENDPOINT, {
-      method: 'POST',
-      // TW's server gates every POST behind the writer CSRF header
-      // (core-server/server.js: POST → "writers", requires X-Requested-With).
-      // Same-origin requests may set it freely; the header is what makes the
-      // request land instead of a 403.
-      headers: { 'content-type': 'application/json', 'x-requested-with': 'TiddlyWiki' },
-      body: JSON.stringify({ title }),
-      signal: AbortSignal.timeout(10_000),
-    })
-    if (!res.ok) return null
-    return await res.text()
-  } catch {
-    return null
-  }
+  return fetchRenderFragment(title, 10_000)
 }
 
 /** Lightweight async-state hook for one loader keyed by `deps`. */
@@ -359,15 +347,17 @@ function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: str
 
 /* ── list cards (search / recent / batch) ── */
 
+/** One list row: title, tags, modified stamp — and the match snippet.
+ *
+ *  `snippet` used to be declared but never read (v0.22.8): the route has shipped
+ *  a per-hit context snippet since v0.19.0 precisely so a hit deep inside a long
+ *  note is visible, and dropping it left the card showing only a title — the
+ *  model-visible tool result (see tools.ts' render contract) carried more than
+ *  the card did. It is rendered as a second line and only when non-empty. */
 function HitRow(props: { title: string; tags?: readonly string[]; modified?: string | null; snippet?: string }): React.ReactElement {
-  return React.createElement(
-    'a',
-    {
-      className: 'dsh-tw-toolcard-row',
-      href: `${TW_PROXY_BASE}#${encodeURIComponent(props.title)}`,
-      onClick: openTw(props.title),
-      title: props.title,
-    },
+  const meta = React.createElement(
+    'span',
+    { className: 'dsh-tw-toolcard-row-head' },
     React.createElement('span', { className: 'dsh-tw-toolcard-row-title' }, props.title),
     props.tags !== undefined && props.tags.length > 0
       ? React.createElement('span', { className: 'dsh-tw-toolcard-row-tags' }, props.tags.slice(0, 4).join(' · '))
@@ -375,6 +365,18 @@ function HitRow(props: { title: string; tags?: readonly string[]; modified?: str
     typeof props.modified === 'string' && props.modified.length > 0
       ? React.createElement('span', { className: 'dsh-tw-toolcard-row-meta' }, props.modified)
       : null,
+  )
+  const snippet = typeof props.snippet === 'string' && props.snippet.trim().length > 0 ? props.snippet : null
+  return React.createElement(
+    'a',
+    {
+      className: 'dsh-tw-toolcard-row',
+      href: `${TW_PROXY_BASE}#${encodeURIComponent(props.title)}`,
+      onClick: openTw(props.title),
+      title: snippet === null ? props.title : `${props.title}\n${snippet}`,
+    },
+    meta,
+    snippet === null ? null : React.createElement('span', { className: 'dsh-tw-toolcard-row-snippet' }, snippet),
   )
 }
 
@@ -422,6 +424,7 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown> }):
     title: str(item.title),
     tags: Array.isArray(item.tags) ? (item.tags as unknown[]).filter((t): t is string => typeof t === 'string') : [],
     modified: typeof item.modified === 'string' ? (item.modified as string) : null,
+    snippet: typeof item.snippet === 'string' ? (item.snippet as string) : '',
   }))
   const total = typeof payload?.total === 'number' ? (payload.total as number) : undefined
   const subtitle = `关键词「${query || '（全部）'}」${total !== undefined ? ` · 共 ${total} 条` : ''}`
@@ -446,6 +449,7 @@ function RecentCard(props: { toolName: string; args: Record<string, unknown> }):
     title: str(item.title),
     tags: Array.isArray(item.tags) ? (item.tags as unknown[]).filter((t): t is string => typeof t === 'string') : [],
     modified: typeof item.modified === 'string' ? (item.modified as string) : null,
+    snippet: typeof item.snippet === 'string' ? (item.snippet as string) : '',
   }))
   return React.createElement(ListCard, {
     toolName: props.toolName,
@@ -552,8 +556,9 @@ function headerTitle(toolName: string, args: Record<string, unknown>): string {
   }
 }
 
-/** The one component registered under every `tiddlywiki_*` toolview key. */
-export function TiddlywikiToolView(props: ToolCallOwnerProps): React.ReactNode {
+/** The one component registered under every `tiddlywiki_*` toolview key.
+ *  Module-private (v0.22.8): only `registerToolViews()` below registers it. */
+function TiddlywikiToolView(props: ToolCallOwnerProps): React.ReactNode {
   const block = props.block
   const toolName = props.toolName
   const settled = isSettled(block)
@@ -620,8 +625,9 @@ export function TiddlywikiToolView(props: ToolCallOwnerProps): React.ReactNode {
   }
 }
 
-/** All `tiddlywiki_*` wire tool names the keyed slot should own. */
-export const TOOL_VIEW_KEYS: readonly string[] = [
+/** All `tiddlywiki_*` wire tool names the keyed slot should own. Module-private
+ *  (v0.22.8): the registration loop below is its only consumer. */
+const TOOL_VIEW_KEYS: readonly string[] = [
   'tiddlywiki_get',
   'tiddlywiki_search',
   'tiddlywiki_recent',

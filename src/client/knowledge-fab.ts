@@ -29,13 +29,14 @@ const BOOK_ICON = '<svg viewBox="0 0 16 16" width="17" height="17" fill="none" s
 
 interface UiFlags { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean }
 
+/** Read the three FAB-menu gates from the shared, TTL-cached ui config.
+ *
+ *  Used to be a private `fetchStatus()` projection (v0.22.8): the `/status`
+ *  `ui.*` shape was spelled out in three places (here, note-widget, and the
+ *  shared reader), so one new field meant three edits. */
 async function fetchUiFlags(): Promise<UiFlags> {
-  const status = await fetchStatus()
-  return {
-    showQuickNote: status?.ui?.showQuickNote !== false,
-    showPanelStatus: status?.ui?.showPanelStatus !== false,
-    showSyncButton: status?.ui?.showSyncButton !== false,
-  }
+  const cfg = await fetchUiConfig()
+  return { showQuickNote: cfg.showQuickNote, showPanelStatus: cfg.showPanelStatus, showSyncButton: cfg.showSyncButton }
 }
 
 /** TW service health snapshot for the menu's status line + hover tip. */

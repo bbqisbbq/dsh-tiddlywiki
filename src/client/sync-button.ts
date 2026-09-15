@@ -18,30 +18,21 @@
  */
 import { toast } from './toast.ts'
 
-import { SYNC_ENDPOINT } from './endpoints.ts'
+import { SYNC_ENDPOINT, describeSyncResult, type SyncResultPayload } from './endpoints.ts'
 import { fetchStatus, type StatusPayload } from './status-cache.ts'
 const POLL_MS = 30_000
 
-/** Public git summary shape (mirrors GitStatusViewPublic on the host). */
-interface GitView {
-  exists?: boolean
-  branch?: string
-  dirty?: boolean
-  dirtyFiles?: string[]
-  remote?: string
-  lastCommit?: string
-  ahead?: number
-  behind?: number
-}
-
+/**
+ * Sync state snapshot. Only the DOT colour key and the tooltip are consumed
+ * (`knowledge-fab.ts` reads `.state` for the dot and `.tooltip` for the hover
+ * tip) — v0.22.8 dropped the `label` / `lastSync` fields that `buildState()`
+ * computed on every poll and nothing ever displayed.
+ */
 export interface SyncStateView {
   /** Dot color key: offline | dirty | behind | clean | syncing. */
   state: 'offline' | 'dirty' | 'behind' | 'clean' | 'syncing'
-  /** Short label for the menu entry ("已同步" / "待提交" / "可更新" / "离线"). */
-  label: string
   /** Full tooltip line (branch / commits / dirty files / last sync). */
   tooltip: string
-  lastSync?: Date
 }
 
 function pad(n: number): string {
@@ -58,7 +49,6 @@ function buildState(payload: StatusPayload | null, lastSync: Date | undefined): 
   const git = payload?.git
   const bits: string[] = ['同步知识库']
   let state: SyncStateView['state'] = 'offline'
-  let label = '离线'
 
   if (git === null || git === undefined || git.exists !== true) {
     bits.push('git 仓库不可用')
@@ -71,18 +61,15 @@ function buildState(payload: StatusPayload | null, lastSync: Date | undefined): 
     if (behind > 0) bits.push(`落后 ${behind}`)
     if (git.dirty === true) {
       state = 'dirty'
-      label = '待提交'
       bits.push(`有 ${git.dirtyFiles?.length ?? 0} 个未提交改动`)
     } else if (behind > 0) {
       state = 'behind'
-      label = '可更新'
     } else {
       state = 'clean'
-      label = '已同步'
     }
   }
   if (lastSync !== undefined) bits.push(`上次同步 ${clock(lastSync)}`)
-  return { state, label, tooltip: bits.join(' · '), ...(lastSync !== undefined ? { lastSync } : {}) }
+  return { state, tooltip: bits.join(' · ') }
 }
 
 export interface SyncController {
@@ -100,7 +87,7 @@ export interface SyncController {
  * `trigger()` for the FAB's 同步 entry. No DOM is created here.
  */
 export function createSyncController(): SyncController {
-  let state: SyncStateView = { state: 'offline', label: '离线', tooltip: '同步知识库' }
+  let state: SyncStateView = { state: 'offline', tooltip: '同步知识库' }
   let lastSync: Date | undefined
   let timer: number | undefined
   let syncing = false
@@ -141,32 +128,24 @@ export function createSyncController(): SyncController {
       return state
     }
     syncing = true
-    state = { ...state, state: 'syncing', label: '同步中…' }
+    state = { ...state, state: 'syncing' }
     emit()
     try {
       const res = await fetch(SYNC_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
-      const payload = (await res.json().catch(() => null)) as
-        | { ok?: boolean; message?: string; error?: string; status?: GitView; conflictFiles?: string[]; push?: string; changed?: boolean; restarted?: boolean; restartError?: string }
-        | null
-      if (payload === null || payload.ok !== true) {
-        const msg = payload?.error ?? payload?.message ?? `HTTP ${res.status}`
-        toast(`同步失败：${msg}`)
+      const payload = (await res.json().catch(() => null)) as SyncResultPayload | null
+      const result = describeSyncResult(payload, res.status)
+      if (!result.ok) {
+        toast(`同步失败：${result.message}`)
       } else {
         // 只在成功时记录「上次同步」，失败时 tooltip 不应显示一个假的成功时间。
         lastSync = new Date()
-        let detail = ''
-        if (payload.push && payload.push !== 'nothing to commit') detail = `（${payload.push}）`
-        if (payload.changed === true) {
-          detail += payload.restarted === true ? '，TW 已重启' : '，TW 未自动重启'
-          if (payload.restartError) detail += `（${payload.restartError}）`
-        }
-        toast(`同步完成：${payload.message ?? 'OK'}${detail}`)
+        toast(`同步完成：${result.message}`)
       }
     } catch (err) {
       toast(`同步失败：${err instanceof Error ? err.message : String(err)}`)
     } finally {
       syncing = false
-      // Re-sync the label (may still be dirty after a failed sync). This is the
+      // Re-sync the state (may still be dirty after a failed sync). This is the
       // ONLY post-sync poll — a second one used to run inside the try.
       await poll()
     }

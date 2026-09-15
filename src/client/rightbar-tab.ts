@@ -69,12 +69,13 @@ export interface RightbarSlotsFace {
   ): () => void
 }
 
-/**
- * The tab body (stage 2): a thin React wrapper that mounts the TW iframe into
- * a plain-DOM host. One mount per tab record; mutual exclusion rides the
- * `dsh-panel-activate` protocol both ways.
- */
-export function TwRightbarTabBody(props: RightbarTabBodyProps): React.ReactElement {
+/** The tab body (stage 2): a thin React wrapper that mounts the TW iframe into
+ *  a plain-DOM host. One mount per tab record; mutual exclusion rides the
+ *  `dsh-panel-activate` protocol both ways.
+ *
+ *  Module-private (v0.22.8): it serves as the `slots.register` component and is
+ *  never referenced directly. */
+function TwRightbarTabBody(props: RightbarTabBodyProps): React.ReactElement {
   const { useTabInfo } = props
   const info = useTabInfo()
   const tab = info.tab
@@ -116,8 +117,9 @@ export function TwRightbarTabBody(props: RightbarTabBodyProps): React.ReactEleme
   return React.createElement('div', { ref: hostRef, className: 'dsh-tw-rightbar-tab' })
 }
 
-/** The tab definition (stage 1): a page type opened by kind, with a guide entry box. */
-export function rightbarDefinition(): Record<string, unknown> {
+/** The tab definition (stage 1): a page type opened by kind, with a guide entry
+ *  box. Module-private (v0.22.8) — only `mountRightbarTab()` below registers it. */
+function rightbarDefinition(): Record<string, unknown> {
   return {
     id: TW_RIGHTBAR_ID,
     kind: TW_RIGHTBAR_KIND,

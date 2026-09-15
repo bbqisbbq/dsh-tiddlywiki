@@ -169,16 +169,13 @@ function relativeTime(iso: string | null): string {
   return new Date(ms).toLocaleDateString('zh-CN')
 }
 
-interface UiOptions { showQuickNote: boolean; defaultTag: string }
-
-async function fetchUiOptions(): Promise<UiOptions> {
-  const fallback: UiOptions = { showQuickNote: true, defaultTag: 'inbox' }
+/** The default tag for a new note (settings `note.tag`).
+ *
+ *  Reads the shared, TTL-cached `/status` projection rather than a private copy
+ *  of the `ui.*` shape (v0.22.8 — this was one of three duplicates). */
+async function fetchDefaultTag(): Promise<string> {
   const status = await fetchStatus()
-  if (status === null) return fallback
-  return {
-    showQuickNote: status.ui?.showQuickNote !== false,
-    defaultTag: typeof status.note?.tag === 'string' && status.note.tag.length > 0 ? status.note.tag : 'inbox',
-  }
+  return typeof status?.note?.tag === 'string' && status.note.tag.length > 0 ? status.note.tag : 'inbox'
 }
 
 /** Multi-tag chip editor with autocomplete from the wiki's existing tags. */
@@ -488,8 +485,21 @@ export function createNoteWidget(): NoteWidgetHandle {
     }
   }
 
+  /**
+   * The auto-generated title currently in the title input, or null once the
+   * user changed it. Used by `flushDraft` to recognise "opened the card, typed
+   * nothing, closed it": that state must not be persisted as an unsaved draft
+   * (v0.22.8 — `dispose()`/pagehide call `flushDraft()` unconditionally, and a
+   * blank body with only an auto timestamp passed the old `text && title` guard,
+   * so the next open announced「已恢复未保存草稿」over an empty editor).
+   */
+  let autoTitle: string | null = null
+
   const resetTitle = (): void => {
-    if (ui !== undefined) ui.titleInput.value = timestampTitle()
+    if (ui !== undefined) {
+      autoTitle = timestampTitle()
+      ui.titleInput.value = autoTitle
+    }
   }
 
   /**
@@ -500,7 +510,9 @@ export function createNoteWidget(): NoteWidgetHandle {
     if (ui === undefined) return
     const text = ui.editor.getValue()
     const title = ui.titleInput.value.trim()
-    if (text.trim().length === 0 && title.length === 0) {
+    // 正文与标题皆空，或「只有自动生成的标题、正文一个字都没写」：没有可恢复的
+    // 内容，清掉草稿即可（否则会写出一份空草稿，下次打开误报「已恢复未保存草稿」）。
+    if (text.trim().length === 0 && (title.length === 0 || title === autoTitle)) {
       clearDraft()
       return
     }
@@ -829,15 +841,37 @@ export function createNoteWidget(): NoteWidgetHandle {
       emitState(false)
     }
 
+    /**
+     * Reset the editor to a blank new note and make that reset STICK.
+     *
+     * `editor.setValue('')` fires CodeMirror's change listener → `scheduleDraft()`
+     * while `opened` is still true, so a 500ms debounce lands in `flushDraft`
+     * after save/discard. There the empty-body guard does not fire (the title is
+     * a fresh non-empty timestamp) and the signature guard misses too (the title
+     * changed), so a PHANTOM draft `{text:'', title:'<timestamp>', tags:[]}` was
+     * persisted. The next open then showed「已恢复未保存草稿」over an empty
+     * editor and skipped the default-tag branch — and 「已丢弃草稿」 came back
+     * on the next open (v0.22.8).
+     *
+     * Cancelling the pending timer and recording the cleared state as already
+     * "persisted" makes the debounce a no-op whichever way it is re-armed.
+     */
+    const resetForNewNote = (): void => {
+      if (draftTimer !== undefined) { clearTimeout(draftTimer); draftTimer = undefined }
+      editor.setValue('')
+      titleInput.value = timestampTitle()
+      autoTitle = titleInput.value
+      tagEditor.setTags([])
+      persistedSignature = draftSignature(titleInput.value.trim(), '', [])
+    }
+
     const saveDone = (): void => {
       clearDraft()
       hideDraftBanner()
       // 这份内容已经进 wiki 了：同内容不再回写成草稿（v0.19.1），token 也失效。
       persistedSignature = draftSignature(titleInput.value.trim(), editor.getValue(), tagEditor.getTags())
       loadedToken = null
-      editor.setValue('')
-      titleInput.value = timestampTitle()
-      tagEditor.setTags([])
+      resetForNewNote()
       close()
     }
 
@@ -961,9 +995,9 @@ export function createNoteWidget(): NoteWidgetHandle {
     discardBtn.addEventListener('click', () => {
       clearDraft()
       hideDraftBanner()
-      editor.setValue('')
-      titleInput.value = timestampTitle()
-      tagEditor.setTags([])
+      // 与保存后同样的「重置即定型」：否则 500ms 后防抖会把这份空内容又写成草稿，
+      // 下次打开又弹「已恢复未保存草稿」（v0.22.8）。
+      resetForNewNote()
       toast('已丢弃草稿')
     })
 
@@ -1002,7 +1036,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         }
       } else {
         resetTitle()
-        defaultTag = (await fetchUiOptions()).defaultTag
+        defaultTag = await fetchDefaultTag()
         // dispose() may have run while awaiting (sets ui = undefined); a live
         // `ui` reference must be re-read under the same guard as above.
         if (disposed || ui === undefined) return
@@ -1039,7 +1073,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         if (hasDraft) {
           tags = hit.draft.tags
         } else {
-          defaultTag = (await fetchUiOptions()).defaultTag
+          defaultTag = await fetchDefaultTag()
           if (disposed) return
           tags = [defaultTag]
         }

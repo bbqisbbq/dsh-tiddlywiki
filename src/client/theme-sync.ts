@@ -38,10 +38,16 @@
  * @module dsh-tiddlywiki/client/theme-sync
  */
 
-/** Default dark palette used when DSH is dark (overridable in settings). */
-export const DARK_PALETTE_DEFAULT = '$:/palettes/CupertinoDark'
+/**
+ * Default dark palette used when DSH is dark (overridable in settings).
+ *
+ * Module-private (v0.22.8): the host keeps its own copy in
+ * `host/config.ts` (`DARK_PALETTE_DEFAULT`), because the two bundles cannot
+ * share code — the client export was a leftover nobody imported.
+ */
+const DARK_PALETTE_DEFAULT = '$:/palettes/CupertinoDark'
 /** Fallback light palette when no user palette was ever captured. */
-export const LIGHT_PALETTE_FALLBACK = '$:/palettes/Vanilla'
+const LIGHT_PALETTE_FALLBACK = '$:/palettes/Vanilla'
 
 /** DSH's dark-mode marker (set/removed on <body> by dsh-client-ui-layout). */
 const DARK_ATTR = 'data-ds-dark-theme'

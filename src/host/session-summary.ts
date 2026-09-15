@@ -26,6 +26,7 @@
  * @module dsh-tiddlywiki/host/session-summary
  */
 import { parseTiddlerDate, type TiddlyWebClient } from './tw-api.ts'
+import { formatLocalMinute } from './text-util.ts'
 
 /** 会话汇总 tiddler 的 $:/temp 命名空间前缀。 */
 export const SESSION_SUMMARY_PREFIX = '$:/temp/dsh/session-summary/'
@@ -298,12 +299,9 @@ async function enrichTitles(client: TiddlyWebClient, titles: string[]): Promise<
   return out
 }
 
-/** epoch ms → 本地 `YYYY-MM-DD HH:mm`。 */
+/** epoch ms → 本地 `YYYY-MM-DD HH:mm`（与 routes.ts 的 timestampTitle 共用一份实现）。 */
 function fmtTime(ms: number): string {
-  const d = new Date(ms)
-  if (Number.isNaN(d.getTime())) return ''
-  const p = (n: number): string => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  return formatLocalMinute(ms)
 }
 
 /**

@@ -176,6 +176,31 @@ try {
     assert.equal(draft.type, 'text/markdown', `新笔记草稿应为 markdown，实际 ${draft.type}`)
   })
 
+  // 2b ── 复用既有草稿时不得覆盖用户在 TW 里未保存的内容（v0.22.8）─────────
+  // v0.20.0 只修掉了「另起一个时间戳标题」，但仍然会把 draftText（调用方的文本
+  // 或笔记已保存的正文）PUT 进「刚复用」的那个草稿 —— 而那个草稿里装的是用户在
+  // TW 原生编辑器里敲进去、尚未保存的内容。触发路径极常见：打开快速笔记（标题
+  // 精确到分钟）、写点东西、关掉弹窗、同一分钟内再打开 —— 标题相同、调用方文本
+  // 为空，草稿就被清空了。
+  await test('openInTwEditor：不得用空文本覆盖既有草稿的内容', async () => {
+    await api.put({ title: 'DraftKeep', text: 'saved body', type: 'text/markdown' })
+    // 第一次 /edit（无文本）建成 canonical 草稿。
+    const first = await openInTwEditor(api, 'DraftKeep', '', undefined, { defaultTags: ['inbox'] })
+    // 模拟用户在 TW 原生编辑器里打字（未保存）。
+    await api.put({ ...(await api.get(first.draftTitle)), text: 'USER TYPED THIS, NOT SAVED' })
+    // 同一分钟内再次点「快速笔记」：调用方不带文本。
+    const second = await openInTwEditor(api, 'DraftKeep', '', undefined, { defaultTags: ['inbox'] })
+    assert.equal(second.draftTitle, first.draftTitle, '既有草稿应被复用（不另起标题）')
+    const draft = await api.get(second.draftTitle)
+    assert.equal(draft.text, 'USER TYPED THIS, NOT SAVED', `复用的草稿内容不得被空文本清掉，实际：${JSON.stringify(draft.text)}`)
+  })
+
+  await test('openInTwEditor：调用方给了文本时仍写入草稿（快速笔记内容为准）', async () => {
+    const r = await openInTwEditor(api, 'DraftWrite', 'from the card', undefined, { defaultTags: ['inbox'] })
+    const draft = await api.get(r.draftTitle)
+    assert.equal(draft.text, 'from the card', '显式文本必须写进草稿')
+  })
+
   // 2c ── 内容类型保留（v0.20.1）────────────────────────────────────────────
   // 旧实现把 `type` 当成「构造 PUT body 时跳过的字段」，于是 cleanTiddler() 丢掉
   // 既有条目的内容类型，finalTypeForWrite() 再补默认值：put 把 text/css 改成
@@ -417,7 +442,52 @@ try {
     assert.ok(reportedDeleted.length > 0 && reportedDeleted.every((l) => l.includes('SumGone-')), `只有真的不存在的标题能标已删除：${reportedDeleted.slice(0, 3).join(' | ')}`)
   })
 
-  // 7 ── batch_put 并发后顺序与容错不变 ─────────────────────────────────────
+  // 7 ── /recent 必须把 since 透传给 TiddlyWebClient.recent（v0.22.8）──────
+  // 路由曾经只读 limit 就调 client.recent(limit)，把 ?since= 丢掉：工具
+  // （wiki.recent(limit, since)）与回复流卡片都发 since，于是模型看到的是过滤后
+  // 的结果、人看到的卡片却是未过滤的最近条目。与 v0.20.0 修过的 /search 同类漂移。
+  await test('/recent：since 必须透传并在回包里回显', async () => {
+    const seen = []
+    const spy = {
+      recent: async (limit, since) => { seen.push({ limit, since }); return [] },
+      get: (t) => api.get(t),
+    }
+    const { routes, face } = fakeWebServer()
+    registerRoutes({ webServer: face }, {
+      server,
+      getClient: () => spy,
+      git,
+      autoCommit: () => {},
+      noteDefaults: () => ({ tag: 'inbox' }),
+      uiDefaults: () => ({
+        showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki',
+        showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: '$:/palettes/CupertinoDark',
+        tabLabel: '知识库', showSessionTab: true, showRightbarTab: true,
+      }),
+      getWikiPath: () => wikiDir,
+      getSessionController: () => undefined,
+      getWorkspaceRegistry: () => undefined,
+      getAgentPresets: () => undefined,
+      getSessionPersistence: () => undefined,
+      getPermissionPresets: () => undefined,
+      getSessions: () => undefined,
+      getSessionQuery: () => undefined,
+      sendToAgentEnabled: () => true,
+      sendToAgentToken: () => '',
+    })
+    const handler = routes.get('exact:/dsh-tiddlywiki/recent')
+    assert.ok(handler !== undefined, '/recent 路由未注册')
+    const { state, res } = recorder()
+    handler(fakeReq({ method: 'GET', url: '/dsh-tiddlywiki/recent?limit=5&since=2026-09-01' }), res)
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(seen.length, 1, `recent 应被调用一次，实际 ${seen.length}`)
+    assert.equal(seen[0].limit, 5, `limit 应透传：${JSON.stringify(seen[0])}`)
+    assert.equal(seen[0].since, '2026-09-01', `since 必须透传（旧实现把它丢掉，卡片会列出未过滤的最近条目）：${JSON.stringify(seen[0])}`)
+    const payload = parseJson(state.body)
+    assert.equal(payload?.since, '2026-09-01', `回包应回显 since（与 /search 一致）：${state.body.slice(0, 200)}`)
+  })
+
+  // 8 ── batch_put 并发后顺序与容错不变 ─────────────────────────────────────
   await test('batch_put：并发实现仍保持入参顺序与逐条容错', async () => {
     const items = []
     for (let i = 0; i < 60; i++) items.push({ title: `Conc-${String(i).padStart(2, '0')}`, text: `conc ${i}` })

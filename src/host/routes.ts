@@ -51,7 +51,7 @@ import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { TiddlyWebClient } from './tw-api.ts'
-import { isBinaryType, toIsoDateString } from './tw-api.ts'
+import { RenderNotFoundError, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import type { GitFace, GitStatusView } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
@@ -59,7 +59,7 @@ import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts
 import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 import { sanitizeTwFragment } from './sanitize.ts'
 import { flushPendingWrites } from './seeds.ts'
-import { snippetOf } from './text-util.ts'
+import { snippetOf, formatLocalMinute } from './text-util.ts'
 import { WriteConflictError, assertNoConflict, buildWriteTiddler, flattenTiddlerFields } from './write-policy.ts'
 
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
@@ -305,12 +305,7 @@ export function redactLogLines(logs: readonly string[]): string[] {
     .replace(/(authorization:\s*basic\s+)[A-Za-z0-9+/=]+/gi, '$1***'))
 }
 
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : String(n)
-}
-
-/** Max `limit` accepted by the list routes (bounded payloads, v0.19.4). */
-const MAX_LIST_LIMIT = 200
+/** Max `limit` accepted by the list routes (bounded payloads, v0.19.4). */const MAX_LIST_LIMIT = 200
 
 /** Max `limit` accepted by `/tags` — the tag list is a small wrapper around one
  *  full listing, so a larger cap is fine while still bounding the payload. */
@@ -331,9 +326,10 @@ function readOptionalLimit(url: URL, max: number): number | undefined {
   return Math.max(1, Math.min(Math.floor(parsed), max))
 }
 
-/** Default note title: `YYYY-MM-DD HH:mm` (design doc D6). */
+/** Default note title: `YYYY-MM-DD HH:mm` (design doc D6). Shared formatter —
+ *  session-summary.ts used to carry a second, byte-identical copy (v0.22.8). */
 function timestampTitle(date = new Date()): string {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  return formatLocalMinute(date)
 }
 
 /**
@@ -390,6 +386,8 @@ export async function openInTwEditor(
   // reuse of any existing draft title found in the fallback listing.
   const canonical = `Draft of "${title}"`
   let draftTitle: string | undefined
+  /** true = the draft tiddler already existed and owns unsaved user content. */
+  let draftExists = false
   let canonicalFree: boolean | undefined
   try {
     canonicalFree = (await client.get(canonical)) === undefined
@@ -408,6 +406,7 @@ export async function openInTwEditor(
       for (const item of items) {
         if (item['draft.of'] === title && typeof item.title === 'string') {
           draftTitle = item.title
+          draftExists = true
           break
         }
       }
@@ -416,7 +415,24 @@ export async function openInTwEditor(
     }
     if (draftTitle === undefined) draftTitle = `${canonical} ${Date.now()}`
   }
-  await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: draftType })
+  // WRITE THE BODY ONLY WHEN IT IS OURS TO WRITE (v0.22.8).
+  //
+  // The v0.20.0 fix stopped the code from minting a fresh draft title over an
+  // existing one — but it still PUT `draftText` into whatever draft it had just
+  // REUSED, and that is the destructive half. `draftText` is the caller's text
+  // or the note's SAVED body, while a reused draft holds whatever the user has
+  // typed into TW's native editor and not yet saved; overwriting it silently
+  // discards that. Reachable without any exotic setup: open 快速笔记 (a
+  // minute-precision title), type, close the popup, reopen within the same
+  // minute — same title, empty caller text, and the draft is blanked.
+  //
+  // So: a draft we are CREATING is ours to fill; a draft we are REUSING is only
+  // overwritten when the caller explicitly supplied text (the quick-note card's
+  // content is the source of truth then, and it was just saved to the note
+  // above). With no text, the existing draft is left exactly as the user left it.
+  if (!draftExists || text.trim().length > 0) {
+    await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: draftType })
+  }
   return { title, draftTitle }
 }
 
@@ -1013,10 +1029,16 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')
       const limit = readLimit(url, 15)
-      const items = await client.recent(limit)
+      // `since` must be forwarded and echoed (v0.22.8): the tool
+      // (`wiki.recent(limit, since)`) and the reply-stream card both send it, so
+      // dropping it here listed UNFILTERED recents for a filtered request — the
+      // same route/tool drift that was fixed for /search in v0.20.0.
+      const since = url.searchParams.get('since') ?? undefined
+      const items = await client.recent(limit, since)
       json(res, {
         ok: true,
         limit,
+        since: since ?? null,
         items: items.map((t) => ({
           title: t.title,
           tags: t.tags ?? [],
@@ -1047,7 +1069,11 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       // The plugin's own config tiddler can carry shared tokens (bridge.token /
       // sendToAgent.token) and this route is unauthenticated: serve the note
       // picker but never the plugin's secret-bearing config (v0.19.0).
-      if (title.startsWith('$:/plugins/dsh-tiddlywiki/')) {
+      //
+      // Uses the SHARED predicate (v0.22.8): this was a second copy of the
+      // literal, so adding another secret namespace to
+      // BLOCKED_PROXY_TITLE_PREFIXES would have silently left /get exposed.
+      if (isBlockedProxyTitle(title)) {
         json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
         return
       }
@@ -1363,12 +1389,13 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       })
       res.end(safe)
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      if (/HTTP 404/.test(message)) {
-        json(res, { ok: false, notFound: true, error: message }, 404)
+      // Structural 404 detection (v0.22.8): RenderNotFoundError carries the
+      // flag, so this no longer depends on the error MESSAGE wording.
+      if (err instanceof RenderNotFoundError || (err as { notFound?: unknown } | null)?.notFound === true) {
+        json(res, { ok: false, notFound: true, error: err instanceof Error ? err.message : String(err) }, 404)
         return
       }
-      json(res, { ok: false, error: message }, 502)
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 502)
     }
   }
 
@@ -1422,7 +1449,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * (arrayBuffer) — unlike the /api JSON proxy, this route must never .text().
    */
   const handleTwProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    if (rejectCrossSiteWrite(req, res)) return
+    // Explicit method whitelist (v0.22.8): the host webserver dispatches by
+    // pathname only, so without it TRACE or a typo'd verb was forwarded straight
+    // to the TW child. Same set the sibling /api proxy declares.
+    if (rejectCrossSiteWrite(req, res, ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'])) return
     const client = deps.getClient()
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)

@@ -108,8 +108,14 @@ export function cleanTiddler(t: Tiddler): Tiddler {
   return out
 }
 
-/** 合并调用方显式提供的自定义字段（跳过保留字段与 undefined）。 */
-export function applyCustomFields(tiddler: Tiddler, fields: Record<string, unknown> | undefined): void {
+/**
+ * 合并调用方显式提供的自定义字段（跳过保留字段与 undefined）。
+ *
+ * 模块私有（v0.22.8）：它只被 buildWriteTiddler 调用，导出会让「写策略只有一个
+ * 入口」这条约定出现第二个可绕过的门。`verify-write-policy.mjs` 断的是
+ * `buildWriteTiddler`/`cleanTiddler` 的对外行为，不需要这个内部步骤。
+ */
+function applyCustomFields(tiddler: Tiddler, fields: Record<string, unknown> | undefined): void {
   if (fields === undefined || fields === null || typeof fields !== 'object') return
   for (const [key, value] of Object.entries(fields)) {
     if (RESERVED_TIDDLER_FIELDS.has(key)) continue
@@ -126,13 +132,15 @@ export function normalizeTagArg(tags: unknown): string[] | undefined {
 }
 
 /**
- * 计算最终标签：
+ * 计算最终标签（模块私有，v0.22.8）：只被 `buildWriteTiddler` 调用，导出会让
+ * 「新条目补 agent-written」这条规则出现绕过 buildWriteTiddler 的第二条路。
+ *
  * - 已存在的条目 → 调用方给什么就是什么（不给 = 保留基底里的原标签）；
  * - 新条目 + `agentTag` → 自动补 `agent-written`（`$:/` 系统条目除外）；
  * - 新条目 + 人类入口（`agentTag: false`，如快速笔记 / `/note`）→ 不补，
  *   人类写的笔记不该被标成 agent 撰写。
  */
-export function finalTagsForWrite(title: string, existing: Tiddler | undefined, tags: string[], agentTag: boolean): string[] {
+function finalTagsForWrite(title: string, existing: Tiddler | undefined, tags: string[], agentTag: boolean): string[] {
   if (existing !== undefined) return tags
   if (!agentTag) return tags
   if (title.startsWith('$:/')) return tags

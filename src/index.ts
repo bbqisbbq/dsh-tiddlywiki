@@ -23,7 +23,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type UiDefaultsPublic, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
-import { ConfigStore, DARK_PALETTE_DEFAULT, TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT, type PluginConfigShape } from './host/config.ts'
+import { ConfigStore, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, ensurePlugin, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds } from './host/seeds.ts'
 import { RENDER_PLUGIN_FILE } from './host/seed-render.ts'
@@ -210,22 +210,17 @@ const DEFAULTS: ResolvedConfig = {
 /** Config tiddler steering TW's frontend API base (tiddlywebadaptor). */
 export { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './host/config.ts'
 
-/**
- * Point TW's frontend at the same-origin DSH proxy (remote-access mode, R1).
- * The tiddlywebadaptor builds every API URL from $:/config/tiddlyweb/host; its
- * default `$protocol$//$host$/` resolves to the iframe's origin ROOT, which
- * 404s whenever the browser is not on the same machine as TW. Written only
- * when the tiddler is missing or still the legacy default — a user override is
- * honored (e.g. someone who really does expose TW on a dedicated origin).
+/*
+ * `ensureTwWebHost()` used to live here and described the same contract as the
+ * `tw-web-host` SEED in host/seeds.ts, which `bootstrapWiki()` actually runs at
+ * startup and after a wiki switch — and which the settings page can re-run with
+ * 「重新初始化」. Two implementations of "$:/config/tiddlyweb/host" (one of them
+ * unreachable from production code) is exactly the drift this repo keeps
+ * paying for, so v0.22.8 deleted the dead one and left the seed as the single
+ * implementation. Its behaviour (write only when the tiddler is missing or still
+ * the legacy default; never touch a user's custom base) is unchanged and is
+ * covered by scripts/selftest.mjs through `runSeedById(..., 'tw-web-host')`.
  */
-export async function ensureTwWebHost(client: TiddlyWebClient | undefined): Promise<void> {
-  if (client === undefined) return
-  // Read WITHOUT swallowing: only a 404 means "missing". A transient failure
-  // must not look like "absent" and overwrite a user's custom host value.
-  const current = (await client.get(TW_WEB_HOST_TIDDLER))?.text
-  if (current !== undefined && current.trim() !== TW_WEB_HOST_DEFAULT) return
-  await client.put({ title: TW_WEB_HOST_TIDDLER, text: TW_PROXY_PATH, type: 'text/plain', tags: [] })
-}
 
 /**
  * Resolve the DEFAULT wikiRoot: explicit config (env-expanded) else
