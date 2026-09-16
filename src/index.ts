@@ -45,7 +45,7 @@ import {
 } from './host/wiki-location.ts'
 import { switchWiki, type WikiSwitchResult } from './host/wiki-switch.ts'
 import { READY_TIMEOUT_DEFAULT_MS } from './host/ready-policy.ts'
-import { PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer } from './host/wiki.ts'
+import { ANON_USERNAME, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
 
 /** Cordis plugin name (also the client loader id / profile row id). */
@@ -55,7 +55,7 @@ export const name = 'dsh-tiddlywiki'
 export const inject = ['tools', 'systemPrompt']
 
 /** Re-exports for the headless selftest and future consumers. */
-export { AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool }
+export { ANON_USERNAME, AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool }
 export { ConfigStore, deepMerge } from './host/config.ts'
 export { sanitizeTwFragment, isSafeUrl } from './host/sanitize.ts'
 export { MISSING_TYPE_FILTER } from './host/tw-api.ts'

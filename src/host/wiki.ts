@@ -68,6 +68,19 @@ const LOG_BUFFER_LIMIT = 200
 /** One-shot scaffold timeout for `--init server`. */
 const INIT_TIMEOUT_MS = 30_000
 
+/**
+ * `anon-username` for the anonymous loopback spawn (v0.22.9).
+ *
+ * This MUST stay the literal `"GUEST"`. TW's TiddlyWeb adaptor derives its
+ * login flag as `json.username !== "GUEST"` (tiddlywebadaptor.js:93), so any
+ * other value — including any real person's name — still reports as logged in,
+ * and syncer.js then overwrites `$:/status/UserName` with whatever `/status`
+ * returns. Only this sentinel makes the syncer leave the user's signature
+ * alone. Exported so the regression gate asserts the exact string instead of
+ * re-typing it.
+ */
+export const ANON_USERNAME = 'GUEST'
+
 export interface WikiServerOptions {
   /** Root that holds one folder per wiki (default $DSH_HOME/tiddlywiki). */
   wikiRoot: string
@@ -297,15 +310,37 @@ export class WikiServer {
     const args = [tw, this.wikiPath, '--listen', 'host=127.0.0.1', `port=${port}`]
     if (this.options.username) {
       // Locked-down mode for non-loopback exposure: Basic Auth + access lists.
+      // Do NOT add anon-username here: `authenticatedUsername` already wins in
+      // get-status.js, so it changes nothing for an authenticated caller.
       args.push(`username=${this.options.username}`)
       args.push(`password=${this.options.password ?? ''}`)
       args.push(`readers=${this.options.username}`)
       args.push(`writers=${this.options.username}`)
+    } else {
+      // Anonymous loopback mode: no auth args (TW's defaults open the wiki to
+      // anonymous read/write on the bound loopback address), but the username
+      // MUST be the literal sentinel `GUEST`.
+      //
+      // v0.22.9 — WHY (this used to say the opposite, and that comment caused
+      // the bug): the old note claimed "anon-username/readers/writers was
+      // verified to 401 every request". That conflated two independent args.
+      // Only `readers`/`writers` close anonymous access (server.js:63-66 makes
+      // an explicit `readers` list drop the `(anon)` principal, so
+      // isAuthorized() returns false and requestHandler 401s with
+      // `'undefined' is not authorized`). `anon-username` ALONE is harmless —
+      // verified against TW 5.4.1: /status 200, GET 204-tiddler 200, PUT 204.
+      //
+      // Without it, get-status.js:21 falls back to `""`, and the TiddlyWeb
+      // adaptor decides login as `json.username !== "GUEST"`
+      // (tiddlywebadaptor.js:93) → `"" !== "GUEST"` is TRUE → it believes the
+      // anonymous reader is logged in. syncer.js:281-283 then overwrites
+      // `$:/status/UserName` with that empty string on EVERY page load, which
+      // silently wipes the user's Control Panel signature (and, once
+      // `$:/config/SyncFilter` is edited to allowlist UserName, commits the
+      // loss to disk and git). `GUEST` is a load-bearing magic value, not a
+      // style choice: any other name still leaves isLoggedIn true.
+      args.push(`anon-username=${ANON_USERNAME}`)
     }
-    // Anonymous loopback mode carries NO auth args: TW's defaults open the
-    // wiki to anonymous read/write on the bound (loopback) address. Passing
-    // anon-username/readers/writers here was verified to 401 every request
-    // ('undefined' is not authorized), so the anonymous branch stays bare.
     //
     // NEVER log the raw argv: it carries `password=…`, the ring buffer is
     // returned by the UNAUTHENTICATED GET /status, and the same string could
