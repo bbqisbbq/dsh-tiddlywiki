@@ -58,7 +58,7 @@ export const inject = ['tools', 'systemPrompt']
 export { ANON_USERNAME, AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool }
 export { ConfigStore, deepMerge } from './host/config.ts'
 export { sanitizeTwFragment, isSafeUrl } from './host/sanitize.ts'
-export { MISSING_TYPE_FILTER } from './host/tw-api.ts'
+export { MISSING_TYPE_FILTER, ensureTiddlerTimestamps, formatTiddlerDate, parseTiddlerDate, toIsoDateString } from './host/tw-api.ts'
 export {
   AGENT_WRITTEN_TAG,
   DEFAULT_NOTE_TYPE,

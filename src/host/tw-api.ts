@@ -137,6 +137,58 @@ export function toIsoDateString(value: unknown): string | null {
   return ms === undefined ? null : new Date(ms).toISOString()
 }
 
+/**
+ * Format an instant in TW's own date-field format: `YYYYMMDDhhmmssSSS` (UTC,
+ * 17 digits) — byte-for-byte what `$tw.utils.stringifyDate()` writes, which is
+ * the inverse of `parseTiddlerDate()` above.
+ *
+ * TW's `created`/`modified` tiddlerfield modules parse with `$tw.utils.parseDate`
+ * and stringify with `$tw.utils.stringifyDate`, so a Date produced by either
+ * round-trips. Sending ISO-8601 instead would still be PARSED correctly (the
+ * date parser is lenient) but the on-disk `.tid`/`.meta` would differ from what
+ * the TW editor writes — keeping the two write paths byte-identical is the whole
+ * point of v0.22.10, so writers must use this function.
+ *
+ * (Local time is deliberately NOT used: TW stores UTC and renders in the
+ * viewer's zone, so a local-time string would shift every displayed date.)
+ */
+export function formatTiddlerDate(value: Date | number): string {
+  const d = value instanceof Date ? value : new Date(value)
+  const pad = (n: number, width = 2): string => String(n).padStart(width, '0')
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`
+    + `${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`
+    + `${pad(d.getUTCMilliseconds(), 3)}`
+}
+
+/**
+ * Fill missing `created`/`modified` on a tiddler about to be PUT (v0.22.10).
+ *
+ * SAFETY NET, not the policy: `buildWriteTiddler()` owns the semantics (new
+ * tiddler ⇒ both = now; overwrite ⇒ keep the base `created`, refresh `modified`).
+ * This only guarantees the INVARIANT that every tiddler this plugin writes
+ * carries both fields, including the write paths that deliberately hand-build
+ * their PUT (clip bridge, seeds, config, `/upload`, session summary) and any
+ * future one.
+ *
+ * Why it matters: TW's server-side write path never stamps these fields
+ * (`put-tiddler.js` just does `addTiddler(new $tw.Tiddler(fields, {title}))`;
+ * `getCreationFields()`/`getModificationFields()` are only called by TW's own
+ * UI). A stored tiddler without `modified` is read by `sortTiddlers` as
+ * `fields[sortField] || ""`, so `!sort[modified]` sinks it to the LAST slot —
+ * the note looks like it was never collected.
+ *
+ * Existing values are NEVER overwritten: explicit timestamps (a trash snapshot
+ * copied from the original, a restore, or a caller that set them on purpose)
+ * must survive.
+ */
+export function ensureTiddlerTimestamps(tiddler: Tiddler, now: Date | number = new Date()): void {
+  const stamp = formatTiddlerDate(now)
+  const hasCreated = typeof tiddler.created === 'string' && tiddler.created.trim().length > 0
+  const hasModified = typeof tiddler.modified === 'string' && tiddler.modified.trim().length > 0
+  if (!hasCreated) tiddler.created = hasModified ? tiddler.modified : stamp
+  if (!hasModified) tiddler.modified = hasCreated ? tiddler.created : stamp
+}
+
 /** Split TW's whitespace-joined tags string into an array. */
 function normalizeTags(tags: unknown): string[] | undefined {
   if (tags === undefined) return undefined
@@ -258,8 +310,18 @@ export class TiddlyWebClient {
     return res.text()
   }
 
-  /** Write (create or overwrite) one tiddler via PUT (204 on success). */
+  /**
+   * Write (create or overwrite) one tiddler via PUT (204 on success).
+   *
+   * Every write goes through here, so this is also where the timestamp INVARIANT
+   * is enforced (v0.22.10): a tiddler without `modified` would be sorted as an
+   * empty string by TW's `sortTiddlers` and sink to the bottom of every
+   * `!sort[modified]` page. `buildWriteTiddler()` decides the real semantics
+   * (keep `created` on overwrite, refresh `modified`); this only fills gaps for
+   * the paths that build their PUT by hand.
+   */
   async put(tiddler: Tiddler): Promise<Tiddler> {
+    ensureTiddlerTimestamps(tiddler)
     const title = tiddler.title
     const res = await this.request(`/recipes/default/tiddlers/${encodeURIComponent(title)}`, {
       method: 'PUT',

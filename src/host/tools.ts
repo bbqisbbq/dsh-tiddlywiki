@@ -26,7 +26,6 @@ import { snippetOf } from './text-util.ts'
 import {
   assertNoConflict,
   buildWriteTiddler,
-  cleanTiddler,
   flattenTiddlerFields,
   normalizeTagArg,
 } from './write-policy.ts'
@@ -672,13 +671,22 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           if (text.length === 0) continue
           const rewritten = rewriteRefs(text, oldTitle, newTitle)
           if (rewritten.count > 0) {
-            await wiki.put({ ...cleanTiddler(t), text: rewritten.text })
+            // Shared policy (v0.22.10): a rewrite of the note's text is an
+            // overwrite — keep its `created`, refresh `modified`, and preserve
+            // tags/custom fields/type. Hand-building the PUT (the old
+            // `cleanTiddler(t)` + text) carried the STALE `modified` through.
+            const { tiddler } = buildWriteTiddler(t.title, rewritten.text, { existing: t })
+            await wiki.put(tiddler)
             refsUpdated += rewritten.count
             refsTiddlers++
           }
         }
       }
-      await wiki.put({ ...cleanTiddler(existing), title: newTitle })
+      // Renaming is an overwrite from the new title's point of view: TW's own
+      // rename keeps the source's `created` and stamps a fresh `modified`
+      // (`new $tw.Tiddler(getCreationFields(), tiddler, {...}, getModificationFields())`).
+      const { tiddler: renamed } = buildWriteTiddler(newTitle, existing.text ?? '', { existing })
+      await wiki.put(renamed)
       // The new title is already written; a failure here leaves BOTH copies on
       // disk, so report the partial state instead of throwing a bare error (the
       // caller would otherwise assume the rename never happened) — v0.19.5.
@@ -741,7 +749,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       }
       const trashTitle = trashTitleFor(args.title)
       const at = new Date().toISOString()
-      await wiki.put({ ...cleanTiddler(existing), title: trashTitle, 'trash-of': args.title, 'trash-at': at })
+      // The snapshot is a COPY: it keeps the original's created/modified (they
+      // describe the note — deleting must not rewrite its history, and a later
+      // restore must bring the note back with the same times). `trash-at` records
+      // when it was deleted. buildWriteTiddler refreshes `modified` to now (it
+      // cannot tell a copy from an edit), so put the original back explicitly.
+      const { tiddler: trashTiddler } = buildWriteTiddler(trashTitle, existing.text ?? '', { existing })
+      trashTiddler.created = existing.created ?? trashTiddler.created
+      trashTiddler.modified = existing.modified ?? trashTiddler.modified
+      await wiki.put({ ...trashTiddler, 'trash-of': args.title, 'trash-at': at })
       await wiki.delete(args.title)
       // Read the index BEFORE touching it, and ABORT when the read failed or the
       // JSON is broken: overwriting it with `[] + thisEntry` after a transient
@@ -812,10 +828,19 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       if ((await wiki.get(match.of)) !== undefined) {
         throw new Error(`无法恢复：标题「${match.of}」已被占用，请先处理现有条目`)
       }
-      const restored = cleanTiddler(stored)
+      // A restore means「恢复原状」: bring the note back with the SAME
+      // created/modified it had before deletion. The trash snapshot deliberately
+      // preserved both (see the delete branch), so restoring must not stamp a new
+      // modified — otherwise that preservation would be pointless and a restored
+      // note would jump to the top of every「最近修改」view as if it were edited.
+      // Both fields are still guaranteed present: `buildWriteTiddler` stamps a
+      // legacy snapshot that lacks them, and `put()` is the final safety net.
+      const { tiddler: restored } = buildWriteTiddler(match.of, stored.text ?? '', { existing: stored })
+      restored.created = stored.created ?? restored.created
+      restored.modified = stored.modified ?? restored.modified
       delete restored['trash-of']
       delete restored['trash-at']
-      await wiki.put({ ...restored, title: match.of })
+      await wiki.put(restored)
       await wiki.delete(match.trash)
       await writeTrashIndex(wiki, indexed.filter((entry) => entry.trash !== match.trash))
       deps.autoCommit()

@@ -8,6 +8,12 @@
  *   - Markdown 默认值**只给新建条目**（`$:/` 系统条目除外）；
  *   - `fields.type` 是唯一的显式改类型入口。
  *
+ * v0.22.10 追加「时间戳」一节：TW 的服务端写路径**不补** `created`/`modified`，
+ * 缺 `modified` 的条目会被 `sortTiddlers` 的 `fields[sortField] || ""` 当空串，
+ * `!sort[modified]` 降序时沉到最后一名（用户实测：新日记在「主题页·日志」排
+ * 175/175，看起来像没被收录）。这组断言同时钉住「TW 紧凑格式」与
+ * 「覆盖保 created、刷新 modified」两条语义。
+ *
  * 背景（v0.20.1 修复）：`cleanTiddler()` 曾把 `type` 列为「构造 PUT body 时跳过的
  * 字段」，于是覆盖路径丢掉原类型、再被默认值顶上；`tiddlywiki_append` 更彻底，
  * 手写 PUT body 导致 TW 把条目回落成 `text/vnd.tiddlywiki`（磁盘上 `.md + .meta`
@@ -18,7 +24,14 @@
  * @module dsh-tiddlywiki/scripts/verify-write-policy
  */
 import assert from 'node:assert/strict'
-import { buildWriteTiddler, cleanTiddler, DEFAULT_NOTE_TYPE } from '../lib/index.js'
+import {
+  buildWriteTiddler,
+  cleanTiddler,
+  DEFAULT_NOTE_TYPE,
+  ensureTiddlerTimestamps,
+  formatTiddlerDate,
+  parseTiddlerDate,
+} from '../lib/index.js'
 
 let failures = 0
 function test(name, fn) {
@@ -30,6 +43,9 @@ function test(name, fn) {
     console.error(`FAIL  ${name}\n      ${err && err.message ? err.message : err}`)
   }
 }
+
+/** TW 紧凑格式（17 位 UTC），与 $tw.utils.stringifyDate 一致。 */
+const COMPACT = /^\d{17}$/
 
 const css = { title: 'MyStyles.css', text: '.a{}', type: 'text/css', tags: ['$:/tags/Stylesheet'], fields: { q: 'keep-me' } }
 
@@ -78,6 +94,90 @@ test('buildWriteTiddler：human 路径（agentTag:false）新建不补 agent-wri
   const { tiddler } = buildWriteTiddler('HumanNote', 'body', { agentTag: false, defaultTags: ['inbox'] })
   assert.deepEqual(tiddler.tags, ['inbox'], `人类路径不该出现 agent-written：${JSON.stringify(tiddler.tags)}`)
   assert.equal(tiddler.type, DEFAULT_NOTE_TYPE)
+})
+
+// ── 时间戳（v0.22.10）────────────────────────────────────────────────────────
+// 旧实现把 created/modified 放进 CLEAN_SKIP_FIELDS 并假设「服务端会补」，
+// 但 TW 的服务端 PUT 路由只 addTiddler，从不补这两个字段。
+
+test('formatTiddlerDate：输出 TW 的 17 位紧凑 UTC 格式且可往返', () => {
+  const at = Date.UTC(2026, 8, 16, 15, 20, 42, 0)
+  const s = formatTiddlerDate(at)
+  assert.match(s, COMPACT, `必须是 17 位紧凑格式，实际 ${JSON.stringify(s)}`)
+  assert.equal(s, '20260916152042000', `与 $tw.utils.stringifyDate 一致，实际 ${s}`)
+  assert.equal(parseTiddlerDate(s), at, 'formatTiddlerDate ↔ parseTiddlerDate 必须往返一致')
+  // 补零边界：单数字月/日/时/分/秒与毫秒都要补齐。
+  assert.equal(formatTiddlerDate(Date.UTC(2026, 0, 2, 3, 4, 5, 6)), '20260102030405006', '各位数必须补零')
+})
+
+test('buildWriteTiddler：新建条目写入 created = modified = 当前时刻', () => {
+  const now = Date.UTC(2026, 8, 16, 23, 30, 37, 0)
+  const { tiddler } = buildWriteTiddler('FreshStamped', 'body', { now })
+  assert.match(String(tiddler.created), COMPACT, `新建必须写 created，实际 ${JSON.stringify(tiddler.created)}`)
+  assert.equal(tiddler.created, '20260916233037000', `created 应为注入时刻，实际 ${tiddler.created}`)
+  assert.equal(tiddler.modified, tiddler.created, '新建时 modified 必须等于 created')
+  assert.ok(parseTiddlerDate(tiddler.modified) !== undefined, 'TW 必须能解析这个值（否则页面看不了日期）')
+})
+
+test('buildWriteTiddler：覆盖既有条目保留原 created、刷新 modified', () => {
+  const existing = { title: 'KeepTimes', text: 'old', created: '20250101000000000', modified: '20250101000000000' }
+  const now = Date.UTC(2026, 8, 16, 23, 30, 37, 123)
+  const { tiddler } = buildWriteTiddler('KeepTimes', 'new', { existing, now })
+  assert.equal(tiddler.created, '20250101000000000', `覆盖必须保留原 created，实际 ${tiddler.created}`)
+  assert.equal(tiddler.modified, '20260916233037123', `覆盖必须刷新 modified，实际 ${tiddler.modified}`)
+  assert.notEqual(tiddler.created, tiddler.modified, 'created 与 modified 不得被一起冲掉')
+})
+
+test('buildWriteTiddler：覆盖缺 created 的存量条目时补上 created', () => {
+  // 迁移来的存量条目没有 created——覆盖后不得留空（否则新页面还是缺字段）。
+  const existing = { title: 'LegacyNoTimes', text: 'legacy' }
+  const now = Date.UTC(2026, 8, 16, 23, 30, 37, 0)
+  const { tiddler } = buildWriteTiddler('LegacyNoTimes', 'updated', { existing, now })
+  assert.match(String(tiddler.created), COMPACT, `缺 created 时必须补，实际 ${JSON.stringify(tiddler.created)}`)
+  assert.equal(tiddler.created, '20260916233037000')
+  assert.equal(tiddler.modified, tiddler.created)
+})
+
+test('buildWriteTiddler：$:/ 系统条目同样补时间戳', () => {
+  // 系统条目也会出现在按 modified 排序的列表里（回收站索引、flush 哨兵…），
+  // 且「缺字段就沉底」的规则一视同仁；补上不改变 TW 的语义。
+  const now = Date.UTC(2026, 8, 16, 23, 30, 37, 0)
+  const { tiddler } = buildWriteTiddler('$:/temp/stamp-probe', 'x', { now })
+  assert.equal(tiddler.created, '20260916233037000', '$:/ 条目也应补 created')
+  assert.equal(tiddler.modified, '20260916233037000', '$:/ 条目也应补 modified')
+})
+
+test('buildWriteTiddler：fields.created/modified 仍不得覆盖时间戳', () => {
+  const now = Date.UTC(2026, 8, 16, 23, 30, 37, 0)
+  const { tiddler } = buildWriteTiddler('FieldStampGuard', 'body', {
+    fields: { created: '19990101000000000', modified: '19990101000000000' },
+    now,
+  })
+  assert.equal(tiddler.created, '20260916233037000', 'fields.created 是保留字段，不得覆盖')
+  assert.equal(tiddler.modified, '20260916233037000', 'fields.modified 是保留字段，不得覆盖')
+})
+
+test('ensureTiddlerTimestamps：只补缺、绝不改写已有值（安全网）', () => {
+  const now = Date.UTC(2026, 8, 16, 23, 30, 37, 0)
+  const both = { title: 'A', created: '20200101000000000', modified: '20210101000000000' }
+  ensureTiddlerTimestamps(both, now)
+  assert.equal(both.created, '20200101000000000', '已有 created 不得被改写')
+  assert.equal(both.modified, '20210101000000000', '已有 modified 不得被改写')
+
+  const none = { title: 'B' }
+  ensureTiddlerTimestamps(none, now)
+  assert.equal(none.created, '20260916233037000', '两者都缺时补当前时刻')
+  assert.equal(none.modified, '20260916233037000')
+
+  // 只有 modified（迁移常见）：created 跟随它，而不是被改成 now。
+  const onlyModified = { title: 'C', modified: '20200101000000000' }
+  ensureTiddlerTimestamps(onlyModified, now)
+  assert.equal(onlyModified.created, '20200101000000000', 'created 应跟随已有的 modified')
+  assert.equal(onlyModified.modified, '20200101000000000')
+
+  const onlyCreated = { title: 'D', created: '20200101000000000' }
+  ensureTiddlerTimestamps(onlyCreated, now)
+  assert.equal(onlyCreated.modified, '20200101000000000', 'modified 应跟随已有的 created')
 })
 
 console.log(failures === 0 ? '\nWRITE POLICY OK' : `\nWRITE POLICY FAILED (${failures})`)

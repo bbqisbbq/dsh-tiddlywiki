@@ -136,6 +136,76 @@ try {
     assert.equal((await api.get('ToolsWikitext')).type, 'text/vnd.tiddlywiki', '落库类型应为显式指定的 text/vnd.tiddlywiki')
   })
 
+  // ── 时间戳（v0.22.10）──────────────────────────────────────────────────────
+  // 旧实现把 created/modified 列进 CLEAN_SKIP_FIELDS 并假设「TW 服务端会补」。
+  // 服务端不补（put-tiddler.js 只 addTiddler），于是落盘条目缺 modified，
+  // 而 TW 的 sortTiddlers 取值是 `fields[sortField] || ""` —— `+[!sort[modified]]`
+  // 降序把它们**全部沉到最后一名**（用户现象：新日记在「主题页·日志」排 175/175）。
+  // 这里用 TW 自己的 sort 过滤器（REST listing 的顺序就是过滤器结果顺序）做真实回归。
+  await test('时间戳：新建条目落盘带 created/modified（TW 紧凑格式）', async () => {
+    const r = await call('tiddlywiki_put', { title: 'StampNew', text: 'stamp probe', tags: ['stamp-probe'] })
+    assert.equal(r.ok, true, `put 应成功：${JSON.stringify(r)}`)
+    const t = await api.get('StampNew')
+    const created = String(t.created ?? '')
+    const modified = String(t.modified ?? '')
+    assert.match(created, /^\d{17}$/, `新建必须落盘 created（TW 的 YYYYMMDDhhmmssSSS），实际 ${JSON.stringify(t.created)}——旧实现这里为空`)
+    assert.match(modified, /^\d{17}$/, `新建必须落盘 modified，实际 ${JSON.stringify(t.modified)}——缺它就会在 !sort[modified] 里沉底`)
+    assert.equal(created, modified, `新建时 created 应等于 modified（实际 ${created} vs ${modified}）`)
+  })
+
+  await test('时间戳：覆盖保留原 created、刷新 modified', async () => {
+    const before = await api.get('StampNew')
+    // 等过一个毫秒刻度，确保 modified 真的前进（不是「看起来一样」）。
+    await new Promise((resolveP) => setTimeout(resolveP, 25))
+    await call('tiddlywiki_put', { title: 'StampNew', text: 'stamp probe v2', tags: ['stamp-probe'] })
+    const after = await api.get('StampNew')
+    assert.equal(String(after.created), String(before.created), `覆盖必须保留基线 created（${before.created} → ${after.created}）`)
+    assert.notEqual(String(after.modified), String(before.modified), '覆盖必须刷新 modified（否则页面显示成「没改过」）')
+    assert.ok(Number(after.modified) > Number(before.modified), `modified 必须前进：${before.modified} → ${after.modified}`)
+  })
+
+  await test('时间戳：TW 的 !sort[modified] 不再把新写的笔记排到最后', async () => {
+    // 一条「很久以前」的对照条目：显式写入旧 modified。
+    await api.put({ title: 'StampAncient', text: 'ancient probe', tags: ['stamp-probe'], modified: '2000-01-01T00:00:00.000Z' })
+    // 真实 TW 过滤器：listing 的返回顺序 = filterTiddlers 的结果顺序。
+    // `!sort[modified]` 降序，最新在前；`[tag[stamp-probe]]` 只取本轮探针。
+    const desc = (await api.list('[tag[stamp-probe]!has[draft.of]!sort[modified]]')).map((t) => t.title)
+    assert.ok(desc.includes('StampNew'), `新写的条目必须出现在结果里：${JSON.stringify(desc)}`)
+    assert.equal(desc[0], 'StampNew', `最新修改的笔记必须排第一，实际 ${JSON.stringify(desc)}——旧实现缺 modified 会沉到最后`)
+    assert.equal(desc[desc.length - 1], 'StampAncient', `缺字段沉底的是那条显式旧时间的对照条目：${JSON.stringify(desc)}`)
+    // 升序（正序）时，旧条目在前、新条目在最后。
+    const asc = (await api.list('[tag[stamp-probe]!has[draft.of]sort[modified]]')).map((t) => t.title)
+    assert.equal(asc[asc.length - 1], 'StampNew', `正序时新条目应在末位：${JSON.stringify(asc)}`)
+  })
+
+  await test('时间戳：append/rename 也刷新 modified 且保住 created', async () => {
+    await call('tiddlywiki_append', { title: 'StampAppend', text: 'first' })
+    const a1 = await api.get('StampAppend')
+    assert.match(String(a1.created ?? ''), /^\d{17}$/, `append 新建也应带 created：${JSON.stringify(a1.created)}`)
+    await new Promise((resolveP) => setTimeout(resolveP, 25))
+    await call('tiddlywiki_append', { title: 'StampAppend', text: 'second' })
+    const a2 = await api.get('StampAppend')
+    assert.equal(String(a2.created), String(a1.created), 'append 覆盖必须保留 created')
+    assert.ok(Number(a2.modified) > Number(a1.modified), `append 必须刷新 modified：${a1.modified} → ${a2.modified}`)
+    await call('tiddlywiki_rename', { oldTitle: 'StampAppend', newTitle: 'StampAppendRenamed', updateRefs: false })
+    const r = await api.get('StampAppendRenamed')
+    assert.equal(String(r.created), String(a1.created), `rename 必须保留 created：${a1.created} → ${r.created}`)
+    assert.match(String(r.modified ?? ''), /^\d{17}$/, `rename 后 modified 必须存在：${JSON.stringify(r.modified)}`)
+  })
+
+  await test('时间戳：fields 仍不得覆盖 created/modified', async () => {
+    const r = await call('tiddlywiki_put', {
+      title: 'StampReserved',
+      text: 'reserved probe',
+      fields: { created: '19990101000000000', modified: '19990101000000000' },
+    })
+    assert.equal(r.ok, true)
+    const t = await api.get('StampReserved')
+    assert.notEqual(String(t.created), '19990101000000000', `fields.created 不得覆盖（实际 ${t.created}）`)
+    assert.notEqual(String(t.modified), '19990101000000000', `fields.modified 不得覆盖（实际 ${t.modified}）`)
+  })
+
+  // ── put：覆盖已存在的人类笔记不补 agent-written ──────────────────────────
   await test('put：覆盖已存在的人类笔记不补 agent-written', async () => {
     await api.put({ title: 'HumanNote', text: 'human body', tags: ['human'] })
     const first = await call('tiddlywiki_put', { title: 'HumanNote', text: 'human body 2', tags: ['human'] })

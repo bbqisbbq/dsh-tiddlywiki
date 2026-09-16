@@ -51,7 +51,7 @@ import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { TiddlyWebClient } from './tw-api.ts'
-import { RenderNotFoundError, isBinaryType, toIsoDateString } from './tw-api.ts'
+import { RenderNotFoundError, formatTiddlerDate, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import type { GitFace, GitStatusView } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
@@ -430,8 +430,31 @@ export async function openInTwEditor(
   // overwritten when the caller explicitly supplied text (the quick-note card's
   // content is the source of truth then, and it was just saved to the note
   // above). With no text, the existing draft is left exactly as the user left it.
+  //
+  // Draft TIMESTAMPS (v0.22.10): TW's save rebuilds the note as
+  // `new $tw.Tiddler(getCreationFields(), draft, {title}, getModificationFields())`
+  // — the DRAFT's fields win over the freshly generated creation fields, so
+  // whatever `created` the draft carries becomes the note's `created` after the
+  // user saves. A draft without it therefore resets the note's creation instant
+  // to "now"; carrying the note's own `created` keeps it. This mirrors TW's own
+  // draft seeding (`handleNewTiddlerEvent` merges `getCreationFields()`,
+  // `existingTiddler`, then `getModificationFields()`), so the draft ends up with
+  // the NOTE's created and a fresh modified.
   if (!draftExists || text.trim().length > 0) {
-    await client.put({ title: draftTitle, text: draftText, 'draft.of': title, 'draft.title': title, type: draftType })
+    const draftCreated = typeof existing?.created === 'string' && existing.created.trim().length > 0
+      ? existing.created
+      : undefined
+    await client.put({
+      title: draftTitle,
+      text: draftText,
+      'draft.of': title,
+      'draft.title': title,
+      type: draftType,
+      ...(draftCreated !== undefined ? { created: draftCreated } : {}),
+      // Written "now" — the draft IS new content. `put()` would otherwise fall
+      // back to copying `created`, labelling a just-written draft with the note's age.
+      modified: formatTiddlerDate(new Date()),
+    })
   }
   return { title, draftTitle }
 }

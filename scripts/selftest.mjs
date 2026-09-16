@@ -1435,6 +1435,19 @@ try {
   const parsed = JSON.parse(fakeClient.saved.text)
   assert(parsed.note?.tag === 'meeting' && parsed.uiLanguage === 'zh-Hans', 'config tiddler text holds merged overrides')
 
+  // v0.22.10: the config tiddler is re-PUT on every settings save; its `created`
+  // must survive (the write-policy/put() timestamp net would otherwise re-stamp
+  // it on each save, so `created` would always read "just now").
+  const storeWithTimes = new ConfigStore({ note: { tag: 'inbox' } })
+  const timesClient = {
+    saved: null,
+    get: async () => ({ title: '$:/plugins/dsh-tiddlywiki/config', text: '{"uiLanguage":"en"}', created: '20200101000000000', modified: '20200101000000000' }),
+    put: async (t) => { timesClient.saved = t; return t },
+  }
+  await storeWithTimes.set(timesClient, { note: { tag: 'archive' } })
+  assert(timesClient.saved?.created === '20200101000000000', `config set must preserve the stored created (got ${JSON.stringify(timesClient.saved?.created)})`)
+  assert(timesClient.saved?.modified === undefined, 'config set must leave modified to the timestamp net (fresh = now)')
+
   console.log('\nSELFTEST PASSED')
 } catch (err) {
   exitCode = 1

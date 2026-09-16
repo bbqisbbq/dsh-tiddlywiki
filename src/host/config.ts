@@ -194,11 +194,19 @@ export class ConfigStore {
    */
   async set(client: TiddlyWebClient, patch: PluginConfigShape): Promise<PluginConfigShape> {
     let stored: PluginConfigShape = this.overrides
+    // The existing tiddler is read to merge onto (not just the cache), and its
+    // `created` is carried over (v0.22.10): the config tiddler is re-PUT on every
+    // settings save, and `put()`'s safety net would otherwise re-stamp it each
+    // time — `created` must stay at the first write, `modified` tracks edits.
+    let existingCreated: string | undefined
     try {
       const tiddler = await client.get(CONFIG_TIDDLER)
       if (tiddler !== undefined && typeof tiddler.text === 'string') {
         const parsed = JSON.parse(tiddler.text) as unknown
         if (isPlainObject(parsed)) stored = parsed as PluginConfigShape
+      }
+      if (tiddler !== undefined && typeof tiddler.created === 'string' && tiddler.created.trim().length > 0) {
+        existingCreated = tiddler.created
       }
     } catch {
       // Unreadable config tiddler → merge onto the in-memory cache.
@@ -209,6 +217,7 @@ export class ConfigStore {
       text: JSON.stringify(this.overrides, null, 2),
       type: 'application/json',
       tags: [],
+      ...(existingCreated !== undefined ? { created: existingCreated } : {}),
     })
     return this.get()
   }

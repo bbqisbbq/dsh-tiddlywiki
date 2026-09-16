@@ -18,7 +18,7 @@
  * @module dsh-tiddlywiki/host/write-policy
  */
 import type { Tiddler } from './tw-api.ts'
-import { parseTiddlerDate, toIsoDateString } from './tw-api.ts'
+import { formatTiddlerDate, parseTiddlerDate, toIsoDateString } from './tw-api.ts'
 
 /** 约定标签：标记「由 Agent 撰写」的笔记（新建时自动补打）。 */
 export const AGENT_WRITTEN_TAG = 'agent-written'
@@ -30,7 +30,7 @@ export const HUMAN_EDITED_TAG = 'human-edited'
 export const DEFAULT_NOTE_TYPE = 'text/markdown'
 
 /**
- * 构造 PUT body 时跳过的字段（身份/内容/TW 自己的时间戳）。
+ * 构造 PUT body 时跳过的字段（身份/内容）。
  *
  * ⚠️ `type` **不在**这里（v0.20.1 修复）：它曾被误列为跳过字段，于是
  * `cleanTiddler(existing)` 把条目的内容类型丢掉，`finalTypeForWrite()` 随后又
@@ -40,8 +40,17 @@ export const DEFAULT_NOTE_TYPE = 'text/markdown'
  *   - `text/markdown` 笔记被改成 `text/vnd.tiddlywiki` → `##`/`**粗体**`/表格全按
  *     wikitext 解析（磁盘上 `.md` + `.meta` 也变成 `.tid`）。
  * 内容类型是条目的解析方式，必须与 tags/自定义字段一样按「以已有条目为基底」保留。
+ *
+ * ⚠️ `created`/`modified` 也**不再**在这里（v0.22.10 修复）：它们曾被当成「TW 自己
+ * 拥有的时间戳，服务端会补」而丢弃——**TW 的服务端写路径从不补这两个字段**
+ * （`core-server` 的 put 路由只是 `addTiddler(new $tw.Tiddler(fields,{title}))`，
+ * `getCreationFields()`/`getModificationFields()` 只在 TW **自己的 UI** 里被调用；
+ * 实测 `tiddlywiki_put` 新建条目落盘只有 tags/title/type）。于是插件写下的条目在
+ * `+[!sort[modified]]` 这类页面上被 `sortTiddlers` 的 `fields[sortField] || ""`
+ * 当空串——降序时**沉到最后一名**，看起来就像「没被收录」。现在这两个字段由
+ * `buildWriteTiddler()` 负责写入（见 `stampTiddlerTimes`），与 TW 编辑器行为一致。
  */
-const CLEAN_SKIP_FIELDS = new Set(['title', 'text', 'tags', 'created', 'modified', 'fields'])
+const CLEAN_SKIP_FIELDS = new Set(['title', 'text', 'tags', 'fields'])
 
 /**
  * 调用方**不得**通过 `fields` 覆盖的保留字段：它们是条目的身份/内容，时间戳
@@ -175,14 +184,49 @@ export interface BuildWriteOptions {
   agentTag?: boolean
   /** 新建条目且未显式给标签时使用的默认标签（人类入口，如 note.tag）。 */
   defaultTags?: string[] | undefined
+  /** 写入时刻（测试注入用；省略 = `new Date()`）。 */
+  now?: Date | number | undefined
+}
+
+/**
+ * 给要写出的条目补 `created`/`modified`（v0.22.10），语义与 TW 编辑器一致：
+ *
+ * | 情形 | created | modified |
+ * |---|---|---|
+ * | 新建（含首次写入的 `$:/`） | 当前时刻 | 当前时刻 |
+ * | 覆盖既有条目、基底有 created | **基底原值** | 当前时刻 |
+ * | 覆盖既有条目、基底无 created（迁移存量） | 当前时刻 | 当前时刻 |
+ *
+ * 为什么必须由插件来写：TW 的 `getCreationFields()`/`getModificationFields()`
+ * 只在 **TW 自己的 UI**（`$tw.wiki.setTiddlerData`、navigation/editor widgets…）
+ * 里被调用；服务端的 PUT 路由只做
+ * `state.wiki.addTiddler(new $tw.Tiddler(fields, {title: title}))`，**不会补**
+ * 这两个字段。所以「服务端会补」这个假设是错的，缺 `modified` 的条目会被
+ * `sortTiddlers` 的 `fields[sortField] || ""` 当成空串——`!sort[modified]` 降序时
+ * 直接沉到最后一名（用户看到的现象：新日记在「主题页·日志」里排 175/175）。
+ *
+ * 值是 TW 的紧凑格式 `YYYYMMDDhhmmssSSS`（UTC），与 `$tw.utils.stringifyDate()`
+ * 逐字节一致，TW 的日期字段模块能正常 parse/stringify/显示。
+ */
+export function stampTiddlerTimes(tiddler: Tiddler, existing: Tiddler | undefined, now: Date | number = new Date()): void {
+  const stamp = formatTiddlerDate(now)
+  const existingCreated = typeof existing?.created === 'string' && existing.created.trim().length > 0
+    ? existing.created
+    : undefined
+  // An overwrite keeps the note's ORIGINAL creation instant; a new tiddler (and a
+  // legacy one written before this fix, whose created is unknown) starts now.
+  tiddler.created = existingCreated ?? stamp
+  tiddler.modified = stamp
 }
 
 /**
  * 构造一次写要 PUT 的 tiddler。
  *
- * - 已有条目 → 以其为基底（标签、自定义字段、**内容类型**全部保留）；
+ * - 已有条目 → 以其为基底（标签、自定义字段、**内容类型**、**created** 全部保留）；
  * - 新条目 → `{title, text}` + 默认/显式标签（`$:/` 不带 agent 标签）；
- * - `fields` 逐个覆盖；`type` 未指定时**仅新建条目**补 Markdown（`$:/` 除外）。
+ * - `fields` 逐个覆盖；`type` 未指定时**仅新建条目**补 Markdown（`$:/` 除外）；
+ * - `created`/`modified` 一律补写（v0.22.10，见 `stampTiddlerTimes`）——TW 的服务端
+ *   写路径**不会**补这两个字段，缺它们的条目会在 `!sort[modified]` 里沉底。
  */
 export function buildWriteTiddler(
   title: string,
@@ -205,6 +249,10 @@ export function buildWriteTiddler(
   // v0.20.1: the Markdown default is for NEW tiddlers only — an overwrite keeps
   // the content type it was read with (see finalTypeForWrite).
   const { defaulted } = finalTypeForWrite(title, tiddler, existing === undefined)
+  // v0.22.10: stamp created/modified AFTER applyCustomFields — those two are
+  // reserved (applyCustomFields refuses them anyway) and TW's own editor uses the
+  // same "keep created, refresh modified" rule on save.
+  stampTiddlerTimes(tiddler, existing, options.now)
   return { tiddler, typeDefaulted: defaulted }
 }
 
