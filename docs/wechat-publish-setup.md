@@ -69,8 +69,7 @@ opencli weixin publish-note "笔记标题" --trace retain-on-failure -f json
 | 4 | **Browser Bridge 扩展** | 见 §2（二选一） | `opencli doctor` 显示 `Extension: connected` |
 | 5 | **Chrome/Edge + 公众号登录** | 浏览器登录 mp.weixin.qq.com | 能进后台首页 |
 | 6 | **本仓库的 adapter** | `node tools/wechat/install-wechat-adapters.mjs` | 脚本自检输出 ✔ |
-| 7 | **公众号账号状态** | 见下方「账号级前置」（自动化绕不开） | 后台无「未实名 / 未设置头像和名称」提示 |
-| 8 | **打开插件开关** | 设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」勾选 → 保存配置 | 提示词预览里出现「发布元数据规范」一行 |
+| 7 | **打开插件开关** | 设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」勾选 → 保存配置 | 提示词预览里出现「发布元数据规范」一行 |
 
 > **opencli 版本建议 ≥ 1.8.7**（本方案在该版本实测通过；1.7.x 的 `browser`
 > 子命令语法不同，且内置 weixin adapter 不完整）。
@@ -79,19 +78,16 @@ opencli weixin publish-note "笔记标题" --trace retain-on-failure -f json
 > warning）：**无害，可忽略**——postinstall 只装 bash/zsh/fish 补全（Windows 用不上），
 > adapters 随 npm 包自带，功能不受影响。
 >
-> 第 8 步之前，插件不会注入任何发布相关提示词、也不会往 wiki 写「发布元数据规范」。
+> 第 7 步之前，插件不会注入任何发布相关提示词、也不会往 wiki 写「发布元数据规范」。
 > 也就是说：**没装好工具链时开关可以一直关着，不影响任何其他功能。**
 
-### 账号级前置（2026-09-17 实测补：自动化绕不开，必须人工做）
+### 自动化的终点：草稿箱（2026-09-17 与用户确认的策略）
 
-公众号后台是**账号状态驱动**的，以下两项没完成时，流程会走到最后一步被平台拒绝：
-
-| 账号状态缺失 | 实测表现（toast 原文） | 被挡住的环节 |
-|---|---|---|
-| **未设置头像和名称** | 「未设置头像和名称 发表内容需要完善公众号头像和名称」 | 点「发表」直接被拒 |
-| **未实名认证** | 「公众号尚未实名」 | 原创声明弹窗全填对、点确定后**静默失败**（侧栏仍显示「未声明」） |
-
-在 **设置 → 公众号设置** 里完善头像/名称并完成实名认证后，草稿照常可用，无需重发。
+**adapter 负责到「草稿落盘」为止**：填标题/作者/摘要、写正文、传图、设封面、存草稿。
+**发表由人工在后台完成**——点「发表」时平台会弹确认对话框（原创声明、作者、留言
+设置等）以及最后的管理员扫码；原创声明涉及账号权益，人工点最稳妥。`--publish`
+选项保留（best-effort：点「发表」后轮询等扫码），但**不处理中途弹窗**，遇到弹窗
+会一直等到超时。
 
 ---
 
@@ -282,12 +278,12 @@ Navigation rejected
 
 两者都要扫码 → 默认选**不吃额度**的「发表」。
 
-### 4.4 发表阶段的平台弹窗 adapter 不处理（v0.23.x 现状）
+### 4.4 发表阶段的确认弹窗 adapter 不处理（v0.23.x 现状）
 
-`publishDraft` 点完「发表」后**只轮询成功信号**，不会点任何平台弹窗。账号状态
-正常时发表链路只有「管理员扫码」一个弹窗；但账号有未完成事项时（见 §1 账号级
-前置），平台会先弹「未实名」「未设置头像和名称」等提示——**这些要人工在浏览器里
-处理**，自动化命令会一直等到超时。排错见 §8。
+`publishDraft` 点完「发表」后**只轮询成功信号**，不会点任何平台弹窗。发表链路上
+还有：原创声明/作者/留言设置等**确认对话框**（2026-09-17 人工发表实测必经）与最后
+的管理员扫码。所以**推荐流程到草稿箱为止**（见 §1），发表环节人工做；`--publish`
+只是 best-effort，遇到弹窗会卡到超时。排错见 §8。
 
 ---
 
@@ -402,11 +398,11 @@ input.dispatchEvent(new Event('change', { bubbles: true }))
 | 无法连接 DSH | `--dsn` 默认 `http://127.0.0.1:3080/dsh-tiddlywiki`；DSH 没跑或端口不同就改它 |
 | 草稿显示「内容不完整」 | 缺封面 → 传 `--cover`（或用 publish-note-imgs 从正文第一张自动设） |
 | 图片没上传 | 单图 > 8MB（DataTransfer 限制）→ 先压缩 |
-| 发表卡住超时 | 没扫码，或扫码没完成 → 调大 `--timeout`；若是「未实名/未设头像名称」等平台弹窗 → 人工处理后重试（见 §1 账号级前置、§4.4） |
+| 发表卡住超时 | 没扫码，或扫码没完成 → 调大 `--timeout`；若卡在原创声明/留言等确认弹窗 → 推荐流程本就到草稿箱为止，到后台人工点发表（见 §1、§4.4） |
 | `stale page identity` | 命令执行中标签页被手工关闭/导航了。**草稿不丢**——重开编辑页续作：`https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit&type=77&appmsgid=<id>&idx=0&token=<token>`（token 用 `opencli browser wx eval 'location.href.match(/token=(\d+)/)[1]'` 从后台首页取） |
 | 封面警告「设置失败」但草稿其实有封面 | 已知**误报**（校验时机太早）；以草稿箱实际显示为准（2026-09-17 实测：`list_ex` 接口 `cover` 字段已是 mmbiz 地址）。v0.23.2 起改为轮询校验 |
-| 原创声明点了「确定」却还是「未声明」 | 账号**未实名**：平台静默拒绝（弹窗流程全对也没用）→ 先实名（§1 账号级前置） |
-| 需要核实草稿是否落盘 | 后台 ajax：`/cgi-bin/appmsg?action=list_ex&type=77&orderby=create_time&token=<token>&f=json&begin=0&count=5`（在 mp.weixin.qq.com 页面上下文执行；`cover`/`digest`/`update_time` 一目了然） |
+| 用 eval 诊断后台状态时读到「未实名」「未设置头像和名称」等提示 | ⚠️ 后台 DOM 里常残留**不可见的历史 toast 节点**——查询必须过滤可见性（`offsetHeight > 0`），勿把残留文案当实时状态（2026-09-17 踩过：据此误判账号被平台拦截，实际账号正常并成功发表含原创声明）。同理，判断原创声明是否生效以草稿箱/发表记录为准，勿只看侧栏文案 |
+| 需要核实草稿是否落盘 | 后台 ajax：`/cgi-bin/appmsg?action=list_ex&type=77&orderby=create_time&token=<token>&f=json&begin=0&count=5`（在 mp.weixin.qq.com 页面上下文执行；`cover`/`digest`/`update_time` 一目了然）；发表记录：`/cgi-bin/appmsgpublish?sub=list&...&f=json`（`publish_page.publish_list[].publish_info` 里是 JSON 字符串，含 `content_url`） |
 
 ---
 
