@@ -69,13 +69,29 @@ opencli weixin publish-note "笔记标题" --trace retain-on-failure -f json
 | 4 | **Browser Bridge 扩展** | 见 §2（二选一） | `opencli doctor` 显示 `Extension: connected` |
 | 5 | **Chrome/Edge + 公众号登录** | 浏览器登录 mp.weixin.qq.com | 能进后台首页 |
 | 6 | **本仓库的 adapter** | `node tools/wechat/install-wechat-adapters.mjs` | 脚本自检输出 ✔ |
-| 7 | **打开插件开关** | 设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」勾选 → 保存配置 | 提示词预览里出现「发布元数据规范」一行 |
+| 7 | **公众号账号状态** | 见下方「账号级前置」（自动化绕不开） | 后台无「未实名 / 未设置头像和名称」提示 |
+| 8 | **打开插件开关** | 设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」勾选 → 保存配置 | 提示词预览里出现「发布元数据规范」一行 |
 
 > **opencli 版本建议 ≥ 1.8.7**（本方案在该版本实测通过；1.7.x 的 `browser`
 > 子命令语法不同，且内置 weixin adapter 不完整）。
 >
-> 第 7 步之前，插件不会注入任何发布相关提示词、也不会往 wiki 写「发布元数据规范」。
+> **新版 npm 的 allowScripts 机制会拦 opencli 的 postinstall 脚本**（安装时打
+> warning）：**无害，可忽略**——postinstall 只装 bash/zsh/fish 补全（Windows 用不上），
+> adapters 随 npm 包自带，功能不受影响。
+>
+> 第 8 步之前，插件不会注入任何发布相关提示词、也不会往 wiki 写「发布元数据规范」。
 > 也就是说：**没装好工具链时开关可以一直关着，不影响任何其他功能。**
+
+### 账号级前置（2026-09-17 实测补：自动化绕不开，必须人工做）
+
+公众号后台是**账号状态驱动**的，以下两项没完成时，流程会走到最后一步被平台拒绝：
+
+| 账号状态缺失 | 实测表现（toast 原文） | 被挡住的环节 |
+|---|---|---|
+| **未设置头像和名称** | 「未设置头像和名称 发表内容需要完善公众号头像和名称」 | 点「发表」直接被拒 |
+| **未实名认证** | 「公众号尚未实名」 | 原创声明弹窗全填对、点确定后**静默失败**（侧栏仍显示「未声明」） |
+
+在 **设置 → 公众号设置** 里完善头像/名称并完成实名认证后，草稿照常可用，无需重发。
 
 ---
 
@@ -92,6 +108,10 @@ opencli weixin publish-note "笔记标题" --trace retain-on-failure -f json
 2. 解压到某个固定目录
 3. 浏览器打开 `chrome://extensions` → 开启右上角「开发者模式」
 4. 点「加载已解压的扩展程序」→ 选择解压出的目录
+
+> ⚠️ GitHub 的 ext release **经常落后于 Web Store**（2026-09-17 实测只到
+> `ext-v1.0.21`，Web Store 已是 1.0.24）。**扩展版本以 Chrome Web Store 为准**；
+> GitHub 方式只作 Web Store 打不开时的离线兜底。
 
 **验证**：
 
@@ -134,6 +154,15 @@ opencli weixin publish-note "某篇笔记标题" --cover ./cover.png --trace ret
 
 # ④ 直接发表（⚠️ 会真发文章，需管理员扫码）
 opencli weixin publish-note "某篇笔记标题" --publish --trace retain-on-failure -f json
+
+# ⑤ 正文多图（v0.23.2+）：TW 笔记内嵌 [img[...]] 经 /render 变成 data URI，
+#    publish-note 传不了（微信存草稿时过滤非 mmbiz 图）——用 publish-note-imgs：
+opencli weixin publish-note-imgs "某篇笔记标题" --images <图片目录> --trace retain-on-failure -f json
+opencli weixin publish-note-imgs "某篇笔记标题" --images "01.png|02.png|03.png" -f json
+#    · --images 传目录时按文件名排序 = 正文图片出现顺序（封面图排第一）
+#    · 也可用 | 分隔的路径列表精确指定顺序
+#    · 流程：先逐张上传 CDN → 按 DOM 顺序重写正文 src → insertHTML → 选封面 → 存草稿
+#    · 发表前同样读 pub-state / no-publish（只告警不阻断），--publish 可直接发表
 ```
 
 ---
@@ -253,6 +282,13 @@ Navigation rejected
 
 两者都要扫码 → 默认选**不吃额度**的「发表」。
 
+### 4.4 发表阶段的平台弹窗 adapter 不处理（v0.23.x 现状）
+
+`publishDraft` 点完「发表」后**只轮询成功信号**，不会点任何平台弹窗。账号状态
+正常时发表链路只有「管理员扫码」一个弹窗；但账号有未完成事项时（见 §1 账号级
+前置），平台会先弹「未实名」「未设置头像和名称」等提示——**这些要人工在浏览器里
+处理**，自动化命令会一直等到超时。排错见 §8。
+
 ---
 
 ## 5. 为什么不用官方 API（背景，避免走回头路）
@@ -278,7 +314,8 @@ tools/wechat/
 ├── wechat-html.js      # 排版装饰器：语义 HTML → 内联样式 HTML（主题表在这里改）
 ├── weixin-flow.js      # 浏览器流程：登录检测/填表/写正文/传图/设封面/存草稿/发表
 ├── create-article.js   # 命令：从本地 HTML 文件建草稿（可选发表）
-├── publish-note.js     # 命令：从 TW 笔记建草稿（主入口，含 --preview）
+├── publish-note.js     # 命令：从 TW 笔记建草稿（主入口，含 --preview；单图 --cover）
+├── publish-note-imgs.js # 命令：多图版——正文内嵌 data URI 图全部上传 CDN 再发布
 └── install-wechat-adapters.mjs  # 一键安装到 ~/.opencli/clis/weixin/
 ```
 
@@ -363,9 +400,13 @@ input.dispatchEvent(new Event('change', { bubbles: true }))
 | 找不到笔记 | tiddler 标题要**完全精确**（含空格/标点）；`opencli weixin publish-note "标题"` |
 | `/render 返回 HTTP 404` | 标题不存在；先用 `tiddlywiki_search` 或 TW 面板确认 |
 | 无法连接 DSH | `--dsn` 默认 `http://127.0.0.1:3080/dsh-tiddlywiki`；DSH 没跑或端口不同就改它 |
-| 草稿显示「内容不完整」 | 缺封面 → 传 `--cover` |
+| 草稿显示「内容不完整」 | 缺封面 → 传 `--cover`（或用 publish-note-imgs 从正文第一张自动设） |
 | 图片没上传 | 单图 > 8MB（DataTransfer 限制）→ 先压缩 |
-| 发表卡住超时 | 没扫码，或扫码没完成 → 调大 `--timeout`，或到后台手动点发表 |
+| 发表卡住超时 | 没扫码，或扫码没完成 → 调大 `--timeout`；若是「未实名/未设头像名称」等平台弹窗 → 人工处理后重试（见 §1 账号级前置、§4.4） |
+| `stale page identity` | 命令执行中标签页被手工关闭/导航了。**草稿不丢**——重开编辑页续作：`https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit&type=77&appmsgid=<id>&idx=0&token=<token>`（token 用 `opencli browser wx eval 'location.href.match(/token=(\d+)/)[1]'` 从后台首页取） |
+| 封面警告「设置失败」但草稿其实有封面 | 已知**误报**（校验时机太早）；以草稿箱实际显示为准（2026-09-17 实测：`list_ex` 接口 `cover` 字段已是 mmbiz 地址）。v0.23.2 起改为轮询校验 |
+| 原创声明点了「确定」却还是「未声明」 | 账号**未实名**：平台静默拒绝（弹窗流程全对也没用）→ 先实名（§1 账号级前置） |
+| 需要核实草稿是否落盘 | 后台 ajax：`/cgi-bin/appmsg?action=list_ex&type=77&orderby=create_time&token=<token>&f=json&begin=0&count=5`（在 mp.weixin.qq.com 页面上下文执行；`cover`/`digest`/`update_time` 一目了然） |
 
 ---
 

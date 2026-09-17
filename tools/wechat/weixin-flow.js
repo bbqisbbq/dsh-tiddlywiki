@@ -318,18 +318,25 @@ export async function selectCoverFromContent(page) {
             if ((btns[i].textContent || '').trim() === '确认' && btns[i].offsetHeight > 0 && !btns[i].disabled) { btns[i].click(); return; }
         }
     })()`);
-    await page.wait(2);
 
-    return page.evaluate(`(() => {
-        var area = document.querySelector(${JSON.stringify('#js_cover_area')});
-        if (!area) return false;
-        var found = false;
-        area.querySelectorAll('*').forEach(function(el) {
-            var bg = window.getComputedStyle(el).backgroundImage;
-            if (bg && bg.indexOf('mmbiz') >= 0) found = true;
-        });
-        return found;
-    })()`);
+    // ⚠️ 裁剪确认后封面区渲染需要时间：一次性检查会「实际成功却报失败」的假阴性
+    // （2026-09-17 实测：立即检查返回 false，但草稿 list_ex 里 cover 已是 mmbiz 地址）。
+    // 改为轮询（只查 #js_cover_area 局部，O(小)，不碰 body.innerText）。
+    for (let attempt = 0; attempt < 5; attempt++) {
+        await page.wait(2);
+        const ok = await page.evaluate(`(() => {
+            var area = document.querySelector(${JSON.stringify('#js_cover_area')});
+            if (!area) return false;
+            var found = false;
+            area.querySelectorAll('*').forEach(function(el) {
+                var bg = (window.getComputedStyle(el).backgroundImage || '') + ' ' + String(el.style.backgroundImage || '');
+                if (bg.indexOf('mmbiz') >= 0) found = true;
+            });
+            return found;
+        })()`);
+        if (ok) return true;
+    }
+    return false;
 }
 
 /** 点「保存为草稿」并且必须看到保存成功信号才算成功。 */

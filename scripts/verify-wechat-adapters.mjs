@@ -55,6 +55,7 @@ const EXPECTED = [
   'weixin-flow.js',
   'create-article.js',
   'publish-note.js',
+  'publish-note-imgs.js',
   'install-wechat-adapters.mjs',
   'backfill-publish-state.mjs',
   'seed-publish-spec-now.mts',
@@ -111,22 +112,24 @@ test('装饰器对每个元素注入内联 style（微信唯一认的形式）',
 })
 
 // ── 5. 发布前检查必须存在，且是「只告警不阻断」 ───────────────────────────
-test('publish-note 有发布前状态检查（pub-state / no-publish）', () => {
-  const src = read('publish-note.js')
-  assert.ok(/checkPublishState/.test(src), 'publish-note.js 缺少 checkPublishState')
-  assert.ok(/pub-state/.test(src), '检查里没有读 pub-state')
-  assert.ok(/no-publish/.test(src), '检查里没有看 no-publish 标签')
-  assert.ok(/fetchNoteMeta/.test(src), '缺少读取笔记元数据的 fetchNoteMeta')
-})
+for (const noteCmd of ['publish-note.js', 'publish-note-imgs.js']) {
+  test(`${noteCmd} 有发布前状态检查（pub-state / no-publish）`, () => {
+    const src = read(noteCmd)
+    assert.ok(/checkPublishState/.test(src), `${noteCmd} 缺少 checkPublishState`)
+    assert.ok(/pub-state/.test(src), '检查里没有读 pub-state')
+    assert.ok(/no-publish/.test(src), '检查里没有看 no-publish 标签')
+    assert.ok(/fetchNoteMeta/.test(src), '缺少读取笔记元数据的 fetchNoteMeta')
+  })
 
-test('发布前检查只告警不阻断（不得把已发布当致命错误抛出）', () => {
-  const src = read('publish-note.js')
-  // checkPublishState 必须返回 warnings 而不是 throw
-  assert.ok(/return \{ warnings/.test(src), 'checkPublishState 应返回 warnings 对象而非抛错')
-  const fnBody = src.slice(src.indexOf('function checkPublishState'), src.indexOf('function emitWarnings'))
-  assert.ok(/warnings\.push/.test(fnBody), 'checkPublishState 里应当收集 warnings')
-  assert.ok(!/throw\s+new\s+\w*Error/.test(fnBody), 'checkPublishState 不得抛错（用户明确要求只告警不阻断）')
-})
+  test(`${noteCmd} 发布前检查只告警不阻断（不得把已发布当致命错误抛出）`, () => {
+    const src = read(noteCmd)
+    // checkPublishState 必须返回 warnings 而不是 throw
+    assert.ok(/return \{ warnings/.test(src), 'checkPublishState 应返回 warnings 对象而非抛错')
+    const fnBody = src.slice(src.indexOf('function checkPublishState'), src.indexOf('function emitWarnings'))
+    assert.ok(/warnings\.push/.test(fnBody), 'checkPublishState 里应当收集 warnings')
+    assert.ok(!/throw\s+new\s+\w*Error/.test(fnBody), 'checkPublishState 不得抛错（用户明确要求只告警不阻断）')
+  })
+}
 
 // ── 6. 返回行的 key 必须与 columns 一致 ──────────────────────────────────
 test('adapter 返回的 row 只含 columns 声明的字段', () => {
@@ -156,8 +159,8 @@ test('install 脚本的 FILES 清单与磁盘文件一致', () => {
   const listed = [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]).sort()
   assert.deepEqual(
     listed,
-    ['create-article.js', 'publish-note.js', 'wechat-html.js', 'weixin-flow.js'].sort(),
-    'FILES 应恰好是四个 adapter（wechat-html / weixin-flow / create-article / publish-note）',
+    ['create-article.js', 'publish-note-imgs.js', 'publish-note.js', 'wechat-html.js', 'weixin-flow.js'].sort(),
+    'FILES 应恰好是五个 adapter（wechat-html / weixin-flow / create-article / publish-note / publish-note-imgs）',
   )
   for (const f of listed) {
     assert.ok(fs.existsSync(path.join(WECHAT_DIR, f)), `FILES 列了 ${f} 但磁盘上没有`)

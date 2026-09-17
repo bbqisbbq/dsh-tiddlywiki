@@ -27,7 +27,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const TARGET = join(homedir(), '.opencli', 'clis', 'weixin')
 
 /** 需要安装的 adapter 文件（顺序无关）。 */
-const FILES = ['wechat-html.js', 'weixin-flow.js', 'create-article.js', 'publish-note.js']
+const FILES = ['wechat-html.js', 'weixin-flow.js', 'create-article.js', 'publish-note.js', 'publish-note-imgs.js']
 
 function log(msg) {
   process.stdout.write(`${msg}\n`)
@@ -128,5 +128,10 @@ log('')
 log('  opencli weixin publish-note "笔记标题" --trace retain-on-failure -f json')
 log('  opencli weixin publish-note "笔记标题" --cover ./cover.png -f json')
 log('  opencli weixin publish-note "笔记标题" --publish -f json   # 需管理员扫码')
+log('')
+log('  正文多图（TW 笔记内嵌 [img[...]] 会变成 data URI，publish-note 传不了）：')
+log('  opencli weixin publish-note-imgs "笔记标题" --images <图片目录|a.png|b.png> \\')
+log('    --trace retain-on-failure -f json [--publish]')
+log('  （--images 目录按文件名排序 = 正文图片出现顺序；封面默认取正文第一张）')
 log('')
 log('  加 --preview ./out 可先导出排版预览（不碰微信）。')
