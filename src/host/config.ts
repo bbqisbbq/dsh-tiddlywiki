@@ -114,6 +114,20 @@ export interface PluginConfigShape {
     showRightbarTab?: boolean
   }
   uiLanguage?: string
+  /**
+   * 微信公众号发布（**可选功能，默认关闭**，v0.23.0）。
+   *
+   * 这是一项**需要额外安装**的能力：真正干活的是仓库 `tools/wechat/` 下的
+   * opencli adapter + Browser Bridge 浏览器扩展（见 docs/wechat-publish-setup.md），
+   * 插件本体不含它、不装也不影响任何其他功能。
+   *
+   * 因此本开关默认 `false`——关闭时：
+   *   - 注入提示词**不含**发布相关的约定（不打扰不用该功能的用户）；
+   *   - 启动 seed **不写**「发布元数据规范」文档。
+   * 打开后：提示词多一行发布前检查约定，并在启动时把该规范写进 wiki。
+   * 保存后即时生效（提示词 section 会重注册），无需重启 dsh web。
+   */
+  wechat?: { enabled?: boolean }
   [key: string]: unknown
 }
 

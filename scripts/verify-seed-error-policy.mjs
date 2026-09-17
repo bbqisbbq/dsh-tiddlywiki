@@ -104,9 +104,10 @@ for (const id of STARTUP_SEED_IDS) {
 }
 
 // ── 2. runAllSeeds：一个失败不拖累其余 ───────────────────────────────────────
+// 传 `wechat: true` → 可选功能的 seed 也参与，得到完整启动集合。
 await test('runAllSeeds 读取失败时逐个失败但**不中止**其余 seed，且零写', async () => {
   const client = makeClient('failing')
-  const results = await runAllSeeds({ client })
+  const results = await runAllSeeds({ client, wechat: true })
   // 数量从 STARTUP_SEED_IDS 派生，别再写死数字——v0.23.0 加 publish-spec 时
   // 这个硬编码 5 就红过一次（而集合断言本来就会拦住漂移，数量断言是冗余的）。
   assert.equal(results.length, STARTUP_SEED_IDS.length, `启动路径应覆盖 ${STARTUP_SEED_IDS.length} 个 seed，实际 ${results.length}`)
@@ -120,6 +121,23 @@ await test('runAllSeeds 读取失败时逐个失败但**不中止**其余 seed�
     assert.equal(r.wrote, false, `seed ${r.id} 读取失败时必须 wrote:false`)
   }
   assertNoWrite(client.calls, 'runAllSeeds')
+})
+
+// 可选功能默认关：不启用微信发布时，启动不该写「发布元数据规范」。
+await test('可选功能 gate：wechat 未开启时跳过 publish-spec（不打扰不用该功能的用户）', async () => {
+  const client = makeClient('failing')
+  const off = await runAllSeeds({ client })
+  assert.ok(
+    !off.some((r) => r.id === 'publish-spec'),
+    `默认（wechat 未开）不得跑 publish-spec，实际跑了：${off.map((r) => r.id).join(', ')}`,
+  )
+  assert.equal(off.length, STARTUP_SEED_IDS.length - 1, `默认应比全量少 1 个（publish-spec），实际 ${off.length}`)
+  // 开启后必须回来
+  const on = await runAllSeeds({ client, wechat: true })
+  assert.ok(on.some((r) => r.id === 'publish-spec'), 'wechat:true 时 publish-spec 必须参与启动')
+  // gate 只影响启动路径；手动 runSeedById 是显式请求，不受 gate 约束
+  const manual = await runSeedById({ client }, 'publish-spec', false)
+  assert.equal(manual[0].id, 'publish-spec', '手动初始化应能指定 publish-spec（gate 不拦显式请求）')
 })
 
 // ── 3. checkAllSeeds：失败 ≠ 缺失 ────────────────────────────────────────────

@@ -82,11 +82,18 @@ export interface PromptPreviewConfig {
   mode?: PromptMode
   extra?: string
   override?: string
+  /**
+   * config `wechat.enabled` — NOT a `prompt.*` field, but a legitimate input to
+   * the built text (it gates the publish rule), so the draft preview carries it
+   * too. Otherwise toggling 可选功能 in the form and previewing would show stale
+   * text — the exact class of bug v0.22.7 fixed for `mode` (v0.23.0).
+   */
+  wechat?: boolean
 }
 
 /**
- * Whitelist an untrusted preview body (`POST /admin/prompt`) down to the four
- * prompt fields, with type checks. Unknown keys and wrong types are DROPPED
+ * Whitelist an untrusted preview body (`POST /admin/prompt`) down to the five
+ * rendering inputs, with type checks. Unknown keys and wrong types are DROPPED
  * (so a malformed body degrades to the built-in defaults instead of throwing),
  * and `mode` is only accepted when it is a known value — the same
  * "unknown falls back to slim" rule `normalizePromptMode()` applies later.
@@ -98,6 +105,7 @@ export function normalizePromptPreview(input: unknown): PromptPreviewConfig {
   if (src.mode === 'slim' || src.mode === 'full') out.mode = src.mode
   if (typeof src.extra === 'string') out.extra = src.extra
   if (typeof src.override === 'string') out.override = src.override
+  if (typeof src.wechat === 'boolean') out.wechat = src.wechat
   return out
 }
 
@@ -121,7 +129,7 @@ export function describePrompt(config: PromptPreviewConfig, tools: readonly Prom
   return {
     enabled,
     mode: normalizePromptMode(config.mode),
-    text: buildPromptText({ enabled, mode: config.mode, extra: config.extra, override: config.override, tools }),
+    text: buildPromptText({ enabled, mode: config.mode, extra: config.extra, override: config.override, tools, wechat: config.wechat }),
   }
 }
 
@@ -163,8 +171,17 @@ const NOTE_RULES = `### 笔记约定
 - **把有价值但不在当前执行范围内的想法沉淀进 wiki**：遇到「未来可能有用 / 值得做」的想法，用 \`tiddlywiki_put\` 写成独立 tiddler，打上 \`todo\` + \`agent-written\` 标签（并附当前工作区名），正文简要说明来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
 - 自动创建笔记时，除了业务性 tag 外，请把**当前工作区（项目）的名字**也作为标签之一，方便按项目归集与检索。
 - \`agent-written\`：\`put\`/\`batch_put\` 新建条目时工具自动补打，无需手动添加、也不要手动移除（除非用户明确要求）；若某篇 Agent 笔记之后被人类编辑过，请补打 \`human-edited\`。
-- **引用 wiki 笔记用可点击链接**：在回复流中引用笔记时用 \`[标题](/dsh-tiddlywiki/tw/#标题)\`（标题含空格/特殊字符时做 URL 编码，如 \`A%20B\`；中文可直接写）。点击会打开中央 TW 面板并跳转到该笔记，请优先用它代替纯文本标题。
-- **对外发布前**：先读 [[发布元数据规范]]（\`pub-state\`/\`no-publish\`），别重发或误发。`
+- **引用 wiki 笔记用可点击链接**：在回复流中引用笔记时用 \`[标题](/dsh-tiddlywiki/tw/#标题)\`（标题含空格/特殊字符时做 URL 编码，如 \`A%20B\`；中文可直接写）。点击会打开中央 TW 面板并跳转到该笔记，请优先用它代替纯文本标题。`
+
+/**
+ * Publish-metadata rule, appended ONLY when `wechat.enabled` is on (v0.23.0).
+ *
+ * The WeChat publishing feature is opt-in and needs its own install (opencli +
+ * a browser extension — see docs/wechat-publish-setup.md), so users who never
+ * enabled it must not see this line: the slim prompt had ~5 characters of
+ * headroom left and every line costs context in EVERY session.
+ */
+const PUBLISH_RULE = `- **对外发布前**：先读 [[发布元数据规范]]（\`pub-state\`/\`no-publish\`），别重发或误发。`
 
 /**
  * Governance blocks that MUST survive in every mode — exported so
@@ -217,13 +234,24 @@ export function buildPromptText(options: {
   override?: string
   tools?: readonly PromptToolSummary[]
   enabled?: boolean
+  /**
+   * Append the publish-metadata rule (config `wechat.enabled`, v0.23.0).
+   * The WeChat feature is opt-in + separately installed, so this defaults to
+   * FALSE: a user who never enabled it gets no publishing text at all.
+   */
+  wechat?: boolean
 }): string {
   if (options.enabled === false) return ''
   const tools = options.tools ?? []
   const override = typeof options.override === 'string' ? options.override.trim() : ''
+  const intro = normalizePromptMode(options.mode) === 'full' ? fullIntro(tools) : slimIntro(tools.length)
+  // The publish rule rides with NOTE_RULES so it reads as part of 笔记约定;
+  // `override` replaces the whole body, so the rule is dropped there too (an
+  // override means "I'll say it myself").
+  const notes = options.wechat === true ? `${NOTE_RULES}\n${PUBLISH_RULE}` : NOTE_RULES
   const body = override.length > 0
     ? escapePromptBraces(override)
-    : [normalizePromptMode(options.mode) === 'full' ? fullIntro(tools) : slimIntro(tools.length), WRITE_RULES, SYNC_RULES, NOTE_RULES].join('\n\n')
+    : [intro, WRITE_RULES, SYNC_RULES, notes].join('\n\n')
   const extra = typeof options.extra === 'string' ? escapePromptBraces(options.extra.trim()) : ''
   return extra.length > 0 ? `${body}\n\n${extra}` : body
 }

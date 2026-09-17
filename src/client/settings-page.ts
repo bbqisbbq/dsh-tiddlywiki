@@ -323,6 +323,22 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   const allArticles = (ui.allArticles ?? {}) as Record<string, unknown>
   numField('ui.allArticles.pageSize', '「所有文章」每页条数', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10)
 
+  // ── 可选功能：微信公众号发布（v0.23.0）────────────────────────────────────
+  // 默认关闭：这项能力需要**额外安装**（opencli + 浏览器扩展，见
+  // docs/wechat-publish-setup.md），插件本体不含它。关闭时不注入任何发布相关
+  // 提示词、也不自动写「发布元数据规范」文档，避免打扰不用它的用户。
+  section.append(make('h3', 'dsh-tw-settings-h', '可选功能：微信公众号发布'))
+  section.append(make(
+    'div',
+    'dsh-tw-settings-muted',
+    '把 wiki 笔记一键发到公众号草稿箱（可选点发表）。**需要额外安装**：opencli 与 Browser Bridge 浏览器扩展，'
+    + '并让浏览器登录 mp.weixin.qq.com；adapter 在本仓库 tools/wechat/，安装与排错见 docs/wechat-publish-setup.md。'
+    + '不安装／不开启它，插件其他功能完全不受影响。开启后：注入提示词会多一条「发布前先读发布元数据规范」的约定，'
+    + '并在启动时把该规范文档写进 wiki（同名不覆盖）。',
+  ))
+  const wechat = (config.wechat ?? {}) as Record<string, unknown>
+  const wechatEnabled = checkField('wechat.enabled', '启用微信公众号发布（默认关；需先按 docs/wechat-publish-setup.md 安装 opencli + 浏览器扩展）', wechat.enabled === true)
+
   // ── 系统提示词（v0.21.0；草稿预览 v0.22.7）────────────────────────────────
   const prompt = (config.prompt ?? {}) as Record<string, unknown>
   section.append(make('h3', 'dsh-tw-settings-h', '系统提示词（注入每个会话）'))
@@ -334,8 +350,9 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   ])
   const promptExtra = areaField('prompt.extra', '附加说明（永远追加在末尾，可放团队/个人规范）', typeof prompt.extra === 'string' ? prompt.extra : '', 5)
   const promptOverride = areaField('prompt.override', '整段替换（非空时取代上面的内置文本，附加说明仍会追加）', typeof prompt.override === 'string' ? prompt.override : '', 8)
-  /** Any prompt.* field differs from what /admin/state returned (unsaved). */
-  const promptDirty = (): boolean => fields.some((f) => f.key.startsWith('prompt.') && f.changed())
+  /** Any prompt.* field (or the gating wechat.enabled) differs from saved. */
+  const promptDirty = (): boolean =>
+    fields.some((f) => (f.key.startsWith('prompt.') || f.key === 'wechat.enabled') && f.changed())
   const preview = make('button', 'dsh-tw-settings-btn', '预览注入文本（按表单当前值）')
   preview.type = 'button'
   preview.title = '按表单当前值渲染注入文本（不用先保存）；点「保存配置」后这就是实际注入的内容'
@@ -361,6 +378,9 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
             mode: promptMode.value,
             extra: promptExtra.value,
             override: promptOverride.value,
+            // 可选功能的开关也会改变注入文本（是否含发布约定），所以一并送草稿
+            // （v0.23.0；否则勾选它再预览会看到旧文本）。
+            wechat: wechatEnabled.checked,
           }),
         })
         if (data.ok !== true) throw new Error(data.error ?? '获取失败')

@@ -97,6 +97,13 @@ export interface SeedContext {
    * content then degrades to a pointer instead of an outdated list.
    */
   tools?: readonly PromptToolSummary[]
+  /**
+   * Whether the OPT-IN WeChat publishing feature is enabled (config
+   * `wechat.enabled`, default false, v0.23.0). Gates the「发布元数据规范」seed:
+   * users who never enabled the feature must not get that doc written into
+   * their wiki. Absent (headless callers) = false.
+   */
+  wechat?: boolean
 }
 
 /**
@@ -251,6 +258,14 @@ export interface SeedDef {
    */
   startup?: boolean
   /**
+   * Optional gate for the STARTUP path only (v0.23.0). When present and it
+   * returns false, `runAllSeeds` skips this seed entirely — used by seeds that
+   * belong to an OPT-IN feature (微信公众号发布, config `wechat.enabled`,
+   * default off). A manual run ("初始化"/"重新初始化" from the settings page)
+   * ignores the gate: that is an explicit request.
+   */
+  gate?: (ctx: SeedContext) => boolean
+  /**
    * One-shot marker tiddler (v0.22.0): its `hashes` record what the built-in
    * content looked like when this wiki was seeded, which is what lets the
    * settings page tell 「内置内容有更新」 from 「用户自己改过」.
@@ -297,6 +312,8 @@ interface SeedMeta {
   startup?: boolean
   /** One-shot marker tiddler (enables content-hash bookkeeping). */
   markerTitle?: string
+  /** Startup-path gate for seeds belonging to an opt-in feature (v0.23.0). */
+  gate?: (ctx: SeedContext) => boolean
 }
 
 type SeedWriter = (client: TiddlyWebClient, opts?: { force?: boolean; tools?: readonly PromptToolSummary[] }) => Promise<boolean>
@@ -401,6 +418,7 @@ function defineSeed(meta: SeedMeta, impl: {
   run?: (ctx: SeedContext, force: boolean) => Promise<SeedRunResult>
   unseed?: SeedUnseeder
   content?: SeedContent
+  gate?: (ctx: SeedContext) => boolean
 }): SeedDef {
   const { id, title, description, core, startup, markerTitle } = meta
   const removable = !core
@@ -479,6 +497,7 @@ function defineSeed(meta: SeedMeta, impl: {
     id, title, description, core,
     ...(startup === undefined ? {} : { startup }),
     ...(markerTitle === undefined ? {} : { markerTitle }),
+    ...(impl.gate === undefined ? {} : { gate: impl.gate }),
     ...(impl.content === undefined ? {} : { content: impl.content }),
     check, run,
     ...(remove === undefined ? {} : { remove }),
@@ -557,8 +576,14 @@ export const SEED_DEFS: SeedDef[] = [
     { content: async () => [{ title: CLIP_BRIDGE_DOC_TITLE, text: CLIP_BRIDGE_DOC_TEXT }], presentTitle: CLIP_BRIDGE_DOC_TITLE, write: seedClipBridge, unseed: unseedClipBridge },
   ),
   defineSeed(
-    { id: 'publish-spec', title: '发布元数据规范', description: '「发布元数据规范」文档（Markdown）：约定用 pub-state / pub-platform / pub-wechat-* 等自定义字段记录每篇笔记的对外发布状态（已发/未发/不可发），以及 no-publish 标签约定；供发布流程与 agent 判断「这篇发过没有、能不能发」使用。随插件分发，换机器无需重新约定。', markerTitle: PUBLISH_SPEC_MARKER_TITLE, core: false, startup: true },
-    { content: async () => [{ title: PUBLISH_SPEC_TITLE, text: PUBLISH_SPEC_TEXT }], presentTitle: PUBLISH_SPEC_TITLE, write: seedPublishSpec, unseed: unseedPublishSpec },
+    { id: 'publish-spec', title: '发布元数据规范（可选：需开启微信公众号发布）', description: '「发布元数据规范」文档（Markdown）：约定用 pub-state / pub-platform / pub-wechat-* 等自定义字段记录每篇笔记的对外发布状态（已发/未发/不可发），以及 no-publish 标签约定；供发布流程与 agent 判断「这篇发过没有、能不能发」使用。**属于可选功能**：仅当设置页开启「微信发布」（wechat.enabled）时启动才会写入，否则完全跳过。', markerTitle: PUBLISH_SPEC_MARKER_TITLE, core: false, startup: true },
+    {
+      content: async () => [{ title: PUBLISH_SPEC_TITLE, text: PUBLISH_SPEC_TEXT }],
+      presentTitle: PUBLISH_SPEC_TITLE,
+      write: seedPublishSpec,
+      unseed: unseedPublishSpec,
+      gate: (ctx) => ctx.wechat === true,
+    },
   ),
   defineSeed(
     { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', core: true },
@@ -651,6 +676,10 @@ export async function runAllSeeds(ctx: SeedContext): Promise<SeedRunResult[]> {
   const out: SeedRunResult[] = []
   for (const def of SEED_DEFS) {
     if (!def.core && def.startup !== true) continue
+    // Opt-in features (v0.23.0): a `gate` that returns false means "this seed
+    // belongs to a feature the user has NOT enabled" → skip silently. The
+    // settings page's manual 初始化 ignores gates (an explicit request wins).
+    if (def.gate !== undefined && !def.gate(ctx)) continue
     out.push(await def.run(ctx, false))
   }
   return out

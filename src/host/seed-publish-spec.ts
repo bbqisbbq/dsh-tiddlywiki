@@ -108,6 +108,10 @@ pub-platform: wechat
 
 - 发布工具与安装说明见仓库 \`tools/wechat/\` 与 \`docs/wechat-publish-setup.md\`
 - 设计依据见 \`docs/plans/2026-09-17-wechat-publish-design.md\`
+
+> 本文档属于**可选功能**：只有设置页开启「微信公众号发布」（\`wechat.enabled\`）时，
+> 插件才会在启动时写入它；关闭时不写、也不注入任何发布相关提示词。
+> 因此「打开设置开关」与「本文档存在」应当是同进同退的。
 `
 
 /** Write the doc + marker (ONE-SHOT when \`force\` is false). */

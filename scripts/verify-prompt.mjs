@@ -93,6 +93,29 @@ test('slim 有长度预算（防止再次膨胀成工具手册）', () => {
   assert.ok(slim.length < full.length, 'full 必须比 slim 长（否则说明模式没生效）')
 })
 
+test('可选功能默认不打扰：不进提示词（v0.23.0）', () => {
+  // 微信发布是可选 + 需额外安装的：默认必须完全不出现发布相关文字。
+  assert.ok(!slim.includes('发布元数据规范'), '默认 slim 不得出现发布约定（微信发布默认关闭）')
+  assert.ok(!slim.includes('pub-state'), '默认 slim 不得出现 pub-state')
+  // 显式开启后才出现，且只多一行（~61 字符），仍在预算内。
+  const on = buildPromptText({ mode: 'slim', tools, wechat: true })
+  assert.ok(on.includes('发布元数据规范'), 'wechat:true 时必须带发布约定')
+  assert.ok(on.length <= 1800, `开启后 slim 已 ${on.length} 字符，超出预算 1800`)
+  const added = on.split('\n').filter((l) => !slim.split('\n').includes(l))
+  assert.equal(added.length, 1, `开关应当只增加 1 行，实际 ${added.length}`)
+  // 两种形态都受开关控制
+  assert.ok(!full.includes('发布元数据规范'), '默认 full 也不得出现发布约定')
+  assert.ok(buildPromptText({ mode: 'full', tools, wechat: true }).includes('发布元数据规范'))
+})
+
+test('草稿预览把 wechat 开关也算进去（否则勾选后预览是旧文本）', () => {
+  assert.deepEqual(normalizePromptPreview({ wechat: true }), { wechat: true })
+  assert.deepEqual(normalizePromptPreview({ wechat: 'yes' }), {}, '非布尔必须丢弃')
+  const dOff = describePrompt(normalizePromptPreview({ mode: 'slim' }), tools)
+  const dOn = describePrompt(normalizePromptPreview({ mode: 'slim', wechat: true }), tools)
+  assert.notEqual(dOff.text, dOn.text, '预览必须能区分可选功能开关')
+})
+
 test('full 的每个工具与每个参数都出现在文本里（自动生成、不会过期）', () => {
   for (const t of tools) {
     assert.ok(full.includes(`\`${t.name}\``), `full 缺少工具 ${t.name}`)
@@ -145,9 +168,9 @@ test('用户文本里的 {{…}} 被转义（DSH 未知变量会抛错并炸掉�
 })
 
 // v0.22.7 — 草稿预览（设置页 POST /admin/prompt）的两个纯函数。
-test('normalizePromptPreview 只放行 4 个字段，未知键/错类型被丢弃', () => {
-  assert.deepEqual(normalizePromptPreview({ enabled: false, mode: 'full', extra: 'e', override: 'o' }), { enabled: false, mode: 'full', extra: 'e', override: 'o' })
-  assert.deepEqual(normalizePromptPreview({ mode: 'nonsense', extra: 42, enabled: 'yes', nope: 'x' }), {}, '未知形态/错类型必须被丢弃（回落内置默认）')
+test('normalizePromptPreview 只放行 5 个字段，未知键/错类型被丢弃', () => {
+  assert.deepEqual(normalizePromptPreview({ enabled: false, mode: 'full', extra: 'e', override: 'o', wechat: true }), { enabled: false, mode: 'full', extra: 'e', override: 'o', wechat: true })
+  assert.deepEqual(normalizePromptPreview({ mode: 'nonsense', extra: 42, enabled: 'yes', wechat: 'yes', nope: 'x' }), {}, '未知形态/错类型必须被丢弃（回落内置默认）')
   assert.deepEqual(normalizePromptPreview(undefined), {})
   assert.deepEqual(normalizePromptPreview('not-an-object'), {})
   assert.deepEqual(normalizePromptPreview(null), {})

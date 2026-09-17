@@ -37,7 +37,7 @@
 | 🧯 **路由不会拖垮进程** | 所有路由经 `guardHandler` 包装：任何 rejection（含代理里 try 之外的 `new URL()`）都变成 413/500 响应，而不是宿主未处理的 promise rejection（那会**直接结束 dsh web 进程**并挂死请求）；剪藏桥 listen 后保留常驻 `error` 监听（v0.19.3） |
 | 📊 **回复流卡片** | 工具结果显示原生 TW 卡片（**按笔记自己的内容类型渲染**：Markdown 笔记就是 Markdown，v0.18.0），检索/最近列表带**命中处摘要**（v0.22.8）；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明）；成功/失败会弹出提示（v0.20.0 修复：此前提示把自由文本当 tiddler 标题传给 TW notifier，全部静默） |
-| 📮 **发布到微信公众号**（可选） | 把笔记一键发到公众号**草稿箱**（可选点发表）：TW 渲染 → 补内联样式 → 浏览器自动化复用你已登录的后台会话。**绕开官方 API 权限封锁**（2025-07 起个人主体账号的发布接口被回收），个人号可用；发表需管理员扫一次码。**带发布元数据**（`pub-state`/`pub-platform`/`pub-wechat-*` + `no-publish` 标签）避免重发或误发，规范随插件 seed 分发。见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md) |
+| 📮 **发布到微信公众号**（**可选，默认关**） | 把笔记一键发到公众号**草稿箱**（可选点发表）：TW 渲染 → 补内联样式 → 浏览器自动化复用你已登录的后台会话。**绕开官方 API 权限封锁**（2025-07 起个人主体账号的发布接口被回收），个人号可用；发表需管理员扫一次码。**需额外安装**（opencli + 浏览器扩展），插件不替你装；**关闭时完全不打扰**（不注入提示词、不写文档）。**带发布元数据**（`pub-state`/`pub-platform`/`pub-wechat-*` + `no-publish` 标签）避免重发或误发。见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md) |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
 | 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
 | 🧪 **审计守门** | 第四轮审计（v0.20.0）把 CI 与 `npm run verify:*` 合成一份清单，并补上 `verify-constants`（filter 长度预算）、`/render` 403、auth 打码、notify 与草稿避让回归 |
@@ -154,19 +154,29 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 `wikiRoot` / `wiki` 现在只是**默认值**——运行中的实际位置以指针文件优先。这也是为什么它能不改 cordis、不重装就切。
 
-### 📮 发布到微信公众号（可选，2026-09-17）
+### 📮 发布到微信公众号（**可选功能，默认关闭**，2026-09-17）
+
+> **这是可选功能**：需要额外安装 opencli + Browser Bridge 浏览器扩展，**插件不替你装**。
+> 开关 `wechat.enabled` **默认 `false`**——关闭时不注入任何发布相关提示词、也不往 wiki 写
+> 「发布元数据规范」。开启：DSH 设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」。
+> 完整安装步骤与排错见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md)。
 
 把 wiki 里的任意笔记**一键发到微信公众号草稿箱**（可选直接发表）。整套能力放在 `tools/wechat/`，**不依赖公众号服务端 API**——因为 2025-07 起官方已回收个人主体账号的「发布能力」接口权限；本方案改用**浏览器自动化复用你已登录的后台会话**，所以个人号也能用。
 
 ```bash
-# 一次性：装 adapter 到本机 opencli（幂等）
+# ① 先按 docs/wechat-publish-setup.md 装好 opencli + 浏览器扩展，并登录公众号
+# ② 一次性：装 adapter 到本机 opencli（幂等，会自检扩展/登录状态）
 node tools/wechat/install-wechat-adapters.mjs
 
-# 发布（注意必须带 --trace retain-on-failure，原因见下）
+# ③ 发布（注意必须带 --trace retain-on-failure，原因见下）
 opencli weixin publish-note "笔记标题" --trace retain-on-failure -f json
 opencli weixin publish-note "笔记标题" --cover ./cover.png -f json   # 带封面
 opencli weixin publish-note "笔记标题" --preview ./out -f json       # 先导出排版预览
 opencli weixin publish-note "笔记标题" --publish -f json             # 直接发表（需管理员扫码）
+
+# ④ 可选：回填存量「已发布」状态（默认 dry-run）
+node tools/wechat/backfill-publish-state.mjs          # 看
+node tools/wechat/backfill-publish-state.mjs --write  # 写
 ```
 
 **流程**：笔记标题 → DSH 的 `/render`（TW 自己渲染成语义 HTML，含代码高亮）→ `wechat-html.js` 补**内联样式**（微信会剥 `<style>` 和 class，只认内联）→ opencli 驱动后台填表/写正文/传图/设封面/存草稿 →（可选）点发表。
@@ -379,9 +389,13 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
-- **v0.23.0**（2026-09-17）：**新增「发布到微信公众号」+ 发布元数据**（`tools/wechat/`，可选能力，不动 host 代码）。把 wiki 笔记一键发到公众号**草稿箱**，可选点发表。**为什么不用官方 API**：2025-07 起官方回收了「发布能力」接口对个人主体/未认证账号的调用权限（`freepublish/submit` 不可用、`draft/add` 常回 48001）；即便可用还要配 API IP 白名单、封面永久素材、正文图片必须走 `media/uploadimg`。**本方案改走浏览器自动化**，复用你**已登录**的公众号后台会话（opencli + Browser Bridge 扩展），个人号可用、零凭据落盘。数据流：笔记标题 → DSH `POST /render`（TW 自己渲染成语义 HTML，**代码高亮白蹭**）→ `wechat-html.js` 补**内联样式**（实测微信会剥 `<style>` 并删 class，**只认内联 style**；而 TW 输出零内联样式，所以必须有这一步）→ `weixin-flow.js` 驱动后台填表/写正文/传图/设封面/存草稿。
+- **v0.23.0**（2026-09-17）：**新增「发布到微信公众号」+ 发布元数据**（`tools/wechat/`，**可选功能，默认关闭，需额外安装**，不动 host 代码）。把 wiki 笔记一键发到公众号**草稿箱**，可选点发表。
+
+  **⚠️ 可选功能，默认关**：真正干活的是仓库 `tools/wechat/` 下的 opencli adapter + Browser Bridge 浏览器扩展——**插件本体不含它，也不会替你装**。开关 `wechat.enabled` 默认 `false`：**关闭时**不注入任何发布相关提示词、也不往 wiki 写「发布元数据规范」文档；**打开后**仅多这两项，不会安装任何东西、不启用任何后台服务。不装／不开它，插件其他功能完全不受影响。开启方式：设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」→ 勾选 → 保存配置。完整安装步骤（opencli、浏览器扩展、扫码登录）与排错见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md)。
+
+  **为什么不用官方 API**：2025-07 起官方回收了「发布能力」接口对个人主体/未认证账号的调用权限（`freepublish/submit` 不可用、`draft/add` 常回 48001）；即便可用还要配 API IP 白名单、封面永久素材、正文图片必须走 `media/uploadimg`。**本方案改走浏览器自动化**，复用你**已登录**的公众号后台会话（opencli + Browser Bridge 扩展），个人号可用、零凭据落盘。数据流：笔记标题 → DSH `POST /render`（TW 自己渲染成语义 HTML，**代码高亮白蹭**）→ `wechat-html.js` 补**内联样式**（实测微信会剥 `<style>` 并删 class，**只认内联 style**；而 TW 输出零内联样式，所以必须有这一步）→ `weixin-flow.js` 驱动后台填表/写正文/传图/设封面/存草稿。
   
-  **发布元数据**（本轮追加，解决「哪些发过 / 哪些不能发」）：每篇笔记用自定义字段记录对外发布状态——`pub-state`（`draft`/`published`/`excluded`）、`pub-platform`、`pub-wechat-at` / `pub-wechat-title` / `pub-wechat-url`（**按平台分字段**，将来 `pub-zhihu-*` 直接平铺）、`pub-note`；标签 `no-publish` 作为给人看的镜像。**规范全文随插件 seed 分发**（「发布元数据规范」，`dsh-docs` 标签、startup 层），因为注入提示词 slim 形态实测只剩几十字符余量，只在其中放**一句指针**。⚠️ 三个名字**已被占用**故特意避开：`publish`/`publishyear` 是 Obsidian 导入书籍的「出版社/出版年」，`发布记录` 是本插件自己的版本说明。存量来源可辨的公众号文章（`source-path` 含「公众号」，本 wiki 实测 18 篇）用 `tools/wechat/backfill-publish-state.mjs` 回填（**默认 dry-run**；先 GET 完整 tiddler 再只添加字段整体写回；已有 `pub-state` 跳过；正文为空跳过；发表时间无法考证就留空）。发布前检查**只告警不阻断**（读 `pub-state`/`no-publish` 命中就打印警告并继续，`--force` 仅改措辞），回执里附**建议回写值**供 agent 回写。
+  **发布元数据**（本轮追加，解决「哪些发过 / 哪些不能发」）：每篇笔记用自定义字段记录对外发布状态——`pub-state`（`draft`/`published`/`excluded`）、`pub-platform`、`pub-wechat-at` / `pub-wechat-title` / `pub-wechat-url`（**按平台分字段**，将来 `pub-zhihu-*` 直接平铺）、`pub-note`；标签 `no-publish` 作为给人看的镜像。**规范全文放进 seed**（「发布元数据规范」，`dsh-docs` 标签），因为注入提示词 slim 形态实测只剩几十字符余量，只在其中放**一句指针**；该 seed 带 `gate`——**只有开启可选功能才会写**。⚠️ 三个名字**已被占用**故特意避开：`publish`/`publishyear` 是 Obsidian 导入书籍的「出版社/出版年」，`发布记录` 是本插件自己的版本说明。存量来源可辨的公众号文章（`source-path` 含「公众号」，本 wiki 实测 18 篇）用 `tools/wechat/backfill-publish-state.mjs` 回填（**默认 dry-run**；先 GET 完整 tiddler 再只添加字段整体写回；已有 `pub-state` 跳过；正文为空跳过；发表时间无法考证就留空）。发布前检查**只告警不阻断**（读 `pub-state`/`no-publish` 命中就打印警告并继续，`--force` 仅改措辞），回执里附**建议回写值**供 agent 回写。
   
   **四个实测踩坑**：① **必须带 `--trace retain-on-failure`**——不带就对 `mp.weixin.qq.com` 稳定报 `Navigation rejected`（trace 开 5/5 成功、关 8/8 失败；`--site-session ephemeral` / `--keep-tab false` / 前后台窗口 / 重置标签页 / 重启 daemon 全部无效，是 opencli 1.8.7 的 bug）；② **轮询里绝不能读 `document.body.innerText`**——微信编辑器 DOM 极大，读一次强制整页 layout，**实测单次 ≈17 秒**，8 次轮询把命令拖过 210s 超时而**草稿其实已保存成功**（假阴性）；改成只查少量 toast 节点后 `saveDraft` 从 **137 秒降到 3.9 秒**；③ **图片上传必须用 DataTransfer 注入**，不能用 `page.setFileInput`（后者依赖 CDP `Page.fileChooserOpened`，本机扩展版本组合下稳定失败；DataTransfer 在页面上下文直接塞 `input.files`，实测图片真进 `mmbiz` CDN，代价是单图 8MB 上限）；④ **正文必须用 `execCommand('insertHTML')`**，`insertText` 会把 HTML 当字面文本（opencli 内置 `weixin create-draft` 就是这样，实测 Markdown 符号原样进库）。**发表需管理员扫码**——微信的账号安全机制，无法自动化，「一键」的真实含义是「脚本做完排版/上传/填表，你只扫一次码」；默认走**发表**（不推送粉丝、不占群发额度）而非群发。
   
