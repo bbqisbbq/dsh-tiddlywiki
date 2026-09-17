@@ -44,6 +44,7 @@ import { seedUiStyles, unseedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } 
 import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './seed-menubar-theme.ts'
 import { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT } from './seed-clip-bridge.ts'
 import { seedPublishSpec, unseedPublishSpec, PUBLISH_SPEC_TITLE, PUBLISH_SPEC_MARKER_TITLE, PUBLISH_SPEC_TEXT } from './seed-publish-spec.ts'
+import { seedWechatDocs, unseedWechatDocs, WECHAT_DOCS_TITLE, WECHAT_DOCS_MARKER_TITLE, WECHAT_DOCS_TEXT } from './seed-wechat-docs.ts'
 import { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT } from './seed-render.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
@@ -582,6 +583,16 @@ export const SEED_DEFS: SeedDef[] = [
       presentTitle: PUBLISH_SPEC_TITLE,
       write: seedPublishSpec,
       unseed: unseedPublishSpec,
+      gate: (ctx) => ctx.wechat === true,
+    },
+  ),
+  defineSeed(
+    { id: 'wechat-setup', title: '微信公众号发布指南（可选：需开启微信公众号发布）', description: '「微信公众号发布指南」文档（Markdown，逐字节等于仓库 docs/wechat-publish-setup.md）：在另一台机器上还原发布能力的完整步骤——opencli 安装、Browser Bridge 浏览器扩展、公众号登录、装 adapter、试跑命令、发布元数据、三个必须知道的坑（trace / 扫码 / 发表≠群发）、排错表。**属于可选功能**：仅当设置页开启「微信发布」（wechat.enabled）时启动才会写入，否则完全跳过（与发布元数据规范同进同退）。', markerTitle: WECHAT_DOCS_MARKER_TITLE, core: false, startup: true },
+    {
+      content: async () => [{ title: WECHAT_DOCS_TITLE, text: WECHAT_DOCS_TEXT }],
+      presentTitle: WECHAT_DOCS_TITLE,
+      write: seedWechatDocs,
+      unseed: unseedWechatDocs,
       gate: (ctx) => ctx.wechat === true,
     },
   ),

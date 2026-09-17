@@ -58,13 +58,17 @@ interface SeedDef {
 | `ui-styles` | `seed-ui-styles.ts` → `seedUiStyles` / `unseedUiStyles` | 5 张通用样式表（只带功能 tag `$:/tags/Stylesheet`，剥离 wiki 本地标签与个人数据）：编辑器美化、标题与按钮区分开、侧边栏窄屏自动隐藏、批注弹窗、menubar 顶栏加高 | `$:/plugins/dsh-tiddlywiki/seed-ui-styles` | 可选 |
 | `menubar-theme` | `seed-menubar-theme.ts` → `seedMenubarTheme` / `unseedMenubarTheme` | `$:/plugins/dsh-tiddlywiki/menubar-theme`（tag `$:/tags/Stylesheet`）——覆盖 tiddlywiki/menubar 顶栏：把 `<<colour menubar-background>>` 的「默认色映射蓝色」改为跟随活动 palette 的 `background`/`foreground`，随 DSH 主题切换（`$:/palette` 翻转）自动换色 | `$:/plugins/dsh-tiddlywiki/seed-menubar-theme` | 可选 |
 | `clip-bridge` | `seed-clip-bridge.ts` → `seedClipBridge` / `unseedClipBridge` | 「本地剪藏桥 + 书签小工具」使用说明（Markdown 文档，带书签代码 / 启用步骤 / 安全说明，tag `dsh-docs`）——真功能在 `clip-bridge.ts` 运行时代码里 | `$:/plugins/dsh-tiddlywiki/seed-clip-bridge` | 可选 |
+| `publish-spec` | `seed-publish-spec.ts` → `seedPublishSpec` / `unseedPublishSpec` | 「发布元数据规范」（Markdown，tag `dsh-docs`）——pub-state / pub-* 字段与 no-publish 标签约定，供微信发布流程判断「发过没有 / 能不能发」 | `$:/dsh-tiddlywiki/publish-spec-seeded` | **起步（gated）** |
+| `wechat-setup` | `seed-wechat-docs.ts` → `seedWechatDocs` / `unseedWechatDocs` | 「微信公众号发布指南」（Markdown，tag `dsh-docs`）——**逐字节等于 `docs/wechat-publish-setup.md`**（由 `scripts/gen-seed-wechat-docs.mjs` 生成，勿手改常量）：opencli / 扩展 / 登录 / adapter 安装与换机还原、三个坑、排错表 | `$:/plugins/dsh-tiddlywiki/seed-wechat-docs` | **起步（gated）** |
 | `tw-web-host` | `seeds.ts` 内联 | `$:/config/tiddlyweb/host` → `/dsh-tiddlywiki/tw/` | 无 marker（ensure 型，见 §4） | **核心** |
 
 > ℹ️ `home-index` 的 seed 版首页是**通用版**：生成脚本**默认**剥离作者 wiki 里的个人元素（主题页 tabs、书籍书架入口等，仅 `--keep-private` 才原样嵌入），并内置「📚 插件文档」tabs 栏（`[tag[dsh-docs]!is[system]]`，默认展开插件说明）。作者自己的 wiki 首页不受影响（seed 是 ONE-SHOT，不会覆盖）。
 >
 > ℹ️ **v0.22.0 起 marker 记内容哈希**：marker tiddler（`$:/plugins/dsh-tiddlywiki/seed-*`）的正文从一行 `seeded-once` 升级为 JSON `{ version, hashes: { <标题>: <sha256 前 16 位> }, at }`——哈希记录的是**我们写下的内置正文**，据此可区分「内置内容更新了」与「用户自己改过」（见 §3.1）。旧 marker 仍可读，按文本比对，并在下一次重新初始化时升级。
 >
-> ℹ️ **v0.22.0 起 `doc-note` 正文是生成的**：工具清单来自 `tiddlywikiToolSummary()`（`docNoteText(tools)`），不再手抄「N 个 agent 工具」。无注册表的 headless 调用会退化成一句指针，绝不写出过期数量。
+> ℹ️ **v0.23.0 起 gated seed**：`publish-spec` / `wechat-setup`（v0.23.1）虽是起步层（`startup: true`），但带 `gate: (ctx) => ctx.wechat === true`——**只在设置页开启「微信公众号发布」（`wechat.enabled`）时**才参与启动写入；不开该功能的用户 wiki 里不会出现发布相关文档（提示词里也没有指针，死链风险只存在于开启侧）。`gate` 只作用于启动路径 `runAllSeeds`；设置页手动「初始化」走 `runSeedById` 不受它约束（显式请求）。`checkAllSeeds` 照常报告两项「缺失」，属预期。
+>
+> ℹ️ **v0.22.0 起 `doc-note` 正文是生成的**：工具清单来自 `tiddlywikiToolSummary()`（`docNoteText(tools)`），不再手抄「N 个 agent 工具」。无注册表的 headless 调用会退化成一句指针，绝不写出过期数量。`wechat-setup` 的正文同理由 `docs/wechat-publish-setup.md` 生成（`scripts/gen-seed-wechat-docs.mjs`），`scripts/verify-wechat-docs-seed.mjs` 守逐字节一致。
 
 ### 统一入口（`src/index.ts` 导出）
 

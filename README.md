@@ -389,6 +389,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.23.1**（2026-09-17）：**新增 `wechat-setup` seed——「微信公众号发布指南」也随插件分发**（补齐 v0.23.0 的缺口：当时只有「发布元数据规范」进了 seed，387 行的安装/换机还原指南只存在于仓库与 npm 包的 `docs/` 里，wiki 里那篇「换机还原清单」是手写指针笔记）。与 `publish-spec` 完全同模式：起步层（`startup: true`）+ `gate: (ctx) => ctx.wechat === true`——**只在设置页开启「微信公众号发布」时**启动写入（笔记「微信公众号发布指南」，`dsh-docs` 标签自动进首页插件文档栏），不开该功能的用户 wiki 不出现、设置页手动「初始化」不受 gate 约束。**内容单一来源**：新 gen 脚本 `scripts/gen-seed-wechat-docs.mjs` 从 `docs/wechat-publish-setup.md` 生成 `src/host/seed-wechat-docs.ts`（照 send-to-agent 的 gen 流水线，勿手改常量），新守门 `scripts/verify-wechat-docs-seed.mjs`（进 `verify:unit`）断言 seed 常量与文档**逐字节一致** + 注册表 gate 接线（2 个 gated seed = gate 谓词恰好 2 处）。顺带：`verify-package-contents.mjs` 的 `npm pack` 从管道捕获改为**文件重定向 + 临时缓存目录**（DSH 沙箱禁止命名管道 stdio → 原 `exec` 实现 EPERM；npm 默认缓存在沙箱外也要绕开），本地终于能跑这条守门。selftest / verify-seed-error-policy 的 gate 断言改为**从注册表派生** gated 清单（新增 gated seed 不再漏改硬编码）；设置页与 config 注释同步「开启后写两篇文档」；docs/seed-initialization.md 补齐 publish-spec / wechat-setup 两行表格。
+
 - **v0.23.0**（2026-09-17）：**新增「发布到微信公众号」+ 发布元数据**（`tools/wechat/`，**可选功能，默认关闭，需额外安装**，不动 host 代码）。把 wiki 笔记一键发到公众号**草稿箱**，可选点发表。
 
   **⚠️ 可选功能，默认关**：真正干活的是仓库 `tools/wechat/` 下的 opencli adapter + Browser Bridge 浏览器扩展——**插件本体不含它，也不会替你装**。开关 `wechat.enabled` 默认 `false`：**关闭时**不注入任何发布相关提示词、也不往 wiki 写「发布元数据规范」文档；**打开后**仅多这两项，不会安装任何东西、不启用任何后台服务。不装／不开它，插件其他功能完全不受影响。开启方式：设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」→ 勾选 → 保存配置。完整安装步骤（opencli、浏览器扩展、扫码登录）与排错见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md)。

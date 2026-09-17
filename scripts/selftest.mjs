@@ -1234,14 +1234,20 @@ try {
   assert(SEED_DEFS.some((d) => d.id === 'publish-spec' && d.gate !== undefined), 'publish-spec is declared as a gated (opt-in) seed')
   assert(!startup.some((r) => r.id === 'publish-spec'), 'optional publish-spec is GATED OUT at startup while wechat is off (v0.23.0)')
 
-  // 开可选功能后，publish-spec 才参与启动（v0.23.0 gate）。清掉 marker 以便真的写。
+  // 开可选功能后，publish-spec / wechat-setup 才参与启动（v0.23.0 gate，v0.23.1 起
+  // gated starter 不止一个）。清掉 marker 以便真的写。
   await seedApi.delete('$:/dsh-tiddlywiki/publish-spec-seeded')
+  await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-wechat-docs')
   const startupOn = await runAllSeeds({ ...seedCtx, wechat: true })
   const psRun = startupOn.find((r) => r.id === 'publish-spec')
   assert(psRun !== undefined && psRun.ok, 'wechat on → publish-spec participates in startup')
   assert((await seedApi.get('发布元数据规范')) !== undefined, 'wechat on → the publish-metadata spec doc is written')
+  const wsRun = startupOn.find((r) => r.id === 'wechat-setup')
+  assert(wsRun !== undefined && wsRun.ok, 'wechat on → wechat-setup participates in startup')
+  assert((await seedApi.get('微信公众号发布指南')) !== undefined, 'wechat on → the wechat setup guide doc is written')
   // 清理，避免影响后续「手动 run-all 只写缺失的可选项」断言
   await removeSeedById(seedCtx, 'publish-spec')
+  await removeSeedById(seedCtx, 'wechat-setup')
   assert((await seedApi.get(DOC_NOTE_TITLE)) !== undefined, 'startup path re-creates the starter doc note')
   assert((await seedApi.get('教程：按主题/标签做汇总页')) !== undefined, 'startup path re-creates the starter docs')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined, 'startup path does NOT re-create the optional menubar-theme')
@@ -1258,7 +1264,7 @@ try {
   assert(all.length === SEED_DEFS.length, `manual run-all covers every registry item (${all.length}/${SEED_DEFS.length})`)
   assert(all.every((r) => r.ok), 'all seeds run ok')
   const allWrote = all.filter((r) => r.wrote).map((r) => r.id).sort()
-  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'clip-bridge', 'home-index', 'menubar-theme', 'publish-spec', 'ui-styles']), `manual run-all writes exactly the missing seeds (${allWrote.join(',')})`)
+  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'clip-bridge', 'home-index', 'menubar-theme', 'publish-spec', 'ui-styles', 'wechat-setup']), `manual run-all writes exactly the missing seeds (${allWrote.join(',')})`)
 
   // runSeedById with an id runs only that one; force rewrites regardless.
   const onlyHome = await runSeedById(seedCtx, 'home-index', false)
@@ -1333,6 +1339,7 @@ try {
   assert(rmAll.every((r) => r.ok), 'remove-all all ok')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined && (await seedApi.get(DOC_NOTE_TITLE)) === undefined && (await seedApi.get(CLIP_BRIDGE_DOC_TITLE)) === undefined, 'remove-all cleaned optional tiddlers')
   assert((await seedApi.get('发布元数据规范')) === undefined, 'remove-all also cleaned the gated publish-spec doc')
+  assert((await seedApi.get('微信公众号发布指南')) === undefined, 'remove-all also cleaned the gated wechat-setup doc')
   assert((await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)) !== undefined && (await seedApi.get(TW_WEB_HOST_TIDDLER)) !== undefined && (await seedApi.get(RENDER_PLUGIN_TITLE)) !== undefined, 'remove-all keeps the core seeds')
 
   // 5e. Active-palette flip round-trip (before the server stops; kept AFTER

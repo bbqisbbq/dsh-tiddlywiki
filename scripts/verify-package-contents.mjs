@@ -16,12 +16,12 @@
  * @module dsh-tiddlywiki/scripts/verify-package-contents
  */
 import assert from 'node:assert/strict'
-import { exec } from 'node:child_process'
+import { spawn } from 'node:child_process'
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
 
-const execP = promisify(exec)
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 const REQUIRED = [
@@ -65,13 +65,33 @@ async function test(name, fn) {
 
 let stdout
 try {
-  const r = await execP('npm pack --dry-run --json --ignore-scripts', {
-    cwd: repoRoot,
-    timeout: 120_000,
-    maxBuffer: 32 * 1024 * 1024,
-    windowsHide: true,
-  })
-  stdout = r.stdout
+  // ⚠️ 不要改回 child_process.exec：DSH 沙箱禁止程序经命名管道捕获子进程输出
+  //（spawn 默认 stdio:'pipe' → EPERM），本地 verify 从未在此跑过。这里改用
+  // spawn + 文件重定向：stdio 全走文件（fd，不涉及管道），语义与原 exec 等价
+  //（shell:true 保留原命令串、timeout 同步保留），npm 的 JSON 落 stdout 文件。
+  // 另外必须给 --cache 指到临时目录：默认缓存（node_cache\_cacache）在沙箱外，
+  // npm pack 一开缓存文件就 EPERM（真实踩过）。
+  const outPath = path.join(os.tmpdir(), `dsh-tw-pack-${process.pid}.json`)
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-tw-npmcache-'))
+  const fd = fs.openSync(outPath, 'w')
+  try {
+    await new Promise((resolveP, rejectP) => {
+      const child = spawn(`npm pack --dry-run --json --ignore-scripts --cache ${JSON.stringify(cacheDir)}`, [], {
+        cwd: repoRoot,
+        shell: true,
+        stdio: ['ignore', fd, fd],
+        windowsHide: true,
+      })
+      const killer = setTimeout(() => child.kill(), 120_000)
+      child.on('error', (err) => { clearTimeout(killer); rejectP(err) })
+      child.on('exit', (code) => { clearTimeout(killer); code === 0 ? resolveP() : rejectP(new Error(`npm pack exited ${code}`)) })
+    })
+  } finally {
+    fs.closeSync(fd)
+    fs.rmSync(cacheDir, { recursive: true, force: true })
+  }
+  stdout = fs.readFileSync(outPath, 'utf8')
+  fs.rmSync(outPath, { force: true })
 } catch (err) {
   failures++
   console.error('FAIL  npm pack --dry-run --json 执行失败')

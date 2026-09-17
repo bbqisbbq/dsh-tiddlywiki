@@ -334,7 +334,8 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     '把 wiki 笔记一键发到公众号草稿箱（可选点发表）。**需要额外安装**：opencli 与 Browser Bridge 浏览器扩展，'
     + '并让浏览器登录 mp.weixin.qq.com；adapter 在本仓库 tools/wechat/，安装与排错见 docs/wechat-publish-setup.md。'
     + '不安装／不开启它，插件其他功能完全不受影响。开启后：注入提示词会多一条「发布前先读发布元数据规范」的约定，'
-    + '并在启动时把该规范文档写进 wiki（同名不覆盖）。',
+    + '并在启动时把「发布元数据规范」与「微信公众号发布指南」（安装/换机还原步骤，等于仓库 docs/wechat-publish-setup.md）'
+    + '两篇文档写进 wiki（同名不覆盖）。',
   ))
   const wechat = (config.wechat ?? {}) as Record<string, unknown>
   const wechatEnabled = checkField('wechat.enabled', '启用微信公众号发布（默认关；需先按 docs/wechat-publish-setup.md 安装 opencli + 浏览器扩展）', wechat.enabled === true)
