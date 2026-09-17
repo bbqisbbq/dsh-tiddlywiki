@@ -112,6 +112,87 @@ opencli weixin publish-note "某篇笔记标题" --publish --trace retain-on-fai
 
 ---
 
+## 3.5 发布元数据（重要：避免重发/误发）
+
+wiki 里既有**早已发布**的文章，也有**明确不能发**的内容。没有记录，agent 只能猜——
+要么重复发已上线的，要么把不该发的推出去。
+
+**规范全文在 wiki 里**：笔记「**发布元数据规范**」（随插件 seed 分发，`dsh-docs` 标签，
+开机自动写入；也可手动跑 `npx tsx tools/wechat/seed-publish-spec-now.mts` 立即写入）。
+注入给 agent 的系统提示词里只有一句指针（slim 预算只剩几十字符，放不下全文）。
+
+### 字段（自定义字段，不是标签）
+
+| 字段 | 含义 | 示例 |
+|---|---|---|
+| `pub-state` | 能不能发 | `draft` / `published` / `excluded` |
+| `pub-platform` | 最近发布的平台（多平台逗号分隔） | `wechat` |
+| `pub-wechat-at` | 公众号发表时间 | `2026-09-17 15:30` |
+| `pub-wechat-title` | 发表时的标题（**仅当与 TW 标题不同才写**） | `中年失业自救指南` |
+| `pub-wechat-url` | 发表后的链接 | `https://mp.weixin.qq.com/s/xxx` |
+| `pub-note` | 备注 | `删改后重发过一版` |
+
+**没有 `pub-state` = 未知状态**，应当当作「需要人确认」，而不是「可以随便发」。
+
+标签 `no-publish` 是给人看的镜像（TW 界面一眼可见、可筛）；`pub-state: excluded` 给
+agent 程序化判断。**两者应一致，冲突时以字段为准。**
+
+### ⚠️ 命名冲突（别占用）
+
+实测本 wiki 里这三个名字**已被占用**，方案特意避开：
+
+- `publish` / `publishyear` 字段 → Obsidian 导入的**书籍**条目用作「出版社 / 出版年」
+  （值形如「新世界出版社」「2011-09-01」）。
+- `发布记录` 标签 → 本插件自己的**版本发布说明**。
+
+### 发布前检查：只告警，不阻断
+
+`publish-note` 会读 `pub-state` / `no-publish`，命中就打印醒目警告，**然后继续执行**
+（2026-09-17 明确选定的策略）。`--force` 只改措辞，不改变行为：
+
+```
+⚠️ 「某篇」已发布过（平台 wechat）。这可能是重复发布——确认无误再继续；确实要重发请加 --force。
+```
+
+### 回写（agent 负责）
+
+发布成功后，命令的 `detail` 里会带一句**建议回写值**，例如：
+
+```
+建议回写：pub-state=published, pub-platform=wechat, pub-wechat-at="2026-09-17 17:50"
+```
+
+agent 据此用 `tiddlywiki_put` 写回（**不传 `tags` 就保留原标签**，只补 `fields`）：
+
+```
+tiddlywiki_put(title="某篇", text=<原正文>, fields={"pub-state":"published", "pub-platform":"wechat", "pub-wechat-at":"..."})
+```
+
+> ⚠️ 用工具时 `text` 会被覆盖，**务必带上原正文**。别像我一样用裸 REST PUT 只发一段
+> 文字——那会把笔记正文清空（真实踩过，靠 git 恢复）。
+
+### 存量回填
+
+早于本规范、来源可辨（`source-path` 含「公众号」）的文章，用脚本回填：
+
+```bash
+# 默认 dry-run，只打印将改什么
+node tools/wechat/backfill-publish-state.mjs
+
+# 确认后真写
+node tools/wechat/backfill-publish-state.mjs --write
+
+# 指定标题 / 平台 / 匹配子串
+node tools/wechat/backfill-publish-state.mjs --title "打工记" --title "鱼" --write
+node tools/wechat/backfill-publish-state.mjs --match 公众号 --platform wechat --write
+```
+
+脚本纪律（**请勿改成「只写字段」的裸 PUT**）：每条都先 GET **完整** tiddler（含
+text/tags/type/created），**只添加** `pub-*` 字段后整体写回；已有 `pub-state` 的跳过
+（幂等）；正文为空的跳过（宁可不动）；**发表时间无法考证就留空，不编造**。
+
+---
+
 ## 4. ⚠️ 三个必须知道的坑
 
 ### 4.1 所有命令都要带 `--trace retain-on-failure`
@@ -221,7 +302,18 @@ input.dispatchEvent(new Event('change', { bubbles: true }))
 而 **TiddlyWiki 的 `/render` 输出零内联样式**（纯语义 HTML + class）——
 这正是需要 `wechat-html.js` 装饰器的原因。
 
-### 7.4 其他踩过的坑
+### 7.4 轮询里绝不能读 `document.body.innerText`（v0.23.0 实测踩坑）
+
+微信编辑器 DOM 极大，读一次 `body.innerText` **强制整页 layout，实测单次 evaluate
+≈17 秒**。早期 `saveDraft` / `publishDraft` 的轮询用它找成功提示，8 次轮询把整个命令
+拖过 210s 超时——**最坑的是草稿其实已经保存成功**，用户看到的是超时失败（假阴性）。
+
+现在只查少量 toast 节点（`.weui-desktop-toast` / `.weui-desktop-msg` / `#js_save_success`）
+和 URL，都是 O(1) 操作。修复后 `saveDraft` 从 **137 秒降到 3.9 秒**。
+
+`scripts/verify-wechat-adapters.mjs` 有回归守门（已反向验证：塞回去即红）。
+
+### 7.5 其他踩过的坑
 
 - 图片下拉必须**按文案**点「本地上传」：用 `items[0]` 点完 file input 仍不可见。
 - 正文是编辑器页**最后一个** `contenteditable`。

@@ -38,7 +38,7 @@ async function test(name, fn) {
 }
 
 /** 启动路径会跑的 seed（core 3 + starter 2），与 runAllSeeds 的目标集合一致。 */
-const STARTUP_SEED_IDS = ['doc-note', 'starter-docs', 'send-to-agent', 'render-route', 'tw-web-host']
+const STARTUP_SEED_IDS = ['doc-note', 'starter-docs', 'send-to-agent', 'render-route', 'publish-spec', 'tw-web-host']
 
 /**
  * 假 TiddlyWebClient：
@@ -107,7 +107,9 @@ for (const id of STARTUP_SEED_IDS) {
 await test('runAllSeeds 读取失败时逐个失败但**不中止**其余 seed，且零写', async () => {
   const client = makeClient('failing')
   const results = await runAllSeeds({ client })
-  assert.equal(results.length, 5, `启动路径应覆盖 3 个 core + 2 个 starter seed，实际 ${results.length}`)
+  // 数量从 STARTUP_SEED_IDS 派生，别再写死数字——v0.23.0 加 publish-spec 时
+  // 这个硬编码 5 就红过一次（而集合断言本来就会拦住漂移，数量断言是冗余的）。
+  assert.equal(results.length, STARTUP_SEED_IDS.length, `启动路径应覆盖 ${STARTUP_SEED_IDS.length} 个 seed，实际 ${results.length}`)
   assert.deepEqual(
     results.map((r) => r.id),
     STARTUP_SEED_IDS,

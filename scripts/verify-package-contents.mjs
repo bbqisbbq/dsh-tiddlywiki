@@ -41,6 +41,10 @@ const REQUIRED = [
   'docs/wechat-publish-setup.md',
   'tools/wechat/publish-note.js',
   'tools/wechat/install-wechat-adapters.mjs',
+  // 发布元数据（v0.23.0 续）：存量回填脚本 + seed 立即写入脚本也要能随包分发，
+  // 否则换机器后没法定稿「哪些发过」。
+  'tools/wechat/backfill-publish-state.mjs',
+  'tools/wechat/seed-publish-spec-now.mts',
 ]
 const FORBIDDEN = ['lib/client.bundle.js']
 /** package.json `files` 里声明的 lib/ 白名单。 */

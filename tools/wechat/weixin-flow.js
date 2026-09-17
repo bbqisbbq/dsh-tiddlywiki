@@ -353,13 +353,22 @@ export async function saveDraft(page) {
     if (!clicked || !clicked.ok) {
         throw new CommandExecutionError('找不到「保存为草稿」按钮（后台可能改版）');
     }
-    for (let attempt = 0; attempt < 8; attempt++) {
-        await page.wait(2);
+    // ⚠️ 轮询**绝不能**读 `document.body.innerText`：微信编辑器 DOM 极大，读它会
+    // 强制整页 layout，实测每次 evaluate 约 17 秒——8 次轮询就把整个命令拖过 210s
+    // 超时（踩过：命令超时但草稿其实已保存）。改成只查少量 toast 节点 + 直接看正文
+    // 里是否已出现内容，都是 O(1) 级的操作。
+    for (let attempt = 0; attempt < 10; attempt++) {
+        await page.wait(1);
         const saved = await page.evaluate(`(() => {
             var el = document.querySelector('#js_save_success');
             if (el && window.getComputedStyle(el).display !== 'none') return true;
-            var t = document.body.innerText || '';
-            return t.indexOf('已保存') >= 0 || t.indexOf('保存成功') >= 0;
+            // 后台保存成功会弹 .weui-desktop-toast（不必读全页文本）
+            var toasts = document.querySelectorAll('.weui-desktop-toast, .weui-desktop-msg');
+            for (var i = 0; i < toasts.length; i++) {
+                var t = (toasts[i].textContent || '').trim();
+                if (t.indexOf('已保存') >= 0 || t.indexOf('保存成功') >= 0) return true;
+            }
+            return false;
         })()`);
         if (saved) return true;
     }
@@ -393,26 +402,29 @@ export async function publishDraft(page, timeoutSec) {
     );
 
     const deadline = Date.now() + Math.min(Number(timeoutSec) || 180, 300) * 1000;
-    let lastText = '';
+    let lastUrl = '';
     while (Date.now() < deadline) {
         await page.wait(3);
+        // ⚠️ 同样**不要**读 body.innerText（微信 DOM 极大，读一次 ~17s，会把轮询
+        // 拖到超时）。只查 URL + 少量 toast 节点。
         const state = await page.evaluate(`(() => {
-            var t = document.body.innerText || '';
-            return JSON.stringify({
-                url: location.href,
-                published: /已发表|发表成功|发布成功|审核中/.test(t),
-                text: t.slice(0, 160),
-            });
+            var toasts = document.querySelectorAll('.weui-desktop-toast, .weui-desktop-msg, .weui-desktop-dialog__desc');
+            var hit = '';
+            for (var i = 0; i < toasts.length; i++) {
+                var t = (toasts[i].textContent || '').trim();
+                if (/已发表|发表成功|发布成功|审核中/.test(t)) { hit = t.slice(0, 80); break; }
+            }
+            return JSON.stringify({ url: location.href, hit: hit });
         })()`);
         try {
             const parsed = JSON.parse(state);
-            lastText = parsed.text || '';
-            if (parsed.published) return true;
+            lastUrl = parsed.url || lastUrl;
+            if (parsed.hit) return true;
             if (parsed.url && parsed.url.indexOf('appmsgpublish') >= 0) return true;
         } catch { /* keep polling */ }
     }
     throw new TimeoutError(
         `等待发表结果超时（${Math.min(Number(timeoutSec) || 180, 300)}s）。可能是扫码未完成。`
-        + `当前页面：${lastText.slice(0, 120)}`,
+        + `当前页面：${lastUrl}`,
     );
 }

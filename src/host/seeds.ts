@@ -43,6 +43,7 @@ import { seedAllArticles, unseedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MA
 import { seedUiStyles, unseedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } from './seed-ui-styles.ts'
 import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './seed-menubar-theme.ts'
 import { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT } from './seed-clip-bridge.ts'
+import { seedPublishSpec, unseedPublishSpec, PUBLISH_SPEC_TITLE, PUBLISH_SPEC_MARKER_TITLE, PUBLISH_SPEC_TEXT } from './seed-publish-spec.ts'
 import { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT } from './seed-render.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
@@ -554,6 +555,10 @@ export const SEED_DEFS: SeedDef[] = [
   defineSeed(
     { id: 'clip-bridge', title: '本地剪藏桥（书签小工具）', description: '「本地剪藏桥 + 书签小工具」使用说明（Markdown 文档，带书签代码/启用步骤/安全说明）：DSH 监听 127.0.0.1 端口接收剪藏请求，浏览器书签一键把当前页标题/URL/选中文字写进知识库（配置 bridge.*，默认 clip 标签）。真功能在插件运行时代码里，此 seed 只预置说明文档。', markerTitle: CLIP_BRIDGE_MARKER_TITLE, core: false },
     { content: async () => [{ title: CLIP_BRIDGE_DOC_TITLE, text: CLIP_BRIDGE_DOC_TEXT }], presentTitle: CLIP_BRIDGE_DOC_TITLE, write: seedClipBridge, unseed: unseedClipBridge },
+  ),
+  defineSeed(
+    { id: 'publish-spec', title: '发布元数据规范', description: '「发布元数据规范」文档（Markdown）：约定用 pub-state / pub-platform / pub-wechat-* 等自定义字段记录每篇笔记的对外发布状态（已发/未发/不可发），以及 no-publish 标签约定；供发布流程与 agent 判断「这篇发过没有、能不能发」使用。随插件分发，换机器无需重新约定。', markerTitle: PUBLISH_SPEC_MARKER_TITLE, core: false, startup: true },
+    { content: async () => [{ title: PUBLISH_SPEC_TITLE, text: PUBLISH_SPEC_TEXT }], presentTitle: PUBLISH_SPEC_TITLE, write: seedPublishSpec, unseed: unseedPublishSpec },
   ),
   defineSeed(
     { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', core: true },
