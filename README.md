@@ -37,6 +37,7 @@
 | 🧯 **路由不会拖垮进程** | 所有路由经 `guardHandler` 包装：任何 rejection（含代理里 try 之外的 `new URL()`）都变成 413/500 响应，而不是宿主未处理的 promise rejection（那会**直接结束 dsh web 进程**并挂死请求）；剪藏桥 listen 后保留常驻 `error` 监听（v0.19.3） |
 | 📊 **回复流卡片** | 工具结果显示原生 TW 卡片（**按笔记自己的内容类型渲染**：Markdown 笔记就是 Markdown，v0.18.0），检索/最近列表带**命中处摘要**（v0.22.8）；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明）；成功/失败会弹出提示（v0.20.0 修复：此前提示把自由文本当 tiddler 标题传给 TW notifier，全部静默） |
+| 📮 **发布到微信公众号**（可选） | 把笔记一键发到公众号**草稿箱**（可选点发表）：TW 渲染 → 补内联样式 → 浏览器自动化复用你已登录的后台会话。**绕开官方 API 权限封锁**（2025-07 起个人主体账号的发布接口被回收），个人号可用；发表需管理员扫一次码。见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md) |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
 | 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
 | 🧪 **审计守门** | 第四轮审计（v0.20.0）把 CI 与 `npm run verify:*` 合成一份清单，并补上 `verify-constants`（filter 长度预算）、`/render` 403、auth 打码、notify 与草稿避让回归 |
@@ -152,6 +153,31 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 - **注意**：切换期间正在跑的 Agent 工具调用会失败（TW 在重启），界面上按钮会禁用并显示「切换中…（重启 TW）」。
 
 `wikiRoot` / `wiki` 现在只是**默认值**——运行中的实际位置以指针文件优先。这也是为什么它能不改 cordis、不重装就切。
+
+### 📮 发布到微信公众号（可选，2026-09-17）
+
+把 wiki 里的任意笔记**一键发到微信公众号草稿箱**（可选直接发表）。整套能力放在 `tools/wechat/`，**不依赖公众号服务端 API**——因为 2025-07 起官方已回收个人主体账号的「发布能力」接口权限；本方案改用**浏览器自动化复用你已登录的后台会话**，所以个人号也能用。
+
+```bash
+# 一次性：装 adapter 到本机 opencli（幂等）
+node tools/wechat/install-wechat-adapters.mjs
+
+# 发布（注意必须带 --trace retain-on-failure，原因见下）
+opencli weixin publish-note "笔记标题" --trace retain-on-failure -f json
+opencli weixin publish-note "笔记标题" --cover ./cover.png -f json   # 带封面
+opencli weixin publish-note "笔记标题" --preview ./out -f json       # 先导出排版预览
+opencli weixin publish-note "笔记标题" --publish -f json             # 直接发表（需管理员扫码）
+```
+
+**流程**：笔记标题 → DSH 的 `/render`（TW 自己渲染成语义 HTML，含代码高亮）→ `wechat-html.js` 补**内联样式**（微信会剥 `<style>` 和 class，只认内联）→ opencli 驱动后台填表/写正文/传图/设封面/存草稿 →（可选）点发表。
+
+**三个要点**：
+
+1. **必须带 `--trace retain-on-failure`**——不带会对 `mp.weixin.qq.com` 稳定报 `Navigation rejected`（实测 trace 开 5/5 成功、关 8/8 失败；这是 opencli 1.8.7 的 bug，`--site-session ephemeral` 等绕法均无效）。
+2. **发表必须管理员扫码**——后台点「发表」后微信要求管理员微信扫码确认，无法自动化。「一键」的真实含义是「脚本做到填表/排版/上传，你只需扫一次码」。默认走**发表**（不推送粉丝、不占群发额度），群发请自行在后台操作。
+3. **图片上传用 DataTransfer 注入**，不用 `page.setFileInput`——后者依赖 CDP `Page.fileChooserOpened`，本机扩展版本组合下稳定失败；改用页面上下文直接塞 `input.files`，实测图片真进 `mmbiz.qpic.cn`。代价是单图 **8MB** 上限（字节要以 base64 穿过 evaluate）。
+
+**换机器还原**见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md)（含 opencli / Browser Bridge 扩展安装、扫码登录、排错表）。设计依据与全部实测细节见 [docs/plans/2026-09-17-wechat-publish-design.md](docs/plans/2026-09-17-wechat-publish-design.md)。
 
 ### 🧩 初始化（一次性预置 seed）：哪些「必备」，哪些「可有可无」
 
@@ -352,6 +378,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.23.0**（2026-09-17）：**新增「发布到微信公众号」**（`tools/wechat/`，可选能力，不动 host 代码）。把 wiki 笔记一键发到公众号**草稿箱**，可选点发表。**为什么不用官方 API**：2025-07 起官方回收了「发布能力」接口对个人主体/未认证账号的调用权限（`freepublish/submit` 不可用），草稿箱 `draft/add` 也常回 48001；即便可用还要配 API IP 白名单、封面永久素材、正文图片必须走 `media/uploadimg`。**本方案改走浏览器自动化**，复用你**已登录**的公众号后台会话（opencli + Browser Bridge 扩展），个人号可用、零凭据落盘。数据流：笔记标题 → DSH `POST /render`（TW 自已渲染成语义 HTML，**代码高亮白蹭**）→ `wechat-html.js` 补**内联样式**（实测微信会剥 `<style>` 并删 class，**只认内联 style**；而 TW 输出零内联样式，所以必须有这一步）→ `weixin-flow.js` 驱动后台填表/写正文/传图/设封面/存草稿。**三个实测踩坑**：① **必须带 `--trace retain-on-failure`**——不带就对 `mp.weixin.qq.com` 稳定报 `Navigation rejected`（trace 开 5/5 成功、关 8/8 失败；`--site-session ephemeral` / `--keep-tab false` / 前后台窗口 / 重置标签页 / 重启 daemon 全部无效，是 opencli 1.8.7 的 bug）；② **图片上传必须用 DataTransfer 注入**，不能用 `page.setFileInput`（后者依赖 CDP `Page.fileChooserOpened`，本机扩展版本组合下稳定失败；DataTransfer 在页面上下文直接塞 `input.files`，实测图片真进 `mmbiz` CDN，代价是单图 8MB 上限）；③ **正文必须用 `execCommand('insertHTML')`**，`insertText` 会把 HTML 当字面文本（opencli 内置 `weixin create-draft` 就是这样，实测 Markdown 符号原样进库）。**发表需管理员扫码**——微信的账号安全机制，无法自动化，「一键」的真实含义是「脚本做完排版/上传/填表，你只扫一次码」；默认走**发表**（不推送粉丝、不占群发额度）而非群发。命令：`opencli weixin publish-note "标题" [--cover x.png] [--preview out] [--publish]`（另有 `create-article` 从本地 HTML 文件建草稿）。**换机器还原**：`node tools/wechat/install-wechat-adapters.mjs` 一条命令装好 adapter 并自检扩展/登录状态；完整步骤与排错见 `docs/wechat-publish-setup.md`。守门：`verify-package-contents.mjs` 新增 3 条断言（发布包必须含 `tools/wechat/publish-note.js`、`tools/wechat/install-wechat-adapters.mjs` 与 setup 文档），`package.json` 的 `files` 白名单补 `tools`——否则 npm 用户拿不到这套能力。调研与本机实测全过程沉淀在 wiki 笔记「公众号发布插件调研」。
 
 - **v0.22.10**（2026-09-17）：**修「写入丢失 `created`/`modified`，新笔记在按修改时间排序的页面上沉到最后一名」**（用户实测报障：日记在「主题页·日志」排 175/175，看着像没被收录）。根因：插件把这两个字段列进 `CLEAN_SKIP_FIELDS`（假设「TW 服务端会补」），但 TW 服务端的 PUT 路由**从不补**时间戳——`getCreationFields()`/`getModificationFields()` 只在 TW 自己的浏览器 UI 里调用，于是插件写的条目落盘只有 tags/title/type；而 TW 的 `sortTiddlers` 对缺失字段取 `fields[sortField] || ""`，`!sort[modified]` 降序时空串直接沉底。**修复**：`buildWriteTiddler()` 统一负责写这两个字段，语义与 TW 编辑器一致——新建 = 都取当前时刻，覆盖 = 保留原 `created`、只刷新 `modified`（基底无 `created` 的迁移存量则补当前时刻）；格式用新增 `formatTiddlerDate()`（TW 的 17 位紧凑 UTC，与 `$tw.utils.stringifyDate()` 逐字节一致，别用 ISO）。两者继续留在 `RESERVED_TIDDLER_FIELDS`（`fields` 不得覆盖），只是不再被 CLEAN_SKIP 丢弃。`TiddlyWebClient.put()` 另有 `ensureTiddlerTimestamps()` 兜底（**只补缺、绝不改写**已有值），覆盖剪藏桥 / seed / 配置 tiddler 等手拼 PUT 的路径。顺带统一：`rename`（含引用改写）与回收站恢复改走共享写策略（原先手拼 body 会把旧 `modified` 原样带过去）；回收站快照与恢复保留原时间戳（恢复 = 恢复原状，`trash-at` 单独记删除时刻）；`/edit` 生成的 TW 草稿携带原笔记的 `created`——TW 保存草稿时草稿字段会覆盖新生成的时间戳，草稿不带它就会把笔记的创建时刻重置成「刚才」。守门：`verify-write-policy` +7 条纯函数（格式往返 / 三种语义 / `$:/` / `fields` 不可覆盖 / 兜底只补不改写），`verify-tools` +5 条 E2E（含用 TW 真实 `!sort[modified]` 过滤器验证排序），selftest 增配置 `created` 保留断言。**存量数据不自动回填**：线上 wiki 1161 个 `.tid` 中 948 个缺 `modified`（多为历史迁移脚本所致），它们仍会在 `sort[modified]` 页面沉底，可用 wiki 根目录的 `backfill-timestamps.mjs` 一次性补齐（默认 dry-run，按 **git 历史**取首次出现/最后变更时间，`--write` 才落盘）。
 
