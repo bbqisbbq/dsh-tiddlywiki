@@ -1123,10 +1123,12 @@ try {
   await seedApi.delete('所有标签')
   await seedApi.delete(HOME_INDEX_MARKER_TITLE)
 
-  // checkAllSeeds: the registry has exactly the ten联动 items.
+  // checkAllSeeds: the registry reports every declared seed (id set derived from
+  // SEED_DEFS — this is the drift guard, so never hardcode the count/list again).
   const statuses = await checkAllSeeds(seedCtx)
   const ids = statuses.map((s) => s.id).sort()
-  assert(JSON.stringify(ids) === JSON.stringify(['all-articles', 'clip-bridge', 'doc-note', 'home-index', 'menubar-theme', 'render-route', 'send-to-agent', 'starter-docs', 'tw-web-host', 'ui-styles']), `seed registry lists all ten联动 items (${ids.join(',')})`)
+  const registryIds = SEED_DEFS.map((d) => d.id).sort()
+  assert(JSON.stringify(ids) === JSON.stringify(registryIds), `seed registry lists exactly the declared seeds (${ids.join(',')})`)
   assert(statuses.every((s) => typeof s.title === 'string' && s.title.length > 0), 'every seed has a display title')
 
   // all-articles first-run (marker-gated) + content sanity + force.
@@ -1220,10 +1222,26 @@ try {
   await seedApi.delete(RENDER_MARKER_TITLE)
   await seedApi.delete(RENDER_PLUGIN_TITLE)
   const startup = await runAllSeeds(seedCtx)
-  assert(startup.length === 5, 'startup runAllSeeds seeds the three core + two starter items')
+  // 默认启动 = 全部 core + 未 gate 的 starter（doc-note / starter-docs）。
+  // v0.23.0 的 publish-spec 带 `gate`（ctx.wechat 未开 → 跳过），所以不在其中
+  // ——下面单独断言。三个期望值全部从 SEED_DEFS 派生，新增 seed 时不会漂。
+  const expectedStartupIds = SEED_DEFS.filter((d) => d.core || (d.startup === true && d.gate === undefined)).map((d) => d.id).sort()
+  const startupIds = startup.map((r) => r.id).sort()
+  assert(startup.length === expectedStartupIds.length, `startup runAllSeeds seeds every core seed + the ungated starter items (${startupIds.join(',')})`)
   assert(startup.every((r) => r.ok), 'core + starter seeds run ok at startup')
-  assert(startup.every((r) => r.wrote), 'all five startup seeds were missing and got written')
-  assert(startup.every((r) => ['send-to-agent', 'tw-web-host', 'render-route', 'doc-note', 'starter-docs'].includes(r.id)), 'startup only touches the core + starter seeds')
+  assert(startup.every((r) => r.wrote), 'every startup seed was missing and got written')
+  assert(JSON.stringify(startupIds) === JSON.stringify(expectedStartupIds), `startup only touches the core + ungated starter seeds (${startupIds.join(',')})`)
+  assert(SEED_DEFS.some((d) => d.id === 'publish-spec' && d.gate !== undefined), 'publish-spec is declared as a gated (opt-in) seed')
+  assert(!startup.some((r) => r.id === 'publish-spec'), 'optional publish-spec is GATED OUT at startup while wechat is off (v0.23.0)')
+
+  // 开可选功能后，publish-spec 才参与启动（v0.23.0 gate）。清掉 marker 以便真的写。
+  await seedApi.delete('$:/dsh-tiddlywiki/publish-spec-seeded')
+  const startupOn = await runAllSeeds({ ...seedCtx, wechat: true })
+  const psRun = startupOn.find((r) => r.id === 'publish-spec')
+  assert(psRun !== undefined && psRun.ok, 'wechat on → publish-spec participates in startup')
+  assert((await seedApi.get('发布元数据规范')) !== undefined, 'wechat on → the publish-metadata spec doc is written')
+  // 清理，避免影响后续「手动 run-all 只写缺失的可选项」断言
+  await removeSeedById(seedCtx, 'publish-spec')
   assert((await seedApi.get(DOC_NOTE_TITLE)) !== undefined, 'startup path re-creates the starter doc note')
   assert((await seedApi.get('教程：按主题/标签做汇总页')) !== undefined, 'startup path re-creates the starter docs')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined, 'startup path does NOT re-create the optional menubar-theme')
@@ -1233,12 +1251,14 @@ try {
   assert((await seedApi.get(CLIP_BRIDGE_DOC_TITLE)) === undefined, 'startup path does NOT re-create the optional clip-bridge doc')
 
   // Manual run-all (settings "全部重新初始化", non-force) still covers every
-  // registry item; only the missing optional seeds get written now.
+  // registry item; only the missing ones get written now. Note the manual path
+  // deliberately BYPASSES `gate` (an explicit request), so publish-spec — which
+  // startup skipped and which we just removed above — is written here too.
   const all = await runSeedById(seedCtx, undefined, false)
-  assert(all.length === 10, 'manual run-all covers every registry item')
+  assert(all.length === SEED_DEFS.length, `manual run-all covers every registry item (${all.length}/${SEED_DEFS.length})`)
   assert(all.every((r) => r.ok), 'all seeds run ok')
   const allWrote = all.filter((r) => r.wrote).map((r) => r.id).sort()
-  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'clip-bridge', 'home-index', 'menubar-theme', 'ui-styles']), `manual run-all writes exactly the missing optional seeds (${allWrote.join(',')})`)
+  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'clip-bridge', 'home-index', 'menubar-theme', 'publish-spec', 'ui-styles']), `manual run-all writes exactly the missing seeds (${allWrote.join(',')})`)
 
   // runSeedById with an id runs only that one; force rewrites regardless.
   const onlyHome = await runSeedById(seedCtx, 'home-index', false)
@@ -1300,17 +1320,19 @@ try {
   // Unknown id → explicit error result, not thrown.
   const rmUnknown = await removeSeedById(seedCtx, 'nope')
   assert(rmUnknown.length === 1 && !rmUnknown[0].ok && (rmUnknown[0].error ?? '').includes('unknown seed'), 'remove unknown seed id is reported, not thrown')
-  // Remove-all targets exactly the seven non-core seeds (5 optional + 2 starter),
-  // keeps the core ones.
+  // Remove-all targets every non-core seed (core ones are protected), counting
+  // straight off the registry so adding a seed cannot silently drift.
   await runSeedById(seedCtx, 'menubar-theme', true)
   await runSeedById(seedCtx, 'doc-note', true)
   await runSeedById(seedCtx, 'starter-docs', true)
   await runSeedById(seedCtx, 'ui-styles', true)
   await runSeedById(seedCtx, 'clip-bridge', true)
+  const removableCount = SEED_DEFS.filter((d) => !d.core).length
   const rmAll = await removeSeedById(seedCtx, undefined)
-  assert(rmAll.length === 7, 'remove-all targets exactly the seven non-core seeds')
+  assert(rmAll.length === removableCount, `remove-all targets exactly the ${removableCount} non-core seeds (got ${rmAll.length})`)
   assert(rmAll.every((r) => r.ok), 'remove-all all ok')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined && (await seedApi.get(DOC_NOTE_TITLE)) === undefined && (await seedApi.get(CLIP_BRIDGE_DOC_TITLE)) === undefined, 'remove-all cleaned optional tiddlers')
+  assert((await seedApi.get('发布元数据规范')) === undefined, 'remove-all also cleaned the gated publish-spec doc')
   assert((await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)) !== undefined && (await seedApi.get(TW_WEB_HOST_TIDDLER)) !== undefined && (await seedApi.get(RENDER_PLUGIN_TITLE)) !== undefined, 'remove-all keeps the core seeds')
 
   // 5e. Active-palette flip round-trip (before the server stops; kept AFTER

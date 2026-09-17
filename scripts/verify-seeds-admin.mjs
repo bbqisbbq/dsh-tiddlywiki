@@ -3,8 +3,9 @@
 // all) and POST /admin/seeds/remove (反初始化) drive the unified seed registry
 // end to end. v0.16.22: the startup path (runAllSeeds) seeds the CORE items
 // (send-to-agent / render-route / tw-web-host) PLUS the STARTER items (doc-note
-// / starter-docs, safe-skip); the four optional seeds are opt-in from the
-// settings page.
+// / starter-docs, safe-skip); the optional seeds are opt-in from the settings
+// page, and gated ones (publish-spec ← wechat.enabled) stay out entirely.
+// All expected sets are derived from SEED_DEFS so adding a seed cannot drift.
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,12 +26,21 @@ import {
   runSeedById,
   removeSeedById,
   tiddlywikiToolSummary,
+  SEED_DEFS,
   DOC_NOTE_TITLE,
   STARTER_DOCS_ITEMS,
   STARTER_DOCS_MARKER_TITLE,
 } from '../lib/index.js'
 
 const ROUTE_PREFIX = '/dsh-tiddlywiki'
+/** Every id the registry reports (checkAllSeeds is gate-agnostic). */
+const REGISTRY_IDS = SEED_DEFS.map((d) => d.id)
+/** Core seeds: seeded on every startup, never removable. */
+const CORE_IDS = SEED_DEFS.filter((d) => d.core).map((d) => d.id)
+/** Startup set without an opt-in flag on: core + ungated starter seeds. */
+const STARTUP_IDS = SEED_DEFS.filter((d) => d.core || (d.startup === true && d.gate === undefined)).map((d) => d.id)
+/** Non-core seeds: the ones「反初始化」/ remove-all may delete. */
+const REMOVABLE_COUNT = SEED_DEFS.filter((d) => !d.core).length
 const root = await mkdtemp(join(tmpdir(), 'dsh-tw-seeds-admin-'))
 console.log('temp wiki root:', root)
 const server = new WikiServer({ wikiRoot: root, wiki: 'main', port: 0 })
@@ -99,27 +109,24 @@ try {
 
   const base = miniBase
 
-  // 1. GET statuses on a FRESH wiki: all ten seeds missing.
+  // 1. GET statuses on a FRESH wiki: every registry seed missing.
   let res = await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)
   let data = await res.json()
   console.log('fresh statuses:', data.items?.map((i) => `${i.id}:${i.present}`).join(' '))
-  if (res.status !== 200 || data.ok !== true || data.items?.length !== 10) throw new Error('expected 10 seed statuses')
+  if (res.status !== 200 || data.ok !== true || data.items?.length !== REGISTRY_IDS.length) throw new Error(`expected ${REGISTRY_IDS.length} seed statuses (got ${data.items?.length})`)
   if (data.items.some((i) => i.present)) throw new Error('fresh wiki must report everything missing')
 
-  // 2. Startup path (v0.16.22) seeds the three CORE items + two STARTER items
-  // (doc-note 插件说明 / starter-docs 示例与文档); the four optional seeds stay
-  // missing (opt-in, never forced).
+  // 2. Startup path (v0.16.22) seeds the three CORE items + the STARTER items
+  // (doc-note 插件说明 / starter-docs 示例与文档) whose gate is off; the optional
+  // and gated seeds stay missing (opt-in, never forced).
   const startup = await runAllSeeds({ client: clientRef })
-  if (startup.length !== 5 || !startup.every((r) => r.ok && r.wrote)) throw new Error('runAllSeeds must seed exactly the three core + two starter items')
-  if (!startup.every((r) => ['send-to-agent', 'render-route', 'tw-web-host', 'doc-note', 'starter-docs'].includes(r.id))) throw new Error('runAllSeeds must only touch core + starter seeds')
+  if (startup.length !== STARTUP_IDS.length || !startup.every((r) => r.ok && r.wrote)) throw new Error(`runAllSeeds must seed exactly the ${STARTUP_IDS.length} core + ungated starter items (got ${startup.length})`)
+  if (!startup.every((r) => STARTUP_IDS.includes(r.id))) throw new Error('runAllSeeds must only touch core + ungated starter seeds')
   res = await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)
   data = await res.json()
   console.log('after startup:', data.items?.map((i) => `${i.id}:${i.present}`).join(' '))
-  const coreIds = ['send-to-agent', 'render-route', 'tw-web-host']
-  const starterIds = ['doc-note', 'starter-docs']
-  const optionalIds = ['home-index', 'all-articles', 'ui-styles', 'menubar-theme', 'clip-bridge']
-  if (!data.items.every((i) => coreIds.includes(i.id) || starterIds.includes(i.id) ? i.present : !i.present)) throw new Error('after startup: core + starter present, optional missing')
-  if (!data.items.every((i) => i.removable === !coreIds.includes(i.id))) throw new Error('removable flag must mark every non-core seed (core = not removable)')
+  if (!data.items.every((i) => (STARTUP_IDS.includes(i.id) ? i.present : !i.present))) throw new Error('after startup: core + ungated starter present, everything else missing')
+  if (!data.items.every((i) => i.removable === !CORE_IDS.includes(i.id))) throw new Error('removable flag must mark every non-core seed (core = not removable)')
 
   // 3. Force single seed via HTTP: corrupt home tiddler, then POST run force.
   await clientRef.put({ title: '所有标签', text: 'corrupted', tags: ['索引'] })
@@ -164,15 +171,15 @@ try {
   console.log('remove core tw-web-host:', run.status, JSON.stringify(run.json))
   if (run.status !== 400 || run.json?.ok !== false) throw new Error('core seed remove must 400')
   if ((await clientRef.get('$:/config/tiddlyweb/host'))?.text !== TW_PROXY_PATH) throw new Error('core tw-web-host must survive remove attempt')
-  // Remove-all removes the remaining non-core seeds (5 optional + 2 starter),
-  // keeps the core ones.
+  // Remove-all removes every non-core seed (optional + starter + gated), keeps
+  // the core ones.
   run = await post(`${base}${ROUTE_PREFIX}/admin/seeds/remove`, {})
   console.log('remove all:', run.json?.results?.map((r) => `${r.id}:${r.ok}`).join(' '))
-  if (run.status !== 200 || run.json?.results?.length !== 7 || !run.json.results.every((r) => r.ok)) throw new Error('remove-all failed')
+  if (run.status !== 200 || run.json?.results?.length !== REMOVABLE_COUNT || !run.json.results.every((r) => r.ok)) throw new Error(`remove-all failed (expected ${REMOVABLE_COUNT} results, got ${run.json?.results?.length})`)
   const finalStatuses = await (await fetch(`${base}${ROUTE_PREFIX}/admin/seeds`)).json()
   console.log('final statuses:', finalStatuses.items?.map((i) => `${i.id}:${i.present}`).join(' '))
   const presentIds = finalStatuses.items.filter((i) => i.present).map((i) => i.id).sort()
-  if (JSON.stringify(presentIds) !== JSON.stringify([...coreIds].sort())) throw new Error('after remove-all only core seeds remain present')
+  if (JSON.stringify(presentIds) !== JSON.stringify([...CORE_IDS].sort())) throw new Error('after remove-all only core seeds remain present')
 
   // 8. v0.21.0 — 注入提示词的预览与「改配置即生效」接线。
   //    GET /admin/prompt 必须回 host 实时拼出的文本；POST /admin/config 必须

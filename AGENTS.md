@@ -97,6 +97,8 @@ node scripts/verify-menubar-theme.mjs / verify-theme-browser.mjs
 
 **CI**：`.github/workflows/ci.yml` 4 个 job——`static`（typecheck + build + `git diff --exit-code -- lib/` + `npm run verify:static`）、`selftest`（+`smoke:client`）、`verify-unit`（`npm run verify:unit`）、`verify-e2e`（`npm run verify:e2e` + `npm run verify:large`）；后三者 `needs: static`。**CI 只调用 npm 聚合脚本，不再各自维护第二份脚本清单**（v0.20.0 审计：两边清单漂移导致 `verify-status-cache`/`verify-audit-fixes` 从未在 CI 跑过）。浏览器类脚本不进 CI（会静默 SKIP，等于假绿）。
 
+**⚠️ `package-lock.json` 必须与 `package.json` 同步（v0.23.0 教训）**：`static` job 第一步是 `npm ci`，lock 陈旧/损坏会**秒红**——`EUSAGE … Missing: <pkg> from lock file`（v0.23.0 实测：lock 停在 v0.20.1 且含一个 `resolved` 与 `version` 不一致的 hoisted 条目，`npm ci` 6 秒失败），而 `needs: static` 让其余三个 job **根本不跑**（看着像代码坏了，其实是 lock 脏了）。bump 版本或改依赖后必须用**官方源**重新生成：`npm install --package-lock-only --registry=https://registry.npmjs.org`，然后 `npm ci --dry-run` 自检。
+
 **⚠️ 行尾必须 LF（v0.19.1 教训）**：仓库根有 **`.gitattributes`（`* text=auto eol=lf`）**。`lib/index.js.map` 内嵌源文件原文（`sourcesContent`），Windows 工作区若是 CRLF，生成的 map 里就是 `\r\n` 转义，而 GitHub runner 检出为 LF → 重建出的 map 与提交版不同 → `static` 的 `git diff --exit-code -- lib/` 必失败，且它一挂其余三个 job（`needs: static`）**根本不会跑**（v0.19.0 的 CI 实际就是这个状态）。改完 src 一律 `npm run build` 后提交 lib/；不要绕开 `.gitattributes` 的 LF 约定。
 
 **构建约束（踩过的坑）**：host 端 `tiddlywiki` **不打包**（运行时 `createRequire().resolve('tiddlywiki/tiddlywiki.js')`）；client 端 `react` **不打包**（web app 运行时解析）；client 必须 **minify**（否则 >1MB，被 dsh.pub 等注册表校验拒绝）。发布前的自包含检查要断言**不存在真实的 import 语句**（`grep -nE "(from|require\()\s*['\"]@deepseek-ai" lib/*.js` 必须无输出）——简单的 `grep -r "@deepseek-ai" lib/` 会命中 `sdk.ts` 的说明注释（2 处），永远失败。
