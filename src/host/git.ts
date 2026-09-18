@@ -27,7 +27,7 @@
  * @module dsh-tiddlywiki/host/git
  */
 import { execFile } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -222,6 +222,14 @@ export class GitFace {
   private async pullUnlocked(dir: string): Promise<GitActionResult & { changed?: boolean }> {
     const before = await this.exec(['rev-parse', 'HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
     const beforeHead = before.ok ? before.stdout.trim() : ''
+    // Did a rebase already exist BEFORE we ran? (v0.23.5)
+    //
+    // `rebase --abort` used to run unconditionally on every pull failure, so a
+    // pull that fails for an UNRELATED reason (no remote, offline, unrelated
+    // permission error) while the user is mid-rebase in the wiki repo wiped their
+    // in-progress rebase and conflict resolution. Commits survive in the reflog /
+    // ORIG_HEAD, but the resolution work is gone. We only abort what we started.
+    const preexistingRebase = await this.hasRebaseInProgress(dir)
     const r = await this.exec(['pull', '--rebase', '--autostash'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
     if (r.ok) {
       const after = await this.exec(['rev-parse', 'HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
@@ -230,21 +238,37 @@ export class GitFace {
       return { ok: true, message: r.stdout.trim() || 'pull ok', ...(changed ? { changed: true } : {}) }
     }
     const conflictFiles = await this.unmergedFiles(dir)
-    await this.exec(['rebase', '--abort'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
+    // Only abort when WE left a rebase behind: either it did not exist before,
+    // or it did but the failure produced unmerged paths we are responsible for.
+    const rebaseNow = await this.hasRebaseInProgress(dir)
+    const ourRebase = rebaseNow && !preexistingRebase
+    if (ourRebase) {
+      await this.exec(['rebase', '--abort'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
+    }
     // The abort does NOT clean up a failed AUTOSTASH re-apply (module docblock):
     // re-check so we report the leftover markers instead of leaving them for the
     // AutoCommitter to commit.
     const after = await this.conflictState(dir)
     const files = after.conflicted ? [...new Set([...conflictFiles, ...after.files])] : conflictFiles
     const note = after.conflicted ? `（rebase --abort 之后工作树仍有冲突：${after.reason}）` : ''
+    const userRebaseNote = rebaseNow && !ourRebase
+      ? '（检测到你自己的 rebase 正在进行中，已保留不动——请先手动完成或 abort 它再同步）'
+      : ''
     const reason = (r.stderr.trim() || r.stdout.trim()).slice(0, 500)
     return {
       ok: false,
       message: files.length > 0
-        ? `conflict in ${files.join(', ')} (rebase aborted)${note}: ${reason}`
-        : `pull failed${note}: ${reason}`,
+        ? `conflict in ${files.join(', ')}${ourRebase ? ' (rebase aborted)' : ''}${note}${userRebaseNote}: ${reason}`
+        : `pull failed${note}${userRebaseNote}: ${reason}`,
       ...(files.length > 0 ? { conflictFiles: files } : {}),
     }
+  }
+
+  /** Is a rebase in progress in `dir`? (`REBASE_HEAD` or the on-disk state dirs.) */
+  private async hasRebaseInProgress(dir: string): Promise<boolean> {
+    const r = await this.exec(['rev-parse', '-q', '--verify', 'REBASE_HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
+    if (r.ok && r.stdout.trim().length > 0) return true
+    return existsSync(join(dir, '.git', 'rebase-merge')) || existsSync(join(dir, '.git', 'rebase-apply'))
   }
 
   async push(dir: string): Promise<GitActionResult> {

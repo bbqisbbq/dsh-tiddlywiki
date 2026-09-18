@@ -328,6 +328,16 @@ function watchWiki(wikiPath: string, onChange: () => void): () => void {
   for (const dir of [join(wikiPath, 'tiddlers'), wikiPath]) {
     try {
       const watcher = watch(dir, { persistent: false }, () => onChange())
+      // ALWAYS attach an 'error' listener (v0.23.5). `fs.watch` reports failures
+      // (Windows EPERM, Linux ENOSPC when the inotify watch limit is exhausted)
+      // as an ASYNC 'error' event, which the surrounding try/catch cannot catch.
+      // Node's EventEmitter rethrows an unhandled 'error' as an uncaught
+      // exception, and the host installs no uncaughtException handler → the whole
+      // `dsh web` process dies. Degrading to "no watcher" is safe: our own writes
+      // still call `touch()`, and the debounced commit still runs.
+      watcher.on('error', (err) => {
+        console.warn('[dsh-tiddlywiki] wiki watcher error (auto-commit still runs on our own writes):', err.message)
+      })
       watchers.push(watcher)
     } catch {
       /* directory may not exist yet; the committer also fires on our writes */
@@ -823,9 +833,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   let switching = false
   const runSwitch = async (target: { root?: unknown; name?: unknown }, persist: (t: WikiLocation) => Promise<void>): Promise<WikiSwitchResult> => {
     if (switching) return { ok: false, error: '正在切换知识库，请稍候再试', rolledBack: true }
+    // A switch in flight while the plugin is being disposed (hot reload / dsh web
+    // shutdown) would re-arm the committer + fs watcher AFTER teardown ran, and
+    // could even spawn a fresh TW child after `stop()` (v0.23.5).
+    if (disposed) return { ok: false, error: '插件正在卸载，已取消切换', rolledBack: false }
     switching = true
     try {
-      return await switchWiki({
+      const result = await switchWiki({
         currentLocation: () => server.currentLocation,
         currentPath: () => wikiPath,
         stopServer: () => server.stop(),
@@ -852,6 +866,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         savePointer: persist,
         log: (message) => console.warn('[dsh-tiddlywiki]', message),
       }, target)
+      // Teardown may have run while the switch was awaiting: the switch itself
+      // succeeded, but the extras it re-armed must be released again so we do not
+      // leak a committer/watcher past dispose (v0.23.5).
+      if (disposed) teardownCommitter()
+      return result
     } finally {
       switching = false
     }

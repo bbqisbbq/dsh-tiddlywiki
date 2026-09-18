@@ -265,21 +265,43 @@ export interface ConflictTokens {
 /**
  * 乐观并发守卫：调用方可以传 `tiddlywiki_get` 读到的 `modified` 或 `revision`；
  * 与当前值不一致就拒绝写入，避免覆盖人类在 TW 编辑器里的并发修改。
+ *
+ * ⚠️ 两个令牌是 **AND**，不是 OR（v0.23.5 修复）。旧实现「`modified` 命中就放行、
+ * 否则再看 `revision`」，有两个真实缺陷：
+ *   1. `revision` 是 TW `wiki.js` 里的**内存**计数器（`changeCount`），**不持久化**，
+ *      重启后每条回到 1。调用方读到 `revision: 1` → 人类改动 → 一次 pull/重启让
+ *      计数复位 → 带 `expectedRevision: 1` 的写入被判「一致」而**静默覆盖**人类改动。
+ *   2. 同时传两个令牌**并不会更安全**：`modified` 不匹配时会落到 `revision` 分支
+ *      继续写，等于调用方以为有两重保护、实际只有一重。
+ * 现在：**给了哪个令牌就必须匹配哪个**，任一不匹配即拒。只给一个令牌时语义不变
+ * （`revision` 仍是「刚 PUT 还没落盘」条目的唯一可用令牌，只是不再当作强令牌）。
  */
 export function assertNoConflict(title: string, existing: Tiddler | undefined, expected: ConflictTokens): void {
   if (expected.force === true || existing === undefined) return
-  const wantsToken = expected.expectedModified !== undefined || expected.expectedRevision !== undefined
-  if (!wantsToken) return
-  // 两种日期格式都接受：get 给模型的是 ISO，REST 存的是 TW 紧凑格式。
-  const expectedMs = parseTiddlerDate(expected.expectedModified)
-  const currentMs = parseTiddlerDate(existing.modified)
-  if (expectedMs !== undefined && currentMs !== undefined && expectedMs === currentMs) return
+  const wantsModified = expected.expectedModified !== undefined
+  const wantsRevision = expected.expectedRevision !== undefined
+  if (!wantsModified && !wantsRevision) return
+  let modifiedOk = true
+  if (wantsModified) {
+    // 两种日期格式都接受：get 给模型的是 ISO，REST 存的是 TW 紧凑格式。
+    const expectedMs = parseTiddlerDate(expected.expectedModified)
+    const currentMs = parseTiddlerDate(existing.modified)
+    // 无法比较（令牌或当前值解析不出）时判为**不匹配**：宁可让调用方重读一次，
+    // 也不要在证据不足时放行一次覆盖。
+    modifiedOk = expectedMs !== undefined && currentMs !== undefined && expectedMs === currentMs
+  }
   const currentRevision = existing.revision
-  if (expected.expectedRevision !== undefined && currentRevision !== undefined
-    && String(currentRevision) === String(expected.expectedRevision)) return
+  const revisionOk = wantsRevision
+    ? currentRevision !== undefined && String(currentRevision) === String(expected.expectedRevision)
+    : true
+  if (modifiedOk && revisionOk) return
+  const failed = [!modifiedOk ? 'modified' : null, !revisionOk ? 'revision' : null].filter(Boolean).join('、')
+  const revisionHint = !revisionOk && modifiedOk
+    ? '（注意：revision 是 TW 的内存计数器，重启/拉取后会复位——它只能证明「读到过」，长时间跨度的写入请用 expectedModified）'
+    : ''
   throw new WriteConflictError(
-    `写入冲突：tiddler「${title}」在你读取之后已被改动（当前 revision=${currentRevision ?? '?'} modified=${toIsoDateString(existing.modified) ?? '?'}；`
-    + `期望 revision=${expected.expectedRevision ?? '?'} modified=${expected.expectedModified ?? '?'}）。`
+    `写入冲突：tiddler「${title}」在你读取之后已被改动（不匹配的令牌：${failed}；当前 revision=${currentRevision ?? '?'} modified=${toIsoDateString(existing.modified) ?? '?'}；`
+    + `期望 revision=${expected.expectedRevision ?? '?'} modified=${expected.expectedModified ?? '?'}）。${revisionHint}`
     + '请重新读取最新内容后重试；确认要用你的版本覆盖时可传 force: true。',
   )
 }

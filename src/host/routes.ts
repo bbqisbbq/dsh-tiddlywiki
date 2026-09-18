@@ -336,8 +336,14 @@ const MAX_TAGS_LIMIT = 500
 
 /** Clamp a `limit` query param. `fallback` covers absent/unparsable values. */
 function readLimit(url: URL, fallback: number, max = MAX_LIST_LIMIT): number {
-  const raw = Number(url.searchParams.get('limit') ?? fallback)
-  return Number.isFinite(raw) ? Math.max(1, Math.min(Math.floor(raw), max)) : fallback
+  const raw = url.searchParams.get('limit')
+  // An EMPTY value (`?limit=`) means "not specified", not 0 (v0.23.5):
+  // `Number('' ?? fallback)` is 0, which clamped up to 1 — `/recent?limit=`
+  // returned a single tiddler instead of the default 15. `readOptionalLimit`
+  // already treated empty as absent; the two now agree.
+  if (raw === null || raw.trim().length === 0) return fallback
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(Math.floor(parsed), max)) : fallback
 }
 
 /** Optional `limit` query param: `undefined` when absent/unparsable (= no cap). */
@@ -584,18 +590,42 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   const isBlockedProxyTitle = (title: string): boolean =>
     BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix))
 
-  /** True when a proxied pathname addresses a blocked (secret-bearing) tiddler. */
+  /**
+   * True when a proxied pathname addresses a blocked (secret-bearing) tiddler.
+   *
+   * Decodes the WHOLE path rather than looking for a literal `/tiddlers/` marker
+   * (v0.23.5). TW core's `get-tiddler-html.js` route is a SINGLE segment
+   * (`path = /^\/([^\/]+)$/`) decoded with `decodeURIComponentSafe`, so
+   * `GET /tw/%24%3A%2Fplugins%2Fdsh-tiddlywiki%2Fconfig` reached the config
+   * tiddler while the old marker check saw no `/tiddlers/` at all (verified
+   * before the fix: 200, 715 bytes of config JSON on both `/tw` and `/api`).
+   * Raw, once- and twice-decoded forms are all checked so double-encoding cannot
+   * slip through either.
+   */
   const isBlockedProxyPath = (pathname: string): boolean => {
-    const marker = '/tiddlers/'
-    const at = pathname.indexOf(marker)
-    if (at < 0) return false
-    const raw = pathname.slice(at + marker.length)
-    let title = raw
-    try {
-      title = decodeURIComponent(raw)
-    } catch { /* malformed encoding: check the raw form */ }
-    return isBlockedProxyTitle(title)
+    let candidate = pathname
+    for (let i = 0; i < 3; i += 1) {
+      if (BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => candidate.includes(prefix))) return true
+      let next = candidate
+      try {
+        next = decodeURIComponent(candidate)
+      } catch { /* malformed encoding: stop decoding and use what we have */ }
+      if (next === candidate) break
+      candidate = next
+    }
+    return BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => candidate.includes(prefix))
   }
+
+  /**
+   * Does caller-supplied CONTENT reference the protected namespace? (v0.23.5)
+   * TW's `/render` resolves `{{…}}` transclusions server-side, so the `text`
+   * branch was a second way to print the config tiddler: verified before the fix,
+   * `POST /render {"text":"{{$:/plugins/dsh-tiddlywiki/config}}"}` returned 200
+   * with the config JSON inside `<pre><code>` — the fragment sanitizer only strips
+   * tags, it cannot know the text is a secret.
+   */
+  const referencesBlockedTitle = (value: string | undefined): boolean =>
+    value !== undefined && BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => value.includes(prefix))
 
   const handleStatus = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
@@ -1418,7 +1448,16 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       let body: { title?: unknown; text?: unknown; type?: unknown; contextTitle?: unknown; parseAsInline?: unknown } = {}
       try {
         body = JSON.parse(await readBody(req, MAX_PROXY_BODY_BYTES)) as typeof body
-      } catch {
+      } catch (err) {
+        // `readBody` rejects with `body too large` when the cap is hit (v0.23.5):
+        // that used to be swallowed by this catch and reported as 400 "invalid
+        // JSON", which hides the real problem. Route it through errorStatus so an
+        // oversize body is 413 like every other route.
+        const status = errorStatus(err)
+        if (status !== 500) {
+          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, status)
+          return
+        }
         json(res, { ok: false, error: 'invalid JSON body' }, 400)
         return
       }
@@ -1434,6 +1473,15 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       // `/tw` and `/api` guards protect — /render was simply missed. Verified:
       // before this guard the rendered fragment contained both secrets verbatim.
       if (isBlockedProxyTitle(title)) {
+        json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
+        return
+      }
+      // The `text` branch transcludes server-side, so it can reach the same
+      // secret without ever mentioning it as `title` (v0.23.5). Check the body
+      // and the parse context too.
+      if (referencesBlockedTitle(text) || referencesBlockedTitle(
+        typeof body.contextTitle === 'string' ? body.contextTitle : undefined,
+      )) {
         json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
         return
       }

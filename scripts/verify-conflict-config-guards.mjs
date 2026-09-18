@@ -252,6 +252,46 @@ await test('E2E：无 git 操作、但文件里留了冲突块（autostash 形�
   assert.equal(log.stdout.trim().split('\n').length, 1, '绝不能产生第二个提交')
 })
 
+await test('E2E：pull 失败时不得 abort「用户自己的」rebase（v0.23.5）', async () => {
+  // 旧实现无条件 `rebase --abort`：只要 pull 失败（含与被 rebase 无关的原因，
+  // 如没配 remote、离线），用户在 wiki 仓库里**正在做**的 rebase 与冲突解决
+  // 就被清掉（提交还在 reflog/ORIG_HEAD，但解决过程丢了）。
+  const dir = path.join(tmp, 'repo3')
+  fs.mkdirSync(dir)
+  gitIn(dir, ['init', '-b', 'main'])
+  gitIn(dir, ['config', 'user.email', 't@local'])
+  gitIn(dir, ['config', 'user.name', 't'])
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'base\n')
+  gitIn(dir, ['add', '-A'])
+  gitIn(dir, ['commit', '-m', 'base'])
+  // 造一个真冲突并停在中途：用户此时正在解决。
+  gitIn(dir, ['checkout', '-b', 'other'])
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'other\n')
+  gitIn(dir, ['commit', '-am', 'other'])
+  gitIn(dir, ['checkout', 'main'])
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'main\n')
+  gitIn(dir, ['commit', '-am', 'main'])
+  assert.equal(gitIn(dir, ['merge', 'other']).ok, false, '（前置）这次 merge 必须冲突')
+  // 清掉 merge，改用一个**真的停在半路的 rebase**（这才是要保护的用户状态）。
+  gitIn(dir, ['merge', '--abort'])
+  assert.equal(gitIn(dir, ['rebase', 'other']).ok, false, '（前置）这次 rebase 必须冲突并停下')
+  assert.equal(fs.existsSync(path.join(dir, '.git', 'rebase-merge'))
+    || fs.existsSync(path.join(dir, '.git', 'rebase-apply')), true, '（前置）rebase 确实在进行中')
+
+  // 没有 remote → pull 必然失败，且与 rebase 无关。
+  const git = new GitFace()
+  const pulled = await git.pull(dir)
+  assert.equal(pulled.ok, false, '没有 remote 时 pull 必须失败')
+
+  // 用户的 rebase 必须原样保留（旧实现会把它 abort 掉）。
+  const rebaseStillThere = fs.existsSync(path.join(dir, '.git', 'rebase-merge'))
+    || fs.existsSync(path.join(dir, '.git', 'rebase-apply'))
+  assert.equal(rebaseStillThere, true, 'pull 失败后用户的 rebase 必须仍在进行中')
+  assert.ok(/rebase/.test(pulled.message), `回执要点明保留了用户的 rebase，实际：${pulled.message}`)
+  // 冲突块也还在（没被 abort 清掉）——用户对 a.txt 的解决成果同样保留。
+  assert.ok(fs.readFileSync(path.join(dir, 'a.txt'), 'utf8').includes('<<<<<<<'), '工作树里的冲突状态必须保留')
+})
+
 // ── B. ConfigStore：解析失败拒绝写 ─────────────────────────────────────────
 const CONFLICTED_CONFIG = '{\n  "wechat": { "enabled": true },\n<<<<<<< Updated upstream\n  "prompt": { "extra": "keep me" }\n=======\n  "ui": { "showQuickNote": true }\n>>>>>>> Stashed changes\n}\n'
 

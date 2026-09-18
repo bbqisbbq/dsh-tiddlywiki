@@ -148,7 +148,12 @@ export function normalizePromptMode(value: unknown): PromptMode {
  * (the interpolation scanner no longer sees a `{{` group).
  */
 export function escapePromptBraces(text: string): string {
-  return text.replace(/\{\{/g, '{\u200B{')
+  // `{{{name}}}` used to survive: `replace(/\{\{/g)` only matches
+  // NON-OVERLAPPING occurrences, so the 2nd+3rd braces stayed adjacent as `{{`
+  // after the first substitution and DSH's scanner still saw a variable group
+  // (v0.23.5). Inserting a ZWSP between EVERY adjacent brace pair makes any run
+  // of `{` literal, which is the only thing that actually removes the hazard.
+  return text.replace(/\{(?=\{)/g, '{\u200B')
 }
 
 /** Governance block: how to write without clobbering human edits. */

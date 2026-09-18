@@ -186,7 +186,14 @@ export function ensureTiddlerTimestamps(tiddler: Tiddler, now: Date | number = n
   const hasCreated = typeof tiddler.created === 'string' && tiddler.created.trim().length > 0
   const hasModified = typeof tiddler.modified === 'string' && tiddler.modified.trim().length > 0
   if (!hasCreated) tiddler.created = hasModified ? tiddler.modified : stamp
-  if (!hasModified) tiddler.modified = hasCreated ? tiddler.created : stamp
+  // A MISSING half is filled with `now`, never with the other half (v0.23.5).
+  // Copying `created` into `modified` looked harmless but pinned `modified` to
+  // the first write forever — the real victim is the config tiddler, which
+  // `ConfigStore.set()` re-PUTs with only `created` on every settings save
+  // (tw-api.ts docblock above promises "modified tracks edits"). Measured on
+  // disk before the fix: `created === modified` in
+  // `$__plugins_dsh-tiddlywiki_config.json.meta`.
+  if (!hasModified) tiddler.modified = stamp
 }
 
 /** Split TW's whitespace-joined tags string into an array. */

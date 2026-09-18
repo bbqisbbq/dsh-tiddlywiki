@@ -25,6 +25,7 @@
  */
 import assert from 'node:assert/strict'
 import {
+  assertNoConflict,
   buildWriteTiddler,
   cleanTiddler,
   DEFAULT_NOTE_TYPE,
@@ -175,9 +176,65 @@ test('ensureTiddlerTimestamps：只补缺、绝不改写已有值（安全网）
   assert.equal(onlyModified.created, '20200101000000000', 'created 应跟随已有的 modified')
   assert.equal(onlyModified.modified, '20200101000000000')
 
+  // v0.23.5：只有 created 时，modified 必须是 NOW，不能复制 created。
+  // 复制会把 modified 永远钉在首次写入时刻——真实受害者是配置 tiddler
+  // （ConfigStore.set() 每次保存都只带 created），本机磁盘实测 created===modified。
   const onlyCreated = { title: 'D', created: '20200101000000000' }
   ensureTiddlerTimestamps(onlyCreated, now)
-  assert.equal(onlyCreated.modified, '20200101000000000', 'modified 应跟随已有的 created')
+  assert.equal(onlyCreated.created, '20200101000000000', '已有 created 不得被改写')
+  assert.equal(onlyCreated.modified, '20260916233037000', 'modified 应补当前时刻，不得钉死成 created')
+})
+
+// ── 乐观并发：两个令牌是 AND（v0.23.5） ──────────────────────────────────────
+// 旧实现「modified 命中就放行，否则看 revision」，两个真实缺陷：
+//   1. revision 是 TW 内存计数器（不持久化，重启回到 1），跨重启的写入会被误判一致；
+//   2. 同时传两个令牌并不更安全——modified 不匹配仍会落到 revision 分支继续写。
+
+test('assertNoConflict：expectedModified 不匹配 → 拒绝（即便 revision 相同）', () => {
+  const existing = { title: 'X', modified: '20260101000000000', revision: 7 }
+  assert.throws(
+    () => assertNoConflict('X', existing, { expectedModified: '20250101000000000', expectedRevision: 7 }),
+    /写入冲突/,
+    '两个令牌都在场时，modified 不匹配必须拒绝（不能靠 revision 放行）',
+  )
+})
+
+test('assertNoConflict：expectedRevision 不匹配 → 拒绝（即便 modified 相同）', () => {
+  const existing = { title: 'X', modified: '20260101000000000', revision: 7 }
+  assert.throws(
+    () => assertNoConflict('X', existing, { expectedModified: '20260101000000000', expectedRevision: 1 }),
+    /写入冲突/,
+    '两个令牌都在场时，revision 不匹配必须拒绝',
+  )
+})
+
+test('assertNoConflict：两个令牌都匹配 → 放行', () => {
+  const existing = { title: 'X', modified: '20260101000000000', revision: 7 }
+  assert.doesNotThrow(() => assertNoConflict('X', existing, { expectedModified: '20260101000000000', expectedRevision: 7 }))
+})
+
+test('assertNoConflict：单令牌语义不变（只给哪个就只校验哪个）', () => {
+  const existing = { title: 'X', modified: '20260101000000000', revision: 7 }
+  assert.doesNotThrow(() => assertNoConflict('X', existing, { expectedModified: '20260101000000000' }))
+  assert.doesNotThrow(() => assertNoConflict('X', existing, { expectedRevision: 7 }))
+  assert.throws(() => assertNoConflict('X', existing, { expectedModified: '20250101000000000' }), /写入冲突/)
+  assert.throws(() => assertNoConflict('X', existing, { expectedRevision: 3 }), /写入冲突/)
+})
+
+test('assertNoConflict：令牌解析不出的「证据不足」判为冲突（宁可让调用方重读）', () => {
+  const existing = { title: 'X', modified: '20260101000000000', revision: 7 }
+  assert.throws(
+    () => assertNoConflict('X', existing, { expectedModified: 'not-a-date' }),
+    /写入冲突/,
+    '无法比较时不得放行覆盖',
+  )
+})
+
+test('assertNoConflict：force / 不存在 / 不给令牌 → 放行', () => {
+  const existing = { title: 'X', modified: '20260101000000000', revision: 7 }
+  assert.doesNotThrow(() => assertNoConflict('X', existing, { expectedModified: 'x', force: true }))
+  assert.doesNotThrow(() => assertNoConflict('X', undefined, { expectedModified: 'x' }))
+  assert.doesNotThrow(() => assertNoConflict('X', existing, {}))
 })
 
 console.log(failures === 0 ? '\nWRITE POLICY OK' : `\nWRITE POLICY FAILED (${failures})`)

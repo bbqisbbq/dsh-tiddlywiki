@@ -347,6 +347,16 @@ export class WikiServer {
     // end up in a crash dump. (v0.19.0 — the spawn line used to be logged
     // verbatim; the password still lives in the OS process list, which is why
     // the wiki binds loopback by default.)
+    // `await findFreePort()` (above) yields the event loop, so a `stop()` can run
+    // in the meantime: it takes `this.child` (still undefined), clears
+    // `this.restartTimer` and sets `stopping`. Without this re-check the spawn
+    // below would create a child that nothing ever kills — an orphan TW process
+    // holding a port, surviving plugin teardown (v0.23.5). Reachable via
+    // `scheduleRestart()` + `stop()`, and via the 3s teardown race in index.ts.
+    if (this.stopping) {
+      this.log('start aborted: stop() was requested while resolving the port')
+      return this.status()
+    }
     this.log(`spawn: ${process.execPath} ${args.map((a) => (/^password=/.test(a) ? 'password=***' : a)).join(' ')}`)
     const child = spawn(process.execPath, args, { cwd: this.wikiPath, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     this.child = child

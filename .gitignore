@@ -18,3 +18,9 @@ lib/client.bundle.js
 # Local agent workspace (session memory, scratch files) — not part of the
 # published plugin or the repo history.
 .workbuddy/
+
+# Code-audit reports are working documents, not product source: the findings they
+# list are either fixed (and then guarded by scripts/verify-*.mjs) or still open in
+# the issue tracker. Keeping them in the repo made them look like maintained docs.
+# The authoritative copy of the 2026-09-17 report now lives in the knowledge base.
+docs/code-review-*.md

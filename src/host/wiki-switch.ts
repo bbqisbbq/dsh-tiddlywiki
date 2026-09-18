@@ -89,12 +89,23 @@ export async function switchWiki(
       deps.applyLocation(previous ?? { root: previousPath, name: '.' })
       await deps.startServer()
       await deps.reloadConfig()
-      deps.setupExtras()
       deps.log?.(`wiki switch rolled back to ${previousPath}`)
       return true
     } catch (err) {
       deps.log?.(`wiki switch rollback FAILED: ${err instanceof Error ? err.message : String(err)}`)
       return false
+    } finally {
+      // ALWAYS re-arm the extras (v0.23.5). `teardownExtras()` already ran on the
+      // failure path, so the AutoCommitter and the fs watcher are gone. When
+      // `startServer()` threw above, the old code returned from `catch` and never
+      // reached `setupExtras()` — and nothing else ever re-arms them, so EVERY
+      // later wiki write stopped being committed while the (possibly late-ready)
+      // old child kept serving and `/status` looked perfectly healthy.
+      try {
+        deps.setupExtras()
+      } catch (err) {
+        deps.log?.(`wiki switch rollback: re-arming extras failed: ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
   }
 

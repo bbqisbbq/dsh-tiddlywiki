@@ -531,6 +531,24 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         force: args.force,
       })
       const tags = normalizeTagArg(args.tags)
+      // DATA SAFETY (v0.23.5): a binary tiddler (image/PDF/…) holds base64 in
+      // `text`. Writing prose into it keeps `type: image/png` (the write policy
+      // preserves the base type on purpose), so the result is an attachment whose
+      // base64 no longer decodes — the image breaks and the receipt reports
+      // "type unchanged". Refusing is the only honest answer: overwriting an
+      // attachment is `tiddlywiki_attach`'s job. An explicit `fields.type` that
+      // leaves the binary family (or force) is treated as a deliberate conversion.
+      if (existing !== undefined && isBinaryType(typeof existing.type === 'string' ? existing.type : undefined)) {
+        const wantedType = typeof args.fields?.type === 'string' ? args.fields.type : undefined
+        const deliberate = args.force === true || (wantedType !== undefined && !isBinaryType(wantedType))
+        if (!deliberate) {
+          throw new Error(
+            `tiddlywiki_put: 「${args.title}」是二进制附件（type=${String(existing.type)}，正文为 base64），`
+            + '直接写文本会把附件写坏。要替换附件请用 tiddlywiki_attach；'
+            + '确实要转成文本条目，请显式传 fields: {"type":"text/markdown"}（或 force: true）。',
+          )
+        }
+      }
       const { tiddler, typeDefaulted } = buildWriteTiddler(args.title, args.text, { existing, tags, fields: args.fields })
       await wiki.put(tiddler)
       deps.autoCommit()
@@ -740,8 +758,28 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         expectedRevision: args.expectedRevision,
         force: args.force,
       })
-      // Trash entries themselves and system tiddlers are never nested.
-      const canTrash = existing !== undefined && args.permanent !== true && !args.title.startsWith(TRASH_PREFIX)
+      // Trash entries themselves and SYSTEM tiddlers are never nested.
+      // v0.23.5: the condition used to only exclude TRASH_PREFIX, so
+      // `delete('$:/dsh-tiddlywiki/trash-index')` trashed the index itself —
+      // the next read then 404s, looks like "trash is empty", and the index is
+      // rewritten with a single entry, silently dropping every record (exactly
+      // the loss v0.19.5 set out to prevent, just through another door).
+      const canTrash = existing !== undefined
+        && args.permanent !== true
+        && !args.title.startsWith(TRASH_PREFIX)
+        && !args.title.startsWith('$:/')
+      // The trash index is the ONLY way to enumerate what is in the trash
+      // (`$:/` tiddlers cannot be listed through a recipe — see the module
+      // docblock). Deleting it orphans every trashed note: `trash list` can no
+      // longer see them, `restore` cannot find them, `empty` cannot clean them.
+      // Use `tiddlywiki_trash action=empty` to clear the trash deliberately.
+      if (args.title === TRASH_INDEX_TITLE && existing !== undefined) {
+        throw new Error(
+          `tiddlywiki_delete: 「${TRASH_INDEX_TITLE}」是回收站索引，删掉它会让回收站里的条目全部变成不可恢复的孤儿`
+          + '（列不出、恢复不了、也清不掉）。要清空回收站请用 tiddlywiki_trash action=empty；'
+          + '确实要丢弃索引请显式传 permanent: true。',
+        )
+      }
       if (!canTrash) {
         await wiki.delete(args.title)
         deps.autoCommit()
@@ -749,6 +787,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       }
       const trashTitle = trashTitleFor(args.title)
       const at = new Date().toISOString()
+      // ORDER MATTERS (v0.23.5, data safety): read + validate the index BEFORE
+      // any destructive step. The old order trashed the note first and only then
+      // read the index, so a failed/corrupt read aborted the tool AFTER the
+      // original was already gone and BEFORE the index recorded it — the note
+      // became an unreachable orphan (`trash list` cannot see it, `restore`
+      // cannot find it, `empty` cannot clean it), while the tool reported
+      // "aborted". Aborting first means the note simply is not deleted.
+      const index = await readTrashIndex(wiki)
+      if (!index.readOk || index.corrupted) throw new TrashIndexUnavailableError()
       // The snapshot is a COPY: it keeps the original's created/modified (they
       // describe the note — deleting must not rewrite its history, and a later
       // restore must bring the note back with the same times). `trash-at` records
@@ -759,14 +806,6 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       trashTiddler.modified = existing.modified ?? trashTiddler.modified
       await wiki.put({ ...trashTiddler, 'trash-of': args.title, 'trash-at': at })
       await wiki.delete(args.title)
-      // Read the index BEFORE touching it, and ABORT when the read failed or the
-      // JSON is broken: overwriting it with `[] + thisEntry` after a transient
-      // failure dropped every earlier entry — the trashed tiddlers survive but
-      // become unreachable orphans (`trash list` cannot see them, `trash empty`
-      // cannot clean them). A corrupt index is treated the same way: we cannot
-      // know what it held, so we never silently replace it (v0.19.5).
-      const index = await readTrashIndex(wiki)
-      if (!index.readOk || index.corrupted) throw new TrashIndexUnavailableError()
       index.entries.push({ trash: trashTitle, of: args.title, at })
       await writeTrashIndex(wiki, index.entries)
       deps.autoCommit()
@@ -905,7 +944,11 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         ok: true,
         title,
         mode,
-        heading: typeof args.heading === 'string' && args.heading.trim().length > 0 ? args.heading.trim() : null,
+        // `heading` only has an effect in append mode (v0.23.5): reporting it for
+        // a prepend made the model believe the text landed in that section.
+        heading: mode === 'append' && typeof args.heading === 'string' && args.heading.trim().length > 0
+          ? args.heading.trim()
+          : null,
         created: existing === undefined,
         added: addition.length,
         total: next.length,

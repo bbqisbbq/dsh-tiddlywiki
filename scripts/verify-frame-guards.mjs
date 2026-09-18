@@ -56,6 +56,9 @@ const noteWidget = read('src/client/note-widget.ts')
 const rightbar = read('src/client/rightbar-tab.ts')
 const editorPopup = read('src/client/editor-popup.ts')
 const quickNoteDock = read('src/client/quick-note-dock.ts')
+const hostIndex = read('src/index.ts')
+const wiki = read('src/host/wiki.ts')
+const wikiSwitch = read('src/host/wiki-switch.ts')
 
 let failures = 0
 async function test(name, fn) {
@@ -318,6 +321,51 @@ await test('note-widget：保存/丢弃后重置必须取消防抖并记录已�
   assert.match(body, /persistedSignature\s*=/, '重置后必须把「空内容 + 新标题」记为已定型，否则会写出幽灵草稿')
   const flush = bodyOf(noteWidget, 'const flushDraft = ')
   assert.match(flush, /autoTitle/, 'flushDraft 必须识别「只有自动标题、正文为空」= 没有可恢复内容')
+})
+
+console.log('v0.23.5 —— 生命周期 / 进程守卫（源码级：这些坑都死过一次）')
+
+// #6 fs.watch 的 'error' 是异步事件，外层 try/catch 接不住；Node 在没有 error
+// 监听器时把 'error' 抛成未捕获异常，而宿主没有 uncaughtException 处理器 →
+// 整个 dsh web 进程退出（Windows EPERM / Linux ENOSPC 都能触发）。
+await test('watchWiki：fs.watch 必须常驻 error 监听（否则一个 EPERM 杀死 dsh web）', () => {
+  const body = bodyOf(hostIndex, 'function watchWiki(')
+  assert.match(body, /watcher\.on\('error'/, "watcher 必须挂 'error' 监听（try/catch 只能接住同步创建失败）")
+  assert.match(body, /watcher\.close\(\)/, 'disposer 必须关掉 watcher')
+})
+
+// #7 stop() 可能在 startOnce() await findFreePort() 期间跑完（它取走 this.child、
+// 清掉 restartTimer、置 stopping），随后 spawn 出来的子进程没人会杀 = 孤儿 TW。
+await test('wiki.ts：spawn 之前必须复查 stopping（否则 stop() 与 start() 竞态会留孤儿进程）', () => {
+  const body = bodyOf(wiki, 'private async startOnce(')
+  const iSpawn = body.indexOf('spawn(process.execPath, args')
+  const iCheck = body.indexOf('if (this.stopping)')
+  assert.ok(iSpawn >= 0, '找不到 spawn 调用')
+  assert.ok(iCheck >= 0 && iCheck < iSpawn, 'spawn 之前必须有 if (this.stopping) 复查')
+  assert.match(body.slice(iCheck, iSpawn), /return this\.status\(\)/, '命中 stopping 时必须直接返回，不要 spawn')
+})
+
+// #8 restore() 的失败路径曾从 catch 直接 return，跳过 setupExtras()：此后所有 wiki
+// 写入都不再被提交，而「迟到就绪」复探让 /status 看起来一切正常（静默停摆）。
+await test('wiki-switch：回滚失败也必须重装 extras（否则自动提交永久停摆）', () => {
+  const body = bodyOf(wikiSwitch, 'const restore = ')
+  assert.match(body, /finally\s*\{/, 'restore 必须用 finally 保证 setupExtras 一定执行')
+  const iFinally = body.indexOf('finally')
+  assert.ok(body.indexOf('deps.setupExtras()', iFinally) > iFinally, 'setupExtras 必须在 finally 里调用')
+})
+
+// #9 热重载/关闭期间的在途切换会重新挂上 committer+watcher，甚至在 stop() 之后
+// 再 spawn 一个 TW 子进程。disposed 在作用域内但 runSwitch 从不检查。
+await test('index.ts：runSwitch 必须有 disposed 守卫并在收尾重新 teardown', () => {
+  // NB: `bodyOf` cannot be used here — the signature's own parameter type
+  // (`{ root?: unknown; name?: unknown }`) is the first `{` it would find. These
+  // two strings are unique to runSwitch's fixed implementation.
+  assert.match(
+    hostIndex,
+    /if \(disposed\) return \{ ok: false, error: '插件正在卸载，已取消切换'/,
+    'runSwitch 必须在开始检查 disposed',
+  )
+  assert.match(hostIndex, /if \(disposed\) teardownCommitter\(\)/, '切换完成时若已 disposed，必须重新释放 extras')
 })
 
 console.log('')

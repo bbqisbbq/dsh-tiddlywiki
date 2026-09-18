@@ -312,6 +312,60 @@ try {
     )
     const after = await api.get('$:/dsh-tiddlywiki/trash-index')
     assert.equal(after.text, realIndex.text, '读失败路径不得改写索引内容')
+    // v0.23.5 — ORDER: the index is read BEFORE anything destructive. The old
+    // order trashed the note first and aborted afterwards, so the note was gone
+    // AND unrecorded: invisible to `trash list`, unfindable by `restore`,
+    // unclearable by `empty`. Aborting first must leave the note untouched.
+    assert.ok(
+      (await api.get('IndexReadFailProbe')) !== undefined,
+      '索引读失败中止后原条目必须仍在（旧实现：已删除且未入索引 = 永久孤儿）',
+    )
+  })
+
+  // 3b ── 系统条目不得被软删除（v0.23.5） ────────────────────────────────────
+  await test('delete：$:/ 系统条目绝不进回收站，回收站索引更不得被删掉', async () => {
+    await api.put({ title: 'SystemTrashProbe', text: 'not system', tags: ['human'] })
+    await call('tiddlywiki_delete', { title: 'SystemTrashProbe' })
+    // 删除回收站索引本身：旧实现会把它软删（快照进 trash）→ 随后读到 404 →
+    // 被当成「回收站为空」→ 索引被重写成 1 条，全部历史记录丢失。
+    await assert.rejects(
+      () => call('tiddlywiki_delete', { title: '$:/dsh-tiddlywiki/trash-index' }),
+      /回收站索引/,
+      '删除回收站索引必须被拒绝（否则回收站全部记录变孤儿）',
+    )
+    assert.ok((await api.get('$:/dsh-tiddlywiki/trash-index')) !== undefined, '被拒绝后索引必须还在')
+    const entries = JSON.parse((await api.get('$:/dsh-tiddlywiki/trash-index')).text)
+    assert.ok(entries.some((e) => e.of === 'SystemTrashProbe'), '此前的删除记录仍在索引里（未被冲掉）')
+    // 普通 $:/ 系统条目（非索引）走永久删除分支，不产生回收站快照。
+    await api.put({ title: '$:/temp/probe', text: 'x', type: 'text/plain', tags: [] })
+    const delRes = await call('tiddlywiki_delete', { title: '$:/temp/probe' })
+    assert.equal(delRes.trashed, false, `$:/ 条目必须走永久删除分支，不得软删除：${JSON.stringify(delRes)}`)
+    assert.ok((await api.get('$:/temp/probe')) === undefined, '$:/ 条目确实已被删除')
+  })
+
+  // 3c ── 二进制附件不得被 put 写成文本（v0.23.5） ──────────────────────────
+  await test('put：二进制附件默认拒绝写文本，显式改类型才放行', async () => {
+    const b64 = Buffer.from('89504e470d0a1a0a', 'hex').toString('base64')
+    await api.put({ title: 'BinaryProbe.png', text: b64, type: 'image/png', tags: [] })
+    await assert.rejects(
+      () => call('tiddlywiki_put', { title: 'BinaryProbe.png', text: 'prose' }),
+      /二进制附件/,
+      '写文本进二进制附件必须被拒绝（旧实现保留 type=image/png，图裂且回执说类型未变）',
+    )
+    assert.equal((await api.get('BinaryProbe.png')).text, b64, '被拒绝后附件内容必须原样')
+    // 显式转成文本类型 = 蓄意转换，放行且在回执里说明。
+    const converted = await call('tiddlywiki_put', { title: 'BinaryProbe.png', text: 'prose', fields: { type: 'text/markdown' } })
+    assert.equal(converted.type, 'text/markdown', '显式改类型应放行')
+    assert.ok(converted.typeChanged !== undefined, '回执必须写明类型从 image/png 改为 text/markdown')
+    await api.delete('BinaryProbe.png')
+  })
+
+  // 3d ── 回收站与 $:/ 的边界回归后，清理探针 ────────────────────────────────
+  await test('delete：索引读失败中止留下条目，可正常删除（回归后路径可用）', async () => {
+    const ok = await call('tiddlywiki_delete', { title: 'IndexReadFailProbe' })
+    assert.equal(ok.trashed, true, `中止后重试应成功：${JSON.stringify(ok)}`)
+    const entries = JSON.parse((await api.get('$:/dsh-tiddlywiki/trash-index')).text)
+    assert.ok(entries.some((e) => e.of === 'IndexReadFailProbe'), '重试后索引记录本次删除')
   })
 
   // 4 ── delete 乐观并发 ───────────────────────────────────────────────────
@@ -485,6 +539,54 @@ try {
     assert.equal(seen[0].since, '2026-09-01', `since 必须透传（旧实现把它丢掉，卡片会列出未过滤的最近条目）：${JSON.stringify(seen[0])}`)
     const payload = parseJson(state.body)
     assert.equal(payload?.since, '2026-09-01', `回包应回显 since（与 /search 一致）：${state.body.slice(0, 200)}`)
+  })
+
+  // 7b ── 空的 ?limit= 必须按「未指定」处理（v0.23.5）──────────────────────
+  // `Number('' ?? fallback)` 是 0（?? 只挡 null/undefined），再被 clamp 到 1，
+  // 于是 `/recent?limit=` 只返回 1 条而不是默认 15。readOptionalLimit 早已把空值
+  // 当缺省，两条路由的口径必须一致。
+  await test('/recent：?limit= 空值按缺省处理，不得退化成 1', async () => {
+    const seen = []
+    const spy = {
+      recent: async (limit, since) => { seen.push({ limit, since }); return [] },
+      get: (t) => api.get(t),
+    }
+    const { routes, face } = fakeWebServer()
+    registerRoutes({ webServer: face }, {
+      server,
+      getClient: () => spy,
+      git,
+      autoCommit: () => {},
+      noteDefaults: () => ({ tag: 'inbox' }),
+      uiDefaults: () => ({
+        showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki',
+        showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: '$:/palettes/CupertinoDark',
+        tabLabel: '知识库', showSessionTab: true, showRightbarTab: true,
+      }),
+      getWikiPath: () => wikiDir,
+      getSessionController: () => undefined,
+      getWorkspaceRegistry: () => undefined,
+      getAgentPresets: () => undefined,
+      getSessionPersistence: () => undefined,
+      getPermissionPresets: () => undefined,
+      getSessions: () => undefined,
+      getSessionQuery: () => undefined,
+      sendToAgentEnabled: () => true,
+      sendToAgentToken: () => '',
+    })
+    const handler = routes.get('exact:/dsh-tiddlywiki/recent')
+    const { res } = recorder()
+    handler(fakeReq({ method: 'GET', url: '/dsh-tiddlywiki/recent?limit=' }), res)
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(seen[0]?.limit, 15, `空 limit 应回落默认 15（旧实现夹成 1）：${JSON.stringify(seen[0])}`)
+    const { res: res2 } = recorder()
+    handler(fakeReq({ method: 'GET', url: '/dsh-tiddlywiki/recent?limit=%20%20' }), res2)
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(seen[1]?.limit, 15, `全空白的 limit 同样按缺省处理：${JSON.stringify(seen[1])}`)
+    const { res: res3 } = recorder()
+    handler(fakeReq({ method: 'GET', url: '/dsh-tiddlywiki/recent?limit=abc' }), res3)
+    await new Promise((r) => setTimeout(r, 50))
+    assert.equal(seen[2]?.limit, 15, `不可解析的 limit 也按缺省处理：${JSON.stringify(seen[2])}`)
   })
 
   // 8 ── batch_put 并发后顺序与容错不变 ─────────────────────────────────────

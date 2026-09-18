@@ -733,6 +733,30 @@ try {
   await callRaw(apiHandler, makeReq(`/dsh-tiddlywiki/api/recipes/default/tiddlers/${encodeURIComponent(configTitle)}`), apiConfigRes)
   assert(apiConfigRes._status === 403, `api passthrough answers 403 for the config tiddler (got ${apiConfigRes._status})`)
 
+  // SECURITY REGRESSION (v0.23.5): the guard used to look for a literal
+  // `/tiddlers/` marker, but TW core's get-tiddler-html route is a SINGLE
+  // segment (`/^\/([^\/]+)$/`, decoded with decodeURIComponentSafe). Encoding the
+  // slashes as %2F therefore reached the config tiddler with no marker in sight.
+  // Verified on the live wiki before the fix: 200 + 715 bytes on both proxies.
+  const encodedOnly = encodeURIComponent(configTitle) // '$%3A%2Fplugins%2F…'
+  for (const [label, handler, prefix] of [
+    ['tw', proxyHandler, TW_PROXY_PREFIX],
+    ['api', apiHandler, '/dsh-tiddlywiki/api'],
+  ]) {
+    const resEncoded = makeRes()
+    await callRaw(handler, makeReq(`${prefix}/${encodedOnly}`), resEncoded)
+    assert(
+      resEncoded._status === 403,
+      `${label} proxy must 403 the percent-encoded single-segment config path (got ${resEncoded._status})`,
+    )
+    assert(String(resEncoded._payload).includes('not exposed'), `${label} proxy 403 body names the refusal`)
+  }
+  // …and double-encoding must not slip through either.
+  const twiceEncoded = encodeURIComponent(encodedOnly)
+  const resDouble = makeRes()
+  await callRaw(proxyHandler, makeReq(`${TW_PROXY_PREFIX}/${twiceEncoded}`), resDouble)
+  assert(resDouble._status === 403, `tw proxy must also 403 a double-encoded config path (got ${resDouble._status})`)
+
   // tw-web-host (the seed is now the ONE implementation; `ensureTwWebHost()` was
   // a production-dead duplicate removed in v0.22.8): TW's frontend API base must
   // point at the same-origin proxy; a missing/legacy-default tiddler is
@@ -1084,6 +1108,41 @@ try {
   )
   assert(renderSecret._status === 403, `host /render refuses the plugin config tiddler (got ${renderSecret._status})`)
   assert(String(renderSecret._payload).includes('not exposed'), `host /render 403 body names the refusal (${String(renderSecret._payload).slice(0, 120)})`)
+  // SECURITY REGRESSION (v0.23.5): the `title` guard alone was not enough — TW
+  // resolves `{{…}}` transclusions server-side, so the `text` branch printed the
+  // config too. Verified on the live wiki before the fix:
+  // `{"text":"{{$:/plugins/dsh-tiddlywiki/config}}"}` → 200, 3123 bytes of config
+  // JSON inside `<pre><code>` (the fragment sanitizer strips tags; it cannot know
+  // the text is a secret).
+  const renderTransclude = makeRes()
+  await callRaw(
+    hostRenderHandler,
+    makeReq('/dsh-tiddlywiki/render', Buffer.from(JSON.stringify({
+      text: `{{${configTitle}}}`,
+      type: 'text/vnd.tiddlywiki',
+    })), 'POST'),
+    renderTransclude,
+  )
+  assert(renderTransclude._status === 403, `host /render refuses a transclusion of the config tiddler (got ${renderTransclude._status})`)
+  // contextTitle is the parse context of caller-supplied text — same hazard.
+  const renderContext = makeRes()
+  await callRaw(
+    hostRenderHandler,
+    makeReq('/dsh-tiddlywiki/render', Buffer.from(JSON.stringify({
+      text: 'anything',
+      contextTitle: configTitle,
+    })), 'POST'),
+    renderContext,
+  )
+  assert(renderContext._status === 403, `host /render refuses a protected contextTitle (got ${renderContext._status})`)
+  // The guard must not be a blanket ban on `{{…}}`: ordinary transclusions work.
+  const renderNormal = makeRes()
+  await callRaw(
+    hostRenderHandler,
+    makeReq('/dsh-tiddlywiki/render', Buffer.from(JSON.stringify({ text: 'plain body', type: 'text/vnd.tiddlywiki' })), 'POST'),
+    renderNormal,
+  )
+  assert(renderNormal._status === 200, `host /render still renders ordinary text (got ${renderNormal._status})`)
   await renderTid.delete('RenderMe')
   await seedApi.delete(RENDER_PLUGIN_TITLE)
   await seedApi.delete(RENDER_MARKER_TITLE)

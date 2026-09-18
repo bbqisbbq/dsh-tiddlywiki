@@ -167,6 +167,20 @@ test('用户文本里的 {{…}} 被转义（DSH 未知变量会抛错并炸掉�
   assert.ok(text.includes('cwd') === false && text.includes('tiddler'), '转义不得吃掉用户文本')
 })
 
+// v0.23.5 — 连续花括号：`replace(/\{\{/g)` 只替换不重叠匹配，3 个及以上的 `{`
+// 会残留 `{{`（实测 `{{{name}}}` → `{<ZWSP>{{name}}}`），而 DSH 对未知变量
+// **直接抛错**——正是这个函数存在的理由，等于修了单层却漏了多层。
+test('连续花括号（{{{…}}}）也必须被转义干净', () => {
+  for (const sample of ['{{{name}}}', '{{{{x}}}}', 'a {{{b}} c', '{{{{{{deep}}}}}}']) {
+    const escaped = escapePromptBraces(sample)
+    assert.ok(!escaped.includes('{{'), `「${sample}」转义后仍残留 {{：${JSON.stringify(escaped)}`)
+    assert.ok(!escaped.includes('{ {'), `不得改变可读性以外的字符：${JSON.stringify(escaped)}`)
+  }
+  const text = buildPromptText({ mode: 'slim', extra: '三段：{{{cwd}}} 与 {{{{deep}}}}', tools })
+  assert.ok(!text.includes('{{'), '整段装配后仍不得残留 {{')
+  assert.ok(text.includes('cwd') && text.includes('deep'), '转义不得吃掉用户文本')
+})
+
 // v0.22.7 — 草稿预览（设置页 POST /admin/prompt）的两个纯函数。
 test('normalizePromptPreview 只放行 5 个字段，未知键/错类型被丢弃', () => {
   assert.deepEqual(normalizePromptPreview({ enabled: false, mode: 'full', extra: 'e', override: 'o', wechat: true }), { enabled: false, mode: 'full', extra: 'e', override: 'o', wechat: true })
