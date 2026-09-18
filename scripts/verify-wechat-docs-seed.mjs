@@ -68,10 +68,11 @@ await test('seed 模块导出齐全（标题/标记/写入/反初始化）', () 
 await test('seed 注册表：wechat-setup 已登记，与 publish-spec 同 gate 模式且为 startup 层', () => {
   assert.ok(seedsSrc.includes("id: 'wechat-setup'"), "seeds.ts 里没有 id: 'wechat-setup' 的注册项")
   assert.ok(seedsSrc.includes("from './seed-wechat-docs.ts'"), 'seeds.ts 没有导入 seed-wechat-docs')
-  // gate 与 publish-spec 一致：同一个可选拨号（wechat.enabled）。两个 gated seed
-  // 各自携带同一谓词——直接数出现次数（2 个 gated seed = 恰好 2 处）。
+  // gate 与 publish-spec 一致：同一个可选拨号（wechat.enabled）。三个 gated seed
+  // 各自携带同一谓词——直接数出现次数（publish-spec + wechat-setup +
+  // wechat-publish = 恰好 3 处）。
   const gateCount = seedsSrc.split('gate: (ctx) => ctx.wechat === true').length - 1
-  assert.equal(gateCount, 2, `seeds.ts 里 gate 谓词应恰好出现 2 次（publish-spec + wechat-setup），实际 ${gateCount}`)
+  assert.equal(gateCount, 3, `seeds.ts 里 gate 谓词应恰好出现 3 次（publish-spec + wechat-setup + wechat-publish），实际 ${gateCount}`)
   // marker 常量被注册表引用
   assert.ok(seedsSrc.includes('WECHAT_DOCS_MARKER_TITLE'), 'seeds.ts 必须引用 WECHAT_DOCS_MARKER_TITLE 作 markerTitle')
   assert.ok(seedsSrc.includes('seedWechatDocs'), 'seeds.ts 必须把 seedWechatDocs 接到 wechat-setup 的 write')

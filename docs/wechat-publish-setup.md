@@ -161,6 +161,41 @@ opencli weixin publish-note-imgs "某篇笔记标题" --images "01.png|02.png|03
 #    · 发表前同样读 pub-state / no-publish（只告警不阻断），--publish 可直接发表
 ```
 
+### 3.6 在 TiddlyWiki 里点按钮发布（v0.23.3，日常推荐）
+
+不想敲命令时，用**笔记工具栏的「发布到公众号」按钮**（嵌入式 TW 面板、右侧栏 tab、原生编辑弹窗里都在）：
+
+1. 设置页勾选「可选功能：微信公众号发布」并保存 → 重启 dsh web 后，启动 seed 会把按钮插件
+   `$:/plugins/dsh/wechat-publish` 写进 wiki（老 wiki 也可在设置页「初始化」区单独写它）。
+2. 打开任意笔记 → 工具栏点「发布到公众号」→ 按钮**先预检**（opencli 跑不跑得起来、adapter 缺哪些文件），
+   再弹确认框（自动列出 `no-publish` / `pub-state` 警告）→ 点「开始存草稿」。
+3. 宿主进程起一个**后台任务**，覆盖层每 2 秒显示状态与日志尾部。**只到草稿箱为止，不自动发表。**
+
+按钮背后的三条路由（同源；写操作有方法 + CSRF 守卫；`wechat.enabled` 关着时一律 403）：
+
+| 路由 | 方法 | 作用 |
+|---|---|---|
+| `/dsh-tiddlywiki/wechat/ready` | GET | 预检：`opencli --version` 能否跑通、adapter 缺哪些文件 |
+| `/dsh-tiddlywiki/wechat/publish` | POST | 起任务（body `{title, adapter?}`）；单并发，第二次调用 409 |
+| `/dsh-tiddlywiki/wechat/publish/status` | GET | 轮询任务（`?id=`；不带 id 取最新/正在跑的那个） |
+
+可配项（设置页目前只暴露 `enabled`，其余写进配置 tiddler
+`$:/plugins/dsh-tiddlywiki/config` 的 `wechat` 块，保存即生效）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `wechat.enabled` | `false` | 总开关；关着时按钮不写入、三条路由 403 |
+| `wechat.adapter` | `publish-note` | 换成 `publish-note-imgs` 走正文内嵌多图（需该 adapter 已装） |
+| `wechat.command` | `opencli` | CLI 路径（装了别名、不在 PATH 时用） |
+| `wechat.token` | 空 | 非空时要求请求头 `x-wechat-publish-token`（按钮会自动带上） |
+| `wechat.dsn` | 空 | adapter 回连 DSH 的基址；留空按请求端口推导 `http://127.0.0.1:<端口>/dsh-tiddlywiki` |
+| `wechat.endpoint` | 空 | **只被 TW 侧读**：覆盖按钮请求的基址（默认 `location.origin + /dsh-tiddlywiki`）；反向代理/远程访问场景用 |
+
+⚠️ 宿主用 **`--title-file`**（v0.23.3 新增参数）把标题经 UTF-8 文件交给 adapter：标题不进 argv，
+否则 Windows 上 `opencli` 的 `.cmd` shim 会把 `&`/`|`/`^` 当命令分隔符，中文标题还会被 cmd 的
+代码页解码成乱码。位置参数 `<title>` 照旧可用（两者都给时位置参数优先）。
+⚠️ 按钮**不替你发表**：发表要管理员扫码（§4.2），请在公众号后台点「发表」。
+
 ---
 
 ## 3.5 发布元数据（重要：避免重发/误发）

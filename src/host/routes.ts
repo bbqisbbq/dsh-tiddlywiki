@@ -23,6 +23,9 @@
  * | /dsh-tiddlywiki/agent/modes      | GET    | agent / permission preset rosters        |
  * | /dsh-tiddlywiki/agent/send       | POST   | deliver a note into a session            |
  * | /dsh-tiddlywiki/agent/create     | POST   | create session (+workspace) and deliver  |
+ * | /dsh-tiddlywiki/wechat/ready     | GET    | publish precheck (opencli + adapters)    |
+ * | /dsh-tiddlywiki/wechat/publish   | POST   | start a draft-box publish job (mutex)    |
+ * | /dsh-tiddlywiki/wechat/publish/status | GET | poll one publish job                    |
  * | /dsh-tiddlywiki/api/*            | any    | passthrough to the TW service (JSON)     |
  * | /dsh-tiddlywiki/tw/*             | any    | SAME-ORIGIN TW proxy (index + files + API)|
  * | /dsh-tiddlywiki/admin/state      | GET    | settings page: info + catalog + config   |
@@ -61,6 +64,7 @@ import { sanitizeTwFragment } from './sanitize.ts'
 import { flushPendingWrites } from './seeds.ts'
 import { snippetOf, formatLocalMinute } from './text-util.ts'
 import { WriteConflictError, assertNoConflict, buildWriteTiddler, flattenTiddlerFields } from './write-policy.ts'
+import { WECHAT_ADAPTERS, type WechatAdapter, type WechatPublishConfig, type WechatPublishJobView, type WechatPublishStartResult, type WechatReadyView } from './wechat-publish.ts'
 
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './session-summary.ts'
@@ -223,6 +227,25 @@ export interface RouteDeps {
   sendToAgentEnabled: () => boolean
   /** Optional shared token that must match `x-send-to-agent-token` when set. */
   sendToAgentToken: () => string
+  /**
+   * Effective `wechat.*` config (v0.23.3): the opt-in 公众号发布 feature's
+   * switch, CLI override, optional token and default adapter. Read per request
+   * so a settings-page save applies without a dsh web restart.
+   */
+  wechatConfig: () => WechatPublishConfig
+  /** The publish runner, or undefined when the host has not wired one. */
+  wechatRunner: () => WechatPublishFace | undefined
+  /** Readiness report (opencli + adapter files) for the button's precheck. */
+  wechatReady: () => Promise<WechatReadyView>
+}
+
+/**
+ * Structural face over the WeChat publish runner (host/wechat-publish.ts).
+ * Declared here so the routes only depend on start/status, never on the class.
+ */
+export interface WechatPublishFace {
+  start(request: { title: string; adapter?: WechatAdapter; dsn: string }): WechatPublishStartResult
+  status(id?: string): WechatPublishJobView | undefined
 }
 
 /** Header names forwarded to the upstream TW service by the proxy routes. */
@@ -1552,6 +1575,175 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
   }
 
+  /**
+   * Shared gate for the TW-side 公众号发布 routes (v0.23.3): opt-in feature
+   * switch (`wechat.enabled`, default OFF) then, when a shared token is
+   * configured, the `x-wechat-publish-token` header must match. Mirror of
+   * `guardSendToAgent` — the feature is off by default, so an unconfigured
+   * deployment answers 403 instead of starting browser automation.
+   */
+  const guardWechat = (req: IncomingMessage, res: ServerResponse): boolean => {
+    const config = deps.wechatConfig()
+    if (!config.enabled) {
+      json(res, { ok: false, error: 'wechat publishing is disabled' }, 403)
+      return false
+    }
+    const token = config.token.trim()
+    if (token.length === 0) return true
+    const got = req.headers['x-wechat-publish-token']
+    const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
+    if (safeTokenEqual(value, token)) return true
+    json(res, { ok: false, error: 'unauthorized' }, 401)
+    return false
+  }
+
+  /**
+   * GET /dsh-tiddlywiki/wechat/ready — precheck for the TW toolbar button:
+   * is opencli on PATH and are the adapter files installed? 200 whenever the
+   * feature is on; the caller reads `opencli.ok` / `adapters.*` (an installation
+   * problem is NOT an HTTP error — the button shows it as an actionable notice).
+   */
+  const handleWechatReady = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectNonRead(req, res)) return
+      if (!guardWechat(req, res)) return
+      const ready = await deps.wechatReady()
+      json(res, {
+        ok: true,
+        enabled: ready.enabled,
+        command: ready.command,
+        opencli: ready.opencli,
+        adapters: ready.adapters,
+      })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+    }
+  }
+
+  /**
+   * The loopback DSN the adapter calls back into (`fetch /render`): the DSH web
+   * port this very request arrived on, so opencli (a local process) reaches the
+   * same server regardless of which hostname the browser used. `wechat.dsn`
+   * overrides it for exotic setups.
+   */
+  const wechatDsn = (req: IncomingMessage): string => {
+    const configured = deps.wechatConfig().dsn
+    if (configured.length > 0) return configured
+    const port = req.socket.localPort
+    return port === undefined ? '' : `http://127.0.0.1:${port}${ROUTE_PREFIX}`
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/wechat/publish — start ONE publish job.
+   *
+   * Body `{title, adapter?}`. The heavy work happens in the runner (spawned
+   * opencli), so this returns a job id immediately; the TW overlay then polls
+   * `/wechat/publish/status`. A second concurrent call gets 409: two opencli
+   * runs would fight over the same browser tab.
+   */
+  const handleWechatPublish = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      if (!guardWechat(req, res)) return
+      let body: { title?: unknown; adapter?: unknown } = {}
+      try {
+        body = JSON.parse(await readBody(req)) as { title?: unknown; adapter?: unknown }
+      } catch {
+        /* malformed body → the title check below answers */
+      }
+      const title = typeof body.title === 'string' ? body.title.trim() : ''
+      if (title.length === 0) {
+        json(res, { ok: false, error: 'title is required' }, 400)
+        return
+      }
+      if (title.length > 300) {
+        json(res, { ok: false, error: 'title is too long' }, 400)
+        return
+      }
+      // The title becomes a TW `/render` lookup and a text file name we generate;
+      // the secret namespace must never be publishable (same predicate as /render).
+      if (isBlockedProxyTitle(title)) {
+        json(res, { ok: false, error: 'unsupported title' }, 400)
+        return
+      }
+      const requested = body.adapter === undefined ? undefined : String(body.adapter)
+      if (requested !== undefined && !(WECHAT_ADAPTERS as readonly string[]).includes(requested)) {
+        json(res, { ok: false, error: `unsupported adapter: ${requested}` }, 400)
+        return
+      }
+      const runner = deps.wechatRunner()
+      if (runner === undefined) {
+        json(res, { ok: false, error: 'publish runner unavailable' }, 503)
+        return
+      }
+      // Fail fast on a title that does not exist: the adapter would otherwise
+      // spend ~10s booting the browser only to 404 in /render.
+      const client = deps.getClient()
+      if (client !== undefined) {
+        const tiddler = await client.get(title)
+        if (tiddler === undefined) {
+          json(res, { ok: false, error: `wiki 里找不到笔记「${title}」` }, 400)
+          return
+        }
+      }
+      const adapter = (requested ?? deps.wechatConfig().adapter) as WechatAdapter
+      const ready = await deps.wechatReady()
+      const adapterReady = adapter === 'publish-note-imgs' ? ready.adapters.publishNoteImgs : ready.adapters.publishNote
+      if (!ready.opencli.ok || !adapterReady) {
+        json(res, {
+          ok: false,
+          error: !ready.opencli.ok
+            ? `找不到 opencli（wechat.command=${ready.command}）：请先 npm install -g @jackwener/opencli`
+            : `opencli 里还没有 weixin adapter（缺 ${ready.adapters.missing.join('、') || adapter}）：请运行 node tools/wechat/install-wechat-adapters.mjs`,
+          ready,
+        }, 503)
+        return
+      }
+      const result = runner.start({ title, adapter, dsn: wechatDsn(req) })
+      if (!result.ok) {
+        if (result.busy) {
+          json(res, { ok: false, error: 'a publish job is already running', jobId: result.job.id }, 409)
+          return
+        }
+        json(res, { ok: false, error: result.error }, 400)
+        return
+      }
+      json(res, { ok: true, jobId: result.job.id, title: result.job.title, adapter: result.job.adapter })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+    }
+  }
+
+  /**
+   * GET /dsh-tiddlywiki/wechat/publish/status — poll one job (`?id=`), or the
+   * current/newest one when the id is omitted (the overlay loses its id when the
+   * page reloads mid-publish). `job: null` = nothing has run yet.
+   */
+  const handleWechatPublishStatus = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectNonRead(req, res)) return
+      if (!guardWechat(req, res)) return
+      const runner = deps.wechatRunner()
+      if (runner === undefined) {
+        json(res, { ok: false, error: 'publish runner unavailable' }, 503)
+        return
+      }
+      const id = (new URL(req.url ?? '/', 'http://x').searchParams.get('id') ?? '').trim()
+      const job = runner.status(id.length > 0 ? id : undefined)
+      if (job === undefined) {
+        if (id.length > 0) {
+          json(res, { ok: false, error: 'unknown job' }, 404)
+          return
+        }
+        json(res, { ok: true, job: null })
+        return
+      }
+      json(res, { ok: true, job })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+    }
+  }
+
   // Every handler goes through guardHandler (v0.19.3): a rejection — including a
   // synchronous throw before the handler's own try, e.g. `new URL(req.url)` —
   // becomes a 413/500 JSON response instead of an unhandled rejection that
@@ -1573,6 +1765,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/modes`, handler: guardHandler(handleAgentModes) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: guardHandler(handleAgentSend) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/create`, handler: guardHandler(handleAgentCreate) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/wechat/ready`, handler: guardHandler(handleWechatReady) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/wechat/publish`, handler: guardHandler(handleWechatPublish) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/wechat/publish/status`, handler: guardHandler(handleWechatPublishStatus) }),
     ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: guardHandler(handleApiProxy) }),
     ctx.webServer.register({ kind: 'prefix', path: `${TW_PROXY_PREFIX}`, handler: guardHandler(handleTwProxy) }),
   ]

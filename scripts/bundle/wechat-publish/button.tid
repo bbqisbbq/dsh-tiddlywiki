@@ -1,0 +1,16 @@
+\whitespace trim
+<$button message="dsh-wechat-publish"
+	param=<<currentTiddler>>
+	tooltip="把当前笔记存到微信公众号草稿箱"
+	aria-label="把当前笔记存到微信公众号草稿箱"
+	class=<<tv-config-toolbar-class>>
+>
+	<%if [<tv-config-toolbar-icons>match[yes]] %>
+		{{$:/plugins/dsh/wechat-publish/ui/icon}}
+	<%endif%>
+	<%if [<tv-config-toolbar-text>match[yes]] %>
+		<span class="tc-btn-text">
+		<$text text="发布到公众号"/>
+	</span>
+	<%endif%>
+</$button>

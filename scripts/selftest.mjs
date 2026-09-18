@@ -9,7 +9,7 @@ import { EventEmitter } from 'node:events'
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, flushPendingWrites, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensurePlugin, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, TW_WEB_HOST_TIDDLER, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
+import { WikiServer, TiddlyWebClient, GitFace, AutoCommitter, flushPendingWrites, resolveTwRoot, bundledCatalog, readWikiInfo, writeWikiInfo, ensurePlugin, ensureLanguage, normalizeThemes, openInTwEditor, registerRoutes, seedDocNote, DOC_NOTE_TITLE, DOC_NOTE_TAG, seedStarterDocs, STARTER_DOCS_MARKER_TITLE, seedSendToAgent, SEND_TO_AGENT_PLUGIN_TITLE, SEND_TO_AGENT_MARKER_TITLE, SEND_TO_AGENT_BUNDLE_TEXT, seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT, seedHomeIndex, HOME_INDEX_ITEMS, HOME_INDEX_MARKER_TITLE, seedAllArticles, ALL_ARTICLES_TITLE, seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, seedUiStyles, UI_STYLES_MARKER_TITLE, seedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, checkAllSeeds, runSeedById, runAllSeeds, removeSeedById, SEED_DEFS, ConfigStore, deepMerge, TW_PROXY_PATH, TW_PROXY_PREFIX, TW_WEB_HOST_TIDDLER, WECHAT_PUBLISH_PLUGIN_TITLE, WECHAT_PUBLISH_MARKER_TITLE, registerTiddlywikiTools, isBinaryType, TEXT_LIST_FILTER } from '../lib/index.js'
 import { createRouteServer, waitFor } from './lib/tw-harness.mjs'
 
 const assert = (cond, label) => {
@@ -1238,6 +1238,7 @@ try {
   // gated starter 不止一个）。清掉 marker 以便真的写。
   await seedApi.delete('$:/dsh-tiddlywiki/publish-spec-seeded')
   await seedApi.delete('$:/plugins/dsh-tiddlywiki/seed-wechat-docs')
+  await seedApi.delete(WECHAT_PUBLISH_MARKER_TITLE)
   const startupOn = await runAllSeeds({ ...seedCtx, wechat: true })
   const psRun = startupOn.find((r) => r.id === 'publish-spec')
   assert(psRun !== undefined && psRun.ok, 'wechat on → publish-spec participates in startup')
@@ -1245,9 +1246,14 @@ try {
   const wsRun = startupOn.find((r) => r.id === 'wechat-setup')
   assert(wsRun !== undefined && wsRun.ok, 'wechat on → wechat-setup participates in startup')
   assert((await seedApi.get('微信公众号发布指南')) !== undefined, 'wechat on → the wechat setup guide doc is written')
+  // v0.23.3：第三个 gated seed 是「发布到公众号」工具栏按钮插件。
+  const wpRun = startupOn.find((r) => r.id === 'wechat-publish')
+  assert(wpRun !== undefined && wpRun.ok, 'wechat on → wechat-publish participates in startup')
+  assert((await seedApi.get(WECHAT_PUBLISH_PLUGIN_TITLE)) !== undefined, 'wechat on → the publish-button plugin bundle is written')
   // 清理，避免影响后续「手动 run-all 只写缺失的可选项」断言
   await removeSeedById(seedCtx, 'publish-spec')
   await removeSeedById(seedCtx, 'wechat-setup')
+  await removeSeedById(seedCtx, 'wechat-publish')
   assert((await seedApi.get(DOC_NOTE_TITLE)) !== undefined, 'startup path re-creates the starter doc note')
   assert((await seedApi.get('教程：按主题/标签做汇总页')) !== undefined, 'startup path re-creates the starter docs')
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined, 'startup path does NOT re-create the optional menubar-theme')
@@ -1264,7 +1270,7 @@ try {
   assert(all.length === SEED_DEFS.length, `manual run-all covers every registry item (${all.length}/${SEED_DEFS.length})`)
   assert(all.every((r) => r.ok), 'all seeds run ok')
   const allWrote = all.filter((r) => r.wrote).map((r) => r.id).sort()
-  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'clip-bridge', 'home-index', 'menubar-theme', 'publish-spec', 'ui-styles', 'wechat-setup']), `manual run-all writes exactly the missing seeds (${allWrote.join(',')})`)
+  assert(JSON.stringify(allWrote) === JSON.stringify(['all-articles', 'clip-bridge', 'home-index', 'menubar-theme', 'publish-spec', 'ui-styles', 'wechat-publish', 'wechat-setup']), `manual run-all writes exactly the missing seeds (${allWrote.join(',')})`)
 
   // runSeedById with an id runs only that one; force rewrites regardless.
   const onlyHome = await runSeedById(seedCtx, 'home-index', false)
@@ -1340,6 +1346,7 @@ try {
   assert((await seedApi.get(MENUBAR_THEME_TIDDLER)) === undefined && (await seedApi.get(DOC_NOTE_TITLE)) === undefined && (await seedApi.get(CLIP_BRIDGE_DOC_TITLE)) === undefined, 'remove-all cleaned optional tiddlers')
   assert((await seedApi.get('发布元数据规范')) === undefined, 'remove-all also cleaned the gated publish-spec doc')
   assert((await seedApi.get('微信公众号发布指南')) === undefined, 'remove-all also cleaned the gated wechat-setup doc')
+  assert((await seedApi.get(WECHAT_PUBLISH_PLUGIN_TITLE)) === undefined, 'remove-all also cleaned the gated wechat-publish button plugin')
   assert((await seedApi.get(SEND_TO_AGENT_PLUGIN_TITLE)) !== undefined && (await seedApi.get(TW_WEB_HOST_TIDDLER)) !== undefined && (await seedApi.get(RENDER_PLUGIN_TITLE)) !== undefined, 'remove-all keeps the core seeds')
 
   // 5e. Active-palette flip round-trip (before the server stops; kept AFTER

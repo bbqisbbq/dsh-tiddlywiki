@@ -37,8 +37,8 @@ async function test(name, fn) {
   }
 }
 
-/** 启动路径会跑的 seed（core 3 + starter 4，含两个 gated 的可选功能文档），与 runAllSeeds 的目标集合一致。 */
-const STARTUP_SEED_IDS = ['doc-note', 'starter-docs', 'send-to-agent', 'render-route', 'publish-spec', 'wechat-setup', 'tw-web-host']
+/** 启动路径会跑的 seed（core 3 + starter 4 + 三个 gated 的可选功能项），与 runAllSeeds 的目标集合一致。 */
+const STARTUP_SEED_IDS = ['doc-note', 'starter-docs', 'send-to-agent', 'render-route', 'publish-spec', 'wechat-setup', 'wechat-publish', 'tw-web-host']
 
 /** 启动集合里带 gate 的可选功能 seed（从注册表派生，新增 gated seed 不用再改本脚本）。 */
 const GATED_STARTUP_IDS = SEED_DEFS

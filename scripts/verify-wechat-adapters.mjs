@@ -167,13 +167,36 @@ test('install 脚本的 FILES 清单与磁盘文件一致', () => {
   }
 })
 
-// ── 8. 关键注释不得丢（这些坑靠注释传承） ────────────────────────────────
+// ── 8. 标题必须能走文件（宿主按钮路径）────────────────────────────────────
+test('两个 publish adapter 都支持 --title-file，且标题解析只有一份实现', () => {
+  const flow = read('weixin-flow.js')
+  assert.ok(
+    /export function resolveNoteTitle\(/.test(flow),
+    'weixin-flow.js 缺少 resolveNoteTitle（标题位置参数 / --title-file 二选一的唯一实现）',
+  )
+  for (const file of ['publish-note.js', 'publish-note-imgs.js']) {
+    const src = read(file)
+    assert.ok(/name: 'titleFile'/.test(src), `${file} 缺少 --title-file 参数声明（宿主按钮靠它把标题挡在 argv 之外）`)
+    assert.ok(
+      /resolveNoteTitle\(kwargs\.title, kwargs\.titleFile\)/.test(src),
+      `${file} 没有走 resolveNoteTitle —— 直接读 kwargs.title 会让 --title-file 静默失效`,
+    )
+    assert.ok(
+      !/const noteTitle = String\(kwargs\.title \|\| ''\)\.trim\(\)/.test(src),
+      `${file} 还留着旧的 kwargs.title 直读（会绕过标题文件）`,
+    )
+  }
+})
+
+// ── 9. 关键注释不得丢（这些坑靠注释传承） ────────────────────────────────
 test('三个必需踩坑被注释记录（trace / DataTransfer / insertHTML）', () => {
   const flow = read('weixin-flow.js')
   const joined = unescapeJs(flow)
   assert.ok(/trace retain-on-failure/i.test(joined), 'weixin-flow 应记录「必须带 --trace retain-on-failure」')
   assert.ok(/DataTransfer/.test(joined), 'weixin-flow 应记录 DataTransfer 上传的理由')
   assert.ok(/insertHTML/.test(joined), 'weixin-flow 应记录正文必须用 insertHTML')
+  // 标题文件的理由（cmd.exe shim → 注入面 + 中文乱码）同样必须留在源码里
+  assert.ok(/cmd\.exe/.test(joined) && /argv/.test(joined), 'weixin-flow 应记录「为什么标题不进 argv」')
 })
 
 console.log(failures === 0 ? '\nWECHAT ADAPTER CHECKS OK' : `\nWECHAT ADAPTER CHECKS FAILED (${failures})`)

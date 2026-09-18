@@ -80,6 +80,30 @@ export function requireFile(filePath, label) {
     return resolved;
 }
 
+/**
+ * 解析笔记标题：位置参数，或 `--title-file` 指向的 UTF-8 文本文件。
+ *
+ * 为什么需要文件形态（v0.23.3）：DSH 的「发布到公众号」按钮由**宿主进程**调起
+ * 本命令，标题来自用户 tiddler。走 argv 会同时撞上两个 Windows 现实：
+ *   ① `opencli` 是 `.cmd` shim，必须经 cmd.exe 才跑得起来 → 标题里的 `&`/`|`/
+ *      `^`/引号立刻变成命令注入面；
+ *   ② cmd.exe 的代码页会把中文标题按 ANSI 解码成乱码。
+ * 改成「宿主写一个 UTF-8 文件、argv 里只出现它自己生成的路径」，两个问题一起
+ * 消失。命令行直接调用时位置参数照旧可用（先位置、后文件）。
+ */
+export function resolveNoteTitle(title, titleFile) {
+    const literal = String(title || '').trim();
+    if (literal) return literal;
+    const spec = String(titleFile || '').trim();
+    if (!spec) throw new ArgumentError('缺少笔记标题：请传位置参数 <title>，或用 --title-file <文件>');
+    const file = requireFile(spec, '标题文件');
+    // 去 BOM：Windows 上的记事本/PowerShell 写文件很容易带上它，而 BOM 会跟着
+    // 标题一起进微信后台（表现为标题第一个字符是看不见的 U+FEFF）。
+    const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '').trim();
+    if (!text) throw new ArgumentError(`标题文件是空的: ${file}`);
+    return text;
+}
+
 export function mimeOf(filePath) {
     const ext = path.extname(filePath).toLowerCase();
     if (ext === '.png') return 'image/png';

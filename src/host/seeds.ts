@@ -26,7 +26,7 @@
  *
  * Registry: doc-note / starter-docs / send-to-agent / render-route /
  * home-index / all-articles / ui-styles / menubar-theme / clip-bridge /
- * tw-web-host.
+ * publish-spec / wechat-setup / wechat-publish / tw-web-host.
  *
  * @module dsh-tiddlywiki/host/seeds
  */
@@ -45,6 +45,7 @@ import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_TH
 import { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT } from './seed-clip-bridge.ts'
 import { seedPublishSpec, unseedPublishSpec, PUBLISH_SPEC_TITLE, PUBLISH_SPEC_MARKER_TITLE, PUBLISH_SPEC_TEXT } from './seed-publish-spec.ts'
 import { seedWechatDocs, unseedWechatDocs, WECHAT_DOCS_TITLE, WECHAT_DOCS_MARKER_TITLE, WECHAT_DOCS_TEXT } from './seed-wechat-docs.ts'
+import { seedWechatPublish, unseedWechatPublish, WECHAT_PUBLISH_PLUGIN_TITLE, WECHAT_PUBLISH_MARKER_TITLE, WECHAT_PUBLISH_BUNDLE_TEXT } from './seed-wechat-publish.ts'
 import { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT } from './seed-render.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
@@ -593,6 +594,16 @@ export const SEED_DEFS: SeedDef[] = [
       presentTitle: WECHAT_DOCS_TITLE,
       write: seedWechatDocs,
       unseed: unseedWechatDocs,
+      gate: (ctx) => ctx.wechat === true,
+    },
+  ),
+  defineSeed(
+    { id: 'wechat-publish', title: '「发布到公众号」按钮（可选：需开启微信公众号发布）', description: 'TW 笔记工具栏「发布到公众号」按钮插件（$:/plugins/dsh/wechat-publish）——把当前笔记一键存进公众号**草稿箱**（宿主进程调 opencli 驱动你已登录的浏览器；发表需人工扫码，脚本不做）。按钮先做预检（opencli + adapter 是否就位），再起一个可轮询的后台任务并显示进度。**属于可选功能**：仅当设置页开启「微信发布」（wechat.enabled）时启动才会写入，否则完全跳过（与发布元数据规范 / 公众号发布指南同进同退）。', markerTitle: WECHAT_PUBLISH_MARKER_TITLE, core: false, startup: true },
+    {
+      content: async () => [{ title: WECHAT_PUBLISH_PLUGIN_TITLE, text: WECHAT_PUBLISH_BUNDLE_TEXT }],
+      presentTitle: WECHAT_PUBLISH_PLUGIN_TITLE,
+      write: seedWechatPublish,
+      unseed: unseedWechatPublish,
       gate: (ctx) => ctx.wechat === true,
     },
   ),

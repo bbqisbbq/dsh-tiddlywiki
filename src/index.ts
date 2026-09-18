@@ -29,6 +29,7 @@ import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWri
 import { RENDER_PLUGIN_FILE } from './host/seed-render.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
+import { WechatPublishRunner, checkWechatReady, normalizeWechatConfig } from './host/wechat-publish.ts'
 import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps } from './host/tools.ts'
 import { describePrompt, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig, type PromptPreviewConfig } from './host/prompt.ts'
 import {
@@ -85,6 +86,30 @@ export { seedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } from './host/see
 export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './host/seed-menubar-theme.ts'
 export { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET, CLIP_BRIDGE_DRAG_HREF } from './host/seed-clip-bridge.ts'
 export { seedWechatDocs, unseedWechatDocs, WECHAT_DOCS_TITLE, WECHAT_DOCS_MARKER_TITLE, WECHAT_DOCS_TEXT } from './host/seed-wechat-docs.ts'
+export { seedWechatPublish, unseedWechatPublish, WECHAT_PUBLISH_PLUGIN_TITLE, WECHAT_PUBLISH_MARKER_TITLE, WECHAT_PUBLISH_BUNDLE_TEXT } from './host/seed-wechat-publish.ts'
+export {
+  WechatPublishRunner,
+  checkWechatReady,
+  normalizeWechatConfig,
+  buildPublishInvocation,
+  buildVersionInvocation,
+  interpretPublishOutcome,
+  scanAdapterDir,
+  defaultAdaptersDir,
+  defaultWechatJobDir,
+  capOutput,
+  tailOf,
+  isSafeCliValue,
+  isSafeDsn,
+  WECHAT_ADAPTERS,
+  WECHAT_ADAPTER_FILES,
+  DEFAULT_WECHAT_ADAPTER,
+  DEFAULT_WECHAT_COMMAND,
+  type WechatAdapter,
+  type WechatPublishConfig,
+  type WechatPublishJobView,
+  type WechatReadyView,
+} from './host/wechat-publish.ts'
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUnavailableError } from './host/tools.ts'
 export { tiddlywikiToolSummary } from './host/tools.ts'
@@ -160,8 +185,10 @@ export interface TiddlywikiConfig {
    * 可选功能：微信公众号发布（v0.23.0，**默认关闭**）。该能力需额外安装
    * opencli + Browser Bridge 浏览器扩展（见 docs/wechat-publish-setup.md），
    * 插件本体不含它；关闭时不影响任何其他功能。
+   * v0.23.3 起 `command`/`adapter`/`token`/`dsn` 服务于 TW 工具栏「发布到公众号」
+   * 按钮（见 host/wechat-publish.ts）。
    */
-  wechat?: { enabled?: boolean }
+  wechat?: { enabled?: boolean; command?: string; token?: string; adapter?: 'publish-note' | 'publish-note-imgs'; dsn?: string; endpoint?: string }
   ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
   /** 启动时自动启用的 TW 语言代码（如 "zh-Hans"），也受配置 tiddler 覆盖。 */
   uiLanguage?: string
@@ -191,9 +218,10 @@ interface ResolvedConfig {
   /**
    * 可选功能：微信公众号发布（v0.23.0）。默认 `enabled: false`——该能力需要额外
    * 安装（opencli + 浏览器扩展，见 docs/wechat-publish-setup.md），插件本体不含它。
-   * 关闭时不注入发布相关提示词、也不写「发布元数据规范」seed。
+   * 关闭时不注入发布相关提示词、不写两个 gated seed，`/wechat/*` 三条路由也一律
+   * 403（v0.23.3）。`command`/`adapter`/`token`/`dsn` 供 TW 工具栏按钮使用。
    */
-  wechat: { enabled: boolean }
+  wechat: { enabled: boolean; command: string; token: string; adapter: 'publish-note' | 'publish-note-imgs'; dsn: string }
   uiLanguage: string
   auth: { username?: string; password?: string }
 }
@@ -217,7 +245,8 @@ const DEFAULTS: ResolvedConfig = {
   ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
   startup: { readyTimeoutMs: READY_TIMEOUT_DEFAULT_MS },
   // 可选功能默认关闭（v0.23.0）：需额外安装 opencli + 浏览器扩展才可用。
-  wechat: { enabled: false },
+  // v0.23.3：command/adapter/token/dsn 是 TW 工具栏「发布到公众号」按钮的旋钮。
+  wechat: { enabled: false, command: 'opencli', token: '', adapter: 'publish-note', dsn: '' },
   uiLanguage: '',
   auth: { username: '', password: '' },
 }
@@ -358,7 +387,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // Runtime-editable config (settings page): the cordis `config:` block is the
   // BASE; a config tiddler ($:/plugins/dsh-tiddlywiki/config) written by the
   // settings page overlays it. Effective values come from configStore.get().
-  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge, startup: config.startup } satisfies PluginConfigShape)
+  const configStore = new ConfigStore({ note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge, startup: config.startup, wechat: config.wechat } satisfies PluginConfigShape)
   const eff = (): PluginConfigShape => configStore.get()
   const effectiveNoteTag = (): string => {
     const tag = eff().note?.tag
@@ -403,6 +432,29 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   const disposeAll = (): void => {
     for (const dispose of disposers.splice(0)) dispose()
   }
+
+  /**
+   * Effective 公众号发布 config (cordis base + settings-page overlay), read PER
+   * REQUEST: enabling the feature, switching the adapter or rotating the token
+   * applies without a dsh web restart. `normalizeWechatConfig` is the single
+   * place that turns the loose config-tiddler JSON into the typed shape — a
+   * garbage `adapter`/`command` falls back to the defaults instead of reaching
+   * the spawned command line.
+   */
+  const effectiveWechat = (): ReturnType<typeof normalizeWechatConfig> => normalizeWechatConfig(eff().wechat)
+
+  /**
+   * WeChat publish runner (v0.23.3): owns the opencli child process behind the
+   * TW toolbar button. Construction spawns nothing (the CLI is resolved per
+   * run), and it is disposed with the plugin so a running publish never
+   * outlives dsh web and leaves an orphan browser tab.
+   */
+  const wechatRunner = new WechatPublishRunner({
+    command: () => effectiveWechat().command,
+    adapter: () => effectiveWechat().adapter,
+    log: (message) => console.warn(message),
+  })
+  disposers.push(() => wechatRunner.dispose())
 
   // ── System prompt section (v0.21.0: configurable + live) ──────────────────
   // The section text is built from the EFFECTIVE config (cordis base + config
@@ -865,6 +917,15 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         const token = eff().ui?.sendToAgent?.token
         return typeof token === 'string' ? token : ''
       },
+      // 公众号发布（v0.23.3，可选功能）：config 每请求重读（开关/adapter/token
+      // 保存即生效）；就绪探测每次都真跑一次 `opencli --version`（几百毫秒），
+      // 只在按钮预检与每次起任务前发生，不做缓存以免装完 adapter 还要等 TTL。
+      wechatConfig: () => effectiveWechat(),
+      wechatRunner: () => wechatRunner,
+      wechatReady: () => checkWechatReady({
+        enabled: effectiveWechat().enabled,
+        command: effectiveWechat().command,
+      }),
     })
     const adminDeps: AdminDeps = {
       server,

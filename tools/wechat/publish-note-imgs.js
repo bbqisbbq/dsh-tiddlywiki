@@ -48,6 +48,7 @@ import {
     requireFile,
     mimeOf,
     MAX_IMAGE_BYTES,
+    resolveNoteTitle,
 } from './weixin-flow.js';
 import { extractBody, decorate, wrapForPreview } from './wechat-html.js';
 
@@ -255,7 +256,10 @@ cli({
     browser: true,
     navigateBefore: false,
     args: [
-        { name: 'title', required: true, positional: true, help: 'TiddlyWiki 笔记标题（tiddler 标题）' },
+        // 位置参数与 --title-file 二选一（都传则位置参数优先）。宿主按钮走
+        // --title-file：标题不进 argv，见 weixin-flow.resolveNoteTitle 的注释。
+        { name: 'title', required: false, positional: true, help: 'TiddlyWiki 笔记标题（tiddler 标题；与 --title-file 二选一）' },
+        { name: 'titleFile', help: '从 UTF-8 文本文件读取标题（供宿主进程调用，避免标题进 argv）' },
         { name: 'dsn', default: DEFAULT_DSN, help: `DSH 知识库地址（默认 ${DEFAULT_DSN}）` },
         { name: 'images', required: true, help: '图片目录（按文件名排序），或用 | 分隔的图片路径列表，顺序=正文出现顺序' },
         { name: 'author', help: '公众号作者名（限 8 字）' },
@@ -269,8 +273,7 @@ cli({
     columns: ['status', 'title', 'detail'],
 
     func: async (page, kwargs) => {
-        const noteTitle = String(kwargs.title || '').trim();
-        if (!noteTitle) throw new ArgumentError('笔记标题不能为空');
+        const noteTitle = resolveNoteTitle(kwargs.title, kwargs.titleFile);
 
         // ── 1. 取渲染 HTML 与图片清单 ──
         const rendered = await fetchRendered(kwargs.dsn || DEFAULT_DSN, noteTitle);

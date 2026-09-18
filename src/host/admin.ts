@@ -388,9 +388,17 @@ export function maskConfigSecrets(config: PluginConfigShape): PluginConfigShape 
   const sendToAgent = (ui.sendToAgent ?? {}) as Record<string, unknown>
   const git = (config.git ?? {}) as Record<string, unknown>
   const auth = (config.auth ?? {}) as Record<string, unknown>
+  // v0.23.3: the WeChat publish routes accept a shared token too, and the
+  // settings page round-trips the whole `wechat` block → mask it like the rest.
+  const wechat = (config.wechat ?? {}) as Record<string, unknown>
   const maskToken = (value: unknown): string => (typeof value === 'string' && value.length > 0 ? MASKED_SECRET : '')
   return {
     ...config,
+    wechat: {
+      ...wechat,
+      token: maskToken(wechat.token),
+      tokenSet: typeof wechat.token === 'string' && wechat.token.length > 0,
+    },
     auth: {
       ...auth,
       password: maskToken(auth.password),
@@ -429,6 +437,8 @@ export function stripMaskedSecrets<T extends Record<string, unknown>>(patch: T, 
     return obj
   }
   if (copy.bridge !== undefined) copy.bridge = cleanToken(copy.bridge)
+  // v0.23.3: `wechat.token` follows the same round-trip rule.
+  if (copy.wechat !== undefined) copy.wechat = cleanToken(copy.wechat)
   // v0.20.0: the same round-trip rule for auth.password (`passwordSet` is a
   // display-only flag and must never be persisted).
   if (copy.auth !== undefined && typeof copy.auth === 'object' && copy.auth !== null) {

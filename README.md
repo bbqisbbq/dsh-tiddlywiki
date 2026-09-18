@@ -37,7 +37,7 @@
 | 🧯 **路由不会拖垮进程** | 所有路由经 `guardHandler` 包装：任何 rejection（含代理里 try 之外的 `new URL()`）都变成 413/500 响应，而不是宿主未处理的 promise rejection（那会**直接结束 dsh web 进程**并挂死请求）；剪藏桥 listen 后保留常驻 `error` 监听（v0.19.3） |
 | 📊 **回复流卡片** | 工具结果显示原生 TW 卡片（**按笔记自己的内容类型渲染**：Markdown 笔记就是 Markdown，v0.18.0），检索/最近列表带**命中处摘要**（v0.22.8）；`[标题](/dsh-tiddlywiki/tw/#标题)` 点击直达 TW 面板 |
 | 📤 **发送给 Agent** | TW 笔记工具栏一键把当前笔记注入所选 dsh 会话（可选工作模式/权限/附加说明）；成功/失败会弹出提示（v0.20.0 修复：此前提示把自由文本当 tiddler 标题传给 TW notifier，全部静默） |
-| 📮 **发布到微信公众号**（**可选，默认关**） | 把笔记一键发到公众号**草稿箱**（可选点发表）：TW 渲染 → 补内联样式 → 浏览器自动化复用你已登录的后台会话。**绕开官方 API 权限封锁**（2025-07 起个人主体账号的发布接口被回收），个人号可用；发表需管理员扫一次码。**需额外安装**（opencli + 浏览器扩展），插件不替你装；**关闭时完全不打扰**（不注入提示词、不写文档）。**带发布元数据**（`pub-state`/`pub-platform`/`pub-wechat-*` + `no-publish` 标签）避免重发或误发。见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md) |
+| 📮 **发布到微信公众号**（**可选，默认关**） | 把笔记一键发到公众号**草稿箱**（可选点发表）：TW 渲染 → 补内联样式 → 浏览器自动化复用你已登录的后台会话。**绕开官方 API 权限封锁**（2025-07 起个人主体账号的发布接口被回收），个人号可用；发表需管理员扫一次码。**需额外安装**（opencli + 浏览器扩展），插件不替你装；**关闭时完全不打扰**（不注入提示词、不写文档）。**带发布元数据**（`pub-state`/`pub-platform`/`pub-wechat-*` + `no-publish` 标签）避免重发或误发。**v0.23.3 起 TW 工具栏有「发布到公众号」按钮**（预检 + 进度轮询，只到草稿箱），也可继续用 CLI。见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md) |
 | 🧭 **内嵌编辑器** | 中央列内嵌完整 TW 5 编辑器（同源代理，Tailscale/内网/域名/HTTPS 均可） |
 | 🗂️ **右侧边栏 Tab** | DSH 新右侧栏（rightbar）：首页「TiddlyWiki 知识库」入口一键打开，与聊天并排；链接点击可直达（v0.16.21） |
 | 🧪 **审计守门** | 第四轮审计（v0.20.0）把 CI 与 `npm run verify:*` 合成一份清单，并补上 `verify-constants`（filter 长度预算）、`/render` 403、auth 打码、notify 与草稿避让回归 |
@@ -163,6 +163,11 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 把 wiki 里的任意笔记**一键发到微信公众号草稿箱**（可选直接发表）。整套能力放在 `tools/wechat/`，**不依赖公众号服务端 API**——因为 2025-07 起官方已回收个人主体账号的「发布能力」接口权限；本方案改用**浏览器自动化复用你已登录的后台会话**，所以个人号也能用。
 
+**两条路，随便挑一条**：
+
+- **点按钮（v0.23.3，日常推荐）**：开启可选功能后，笔记工具栏出现「**发布到公众号**」。点它 → 先**预检**（opencli 在不在、adapter 缺不缺）→ 弹确认框（自动列出 `no-publish` / `pub-state` 警告）→「开始存草稿」→ 覆盖层每 2 秒显示进度与日志。**只到草稿箱为止**，发表请到后台点（需扫码）。背后是宿主进程起一个单并发的后台任务（`POST /dsh-tiddlywiki/wechat/publish` + 轮询 `…/status`），标题经 **UTF-8 文件**（`--title-file`）传给 adapter——不进 argv，避免 Windows `cmd.exe` shim 把 `&` 当命令分隔符、把中文解成乱码。
+- **敲命令**（等价，适合批量 / 脚本化）：
+
 ```bash
 # ① 先按 docs/wechat-publish-setup.md 装好 opencli + 浏览器扩展，并登录公众号
 # ② 一次性：装 adapter 到本机 opencli（幂等，会自检扩展/登录状态）
@@ -200,6 +205,7 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
 | | `tw-web-host` | TW 前端 API 基址 → 同源代理（内嵌编辑器前提） | 自动写 |
 | 📖 **起步**（默认写、可移除，**想要完整体验建档案**） | `doc-note` | 「dsh-tiddlywiki 插件说明」笔记 | 自动写 |
 | | `starter-docs` | 「示例与文档」：主题汇总页·模板 + 教程 + 三个示例主题页（日志/决策记录/排障） | 自动写 |
+| | `publish-spec` / `wechat-setup` / `wechat-publish`（**带 gate**） | 只有开启「可选功能：微信公众号发布」才写：发布元数据规范 + 换机还原指南 + 「**发布到公众号**」工具栏按钮插件（v0.23.3） | 开启后自动写 |
 | 🎀 **可选**（默认不写、设置页手动、可移除，**可有可无**） | `home-index` | 首页（四象限待办 + 快速记笔记 + 所有标签/所有文章 + 📚 文档栏）——文档中心的「门面」 | 手动 |
 | | `all-articles` | 「所有文章」两列分页总览（🤖 Agent / 👤 人工） | 手动 |
 | | `ui-styles` | 自定义样式 5 张（编辑器美化 / 窄屏侧栏 / menubar 加高 / 批注弹窗等） | 手动 |
@@ -255,6 +261,12 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       showSessionTab: true
       showRightbarTab: true            # DSH 右侧边栏提供 TiddlyWiki 入口/Tab
       sendToAgent: { enabled: true }
+    wechat:                            # 可选功能：微信公众号发布（默认关；三条 /wechat/* 路由在关时一律 403）
+      enabled: false                   # 开：注入发布约定 + 启动写 3 个 gated seed（元数据规范/换机指南/工具栏按钮）
+      adapter: "publish-note"          # publish-note-imgs = 正文内嵌多图版（需该 adapter 已装）
+      command: "opencli"               # CLI 路径（不在 PATH / 用了别名时填绝对路径）
+      token: ""                        # 非空时 /wechat/* 要求请求头 x-wechat-publish-token（按钮自动带）
+      dsn: ""                          # adapter 回连 DSH 的基址；空 = 按请求端口推导 loopback
     uiLanguage: ""                     # 留空不干预；"zh-Hans" 自动启用简体
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非回环才需要
@@ -389,6 +401,7 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.23.3**（2026-09-18）：**TW 笔记工具栏新增「发布到公众号」按钮**（可选功能，与既有 CLI 等价，只是不用敲命令）。链路：TW 按钮 → `POST /dsh-tiddlywiki/wechat/publish` → 宿主 spawn `opencli weixin publish-note` → `GET …/wechat/publish/status` 轮询 → 覆盖层显示进度与日志尾部。**只到草稿箱为止**，发表仍由人工扫码（沿用 v0.23.2 定的策略）。三处硬骨头：① **标题不进 argv**——Windows 上 `opencli` 是 `.cmd` shim，必须经 cmd.exe 启动，于是标题里的 `&`/`|`/`^`/引号成了命令注入面、中文标题还会被 cmd 的代码页解成乱码；改成宿主写 UTF-8 文件 + adapter 新增 **`--title-file`**（位置参数照旧可用，两者都给时位置参数优先）。② **任务化而非同步请求**——命令要跑几十秒到几分钟，`POST` 立即返回 `jobId`，单并发（第二次 409）、15 分钟上限，超时用 `taskkill /T` 杀**整棵进程树**（只杀 cmd.exe 会留下孤儿 node 抓着 job 目录，实测 `EBUSY`）。③ **可选功能默认不打扰**——`wechat.enabled` 关着时三条 `/wechat/*` 路由一律 403、按钮插件不写进 wiki（新增 gated 起步 seed `wechat-publish`，与 `publish-spec`/`wechat-setup` 同进同退）。新增 `src/host/wechat-publish.ts`（命令组装纯函数 + job registry + 就绪探测）、三条路由（方法/同源守卫 + 可选 `x-wechat-publish-token`；`wechat.token` 与其它密钥一样在 `/admin/state` 打码）、TW bundle `$:/plugins/dsh/wechat-publish`（`scripts/bundle/wechat-publish/` + build/gen/verify 流水线，`wechat-publish.bundle.json` 逐字节守门）。守门：`scripts/verify-wechat-publish.mjs`（17 条：纯函数 + **真跑 spawn 的「假 opencli」E2E**（含标题不进 argv 的逐字断言）+ 真实 HTTP 路由守卫；**已反向验证**：拆掉 `guardWechat` 即红）+ `scripts/verify-wechat-publish-bundle.mjs`（进 `verify:static`）+ `verify-wechat-adapters.mjs` 新增「两个 publish adapter 都必须走 `resolveNoteTitle`」。
 - **v0.23.2**（2026-09-17）：**多图发布命令 `publish-note-imgs` + 发布策略定为「到草稿箱为止」**。TW 笔记内嵌 `[img[...]]` 经 `/render` 是 data URI，微信存草稿会过滤非 mmbiz 图——新命令先把正文全部图片经 DataTransfer 逐张上传 CDN（轮询计数到期望值），按 DOM 顺序重写正文 src 再 insertHTML，从正文第一张设封面；发布前同样读 `pub-state`/`no-publish`（只告警不阻断）。`selectCoverFromContent` 封面校验改轮询，修「实际成功却报失败」的假阴性（实测 `list_ex` 的 `cover` 已是 mmbiz 而流程报失败）。安装脚本 FILES 收编至 5 个 adapter，守门断言同步。**策略**：adapter 负责到草稿落盘为止，发表（含原创声明/作者/留言等确认弹窗 + 管理员扫码）由人工完成——`--publish` 保留但 best-effort，遇弹窗会等到超时。文档新增：发表确认弹窗说明、`stale page identity` 续作法、`list_ex`/`appmsgpublish` 核实命令、GitHub ext release 落后 Web Store 备注、npm allowScripts 拦 postinstall 无害备注、**eval 诊断后台必须过滤不可见 toast 残留**（踩过：把残留文案当实时状态误判账号被拦，实际账号正常）。
 
 - **v0.23.1**（2026-09-17）：**新增 `wechat-setup` seed——「微信公众号发布指南」也随插件分发**（补齐 v0.23.0 的缺口：当时只有「发布元数据规范」进了 seed，387 行的安装/换机还原指南只存在于仓库与 npm 包的 `docs/` 里，wiki 里那篇「换机还原清单」是手写指针笔记）。与 `publish-spec` 完全同模式：起步层（`startup: true`）+ `gate: (ctx) => ctx.wechat === true`——**只在设置页开启「微信公众号发布」时**启动写入（笔记「微信公众号发布指南」，`dsh-docs` 标签自动进首页插件文档栏），不开该功能的用户 wiki 不出现、设置页手动「初始化」不受 gate 约束。**内容单一来源**：新 gen 脚本 `scripts/gen-seed-wechat-docs.mjs` 从 `docs/wechat-publish-setup.md` 生成 `src/host/seed-wechat-docs.ts`（照 send-to-agent 的 gen 流水线，勿手改常量），新守门 `scripts/verify-wechat-docs-seed.mjs`（进 `verify:unit`）断言 seed 常量与文档**逐字节一致** + 注册表 gate 接线（2 个 gated seed = gate 谓词恰好 2 处）。顺带：`verify-package-contents.mjs` 的 `npm pack` 从管道捕获改为**文件重定向 + 临时缓存目录**（DSH 沙箱禁止命名管道 stdio → 原 `exec` 实现 EPERM；npm 默认缓存在沙箱外也要绕开），本地终于能跑这条守门。selftest / verify-seed-error-policy 的 gate 断言改为**从注册表派生** gated 清单（新增 gated seed 不再漏改硬编码）；设置页与 config 注释同步「开启后写两篇文档」；docs/seed-initialization.md 补齐 publish-spec / wechat-setup 两行表格。
