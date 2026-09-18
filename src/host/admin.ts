@@ -26,7 +26,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { ROUTE_PREFIX, redactLogLines, redactRemoteUrl, type WebServerFace } from './routes.ts'
-import { type ConfigStore, type PluginConfigShape } from './config.ts'
+import { ConfigUnreadableError, type ConfigStore, type PluginConfigShape } from './config.ts'
 import { readBody, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
 import { waitForFileWrite, needsRestartAfterSeeds, flushPendingWrites } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
@@ -493,6 +493,10 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [], themeActive },
         catalog,
         config: maskConfigSecrets(deps.config.get()),
+        // Why the overrides above are NOT in effect (v0.23.4): a stored config
+        // that does not parse keeps being ignored silently otherwise, and the
+        // page would show the (masked) defaults as if the user had chosen them.
+        configError: deps.config.parseError() ?? null,
         git,
       })
     } catch (err) {
@@ -642,6 +646,13 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       deps.onConfigChanged?.()
       json(res, { ok: true, config: maskConfigSecrets(deps.config.get()) })
     } catch (err) {
+      // A config tiddler that EXISTS but cannot be parsed is a user-fixable data
+      // problem, not a server fault (v0.23.4): 409 + the actionable text, so the
+      // settings page can tell the user what to fix instead of showing「保存失败」.
+      if (err instanceof ConfigUnreadableError) {
+        json(res, { ok: false, error: err.message }, 409)
+        return
+      }
       // Not a blanket 400 (v0.19.5): a refused/dead wiki client surfaces as a
       // 500/413 like everywhere else — reporting「参数错误」for a service failure
       // sent the settings page down the wrong recovery path.

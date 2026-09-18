@@ -11,7 +11,7 @@
  *   TW 按钮 → POST /wechat/publish → 这里 spawn opencli → 轮询
  *   GET /wechat/publish/status → 覆盖层显示进度 → 存草稿成功/失败
  *
- * 三个必须讲清楚的设计点（都是踩出来的，别改回去）：
+ * 四个必须讲清楚的设计点（都是踩出来的，别改回去）：
  *
  *  1. **标题不进 argv，走 UTF-8 文件**。Windows 上 `opencli` 是 `.cmd` shim，
  *     Node 的 `spawn('opencli', …)` 直接 ENOENT，必须经 cmd.exe 才跑得起来 ——
@@ -23,6 +23,11 @@
  *  3. **`--trace retain-on-failure` 是承重参数**（不带就对 mp.weixin.qq.com 稳定
  *     报 `Navigation rejected`，实测 trace 开 5/5 成功、关 8/8 失败），所以它写死在
  *     组装逻辑里，不暴露给调用方。
+ *  4. **就绪预检要认版本，不能只认文件**。`~/.opencli/clis/weixin/` 是用户态目录：
+ *     装着旧版 adapter 时文件一个不少，但旧入口把标题当**必填位置参数**、根本不认
+ *     `--title-file`（宿主只用 `--title-file`）—— 预检报「就绪」，用户点下按钮才
+ *     报「缺少必填参数」（v0.23.3 的真实事故）。所以 `scanAdapterDir` 除了
+ *     `missing` 还返回 `stale`，按**符号存在性**判版本（见 WECHAT_ADAPTER_MARKER）。
  *
  * 单并发：同一时刻只允许一个发布任务（`start()` 返回 busy）。这与路由的
  * `/sync` `/restart` 互斥是同一思路 —— 两个 opencli 同时抢一个浏览器标签页没有
@@ -32,7 +37,7 @@
  */
 import { spawn as nodeSpawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { dshHomePath } from '../sdk.ts'
@@ -55,6 +60,46 @@ export const DEFAULT_WECHAT_COMMAND = 'opencli'
 export const WECHAT_ADAPTER_FILES: Record<WechatAdapter, readonly string[]> = {
   'publish-note': ['publish-note.js', 'wechat-html.js', 'weixin-flow.js'],
   'publish-note-imgs': ['publish-note-imgs.js', 'wechat-html.js', 'weixin-flow.js'],
+}
+
+/** The shared flow module every adapter imports (`resolveNoteTitle` lives here). */
+const WECHAT_FLOW_FILE = 'weixin-flow.js'
+/** The argv key each entry adapter must declare to accept `--title-file`. */
+const WECHAT_TITLE_FILE_ARG = 'titleFile'
+
+/**
+ * The one symbol only a v0.23.3+ install exports.
+ *
+ * Why symbol presence instead of file size or mtime: `~/.opencli/clis/weixin/`
+ * is a plain user-owned folder that `install-wechat-adapters.mjs` copies files
+ * into, so neither size nor timestamp says WHICH version is installed — an old
+ * adapter re-copied yesterday looks brand new, and a re-formatted (but current)
+ * file can shrink. The failure being guarded is behavioural, not cosmetic: a
+ * pre-v0.23.3 `publish-note.js` takes the title as a *required positional*
+ * argument and has never heard of `--title-file`, while the host only ever
+ * sends `--title-file` (the title must not enter argv, see module header) — so
+ * every file "exists", the readiness probe says 就绪, and the run dies with
+ * 「缺少必填参数」 only after the user presses the button (the v0.23.3
+ * accident). Symbol presence is the only cheap, exact answer to "can this file
+ * do what we are about to ask of it?".
+ */
+export const WECHAT_ADAPTER_MARKER = 'resolveNoteTitle'
+
+/**
+ * file → a matcher deciding whether that file is CURRENT.
+ *
+ * ⚠️ A plain `includes(WECHAT_ADAPTER_MARKER)` is NOT enough (a guard-script
+ * fixture fooled itself this way): an old file that merely MENTIONS the symbol
+ * in a comment would pass. Match the actual definition instead —
+ *   - `weixin-flow.js` must **export** `resolveNoteTitle`;
+ *   - the entry adapters must **declare** the `titleFile` argument.
+ * `wechat-html.js` (the shared decorator) carries no version-specific contract,
+ * so it is never reported as stale.
+ */
+const WECHAT_FRESHNESS_MATCHERS: Record<string, RegExp> = {
+  [WECHAT_FLOW_FILE]: new RegExp(`export\\s+function\\s+${WECHAT_ADAPTER_MARKER}\\s*\\(`),
+  'publish-note.js': new RegExp(`name:\\s*['"]${WECHAT_TITLE_FILE_ARG}['"]`),
+  'publish-note-imgs.js': new RegExp(`name:\\s*['"]${WECHAT_TITLE_FILE_ARG}['"]`),
 }
 
 /** Captured output per stream; the job view only exposes the tail. */
@@ -474,7 +519,14 @@ export interface WechatReadyView {
   enabled: boolean
   command: string
   opencli: { ok: boolean; version: string }
-  adapters: { dir: string; publishNote: boolean; publishNoteImgs: boolean; missing: string[] }
+  adapters: {
+    dir: string
+    publishNote: boolean
+    publishNoteImgs: boolean
+    missing: string[]
+    /** Present but too old for this host (v0.23.3+: e.g. no `--title-file`). */
+    stale: string[]
+  }
 }
 
 /** Where opencli keeps private adapters (`install-wechat-adapters.mjs` target). */
@@ -482,15 +534,35 @@ export function defaultAdaptersDir(home: string = homedir()): string {
   return join(home, '.opencli', 'clis', 'weixin')
 }
 
+/** One adapter directory scan: what is absent, and what is present but too old. */
+export interface WechatAdapterScan {
+  publishNote: boolean
+  publishNoteImgs: boolean
+  /** Required files that are NOT THERE. A file that exists but is old is `stale`. */
+  missing: string[]
+  /** Required files that exist but fail the version check (see WECHAT_ADAPTER_MARKER). */
+  stale: string[]
+}
+
 /**
- * Which adapter files exist in `dir`. A missing/unreadable directory means
- * "nothing installed" — never a thrown error, because this feeds a readiness
- * report that must always answer.
+ * Which adapter files exist in `dir` **and are new enough to be driven by this
+ * host**.
+ *
+ * `missing` and `stale` are deliberately disjoint and each keeps its literal
+ * meaning: a file is either absent or present-and-unusable, never both (an old
+ * file must not be reported as "missing" — the user would go re-install files
+ * that are already on disk and end up exactly where they started).
+ *
+ * A missing/unreadable directory means "nothing installed"; a read failure on a
+ * file we must inspect (EACCES, deleted mid-scan, a directory in its place…)
+ * counts as stale — this feeds a readiness report that must always answer, so it
+ * never throws.
  */
 export function scanAdapterDir(
   dir: string,
   readDir: (path: string) => string[] = (path) => readdirSync(path),
-): { publishNote: boolean; publishNoteImgs: boolean; missing: string[] } {
+  readFile: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): WechatAdapterScan {
   let present: string[] = []
   try {
     present = readDir(dir)
@@ -498,12 +570,34 @@ export function scanAdapterDir(
     present = []
   }
   const has = (file: string): boolean => present.includes(file)
-  const missing = [...new Set([...WECHAT_ADAPTER_FILES['publish-note'], ...WECHAT_ADAPTER_FILES['publish-note-imgs']])]
-    .filter((file) => !has(file))
+
+  // Required = the union of both adapters' file lists (they share flow + decorator).
+  const required = [...new Set([...WECHAT_ADAPTER_FILES['publish-note'], ...WECHAT_ADAPTER_FILES['publish-note-imgs']])]
+  const missing = required.filter((file) => !has(file))
+
+  // 版本校验：文件存在 ≠ 可用。旧版入口不认 `--title-file`、旧版 flow 没有
+  // `resolveNoteTitle`（见 WECHAT_FRESHNESS_MATCHERS 的注释）。
+  const stale = required.filter((file) => {
+    const matcher = WECHAT_FRESHNESS_MATCHERS[file]
+    if (matcher === undefined || !has(file)) return false
+    try {
+      return !matcher.test(readFile(join(dir, file)))
+    } catch {
+      return true
+    }
+  })
+  const staleSet = new Set(stale)
+
+  // 入口能用 = 三个文件都在、且入口与共享 flow 都不旧。flow 旧 → 两个 adapter
+  // 一起作废：入口 import 的 `resolveNoteTitle` 根本不存在。
+  const usable = (adapter: WechatAdapter): boolean =>
+    WECHAT_ADAPTER_FILES[adapter].every((file) => has(file) && !staleSet.has(file))
+
   return {
-    publishNote: WECHAT_ADAPTER_FILES['publish-note'].every(has),
-    publishNoteImgs: WECHAT_ADAPTER_FILES['publish-note-imgs'].every(has),
+    publishNote: usable('publish-note'),
+    publishNoteImgs: usable('publish-note-imgs'),
     missing,
+    stale,
   }
 }
 
@@ -557,7 +651,11 @@ export async function probeOpencli(opts: {
 
 /**
  * Full readiness report for the TW button (and for the 503 body of a failed
- * start): is the CLI there, and are the adapter files installed?
+ * start): is the CLI there, and are the adapter files installed **and current**?
+ *
+ * `ok` keeps its v0.23.3 meaning (enabled && CLI ok && at least one adapter is
+ * usable) — `stale` is additive data for the caller's message, so existing
+ * callers that only read `ok` are unaffected.
  */
 export async function checkWechatReady(opts: {
   enabled: boolean
@@ -586,6 +684,7 @@ export async function checkWechatReady(opts: {
       publishNote: adapters.publishNote,
       publishNoteImgs: adapters.publishNoteImgs,
       missing: adapters.missing,
+      stale: adapters.stale,
     },
   }
 }

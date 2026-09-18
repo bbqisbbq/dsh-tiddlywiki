@@ -56,7 +56,7 @@ import { Readable } from 'node:stream'
 import type { TiddlyWebClient } from './tw-api.ts'
 import { RenderNotFoundError, formatTiddlerDate, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
-import type { GitFace, GitStatusView } from './git.ts'
+import { GitConflictStateError, type GitFace, type GitStatusView } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
 import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
@@ -1271,7 +1271,26 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           restartError = err instanceof Error ? err.message : String(err)
         }
       }
-      const committed = await deps.git.commit(dir, `sync ${new Date().toISOString()}`)
+      // Refuse a conflicted tree (v0.23.4): a leftover conflict block must never
+      // be committed/pushed. `commit` throws GitConflictStateError → answer 409
+      // with the offending files instead of the generic 500 handler.
+      let committed: { committed: boolean; message: string }
+      try {
+        committed = await deps.git.commit(dir, `sync ${new Date().toISOString()}`)
+      } catch (err) {
+        if (err instanceof GitConflictStateError) {
+          json(res, {
+            ok: false,
+            action: 'sync',
+            message: err.message,
+            conflictFiles: err.files,
+            pull: 'ok',
+            status: await status(),
+          }, 409)
+          return
+        }
+        throw err
+      }
       const pushed = await deps.git.push(dir)
       const fresh = await status()
       json(res, {
@@ -1690,11 +1709,19 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const ready = await deps.wechatReady()
       const adapterReady = adapter === 'publish-note-imgs' ? ready.adapters.publishNoteImgs : ready.adapters.publishNote
       if (!ready.opencli.ok || !adapterReady) {
+        // `stale` (v0.23.4) = installed but outdated adapter files: the common
+        // case is an old copy without `--title-file`, which would otherwise fail
+        // deep inside opencli with a confusing "required argument missing".
+        const stale = ready.adapters.stale ?? []
+        const staleNote = stale.length > 0
+          ? `adapter 版本过旧（缺 --title-file）：${stale.join('、')}`
+          : null
         json(res, {
           ok: false,
           error: !ready.opencli.ok
             ? `找不到 opencli（wechat.command=${ready.command}）：请先 npm install -g @jackwener/opencli`
-            : `opencli 里还没有 weixin adapter（缺 ${ready.adapters.missing.join('、') || adapter}）：请运行 node tools/wechat/install-wechat-adapters.mjs`,
+            : (staleNote ?? `opencli 里还没有 weixin adapter（缺 ${ready.adapters.missing.join('、') || adapter}）`)
+              + '：请运行 node tools/wechat/install-wechat-adapters.mjs',
           ready,
         }, 503)
         return

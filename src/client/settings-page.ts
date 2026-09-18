@@ -54,7 +54,14 @@ interface AdminState {
   info?: { plugins?: string[]; themes?: string[]; languages?: string[]; themeActive?: string }
   catalog?: { plugins?: CatalogEntry[]; themes?: CatalogEntry[]; languages?: CatalogEntry[] }
   config?: Record<string, unknown>
-  git?: { exists?: boolean; branch?: string; dirty?: boolean; lastCommit?: string; remote?: string } | null
+  /**
+   * Set when the stored config tiddler exists but cannot be parsed (v0.23.4):
+   * every override in `config` is then IGNORED by the host, and saving is
+   * refused. Rendered as a red banner so the user learns why their settings
+   * "don't stick" instead of guessing.
+   */
+  configError?: string | null
+  git?: { exists?: boolean; branch?: string; dirty?: boolean; lastCommit?: string; remote?: string; conflict?: { reason: string; files: string[] } } | null
   error?: string
 }
 
@@ -172,7 +179,11 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
     server.url !== undefined ? `TW ${server.url}` : '',
     state.git?.branch !== undefined ? `git ${state.git.branch}` : '',
     state.git?.lastCommit !== undefined ? state.git.lastCommit : '',
-    state.git?.dirty === true ? '有未提交改动' : '',
+    // An unresolved conflict is the one git state that blocks commits (v0.23.4):
+    // say so instead of the generic「有未提交改动」.
+    state.git?.conflict !== undefined
+      ? `⚠️ 冲突未解决（${state.git.conflict.files.length} 个文件，已阻止提交）`
+      : (state.git?.dirty === true ? '有未提交改动' : ''),
   ].filter(Boolean).join(' · ')
   const label = make('span', 'dsh-tw-settings-muted', info)
   const sync = make('button', 'dsh-tw-settings-btn', '同步')
@@ -966,6 +977,17 @@ interface ConfigRenderState {
 
 function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState): void {
   body.replaceChildren()
+  // Loud, above everything else: an unparseable config tiddler means the config
+  // block below shows DEFAULTS that are not actually in effect, and saving is
+  // refused until it is fixed (v0.23.4 — that is how a user's prompt.extra /
+  // git.remote were silently wiped on 2026-09-18).
+  if (typeof state.configError === 'string' && state.configError.length > 0) {
+    const banner = make('div', 'dsh-tw-settings-banner')
+    banner.dataset.tone = 'error'
+    banner.setAttribute('style', 'border:1px solid #c0392b;background:#fdecea;color:#8c1c13;border-radius:6px;padding:10px 12px;margin:0 0 12px;font-size:12px;line-height:1.6;white-space:pre-wrap;')
+    banner.textContent = `⚠️ 配置未生效：${state.configError}`
+    body.append(banner)
+  }
   // Config section: only rebuild when the server-side config actually changed.
   // Otherwise the status row's 同步/重启 buttons (and the catalog apply buttons)
   // call refresh() and would silently discard whatever the user had typed into

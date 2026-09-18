@@ -19,7 +19,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { MISSING_TYPE_FILTER, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { TiddlyWebClient, Tiddler } from './tw-api.ts'
-import type { GitFace, GitStatusView } from './git.ts'
+import { GitConflictStateError, type GitFace, type GitStatusView } from './git.ts'
 import { downloadClipImage } from './clip-bridge.ts'
 import { flushPendingWrites } from './seeds.ts'
 import { snippetOf } from './text-util.ts'
@@ -1223,7 +1223,18 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           const pulled = await deps.git.pull(dir)
           if (!pulled.ok) return { action: args.action, ok: false, message: pulled.message, ...(pulled.conflictFiles !== undefined ? { conflictFiles: pulled.conflictFiles } : {}) }
           const restart = await restartIfChanged(pulled)
-          const committed = await deps.git.commit(dir, args.message ?? `sync ${new Date().toISOString()}`)
+          // The commit guard (v0.23.4) turns a conflicted tree into a structured
+          // failure instead of a thrown error: the model must SEE why nothing was
+          // committed, otherwise it would report「同步完成」over broken content.
+          let committed: { committed: boolean; message: string }
+          try {
+            committed = await deps.git.commit(dir, args.message ?? `sync ${new Date().toISOString()}`)
+          } catch (err) {
+            if (err instanceof GitConflictStateError) {
+              return { action: args.action, ok: false, message: err.message, conflictFiles: err.files, ...restart }
+            }
+            throw err
+          }
           const pushed = await deps.git.push(dir)
           const status = await deps.git.status(dir)
           return {
@@ -1288,7 +1299,17 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       if (!checked.ok) {
         return { ok: false, action: 'keep-remote', message: `从远端检出失败：${checked.message}` }
       }
-      const committed = await deps.git.commit(dir, `resolve conflict (keep remote) ${new Date().toISOString()}`)
+      // Same guard as git_sync: resolving one file may still leave other
+      // conflicted files behind — report that instead of throwing (v0.23.4).
+      let committed: { committed: boolean; message: string }
+      try {
+        committed = await deps.git.commit(dir, `resolve conflict (keep remote) ${new Date().toISOString()}`)
+      } catch (err) {
+        if (err instanceof GitConflictStateError) {
+          return { ok: false, action: 'keep-remote', message: err.message, files: err.files }
+        }
+        throw err
+      }
       deps.autoCommit()
       const status = await deps.git.status(dir)
       return {

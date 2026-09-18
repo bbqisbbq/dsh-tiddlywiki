@@ -117,6 +117,10 @@ ok('startup checks no-publish tag', s.includes('no-publish'))
 ok('startup checks pub-state', s.includes('pub-state'))
 ok('startup warns about published / excluded', s.includes('"published"') && s.includes('"excluded"'))
 ok('startup truncates the log tail', s.includes('LOG_TAIL_CHARS'))
+// v0.23.4 defect C: an installed-but-outdated adapter must produce「版本过旧」,
+// not the misleading「缺少发布脚本」 (the two lead to different user actions).
+ok('startup reads adapters.stale', s.includes('adapters.stale'))
+ok('startup distinguishes stale from missing', s.includes('版本过旧') && s.includes('缺少发布脚本'))
 ok('startup wraps the handler in try/catch (never throws into TW startup)',
   s.includes('try {\n\t\t\thandlePublish(event.param);'))
 ok('startup has no @deepseek-ai import', !s.includes('@deepseek-ai'))

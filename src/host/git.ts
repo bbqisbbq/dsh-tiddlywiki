@@ -13,9 +13,22 @@
  * (only reachable by "forgot to pull before writing") → `git rebase --abort`
  * + report the unmerged files. Never auto-merge data.
  *
+ * **Commit guard (v0.23.4, 真实事故)**: `git pull --rebase --autostash` can end
+ * with the REBASE succeeding but the autostash RE-APPLY conflicting. `rebase
+ * --abort` then has nothing to abort, so the conflict markers stay in the
+ * working tree while every subsequent `git add -A && commit` (the 60s
+ * AutoCommitter included) happily **commits and pushes them** — on 2026-09-17
+ * that is exactly how `<<<<<<< Updated upstream` got permanently written into
+ * this wiki's config tiddler, which in turn made the plugin unable to parse its
+ * own config for a day (wechat stayed off + prompt.extra silently inactive).
+ * `commit()` therefore REFUSES a conflicted tree up front (see
+ * `conflictState()`), and `pull()` re-checks after its abort.
+ *
  * @module dsh-tiddlywiki/host/git
  */
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileP = promisify(execFile)
@@ -55,9 +68,47 @@ export interface GitStatusView {
   lastCommit?: string
   ahead?: number
   behind?: number
+  /** Set when the working tree is in an UNRESOLVED conflict state (v0.23.4). */
+  conflict?: { reason: string; files: string[] }
 }
 
 export interface GitActionResult { ok: boolean; message: string; conflictFiles?: string[] }
+
+/**
+ * A conflict block's opening/closing line. Only the LABELLED forms count
+ * (`<<<<<<< HEAD`, `>>>>>>> Stashed changes`): a bare `=======` is far too
+ * common in real content (Markdown setext headings, ASCII dividers) to treat
+ * as evidence of a conflict.
+ */
+const CONFLICT_MARKER_RE = /^(?:<{7}|>{7}) /m
+
+/**
+ * In-progress git operations that make a plain `git commit` the WRONG move.
+ *
+ * ⚠️ `MERGE_HEAD` / `CHERRY_PICK_HEAD` / `REVERT_HEAD` are deliberately NOT in
+ * this list: with those, `git commit` IS how you conclude the operation once the
+ * conflicts are resolved and staged — refusing them would make a resolved merge
+ * permanently uncommittable (v0.23.4, caught by the real-git E2E). They are still
+ * covered by the two content-based checks below: an *unresolved* merge shows up
+ * as unmerged index entries and/or leftover conflict blocks.
+ */
+const CONFLICT_STATE_REFS: ReadonlyArray<readonly [string, string]> = [
+  ['rebase', 'REBASE_HEAD'],
+]
+
+/** What `conflictState()` found (all-empty when the tree is safe to commit). */
+export interface ConflictState { conflicted: boolean; reason: string; files: string[] }
+
+/**
+ * Thrown by `GitFace.commit()` when the tree must NOT be committed. Carries the
+ * offending files so a route/tool can tell the user exactly what to resolve.
+ */
+export class GitConflictStateError extends Error {
+  constructor(message: string, readonly reason: string, readonly files: string[]) {
+    super(message)
+    this.name = 'GitConflictStateError'
+  }
+}
 
 function parseCount(line: string, re: RegExp): number | undefined {
   const m = line.match(re)
@@ -80,7 +131,11 @@ export class GitFace {
     return run
   }
 
-  constructor(private readonly exec: ExecFn = defaultExec) {}
+  constructor(
+    private readonly exec: ExecFn = defaultExec,
+    /** Injected for tests: read a working-tree file as utf8 text. */
+    private readonly readTextFile: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+  ) {}
 
   async isRepo(dir: string): Promise<boolean> {
     const r = await this.exec(['rev-parse', '--is-inside-work-tree'], { cwd: dir, timeout: 2_000 })
@@ -109,6 +164,15 @@ export class GitFace {
   }
 
   private async commitUnlocked(dir: string, message: string): Promise<{ committed: boolean; message: string }> {
+    // NEVER commit a conflicted tree (v0.23.4): the 60s AutoCommitter fires on
+    // its own schedule and cannot ask a human, so a leftover conflict block would
+    // be committed (and pushed) verbatim. `contentScan: true` is REQUIRED here —
+    // the incident shape (a failed autostash re-apply) leaves git with no
+    // operation in progress, so only the file content shows the conflict.
+    const conflict = await this.conflictState(dir, { contentScan: true })
+    if (conflict.conflicted) {
+      throw new GitConflictStateError(describeConflict(conflict), conflict.reason, conflict.files)
+    }
     await this.exec(['add', '-A'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
     const staged = await this.exec(['diff', '--cached', '--quiet'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
     // `diff --cached --quiet` exits 0 when nothing is staged → nothing to commit.
@@ -134,7 +198,16 @@ export class GitFace {
     const remote = remoteR.ok ? remoteR.stdout.split('\n').map((l) => l.trim()).find(Boolean) ?? '' : ''
     const lastR = await this.exec(['log', '-1', '--format=%h %s'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
     const lastCommit = lastR.ok && lastR.stdout.trim().length > 0 ? lastR.stdout.trim() : undefined
-    return { exists: true, branch, dirty, dirtyFiles, remote, ...(lastCommit !== undefined ? { lastCommit } : {}), ...(ahead !== undefined ? { ahead } : {}), ...(behind !== undefined ? { behind } : {}) }
+    // Conflict probe (v0.23.4). The content scan only runs on a dirty tree —
+    // the common clean path stays at the cheap rev-parse/unmerged probes.
+    const conflict = await this.conflictState(dir, { contentScan: dirty })
+    return {
+      exists: true, branch, dirty, dirtyFiles, remote,
+      ...(lastCommit !== undefined ? { lastCommit } : {}),
+      ...(ahead !== undefined ? { ahead } : {}),
+      ...(behind !== undefined ? { behind } : {}),
+      ...(conflict.conflicted ? { conflict: { reason: conflict.reason, files: conflict.files } } : {}),
+    }
   }
 
   /** `git pull --rebase --autostash`; on conflict: abort + report files.
@@ -158,8 +231,20 @@ export class GitFace {
     }
     const conflictFiles = await this.unmergedFiles(dir)
     await this.exec(['rebase', '--abort'], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
+    // The abort does NOT clean up a failed AUTOSTASH re-apply (module docblock):
+    // re-check so we report the leftover markers instead of leaving them for the
+    // AutoCommitter to commit.
+    const after = await this.conflictState(dir)
+    const files = after.conflicted ? [...new Set([...conflictFiles, ...after.files])] : conflictFiles
+    const note = after.conflicted ? `（rebase --abort 之后工作树仍有冲突：${after.reason}）` : ''
     const reason = (r.stderr.trim() || r.stdout.trim()).slice(0, 500)
-    return { ok: false, message: conflictFiles.length > 0 ? `conflict in ${conflictFiles.join(', ')} (rebase aborted): ${reason}` : `pull failed: ${reason}`, ...(conflictFiles.length > 0 ? { conflictFiles } : {}) }
+    return {
+      ok: false,
+      message: files.length > 0
+        ? `conflict in ${files.join(', ')} (rebase aborted)${note}: ${reason}`
+        : `pull failed${note}: ${reason}`,
+      ...(files.length > 0 ? { conflictFiles: files } : {}),
+    }
   }
 
   async push(dir: string): Promise<GitActionResult> {
@@ -211,6 +296,67 @@ export class GitFace {
     return add.ok ? { ok: true, message: `remote origin → ${url}` } : { ok: false, message: add.stderr.trim() || 'remote add failed' }
   }
 
+  /**
+   * Is the working tree in an unresolved conflict state? (v0.23.4)
+   *
+   * Three sources, cheapest first — a pure `git` probe unless `contentScan`
+   * is on:
+   *   1. an in-progress operation (`MERGE_HEAD` / `REBASE_HEAD` / …);
+   *   2. unmerged index entries (`diff --diff-filter=U`);
+   *   3. a conflict BLOCK left in a changed file (the autostash-reapply case:
+   *      git itself is no longer mid-operation, so only the text shows it).
+   */
+  async conflictState(dir: string, options: { contentScan?: boolean } = {}): Promise<ConflictState> {
+    for (const [label, ref] of CONFLICT_STATE_REFS) {
+      const r = await this.exec(['rev-parse', '-q', '--verify', ref], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
+      if (r.ok && r.stdout.trim().length > 0) {
+        return { conflicted: true, reason: `${label} in progress`, files: await this.unmergedFiles(dir) }
+      }
+    }
+    const unmerged = await this.unmergedFiles(dir)
+    if (unmerged.length > 0) return { conflicted: true, reason: 'unmerged paths', files: unmerged }
+    if (options.contentScan !== true) return { conflicted: false, reason: '', files: [] }
+    const marked: string[] = []
+    for (const file of await this.changedFiles(dir)) {
+      if (this.fileHasConflictMarkers(join(dir, file))) marked.push(file)
+    }
+    return marked.length > 0
+      ? { conflicted: true, reason: 'conflict markers in working tree', files: marked }
+      : { conflicted: false, reason: '', files: [] }
+  }
+
+  /** Working-tree files a commit would touch: modified, staged and untracked. */
+  private async changedFiles(dir: string): Promise<string[]> {
+    const out = new Set<string>()
+    for (const args of [
+      ['diff', '--name-only', 'HEAD'],
+      ['diff', '--cached', '--name-only'],
+      ['ls-files', '--others', '--exclude-standard'],
+    ]) {
+      const r = await this.exec(args, { cwd: dir, timeout: QUICK_TIMEOUT_MS })
+      if (!r.ok) continue
+      for (const line of r.stdout.split('\n')) {
+        const name = line.trim()
+        if (name.length > 0) out.add(name)
+      }
+    }
+    return [...out]
+  }
+
+  /**
+   * Does this file contain a conflict block? Read failures and binary content
+   * are treated as "no" — the guard is a safety net, not a content auditor.
+   */
+  private fileHasConflictMarkers(absPath: string): boolean {
+    try {
+      const text = this.readTextFile(absPath)
+      if (text.includes('\u0000')) return false
+      return CONFLICT_MARKER_RE.test(text)
+    } catch {
+      return false
+    }
+  }
+
   private async unmergedFiles(dir: string): Promise<string[]> {
     const r = await this.exec(['diff', '--name-only', '--diff-filter=U'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
     return r.ok ? r.stdout.split('\n').map((l) => l.trim()).filter(Boolean) : []
@@ -220,6 +366,19 @@ export class GitFace {
 /** Always-on local identity so commits never depend on global git config. */
 function identity(): string[] {
   return ['-c', 'user.name=dsh-tiddlywiki', '-c', 'user.email=dsh-tiddlywiki@local']
+}
+
+/**
+ * Wording for a refused commit — shared by the error, the AutoCommitter log and
+ * the `/sync` 409 body so all three say the same actionable thing.
+ */
+export function describeConflict(state: ConflictState): string {
+  const shown = state.files.slice(0, 5)
+  const more = state.files.length > shown.length ? ` 等 ${state.files.length} 个文件` : ''
+  const where = shown.length > 0 ? `涉及 ${shown.join('、')}${more}` : '（未列出具体文件）'
+  return `拒绝提交：工作树处于未解决的冲突状态（${state.reason}），${where}。`
+    + '带着冲突标记提交会把坏内容写进 git 历史（v0.23.3 的真实事故：wiki 配置 tiddler 被提交了 '
+    + '<<<<<<< 标记，插件随即解析不了自己的配置）。请先解决冲突（tiddlywiki_git_resolve 或手动编辑）再同步。'
 }
 
 export interface AutoCommitterOptions {
@@ -241,6 +400,13 @@ export interface AutoCommitterOptions {
 export class AutoCommitter {
   private timer: NodeJS.Timeout | undefined
   private disposed = false
+  /**
+   * Signature of the conflict we already reported. The debounce fires every
+   * 60s and a leftover conflict block stays put until a human fixes it, so
+   * reporting on every tick would bury the log; report once per distinct state
+   * (v0.23.4) and reset the moment a commit succeeds.
+   */
+  private lastBlocked: string | undefined
 
   constructor(private readonly options: AutoCommitterOptions) {}
 
@@ -259,8 +425,14 @@ export class AutoCommitter {
     if (!this.options.enabled || this.disposed) return
     try {
       const result = await this.options.git.commit(this.options.dir, this.options.message())
+      this.lastBlocked = undefined
       this.options.onCommit?.(result)
     } catch (err) {
+      if (err instanceof GitConflictStateError) {
+        const signature = `${err.reason}|${err.files.join(',')}`
+        if (signature === this.lastBlocked) return
+        this.lastBlocked = signature
+      }
       this.options.onError?.(err)
     }
   }

@@ -110,7 +110,7 @@ await test('版本探测同样走 shim 路径', () => {
   assert.ok(inv.args[3].includes('--version'))
 })
 
-// ── 2. 回执解析 / 有界输出 / 配置归一化 ───────────────────────────────────
+// ── 2. 回执解析 / 有界输出 / 配置归一化 / adapter 版本校验 ────────────────
 await test('interpretPublishOutcome：JSON 回执、退出码、stderr 末行', () => {
   const ok = interpretPublishOutcome({ code: 0, stdout: 'noise\n[{"status":"草稿已保存","title":"t","detail":"正文 12 字"}]\n', stderr: '' })
   assert.equal(ok.state, 'ok')
@@ -144,18 +144,116 @@ await test('normalizeWechatConfig：垃圾值回落默认（不落到命令行�
   assert.deepEqual(good, { enabled: true, command: '/opt/opencli', adapter: 'publish-note-imgs', token: 'sek', dsn: DSN })
 })
 
-await test('scanAdapterDir：缺目录 = 全缺，半装状态如实报告', () => {
+// ── 2b. adapter 版本校验（缺陷 C：文件都在但版本过旧）────────────────────
+// 注入式假 adapter 目录。这几个字面量是**故意手写的**（不从 lib 读常量）：
+// 脚本必须能构造「旧版文件」——按定义它就不含那个符号。判据本身是正则
+// （`export function resolveNoteTitle(` / `name: 'titleFile'`），所以旧版夹具
+// 即使在注释里**提到**这些名字也必须判旧（见下面「只在注释里提到」那条断言，
+// 收紧 includes 判据就是为了这个）。真源码的符号由本文件末尾的源码级断言独立
+// 钉住，两边漂移就会变红。
+const FRESH_FLOW = 'export function resolveNoteTitle(title, titleFile) { /* v0.23.3+ */ }\n'
+const STALE_FLOW = 'export function runFlow(kwargs) { /* v0.23.2：flow 里没有标题文件解析器 */ }\n'
+const FRESH_ENTRY = "// v0.23.3+ 入口\n{ name: 'title', positional: true }\n{ name: 'titleFile' }\n"
+const STALE_ENTRY = "// v0.23.2 入口：标题是必填位置参数，不认 --title-file\n{ name: 'title', required: true, positional: true }\n"
+/**
+ * 「旧文件但在注释里提到过新符号」——`includes()` 判据会把它误判为新版，
+ * 正则是唯一能挡住它的形状（也是子代理第一版夹具骗过自己的原因）。
+ */
+const COMMENT_ONLY_FLOW = 'export function runFlow(kwargs) { /* TODO: 将来像 resolveNoteTitle 那样支持 --title-file */ }\n'
+const FRESH_ADAPTER_FILE_TEXT = {
+  'publish-note.js': FRESH_ENTRY,
+  'publish-note-imgs.js': FRESH_ENTRY,
+  'wechat-html.js': '// 语义 HTML → 内联样式装饰器（无版本专属符号，永不判旧）\n',
+  'weixin-flow.js': FRESH_FLOW,
+  // install-wechat-adapters.mjs 的 FILES 里第 5 个：它不是 publish adapter，
+  // scanAdapterDir 不管它（既不算 missing 也不参与版本校验）。
+  'create-article.js': '// 从本地 HTML 建草稿的一次性入口\n',
+}
+const ALL_ADAPTER_FILES = Object.keys(FRESH_ADAPTER_FILE_TEXT)
+
+/**
+ * 注入式 readFile：按文件名返回内容，overrides 可给某个文件换成旧内容（字符串）
+ * 或改成抛错（函数）。默认的四个文件全都是「新版」。
+ */
+function fakeReadFile(overrides = {}) {
+  return (p) => {
+    const name = path.basename(p)
+    if (Object.prototype.hasOwnProperty.call(overrides, name)) {
+      const value = overrides[name]
+      if (typeof value === 'function') return value(p)
+      return value
+    }
+    const text = FRESH_ADAPTER_FILE_TEXT[name]
+    if (text === undefined) throw new Error(`ENOENT: ${p}`)
+    return text
+  }
+}
+
+await test('scanAdapterDir：缺目录 = 全缺，半装状态如实报告（missing 不掺旧文件）', () => {
   const none = scanAdapterDir('/definitely/missing', () => { throw new Error('ENOENT') })
   assert.equal(none.publishNote, false)
   assert.equal(none.publishNoteImgs, false)
   assert.deepEqual(none.missing.sort(), [...new Set([...WECHAT_ADAPTER_FILES['publish-note'], ...WECHAT_ADAPTER_FILES['publish-note-imgs']])].sort())
-  const partial = scanAdapterDir('x', () => ['publish-note.js', 'wechat-html.js', 'weixin-flow.js'])
+  assert.deepEqual(none.stale, [], '目录都没有，谈不上「文件过旧」')
+  const partial = scanAdapterDir('x', () => ['publish-note.js', 'wechat-html.js', 'weixin-flow.js'], fakeReadFile())
   assert.equal(partial.publishNote, true)
   assert.equal(partial.publishNoteImgs, false)
   assert.deepEqual(partial.missing, ['publish-note-imgs.js'])
-  const full = scanAdapterDir('x', () => ['publish-note.js', 'publish-note-imgs.js', 'wechat-html.js', 'weixin-flow.js'])
+  assert.deepEqual(partial.stale, [])
+  const full = scanAdapterDir('x', () => ALL_ADAPTER_FILES, fakeReadFile())
   assert.equal(full.publishNote && full.publishNoteImgs, true)
   assert.deepEqual(full.missing, [])
+  assert.deepEqual(full.stale, [])
+})
+
+await test('版本校验：五个文件都在（真实安装形状）且都是新版 → 两个 adapter 都可用、stale 为空', () => {
+  const scan = scanAdapterDir('x', () => ALL_ADAPTER_FILES, fakeReadFile())
+  assert.equal(scan.publishNote, true, '新版五件套必须判可用')
+  assert.equal(scan.publishNoteImgs, true)
+  assert.equal(scan.stale.length, 0, `全都新鲜时 stale 必须为空，实际 ${JSON.stringify(scan.stale)}`)
+  assert.deepEqual(scan.missing, [])
+})
+
+await test('版本校验：weixin-flow.js 过旧（无 resolveNoteTitle）→ 两个 adapter 一起作废', () => {
+  const scan = scanAdapterDir('x', () => ALL_ADAPTER_FILES, fakeReadFile({ 'weixin-flow.js': STALE_FLOW }))
+  assert.ok(scan.stale.includes('weixin-flow.js'), `旧 flow 必须进 stale，实际 ${JSON.stringify(scan.stale)}`)
+  assert.equal(scan.publishNote, false, '入口 import 不到 resolveNoteTitle，publish-note 必须判不可用')
+  assert.equal(scan.publishNoteImgs, false, '两个入口共用同一个 flow，必须一起作废')
+  assert.deepEqual(scan.missing, [], '文件都在，绝不能塞进 missing（否则用户会去重装一遍同样的旧文件）')
+})
+
+await test('版本校验：只有 publish-note.js 过旧（无 titleFile）→ 另一个 adapter 仍可用', () => {
+  const scan = scanAdapterDir('x', () => ALL_ADAPTER_FILES, fakeReadFile({ 'publish-note.js': STALE_ENTRY }))
+  assert.deepEqual(scan.stale, ['publish-note.js'], `stale 必须精确到那一份，实际 ${JSON.stringify(scan.stale)}`)
+  assert.equal(scan.publishNote, false, '旧入口不认 --title-file（宿主只会发它）→ 必须判不可用，这正是 v0.23.3 的事故')
+  assert.equal(scan.publishNoteImgs, true, '另一个入口与共享 flow 都是新的，必须仍可用')
+})
+
+await test('版本校验：旧文件只在注释里提到新符号 → 仍必须判旧（判据是定义，不是字符串出现）', () => {
+  const scan = scanAdapterDir('x', () => ALL_ADAPTER_FILES, fakeReadFile({ 'weixin-flow.js': COMMENT_ONLY_FLOW }))
+  assert.ok(scan.stale.includes('weixin-flow.js'), `注释里的提及不算新版，实际 ${JSON.stringify(scan.stale)}`)
+  assert.equal(scan.publishNote, false, 'includes() 判据会误判为可用 —— 正则收紧就是为了挡住它')
+})
+
+await test('版本校验：文件不存在只进 missing，不进 stale（两种语义不混）', () => {
+  const scan = scanAdapterDir('x', () => ['weixin-flow.js', 'wechat-html.js'], fakeReadFile())
+  assert.deepEqual(scan.missing.sort(), ['publish-note-imgs.js', 'publish-note.js'])
+  assert.deepEqual(scan.stale, [], '不存在的文件没有「过旧」可言')
+  assert.equal(scan.publishNote, false)
+  assert.equal(scan.publishNoteImgs, false)
+  const mixed = scanAdapterDir('x', () => ['publish-note.js', 'wechat-html.js', 'weixin-flow.js'], fakeReadFile({ 'publish-note.js': STALE_ENTRY }))
+  assert.deepEqual(mixed.missing, ['publish-note-imgs.js'], '旧的 publish-note.js 存在 → 不能算 missing')
+  assert.deepEqual(mixed.stale, ['publish-note.js'])
+})
+
+await test('版本校验：读文件失败（EACCES / 目录被删）一律判过旧，绝不抛错', () => {
+  const unreadable = scanAdapterDir('x', () => ALL_ADAPTER_FILES, fakeReadFile({ 'weixin-flow.js': () => { throw new Error('EACCES: permission denied') } }))
+  assert.ok(unreadable.stale.includes('weixin-flow.js'), '读不到就无法证明是新版 → 保守判旧')
+  assert.equal(unreadable.publishNote, false)
+  assert.equal(unreadable.publishNoteImgs, false)
+  const allFail = scanAdapterDir('x', () => ALL_ADAPTER_FILES, () => { throw new Error('EPERM: operation not permitted') })
+  assert.deepEqual(allFail.stale.sort(), ['publish-note-imgs.js', 'publish-note.js', 'weixin-flow.js'])
+  assert.deepEqual(allFail.missing, [], '读失败 ≠ 文件不存在')
 })
 
 // ── 3. 真跑 spawn：假 opencli（.cmd/.sh → node 桩）────────────────────────
@@ -256,7 +354,7 @@ await test('E2E：超时终止（不留下永不结束的任务）', async () =>
   runner.dispose()
 })
 
-await test('就绪探测：真跑一次 --version；adapter 目录按缺文件如实报告', async () => {
+await test('就绪探测：真跑一次 --version；adapter 目录按缺文件 / 版本过旧如实报告', async () => {
   const adaptersDir = path.join(tmp, 'adapters')
   fs.mkdirSync(adaptersDir, { recursive: true })
   const missing = await checkWechatReady({ enabled: true, command: stub, adaptersDir })
@@ -265,12 +363,21 @@ await test('就绪探测：真跑一次 --version；adapter 目录按缺文件�
   assert.equal(missing.adapters.publishNote, false)
   assert.ok(missing.adapters.missing.includes('publish-note.js'))
   assert.equal(missing.ok, false, '缺 adapter 时 ok 必须为 false')
-  for (const f of ['publish-note.js', 'publish-note-imgs.js', 'wechat-html.js', 'weixin-flow.js']) {
-    fs.writeFileSync(path.join(adaptersDir, f), '// stub\n', 'utf8')
+  // 写真正「新版」的文件内容：走默认 readFileSync，顺带证明真 fs 通路可用。
+  for (const [name, text] of Object.entries(FRESH_ADAPTER_FILE_TEXT)) {
+    fs.writeFileSync(path.join(adaptersDir, name), text, 'utf8')
   }
   const ready = await checkWechatReady({ enabled: true, command: stub, adaptersDir })
   assert.equal(ready.ok, true)
   assert.equal(ready.adapters.publishNote && ready.adapters.publishNoteImgs, true)
+  assert.deepEqual(ready.adapters.stale, [], '真 fs 通路也必须判定为新鲜')
+  // 回归（缺陷 C）：文件一个不少、但 flow 是老版本 → 预检必须报 stale 且 ok=false，
+  // 而不是「就绪」让用户点了按钮才失败。
+  fs.writeFileSync(path.join(adaptersDir, 'weixin-flow.js'), STALE_FLOW, 'utf8')
+  const aged = await checkWechatReady({ enabled: true, command: stub, adaptersDir })
+  assert.equal(aged.ok, false, '旧版 adapter 绝不能被预检判「就绪」（v0.23.3 的真实事故）')
+  assert.ok(aged.adapters.stale.includes('weixin-flow.js'), `stale 必须透传到 ready.adapters，实际 ${JSON.stringify(aged.adapters)}`)
+  assert.deepEqual(aged.adapters.missing, [], '文件都在 → missing 必须是空的，503 文案才能说清是「版本旧」')
   const disabled = await checkWechatReady({ enabled: false, command: stub, adaptersDir })
   assert.equal(disabled.ok, false, '功能未启用时 ok 必须是 false')
   const noCli = await checkWechatReady({ enabled: true, command: path.join(tmp, 'nope-does-not-exist'), adaptersDir, probeTimeoutMs: 2_000 })
@@ -325,7 +432,7 @@ await test('路由：未启用 403 / 方法校验 405 / 同源 403 / token 401 /
       enabled: config.enabled,
       command: stub,
       opencli: { ok: true, version: '9.9.9' },
-      adapters: { dir: 'x', publishNote: true, publishNoteImgs: true, missing: [] },
+      adapters: { dir: 'x', publishNote: true, publishNoteImgs: true, missing: [], stale: [] },
     }),
   })
   const srv = createRouteServer(routes)
@@ -382,6 +489,7 @@ await test('路由：未启用 403 / 方法校验 405 / 同源 403 / token 401 /
     assert.equal(ready.enabled, true)
     assert.equal(ready.opencli.ok, true)
     assert.ok(ready.adapters && typeof ready.adapters.publishNote === 'boolean')
+    assert.ok(Array.isArray(ready.adapters.stale), 'ready 回执必须原样带出 adapters.stale（routes.ts 的 503 文案要用它区分「缺文件」与「版本旧」）')
   } finally {
     dispose()
     runner.dispose()
@@ -404,6 +512,20 @@ await test('routes.ts：三条路由都过 guardHandler，写路由声明 POST�
   assert.ok(src.includes("if (rejectCrossSiteWrite(req, res, ['POST'])) return\n      if (!guardWechat(req, res)) return"), '/wechat/publish 必须先判方法+同源，再判功能开关/token')
   assert.ok(src.includes("const got = req.headers['x-wechat-publish-token']"), 'token 头名必须与 TW 按钮一致')
   assert.ok(src.includes('req.socket.localPort'), 'dsn 必须由请求端口推导（opencli 从本机回连）')
+})
+
+await test('源码：真 adapter 与宿主版本常量都带那两个符号（防我们自己的 adapter 将来退化）', () => {
+  const readSrc = (p) => fs.readFileSync(path.join(repoRoot, p), 'utf8')
+  const flow = readSrc(path.join('tools', 'wechat', 'weixin-flow.js'))
+  assert.ok(flow.includes('resolveNoteTitle'), 'tools/wechat/weixin-flow.js 必须导出 resolveNoteTitle（宿主按它判版本）')
+  for (const entry of ['publish-note.js', 'publish-note-imgs.js']) {
+    assert.ok(readSrc(path.join('tools', 'wechat', entry)).includes('titleFile'), `tools/wechat/${entry} 必须声明 titleFile（--title-file 是宿主唯一的标题通路）`)
+  }
+  // 宿主常量与上面的字面量是**同一份契约**：脚本按字面量构造夹具、宿主按常量判定，
+  // 两边漂移 = 版本校验静默失效（夹具永远绿，生产却判不出旧版）。
+  const host = readSrc(path.join('src', 'host', 'wechat-publish.ts')).replace(/\r\n/g, '\n')
+  assert.ok(host.includes("export const WECHAT_ADAPTER_MARKER = 'resolveNoteTitle'"), 'WECHAT_ADAPTER_MARKER 必须仍是 resolveNoteTitle（与真 flow 的符号对齐）')
+  assert.ok(host.includes("const WECHAT_TITLE_FILE_ARG = 'titleFile'"), '入口版本哨兵必须仍是 titleFile（与真入口声明的参数名对齐）')
 })
 
 await test('index.ts / admin.ts：runner 接线、teardown 释放、wechat.token 打码', () => {

@@ -17,4 +17,7 @@ export const RENDER_BUNDLE_VERSION = '0.2.0'
 // source of truth — build-wechat-publish-bundle.mjs stamps it into the bundle's
 // inner plugin.info and gen-seed-wechat-publish.mjs copies it to the outer wiki
 // tiddler — so bumping behavior means bumping exactly this line.
-export const WECHAT_PUBLISH_BUNDLE_VERSION = '0.1.0'
+// Bumped 0.1.0 → 0.2.0 (v0.23.4): the readiness precheck now understands
+// `adapters.stale` (installed but outdated adapter files) and reports「版本过旧」
+// instead of the misleading「缺少发布脚本」.
+export const WECHAT_PUBLISH_BUNDLE_VERSION = '0.2.0'

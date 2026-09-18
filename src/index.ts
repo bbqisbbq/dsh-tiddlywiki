@@ -57,7 +57,8 @@ export const inject = ['tools', 'systemPrompt']
 
 /** Re-exports for the headless selftest and future consumers. */
 export { ANON_USERNAME, AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool }
-export { ConfigStore, deepMerge } from './host/config.ts'
+export { ConfigStore, deepMerge, ConfigUnreadableError, describeUnreadableConfig } from './host/config.ts'
+export { describeConflict, GitConflictStateError } from './host/git.ts'
 export { sanitizeTwFragment, isSafeUrl } from './host/sanitize.ts'
 export { MISSING_TYPE_FILTER, ensureTiddlerTimestamps, formatTiddlerDate, parseTiddlerDate, toIsoDateString } from './host/tw-api.ts'
 export {
@@ -103,9 +104,11 @@ export {
   isSafeDsn,
   WECHAT_ADAPTERS,
   WECHAT_ADAPTER_FILES,
+  WECHAT_ADAPTER_MARKER,
   DEFAULT_WECHAT_ADAPTER,
   DEFAULT_WECHAT_COMMAND,
   type WechatAdapter,
+  type WechatAdapterScan,
   type WechatPublishConfig,
   type WechatPublishJobView,
   type WechatReadyView,

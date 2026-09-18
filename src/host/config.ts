@@ -164,17 +164,52 @@ export function deepMerge(base: Record<string, unknown>, over: Record<string, un
 }
 
 /**
+ * The config tiddler EXISTS but cannot be understood (v0.23.4).
+ *
+ * `set()` used to fall back to the in-memory cache when the stored text failed
+ * to parse — and right after a failed `load()` that cache is EMPTY, so a single
+ * settings-page save silently replaced the whole config with just the fields
+ * the form happened to send. That is exactly what happened on 2026-09-18 after
+ * a leftover `<<<<<<<` conflict block (committed by the auto-committer) made
+ * the tiddler unparseable: `prompt.extra` / `git.remote` / `ui.*` were wiped.
+ * Saving is now REFUSED instead, and the reason is surfaced to the user.
+ */
+export class ConfigUnreadableError extends Error {
+  constructor(message: string, readonly raw: string) {
+    super(message)
+    this.name = 'ConfigUnreadableError'
+  }
+}
+
+/** User-facing explanation for a refused save (kept next to the config tiddler name). */
+export function describeUnreadableConfig(): string {
+  return `配置 tiddler ${CONFIG_TIDDLER} 存在但不是合法 JSON（常见原因：git 冲突标记 <<<<<<< 残留，或手工编辑出错）。`
+    + '为避免抹掉其它设置，本次保存已被拒绝。请先修好该 tiddler（或删除它、回落到 cordis config 块）再保存。'
+}
+
+/**
  * Runtime config store: caches the override tiddler and exposes the effective
  * (merged) config. `load` runs at startup and after every write/restart.
  */
 export class ConfigStore {
   private overrides: PluginConfigShape = {}
+  /** Set when the stored tiddler exists but cannot be parsed (v0.23.4). */
+  private lastParseError: string | undefined
 
   constructor(private readonly base: PluginConfigShape) {}
 
   /** Effective config = cordis base overlaid with the user override tiddler. */
   get(): PluginConfigShape {
     return deepMerge(this.base, this.overrides) as PluginConfigShape
+  }
+
+  /**
+   * Why the stored config is unusable, or undefined when everything is fine.
+   * `/admin/state` exposes this so the settings page can show a banner instead
+   * of pretending the (ignored) overrides are in effect.
+   */
+  parseError(): string | undefined {
+    return this.lastParseError
   }
 
   /**
@@ -185,10 +220,15 @@ export class ConfigStore {
    * the cache on error silently reverted every user setting for the rest of the
    * session, and the next `set()` then persisted a config tiddler without the
    * user's other overrides.
+   *
+   * A tiddler that exists but does not PARSE is a third case (v0.23.4): the
+   * cache is kept (writes are refused, so nothing can be lost) and the failure
+   * is recorded for the UI — see ConfigUnreadableError.
    */
   async load(client: TiddlyWebClient | undefined): Promise<void> {
     if (client === undefined) {
       this.overrides = {}
+      this.lastParseError = undefined
       return
     }
     let tiddler
@@ -201,15 +241,20 @@ export class ConfigStore {
     }
     if (tiddler === undefined) {
       this.overrides = {}
+      this.lastParseError = undefined
       return
     }
+    const raw = typeof tiddler.text === 'string' ? tiddler.text : ''
     try {
-      const parsed = JSON.parse(typeof tiddler.text === 'string' ? tiddler.text : '') as unknown
-      this.overrides = isPlainObject(parsed) ? (parsed as PluginConfigShape) : {}
+      const parsed = JSON.parse(raw) as unknown
+      if (!isPlainObject(parsed)) throw new Error('config tiddler is not a JSON object')
+      this.overrides = parsed as PluginConfigShape
+      this.lastParseError = undefined
     } catch {
-      // Malformed JSON in the config tiddler: keep the cache rather than
-      // silently reverting to the cordis base.
-      console.warn('[dsh-tiddlywiki] config tiddler is not valid JSON, keeping cached overrides')
+      // Malformed/unparseable: keep the cache (never revert to the base) and
+      // remember WHY so the UI can say it out loud.
+      this.lastParseError = describeUnreadableConfig()
+      console.warn('[dsh-tiddlywiki] config tiddler is not valid JSON, keeping cached overrides; saving is blocked until it is fixed')
     }
   }
 
@@ -219,6 +264,9 @@ export class ConfigStore {
    * The patch is merged onto the STORED overrides (re-read here), not just the
    * in-memory cache: if the startup `load()` failed transiently, saving one
    * setting must not drop every other override the user had stored.
+   *
+   * ⚠️ When the stored tiddler exists but is UNPARSEABLE this THROWS
+   * (v0.23.4) instead of merging onto an empty cache — see ConfigUnreadableError.
    */
   async set(client: TiddlyWebClient, patch: PluginConfigShape): Promise<PluginConfigShape> {
     let stored: PluginConfigShape = this.overrides
@@ -227,17 +275,28 @@ export class ConfigStore {
     // settings save, and `put()`'s safety net would otherwise re-stamp it each
     // time — `created` must stay at the first write, `modified` tracks edits.
     let existingCreated: string | undefined
+    let storedText: string | undefined
     try {
       const tiddler = await client.get(CONFIG_TIDDLER)
       if (tiddler !== undefined && typeof tiddler.text === 'string') {
+        storedText = tiddler.text
         const parsed = JSON.parse(tiddler.text) as unknown
-        if (isPlainObject(parsed)) stored = parsed as PluginConfigShape
+        if (!isPlainObject(parsed)) throw new Error('config tiddler is not a JSON object')
+        stored = parsed as PluginConfigShape
       }
       if (tiddler !== undefined && typeof tiddler.created === 'string' && tiddler.created.trim().length > 0) {
         existingCreated = tiddler.created
       }
-    } catch {
+    } catch (err) {
+      // Read succeeded (we have the raw text) but the content is unusable:
+      // refuse — writing would drop every key the caller did not send. A READ
+      // failure (no raw text) keeps the old "merge onto the cache" behaviour.
+      if (storedText !== undefined) {
+        this.lastParseError = describeUnreadableConfig()
+        throw new ConfigUnreadableError(describeUnreadableConfig(), storedText)
+      }
       // Unreadable config tiddler → merge onto the in-memory cache.
+      void err
     }
     this.overrides = deepMerge(stored, patch) as PluginConfigShape
     await client.put({

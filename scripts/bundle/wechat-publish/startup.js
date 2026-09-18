@@ -269,13 +269,23 @@ function readinessProblem(parsed, adapter) {
 	var adapters = ready.adapters;
 	if (!adapters) { return null; }
 	var missing = Array.isArray(adapters.missing) ? adapters.missing : [];
+	// v0.23.4：`stale` = 文件都在但**版本过旧**（旧版 adapter 不认宿主的
+	// `--title-file`，点了按钮才会在 opencli 里报「缺少必填参数」）。措辞必须
+	// 与「缺失」分开，否则用户会去重装一遍同样的旧文件。
+	var stale = Array.isArray(adapters.stale) ? adapters.stale : [];
+	var installHint = "\n请运行（路径相对插件目录，npm 安装时是 node_modules/dsh-tiddlywiki）：\n"
+		+ "node <插件目录>/tools/wechat/install-wechat-adapters.mjs";
+	if (stale.length > 0) {
+		return "发布脚本（adapter）版本过旧：" + stale.join("、") + "。\n"
+			+ "旧版不认识宿主的 --title-file（标题走文件、不进命令行），直接发布会在 opencli 里报「缺少必填参数」。"
+			+ installHint;
+	}
 	// Only the selected adapter matters: a wiki can publish plain notes long
 	// before the multi-image adapter is installed.
 	var needed = adapter === "publish-note-imgs" ? "publishNoteImgs" : "publishNote";
 	if (adapters[needed] === false || missing.length > 0) {
-		return "缺少发布脚本（adapter）：" + (missing.length > 0 ? missing.join("、") : needed) + "。\n"
-			+ "请运行（路径相对插件目录，npm 安装时是 node_modules/dsh-tiddlywiki）：\n"
-			+ "node <插件目录>/tools/wechat/install-wechat-adapters.mjs";
+		return "缺少发布脚本（adapter）：" + (missing.length > 0 ? missing.join("、") : needed) + "。"
+			+ installHint;
 	}
 	return null;
 }
