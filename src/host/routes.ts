@@ -53,12 +53,13 @@ import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:
 import { mkdir, writeFile, stat } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import { Readable } from 'node:stream'
-import type { TiddlyWebClient } from './tw-api.ts'
+import type { Tiddler, TiddlyWebClient } from './tw-api.ts'
 import { RenderNotFoundError, formatTiddlerDate, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { GitConflictStateError, type GitFace, type GitStatusView } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
-import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
+import { writeSessionSummary, type SessionQueryFace, type SessionSummaryResult } from './session-summary.ts'
+import { WORKSPACE_TAG_PREFIX } from './workspace.ts'
 import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 import { sanitizeTwFragment } from './sanitize.ts'
 import { drainThenStop } from './seeds.ts'
@@ -645,6 +646,18 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   }
 
   /**
+   * Single-flight + short reuse for the session summary (v0.25.0).
+   *
+   * ONE generation reads up to 41 session event logs (whole logs) and probes up
+   * to 300 tiddlers over REST; the client regenerates on every tab mount, so two
+   * tabs or a double-click on「🔄 刷新」used to run that whole pipeline twice in
+   * parallel for the same answer. The cache holds the PROMISE (concurrent callers
+   * share one run) and a rejection is never kept.
+   */
+  const SUMMARY_REUSE_MS = 3_000
+  const summaryInFlight = new Map<string, { at: number; value: Promise<SessionSummaryResult> }>()
+
+  /**
    * POST /dsh-tiddlywiki/session/summary — 生成当前会话的 wiki 汇总页（「知识库」
    * Tab 的后端）。body `{ session: <会话ID> }`；后端用 sessionQuery 读本会话（含
    * 后代 subagent）的完整事件日志，按「产生/读取/检索」收集 tiddlywiki_* 笔记，
@@ -682,7 +695,18 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'session query service unavailable' }, 503)
         return
       }
-      const result = await writeSessionSummary(client, sq, session)
+      const cachedSummary = summaryInFlight.get(session)
+      let pendingSummary: Promise<SessionSummaryResult>
+      if (cachedSummary !== undefined && Date.now() - cachedSummary.at < SUMMARY_REUSE_MS) {
+        pendingSummary = cachedSummary.value
+      } else {
+        pendingSummary = writeSessionSummary(client, sq, session)
+        summaryInFlight.set(session, { at: Date.now(), value: pendingSummary })
+        pendingSummary.catch(() => {
+          if (summaryInFlight.get(session)?.value === pendingSummary) summaryInFlight.delete(session)
+        })
+      }
+      const result = await pendingSummary
       json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
@@ -1210,7 +1234,22 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const field = url.searchParams.get('field') ?? undefined
       const value = url.searchParams.get('value') ?? undefined
       const limit = readLimit(url, 30)
-      const { items, total } = await client.search(query, { tags, tag, since, type, field, value, limit })
+      // Workspace scope (v0.25.0): `tiddlywiki_search` narrows to the session's
+      // workspace and widens only when that finds nothing, but this route did not
+      // — so the reply-stream card could list a DIFFERENT (larger) result set than
+      // the model saw, with no hint about the scope. The card now echoes the
+      // scope it read out of the model-visible receipt (`workspace=<id>`), and we
+      // mirror the tool's rules: an explicit tag/field filter is already a scope,
+      // so it is never second-guessed.
+      const rawWorkspace = url.searchParams.get('workspace') ?? ''
+      const workspace = /^[A-Za-z0-9\u4e00-\u9fa5._-]{1,80}$/.test(rawWorkspace) ? rawWorkspace : ''
+      const explicitScope = tags.length > 0 || tag !== undefined || field !== undefined || value !== undefined
+      const narrowTag = workspace.length > 0 && !explicitScope ? `${WORKSPACE_TAG_PREFIX}${workspace}` : ''
+      const narrowed = narrowTag.length > 0
+        ? await client.search(query, { tags: [narrowTag], tag, since, type, field, value, limit })
+        : undefined
+      const usedWorkspace = narrowed !== undefined && narrowed.total > 0
+      const { items, total } = usedWorkspace ? narrowed as { items: Tiddler[]; total: number } : await client.search(query, { tags, tag, since, type, field, value, limit })
       json(res, {
         ok: true,
         query,
@@ -1222,6 +1261,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         value: value ?? null,
         limit,
         total,
+        workspace: workspace.length > 0 ? workspace : null,
+        scope: usedWorkspace ? 'workspace' : 'all',
+        fellBack: narrowTag.length > 0 && !usedWorkspace,
         items: items.map((t) => ({
           title: t.title,
           tags: t.tags ?? [],

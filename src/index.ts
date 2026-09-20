@@ -57,7 +57,7 @@ export const inject = ['tools', 'systemPrompt']
 
 /** Re-exports for the headless selftest and future consumers. */
 export { ANON_USERNAME, AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool }
-export { ConfigStore, deepMerge, ConfigUnreadableError, describeUnreadableConfig } from './host/config.ts'
+export { ConfigStore, ConfigPatchError, deepMerge, normalizeConfigPatch, ConfigUnreadableError, describeUnreadableConfig } from './host/config.ts'
 export { describeConflict, GitConflictStateError } from './host/git.ts'
 export { sanitizeTwFragment, isSafeUrl } from './host/sanitize.ts'
 export { MISSING_TYPE_FILTER, ensureTiddlerTimestamps, formatTiddlerDate, parseTiddlerDate, toIsoDateString } from './host/tw-api.ts'
@@ -178,7 +178,14 @@ export interface TiddlywikiConfig {
   wiki?: string
   port?: number
   git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
-  note?: { tag?: string }
+  note?: {
+    tag?: string
+    /**
+     * 自动给 **Agent 新建**的笔记打工作区标记（默认 true，v0.24.0；v0.25.0 补上
+     * 这里漏掉的字段——它与 PluginConfigShape/DEFAULTS 三处形状必须同步）。
+     */
+    workspaceMark?: boolean
+  }
   /** 本地剪藏桥（书签小工具）：见 host/clip-bridge.ts 与 seed-clip-bridge.ts 文档。 */
   bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
   /** 注入给每个会话的系统提示词（v0.21.0，见 host/prompt.ts）。 */
@@ -622,6 +629,43 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   }
   disposers.push(() => { void teardownCommitter() })
 
+  /**
+   * Re-apply the EFFECTIVE git config to the running plugin (v0.25.0).
+   *
+   * Until then, `git.*` was read ONCE: `AutoCommitter` snapshots
+   * `enabled`/`debounceMs` into immutable options at construction, and the remote
+   * only reached the repo through `bootstrapGit()` at startup. The settings page
+   * happily saved + echoed new values that changed nothing until a dsh web
+   * restart — turning 自动提交 off kept committing, changing the remote kept
+   * pushing to the old one. Rebuilding the committer closes that gap; the
+   * `gitReconfiguring` flag (plus `teardownCommitter`'s own idempotence) keeps a
+   * burst of saves from leaving two committers or a dangling fs watcher.
+   *
+   * Not covered on purpose: an already-initialised repository keeps its branch
+   * (`git.branch` is only consulted by `git.init`), and clearing the remote
+   * field does not delete `origin` (that is a destructive repo change the UI
+   * never promised). Both are documented in the settings page + README.
+   */
+  let gitReconfiguring = false
+  const reapplyGitConfig = async (): Promise<void> => {
+    if (gitReconfiguring) return
+    gitReconfiguring = true
+    try {
+      await teardownCommitter()
+      const g = eff().git ?? {}
+      const remote = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : config.git.remote).trim()
+      if (remote.length > 0) {
+        const ensured = await git.ensureRemote(wikiPath, remote)
+        if (!ensured.ok) console.warn('[dsh-tiddlywiki] git remote update:', ensured.message)
+      }
+      setupCommitter()
+    } catch (err) {
+      console.warn('[dsh-tiddlywiki] applying git config:', err)
+    } finally {
+      gitReconfiguring = false
+    }
+  }
+
   // Git bootstrap: repo init + initial commit + .gitignore (+ remote/first push).
   const bootstrapGit = async (): Promise<void> => {
     const g = eff().git ?? {}
@@ -997,7 +1041,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // A settings-page save may change prompt.*: re-register the section (no
       // dsh web restart) and expose the built text for the preview panel.
       // startup.readyTimeoutMs is re-applied here too (next start/restart).
-      onConfigChanged: () => { applyPrompt(); applyServerTuning() },
+      onConfigChanged: () => {
+        applyPrompt()
+        applyServerTuning()
+        // git.* must take effect on the RUNNING plugin (v0.25.0) — see
+        // reapplyGitConfig: enabled/debounceMs/remote used to need a dsh web restart.
+        void reapplyGitConfig()
+      },
       // No draft → the SAVED config (what is injected right now); with a draft →
       // the settings form's unsaved values (v0.22.7), through the same builder.
       getPrompt: (draft?: PromptPreviewConfig) =>

@@ -77,7 +77,6 @@ interface SeedItem {
   updateAvailable?: boolean
   /** true=本地改过；false=没动过；undefined=旧格式标记，无法判断。 */
   userModified?: boolean
-  legacyMarker?: boolean
 }
 
 /** Payload of GET /admin/wiki/location (v0.22.0 runtime wiki switch). */
@@ -95,6 +94,18 @@ function make<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string,
   if (className !== undefined) node.className = className
   if (text !== undefined) node.textContent = text
   return node
+}
+
+/**
+ * 红色解释横幅。页面里没有对应 CSS 类（host 注入的样式表不归本文件管），内联样式
+ * 是与宿主既定的视觉约定；抽成函数是为了两处横幅（配置未生效 / 保存被拒）长得一致。
+ */
+function makeErrorBanner(text: string): HTMLDivElement {
+  const banner = make('div', 'dsh-tw-settings-banner')
+  banner.dataset.tone = 'error'
+  banner.setAttribute('style', 'border:1px solid #c0392b;background:#fdecea;color:#8c1c13;border-radius:6px;padding:10px 12px;margin:0 0 12px;font-size:12px;line-height:1.6;white-space:pre-wrap;')
+  banner.textContent = text
+  return banner
 }
 
 /**
@@ -124,6 +135,12 @@ interface ConfigField {
   initial: string | boolean | number
   read: () => string | boolean | number
   changed: () => boolean
+  /**
+   * 数值字段专用：返回「当前输入不能提交」的原因，`undefined` = 可用。
+   * 保存前用它拦截 —— 宿主对越界/非数字是静默回落（bridge.port 掉回 8618、
+   * readyTimeoutMs 夹到 5000–600000），提交等于让页面显示值与真正生效值分家。
+   */
+  invalid?: () => string | undefined
 }
 
 /** Mount the settings page into `container`; returns the disposer.
@@ -132,29 +149,46 @@ function mountSettingsPage(container: HTMLElement): () => void {
   let disposed = false
   container.classList.add('dsh-tw-settings')
 
+  // 加载失败横幅独立于 statusRow/body（v0.24.x）：刷新失败（宿主重启中、网络抖动）
+  // 不该把用户已经填了一半、还没保存的表单从文档里摘掉，所以错误与重试只动这一块。
+  const loadError = make('div', 'dsh-tw-settings-error')
+  loadError.hidden = true
   const statusRow = make('div', 'dsh-tw-settings-row dsh-tw-settings-status')
   const body = make('div', 'dsh-tw-settings-body')
-  container.append(statusRow, body)
+  container.append(loadError, statusRow, body)
 
   const disposers: Array<() => void> = []
   /** Config-section DOM + the server signature it was built from (see renderMain). */
   const configState: ConfigRenderState = {}
+  /** 插件/主题/语言的「未应用勾选」（见 CatalogPending）。 */
+  const catalogPending: CatalogPending = { plugins: new Set(), themes: new Set(), languages: new Set() }
+  /** 首屏是否已成功渲染过内容：决定占位提示与失败时能不能清 body。 */
+  let rendered = false
 
   const refresh = async (): Promise<void> => {
+    // 首屏先给占位（v0.24.x）：以前 await 期间什么都不画，整块白屏看起来像插件坏了。
+    if (!rendered) body.replaceChildren(make('div', 'dsh-tw-settings-muted', '加载中…'))
     try {
       const state = await fetchJson<AdminState>(STATE_ENDPOINT)
       if (disposed) return
+      rendered = true
+      loadError.hidden = true
+      loadError.replaceChildren()
       renderStatus(statusRow, state, refresh)
-      renderMain(body, state, refresh, () => disposed, configState)
+      renderMain(body, state, refresh, () => disposed, configState, catalogPending)
     } catch (err) {
       if (disposed) return
-      body.replaceChildren()
-      statusRow.replaceChildren()
-      const msg = make('div', 'dsh-tw-settings-error', `加载配置失败：${err instanceof Error ? err.message : String(err)}`)
+      // 不再 body.replaceChildren() / statusRow.replaceChildren()：那会把已经渲染出来的
+      // 表单节点连同用户的输入一起摘掉。首屏（还没有任何内容）时把「加载中…」换成实话。
+      if (!rendered) body.replaceChildren(make('div', 'dsh-tw-settings-muted', '配置尚未加载。'))
       const retry = make('button', 'dsh-tw-settings-btn', '重试')
       retry.type = 'button'
       retry.addEventListener('click', () => { void refresh() })
-      body.append(msg, retry)
+      loadError.replaceChildren(
+        make('span', undefined, `加载配置失败：${err instanceof Error ? err.message : String(err)} `),
+        retry,
+      )
+      loadError.hidden = false
     }
   }
 
@@ -214,7 +248,10 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
     restart.textContent = '重启中…'
     void (async () => {
       try {
-        await fetchJson(RESTART_ENDPOINT, { method: 'POST' })
+        // 120s 是显式的：宿主 /admin/restart 会等 TW 就绪才回包，软窗口默认 60s
+        // （大知识库冷启动更久，v0.22.5 记录过 44s+），而 fetchJson 默认只给 15s ——
+        // 于是宿主重启成功、前端却报「重启失败」。同一原因也命中过知识库切换。
+        await fetchJson(RESTART_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
         toast('TW 已重启')
       } catch (err) {
         toast(`重启失败：${err instanceof Error ? err.message : String(err)}`)
@@ -229,7 +266,7 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
 }
 
 /** Config section: fields bound to effective config, changed-only save. */
-function renderConfigSection(body: HTMLElement, config: Record<string, unknown>, refresh: () => Promise<void>): void {
+function renderConfigSection(body: HTMLElement, config: Record<string, unknown>, refresh: () => Promise<void>, configState: ConfigRenderState): void {
   const section = make('section', 'dsh-tw-settings-section')
   section.append(make('h3', 'dsh-tw-settings-h', '常规配置'))
   const note = (config.note ?? {}) as Record<string, unknown>
@@ -245,6 +282,32 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
     section.append(wrap)
   }
+  /**
+   * 共享口令输入（v0.24.x）：`type=password` + 👁 显隐切换。
+   * 为什么不能沿用 textField：token 的 ******** mask 只防「保存时把密文覆盖成星号」，
+   * 不防「屏幕共享 / 录屏 / 背后有人时明文可见」—— 掩码值本身仍然是个可见的明文输入框。
+   */
+  const tokenField = (key: string, label: string, initial: string): void => {
+    const input = make('input', 'dsh-tw-settings-input')
+    input.type = 'password'
+    input.value = initial
+    input.autocomplete = 'off'
+    const toggle = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '👁')
+    toggle.type = 'button'
+    toggle.title = '显示 / 隐藏'
+    toggle.setAttribute('aria-label', '显示 / 隐藏')
+    toggle.addEventListener('click', (event) => {
+      // 按钮位于 <label> 内：阻断 label 的默认「转发点击给控件」，避免切明文时输入框被重聚焦。
+      event.preventDefault()
+      const hidden = input.type === 'password'
+      input.type = hidden ? 'text' : 'password'
+      toggle.textContent = hidden ? '🙈' : '👁'
+    })
+    const wrap = make('label', 'dsh-tw-settings-field')
+    wrap.append(make('span', 'dsh-tw-settings-label', label), input, toggle)
+    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
+    section.append(wrap)
+  }
   const checkField = (key: string, label: string, initial: boolean): HTMLInputElement => {
     const input = make('input', 'dsh-tw-settings-check')
     input.type = 'checkbox'
@@ -255,21 +318,55 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     section.append(wrap)
     return input
   }
-  const numField = (key: string, label: string, initial: number): void => {
+  /**
+   * 数值字段（v0.24.x：加范围校验 + 字段旁提示）。
+   *
+   * 旧写法把非法输入静默回落成 `initial`，于是 `changed()` 变 false —— 用户看到自己填的
+   * 值还在框里，以为保存了，其实一个字节都没提交；而越界值（宿主只做夹取/回落：bridge.port
+   * 掉回 8618、readyTimeoutMs 夹到 5000–600000）即使提交了，页面回显也与真正生效值不符。
+   * 现在：非法输入原样留着 + 红字提示，`invalid` 让保存直接拒绝（见保存按钮）。
+   */
+  const numField = (key: string, label: string, initial: number, range?: { min?: number; max?: number; step?: number; integer?: boolean }): void => {
     const input = make('input', 'dsh-tw-settings-input')
     input.type = 'number'
     input.value = String(initial)
-    // 显式区分「空串/非法输入」与合法的 0：旧写法 `Number(v) || initial` 会把 0
-    // 当成 initial，changed() 变成 false —— 用户输入 0 以为保存了，其实没提交。
-    const read = (): number => {
+    // 与下面校验同一组边界的浏览器侧约束：数字框的上下箭头不会越界。
+    if (range?.min !== undefined) input.min = String(range.min)
+    if (range?.max !== undefined) input.max = String(range.max)
+    if (range?.step !== undefined) input.step = String(range.step)
+    const hint = make('div', 'dsh-tw-settings-error')
+    hint.hidden = true
+    const violation = (): string | undefined => {
       const raw = input.value.trim()
-      if (raw.length === 0) return initial
+      if (raw.length === 0) return '不能为空'
       const parsed = Number(raw)
-      return Number.isFinite(parsed) ? parsed : initial
+      if (!Number.isFinite(parsed)) return '请输入数字'
+      if (range?.integer === true && !Number.isInteger(parsed)) return '必须是整数'
+      if (range?.min !== undefined && parsed < range.min) return `不能小于 ${range.min}`
+      if (range?.max !== undefined && parsed > range.max) return `不能大于 ${range.max}`
+      return undefined
+    }
+    const sync = (): void => {
+      const bad = violation()
+      hint.textContent = bad === undefined ? '' : `⚠️ ${bad}（保存会被拒绝）`
+      hint.hidden = bad === undefined
+      if (bad === undefined) input.removeAttribute('aria-invalid')
+      else input.setAttribute('aria-invalid', 'true')
+    }
+    input.addEventListener('input', sync)
+    // 非法时原样回传字符串（而不是 initial）：不静默改掉用户在框里看到的东西；
+    // 真要落盘也会先被 invalid() 拦下，不会发出去。
+    const read = (): number | string => {
+      const raw = input.value.trim()
+      const parsed = Number(raw)
+      return raw.length === 0 || !Number.isFinite(parsed) ? raw : parsed
     }
     const wrap = make('label', 'dsh-tw-settings-field')
-    wrap.append(make('span', 'dsh-tw-settings-label', label), input)
-    fields.push({ key, initial, read, changed: () => read() !== initial })
+    wrap.append(make('span', 'dsh-tw-settings-label', label), input, hint)
+    fields.push({ key, initial, read, changed: () => read() !== initial, invalid: violation })
+    // 先跑一次：config tiddler 里本来就存着越界值（宿主已静默夹取）时，进页面就该看见
+    // 提示，而不是等用户改动过才亮。
+    sync()
     section.append(wrap)
   }
   const selectField = (key: string, label: string, initial: string, options: Array<{ value: string; label: string }>): HTMLSelectElement => {
@@ -309,13 +406,15 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   // 项目名取自会话工作目录。关掉只是不做标记，不影响任何写入。
   checkField('note.workspaceMark', '新建笔记自动标工作区（ws/<项目名> 标签 + workspace 字段，取自当前会话工作目录）', note.workspaceMark !== false)
   checkField('git.autoCommit', '自动 commit（防抖）', git.autoCommit !== false)
-  numField('git.debounceMs', '自动 commit 防抖(ms)', typeof git.debounceMs === 'number' ? git.debounceMs : 60_000)
-  textField('git.remote', 'git 远端（空=仅本地）', typeof git.remote === 'string' ? git.remote : '')
-  textField('git.branch', 'git 分支', typeof git.branch === 'string' ? git.branch : 'main')
+  // v0.25.0：范围与宿主 config.ts 的 NUMBER_CONFIG_RANGES 对齐（超范围的补丁会被
+  // 宿主夹取，页面必须让用户看见真实边界，别再出现「回显 ≠ 生效」）。
+  numField('git.debounceMs', '自动 commit 防抖(ms；范围 0–3600000)', typeof git.debounceMs === 'number' ? git.debounceMs : 60_000, { min: 0, max: 3_600_000, step: 1_000, integer: true })
+  textField('git.remote', 'git 远端（空=仅本地；保存后即时生效，但**清空不会删除已配置的 origin**，需要时请用 git 命令处理）', typeof git.remote === 'string' ? git.remote : '')
+  textField('git.branch', 'git 分支（**只在仓库首次初始化时生效**；已有仓库请用 git 命令改分支——上面的状态行显示的是真实分支）', typeof git.branch === 'string' ? git.branch : 'main')
   // 启动就绪窗口（v0.22.5）：大知识库冷启动（数千条目）可能 40s+。窗口内只等，
   // 超过它只写日志，硬上限 = 3× 仍无响应才判失败。改动对下一次启动/重启生效。
   const startup = (config.startup ?? {}) as Record<string, unknown>
-  numField('startup.readyTimeoutMs', 'TW 启动就绪等待(ms；默认 60000，范围 5000–600000，超时上限为其 3 倍，对下次启动/重启生效)', typeof startup.readyTimeoutMs === 'number' && startup.readyTimeoutMs > 0 ? startup.readyTimeoutMs : 60_000)
+  numField('startup.readyTimeoutMs', 'TW 启动就绪等待(ms；默认 60000，范围 5000–600000，超时上限为其 3 倍，对下次启动/重启生效)', typeof startup.readyTimeoutMs === 'number' && startup.readyTimeoutMs > 0 ? startup.readyTimeoutMs : 60_000, { min: 5_000, max: 600_000, step: 1_000 })
   checkField('ui.showQuickNote', '显示「知识库」按钮里的「快速笔记」入口', ui.showQuickNote !== false)
   checkField('ui.showQuickNoteDock', '显示聊天输入框上方的「快速笔记」快捷按钮', ui.showQuickNoteDock !== false)
   selectField('ui.quickNoteMode', '点击「快速笔记」的打开方式', typeof ui.quickNoteMode === 'string' && ui.quickNoteMode === 'card' ? 'card' : 'native', [
@@ -333,9 +432,10 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   const sendToAgent = (ui.sendToAgent ?? {}) as Record<string, unknown>
   checkField('ui.sendToAgent.enabled', '启用「发送给 Agent」（TW 笔记 → DSH 会话注入）', sendToAgent.enabled !== false)
   textField('ui.sendToAgent.endpoint', 'TW 端请求基址（空=自动取当前 DSH origin）', typeof sendToAgent.endpoint === 'string' ? sendToAgent.endpoint : '')
-  textField('ui.sendToAgent.token', '共享 token（非空时路由校验 x-send-to-agent-token 头；已设置时显示为 ********，原样保存=不改，清空=删除）', typeof sendToAgent.token === 'string' ? sendToAgent.token : '')
+  tokenField('ui.sendToAgent.token', '共享 token（非空时路由校验 x-send-to-agent-token 头；已设置时显示为 ********，原样保存=不改，清空=删除）', typeof sendToAgent.token === 'string' ? sendToAgent.token : '')
   const allArticles = (ui.allArticles ?? {}) as Record<string, unknown>
-  numField('ui.allArticles.pageSize', '「所有文章」每页条数', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10)
+  // 1–200 是「所有文章」分页的有效范围（超出后分页会失序），宿主不会替我们夹取，所以在这里挡住。
+  numField('ui.allArticles.pageSize', '「所有文章」每页条数（1–200）', typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10, { min: 1, max: 200, step: 1, integer: true })
 
   // ── 可选功能：微信公众号发布（v0.23.0）────────────────────────────────────
   // 默认关闭：这项能力需要**额外安装**（opencli + 浏览器扩展，见
@@ -353,6 +453,16 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   ))
   const wechat = (config.wechat ?? {}) as Record<string, unknown>
   const wechatEnabled = checkField('wechat.enabled', '启用微信公众号发布（默认关；需先按 docs/wechat-publish-setup.md 安装 opencli + 浏览器扩展）', wechat.enabled === true)
+  // 以下四项 v0.23.3 宿主就支持，但设置页此前只暴露了 enabled —— 于是 token 这个安全开关
+  // 只能手改 wiki 里的 config tiddler。token 非空时 `/wechat/*` 要求 x-wechat-publish-token
+  // 头，防的是「任何能打开 DSH Web UI 的人都能用你本机 Chrome 对外发文」。
+  textField('wechat.command', 'opencli 命令（默认 opencli；用别名或绝对路径时填这里。仅在启用微信发布时生效）', typeof wechat.command === 'string' && wechat.command.trim().length > 0 ? wechat.command.trim() : 'opencli')
+  selectField('wechat.adapter', '发布适配器（仅在启用微信发布时生效）', wechat.adapter === 'publish-note-imgs' ? 'publish-note-imgs' : 'publish-note', [
+    { value: 'publish-note', label: 'publish-note（默认）：图文排版，封面单图' },
+    { value: 'publish-note-imgs', label: 'publish-note-imgs：正文内嵌图全部上传 CDN（需先重跑 install-wechat-adapters.mjs）' },
+  ])
+  tokenField('wechat.token', '发布 token（非空时 /wechat/* 校验 x-wechat-publish-token 头，强烈建议设置，否则任何能打开本页的人都能替你发文；已设置时显示为 ********，原样保存=不改，清空=删除。仅在启用微信发布时生效）', typeof wechat.token === 'string' ? wechat.token : '')
+  textField('wechat.dsn', '渲染基址 dsn（adapter 回连 DSH 用，形如 http://127.0.0.1:<端口>/dsh-tiddlywiki；留空=按请求自动推导。仅在启用微信发布时生效）', typeof wechat.dsn === 'string' ? wechat.dsn : '')
 
   // ── 系统提示词（v0.21.0；草稿预览 v0.22.7）────────────────────────────────
   const prompt = (config.prompt ?? {}) as Record<string, unknown>
@@ -414,18 +524,34 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
 
   const bridge = (config.bridge ?? {}) as Record<string, unknown>
   checkField('bridge.enabled', '启用「本地剪藏桥」（书签小工具后端监听 127.0.0.1 端口，保存后立即生效）', bridge.enabled === true)
-  numField('bridge.port', '剪藏桥端口（改端口需重启 dsh web 生效）', typeof bridge.port === 'number' && bridge.port > 0 ? bridge.port : 8618)
-  textField('bridge.token', '剪藏桥 token（非空时校验书签的 x-clip-token 头；强烈建议设置。已设置时显示为 ********，原样保存=不改，清空=删除）', typeof bridge.token === 'string' ? bridge.token : '')
+  // 宿主的真实规则（index.ts effectiveBridge）：必须是 1–65535 的整数，否则静默用默认 8618 ——
+  // 这里不拦，用户会以为端口改了，其实监听还在 8618。
+  numField('bridge.port', '剪藏桥端口（整数 1–65535；改端口需重启 dsh web 生效）', typeof bridge.port === 'number' && bridge.port > 0 ? bridge.port : 8618, { min: 1, max: 65_535, step: 1, integer: true })
+  tokenField('bridge.token', '剪藏桥 token（非空时校验书签的 x-clip-token 头；强烈建议设置。已设置时显示为 ********，原样保存=不改，清空=删除）', typeof bridge.token === 'string' ? bridge.token : '')
   textField('bridge.tag', '剪藏笔记默认 tag', typeof bridge.tag === 'string' && bridge.tag.trim().length > 0 ? bridge.tag.trim() : 'clip')
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
   // 注意：uiLanguage 目前只影响 TW 侧语言，客户端插件文案（FAB/快速笔记/侧边栏/本页）
   // 暂为中文，尚无 i18n 分支。
+
+  // 保存失败的解释性横幅（v0.24.x）：文案存在 mount 级 configState 里，因为 refresh()
+  // 可能按新签名重建整个配置区 —— 局部 DOM 连同这里刚写的节点会一起消失，重建后要从
+  // configState 里把「最近一次保存错误」再渲染回来。
+  const saveErrorBanner = makeErrorBanner(configState.saveError ?? '')
+  saveErrorBanner.hidden = configState.saveError === undefined
 
   const save = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '保存配置')
   save.type = 'button'
   save.addEventListener('click', () => {
     save.disabled = true
     void (async () => {
+      // 数值字段非法就直接拒绝提交：宿主对越界值只会静默夹取/回落，提交它等于把
+      // 「页面显示的值」和「真正生效的值」再次分开 —— 那正是这轮要修的 bug。
+      const invalidFields = fields.filter((field) => field.invalid?.() !== undefined)
+      if (invalidFields.length > 0) {
+        toast(`有 ${invalidFields.length} 个字段填得不对（见字段旁的红色提示），未保存`)
+        save.disabled = false
+        return
+      }
       const patch: Record<string, unknown> = {}
       for (const field of fields) {
         if (!field.changed()) continue
@@ -445,20 +571,40 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
           }
         }
       }
+      // 没有任何改动就别发请求：宿主收到空 patch 也会整体重写 config tiddler 并刷新
+      // modified —— 白白给 git 造 diff（两台机器各点一次「保存」就会在 .meta 上冲突）。
+      if (Object.keys(patch).length === 0) {
+        toast('没有改动')
+        save.disabled = false
+        return
+      }
       try {
         await fetchJson(CONFIG_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
         // ui.* 已落盘：清掉客户端缓存，下一次读取立即拿到新值（否则最长 15s 才生效）。
         invalidateUiConfig()
+        configState.saveError = undefined
+        saveErrorBanner.hidden = true
+        saveErrorBanner.textContent = ''
         toast('配置已保存')
         void refresh()
       } catch (err) {
-        toast(`保存失败：${err instanceof Error ? err.message : String(err)}`)
+        const message = err instanceof Error ? err.message : String(err)
+        // 不能只 toast：失败原因（典型是 409「配置 tiddler 不是合法 JSON，保存已被拒绝」）
+        // 需要持久可见，否则用户看到的就是「点了保存但什么都没发生」。
+        configState.saveError = `保存失败：${message}`
+        saveErrorBanner.textContent = configState.saveError
+        saveErrorBanner.hidden = false
+        // 顺带刷一次：宿主可能因此在顶部给出「配置未生效」横幅（state.configError）。
+        void refresh()
       } finally {
         save.disabled = false
       }
     })()
   })
-  section.append(save)
+  // 暴露「有未保存改动」给 renderMain：签名变化时据此决定要不要重建表单（见
+  // ConfigRenderState.isDirty）。
+  configState.isDirty = () => fields.some((field) => field.changed())
+  section.append(saveErrorBanner, save)
   body.append(section)
 }
 
@@ -468,13 +614,18 @@ function renderCatalogSection(
   info: AdminState['info'],
   catalog: AdminState['catalog'],
   refresh: () => Promise<void>,
+  pending: CatalogPending,
 ): void {
   const plugins = catalog?.plugins ?? []
   const themes = catalog?.themes ?? []
   const languages = catalog?.languages ?? []
-  const activePlugins = new Set(info?.plugins ?? [])
-  const loadedThemes = new Set(info?.themes ?? [])
-  const activeLanguages = new Set(info?.languages ?? [])
+  const serverPlugins = info?.plugins ?? []
+  const serverLoadedThemes = new Set(info?.themes ?? [])
+  const serverLanguages = info?.languages ?? []
+  // 期望集合（见 CatalogPending）：没有被用户碰过时纯跟随服务器。
+  const desiredPlugins = (): Set<string> => pending.plugins ?? new Set(serverPlugins)
+  const desiredThemes = (): Set<string> => pending.themes ?? new Set(serverLoadedThemes)
+  const desiredLanguages = (): Set<string> => pending.languages ?? new Set(serverLanguages)
 
   // ── plugins ──────────────────────────────────────────────────────────────
   const pluginSection = make('section', 'dsh-tw-settings-section')
@@ -492,10 +643,12 @@ function renderCatalogSection(
       if (q.length > 0 && !`${plugin.label} ${plugin.name} ${plugin.description}`.toLowerCase().includes(q)) continue
       const input = make('input', 'dsh-tw-settings-check')
       input.type = 'checkbox'
-      input.checked = activePlugins.has(plugin.name)
+      input.checked = desiredPlugins().has(plugin.name)
       input.addEventListener('change', () => {
-        if (input.checked) activePlugins.add(plugin.name)
-        else activePlugins.delete(plugin.name)
+        const next = desiredPlugins()
+        if (input.checked) next.add(plugin.name)
+        else next.delete(plugin.name)
+        pending.plugins = next
       })
       const label = make('label', 'dsh-tw-settings-row dsh-tw-settings-plugin')
       const name = make('span', 'dsh-tw-settings-name', plugin.label)
@@ -510,7 +663,9 @@ function renderCatalogSection(
     applyPlugins.disabled = true
     void (async () => {
       try {
-        await fetchJson(INFO_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plugins: [...activePlugins] }) })
+        await fetchJson(INFO_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plugins: [...desiredPlugins()] }) })
+        // 应用成功才清 pending：之后重新跟随服务器（TW 重启后 info 会给出真实集合）。
+        pending.plugins = undefined
         toast('插件已应用，TW 已重启')
         void refresh()
       } catch (err) {
@@ -545,29 +700,32 @@ function renderCatalogSection(
   // touching the radios) rewrote `$:/theme` to that wrong pick. Guessing stays
   // as the fallback only when the host cannot tell (wiki down / no `$:/theme`).
   const activeFromServer = info?.themeActive
-  let activeThemeName =
+  const lastLoadedTheme = themeList[themeList.length - 1]
+  const serverActiveThemeName =
     typeof activeFromServer === 'string' && themes.some((theme) => theme.name === activeFromServer)
       ? activeFromServer
-      : themeList.length > 0
-        ? themeList[themeList.length - 1]
-        : 'tiddlywiki/vanilla'
+      : lastLoadedTheme ?? 'tiddlywiki/vanilla'
+  /** 活动主题同样走 pending：单选按钮的未应用选择也要活过 refresh（见 CatalogPending）。 */
+  const activeThemeName = (): string => pending.themeActive ?? serverActiveThemeName
   const themeWrap = make('div', 'dsh-tw-settings-list')
   for (const theme of themes) {
     const load = make('input', 'dsh-tw-settings-check')
     load.type = 'checkbox'
-    load.checked = loadedThemes.has(theme.name)
+    load.checked = desiredThemes().has(theme.name)
     load.title = '加载该主题'
     load.addEventListener('change', () => {
-      if (load.checked) loadedThemes.add(theme.name)
-      else loadedThemes.delete(theme.name)
+      const next = desiredThemes()
+      if (load.checked) next.add(theme.name)
+      else next.delete(theme.name)
+      pending.themes = next
     })
     const act = make('input', 'dsh-tw-settings-check')
     act.type = 'radio'
     act.name = 'dsh-tw-active-theme'
-    act.checked = theme.name === activeThemeName
+    act.checked = theme.name === activeThemeName()
     act.title = '设为活动主题'
     act.addEventListener('change', () => {
-      if (act.checked) activeThemeName = theme.name
+      if (act.checked) pending.themeActive = theme.name
     })
     const name = make('span', 'dsh-tw-settings-name', theme.label)
     name.title = theme.name
@@ -585,8 +743,11 @@ function renderCatalogSection(
         await fetchJson(INFO_ENDPOINT, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ themes: [...loadedThemes], themeActive: activeThemeName }),
+          body: JSON.stringify({ themes: [...desiredThemes()], themeActive: activeThemeName() }),
         })
+        // 应用成功才清 pending（同插件管理）。
+        pending.themes = undefined
+        pending.themeActive = undefined
         toast('主题已应用，TW 已重启')
         void refresh()
       } catch (err) {
@@ -606,10 +767,12 @@ function renderCatalogSection(
   for (const lang of languages) {
     const input = make('input', 'dsh-tw-settings-check')
     input.type = 'checkbox'
-    input.checked = activeLanguages.has(lang.name)
+    input.checked = desiredLanguages().has(lang.name)
     input.addEventListener('change', () => {
-      if (input.checked) activeLanguages.add(lang.name)
-      else activeLanguages.delete(lang.name)
+      const next = desiredLanguages()
+      if (input.checked) next.add(lang.name)
+      else next.delete(lang.name)
+      pending.languages = next
     })
     const label = make('label', 'dsh-tw-settings-row dsh-tw-settings-plugin')
     const name = make('span', 'dsh-tw-settings-name', lang.label)
@@ -624,7 +787,8 @@ function renderCatalogSection(
     applyLangs.disabled = true
     void (async () => {
       try {
-        await fetchJson(INFO_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ languages: [...activeLanguages] }) })
+        await fetchJson(INFO_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ languages: [...desiredLanguages()] }) })
+        pending.languages = undefined
         toast('语言已应用，TW 已重启')
         void refresh()
       } catch (err) {
@@ -976,20 +1140,46 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
 interface ConfigRenderState {
   signature?: string
   host?: HTMLElement
+  /**
+   * 最近一次保存失败的文案。保存失败后要 refresh()（顶部可能因此出现 configError
+   * 横幅），而 refresh() 可能按新签名重建配置区 —— 错误提示存在这里才不会随局部
+   * DOM 一起消失；保存成功时清空。
+   */
+  saveError?: string
+  /**
+   * 「表单里有未保存的改动」（v0.25.0）。用于防另一种静默丢改动：配置在**别处**
+   * 被改过（另一个标签页保存、语言管理顺带写 uiLanguage）时 refresh() 会让签名
+   * 变化 → 重建表单 → 用户刚敲的内容消失。有脏值就保留表单并给出显式提示。
+   */
+  isDirty?: () => boolean
 }
 
-function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState): void {
+/**
+ * 未应用的勾选（插件管理 / 主题管理 / 语言管理）。
+ *
+ * `renderCatalogSection` 每次 refresh() 都从 `state.info` 重建勾选态，而 refresh()
+ * 由「同步 / 重启 TW / 保存」触发 —— 用户勾完插件顺手点状态行的「同步」，勾选就被
+ * 静默丢掉（勾选当时只活在这一次渲染的 DOM 里）。所以把「用户期望的集合」提升到
+ * mount 级：
+ *   - `undefined` = 用户还没碰过，完全跟随服务器；
+ *   - 有值 = 用户的完整期望集合（不是增量 —— 「取消勾选」也必须活过 refresh）。
+ * 点「应用」成功后清回 undefined，重新跟随服务器。
+ */
+interface CatalogPending {
+  plugins?: Set<string>
+  themes?: Set<string>
+  languages?: Set<string>
+  themeActive?: string
+}
+
+function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState, catalogPending: CatalogPending): void {
   body.replaceChildren()
   // Loud, above everything else: an unparseable config tiddler means the config
   // block below shows DEFAULTS that are not actually in effect, and saving is
   // refused until it is fixed (v0.23.4 — that is how a user's prompt.extra /
   // git.remote were silently wiped on 2026-09-18).
   if (typeof state.configError === 'string' && state.configError.length > 0) {
-    const banner = make('div', 'dsh-tw-settings-banner')
-    banner.dataset.tone = 'error'
-    banner.setAttribute('style', 'border:1px solid #c0392b;background:#fdecea;color:#8c1c13;border-radius:6px;padding:10px 12px;margin:0 0 12px;font-size:12px;line-height:1.6;white-space:pre-wrap;')
-    banner.textContent = `⚠️ 配置未生效：${state.configError}`
-    body.append(banner)
+    body.append(makeErrorBanner(`⚠️ 配置未生效：${state.configError}`))
   }
   // Config section: only rebuild when the server-side config actually changed.
   // Otherwise the status row's 同步/重启 buttons (and the catalog apply buttons)
@@ -997,15 +1187,23 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
   // a field (v0.20.0). The host element is re-appended as-is, so its inputs and
   // their pending values survive.
   const signature = JSON.stringify(state.config ?? {})
-  if (configState.host === undefined || configState.signature !== signature) {
+  const serverChanged = configState.host !== undefined && configState.signature !== signature
+  // 有未保存改动时**不重建**（v0.25.0）：重建会静默丢掉用户刚敲的内容（典型触发
+  // 路径：另一个标签页保存了配置，或语言管理顺带写 uiLanguage → 本页 refresh()）。
+  // 保留旧表单 + 显式提示，用户可以选择保存（覆盖别处的改动）或自己改回来。
+  const dirty = configState.isDirty?.() === true
+  if (serverChanged && dirty) {
+    body.append(makeErrorBanner('⚠️ 服务器上的配置在别处被改动过（另一个标签页保存 / 语言管理等），当前表单仍是旧值：直接点「保存配置」会以本页内容覆盖那些改动。'))
+  }
+  if (configState.host === undefined || (serverChanged && !dirty)) {
     const host = make('div', 'dsh-tw-settings-confighost')
-    renderConfigSection(host, state.config ?? {}, refresh)
+    renderConfigSection(host, state.config ?? {}, refresh, configState)
     configState.host = host
     configState.signature = signature
   }
   body.append(configState.host)
   renderWikiLocationSection(body, isDisposed, refresh)
-  renderCatalogSection(body, state.info, state.catalog, refresh)
+  renderCatalogSection(body, state.info, state.catalog, refresh, catalogPending)
   renderSeedsSection(body, isDisposed)
 }
 

@@ -199,6 +199,108 @@ export function describeUnreadableConfig(): string {
     + '为避免抹掉其它设置，本次保存已被拒绝。请先修好该 tiddler（或删除它、回落到 cordis config 块）再保存。'
 }
 
+/** A settings-page patch that cannot be accepted (v0.25.0) — mapped to HTTP 400. */
+export class ConfigPatchError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConfigPatchError'
+  }
+}
+
+/**
+ * Known NUMERIC config paths → `[min, max]`; values are CLAMPED into the range.
+ *
+ * Why clamp instead of reject: the host already clamps at read time
+ * (`effectiveBridge` falls back to 8618 for a bad port, `ready-policy` clamps
+ * the ready window), so a stored-but-unusable number meant the settings page
+ * echoed 70000 while the plugin ran with 8618 — "显示值 ≠ 生效值". Persisting the
+ * clamped value makes the reload show what actually runs.
+ */
+const NUMBER_CONFIG_RANGES: Record<string, readonly [number, number]> = {
+  'bridge.port': [1, 65_535],
+  'git.debounceMs': [0, 3_600_000],
+  'startup.readyTimeoutMs': [5_000, 600_000],
+  'ui.allArticles.pageSize': [1, 200],
+}
+
+/**
+ * Known BOOLEAN paths. A wrong type is REJECTED rather than passed through: the
+ * previous free-form patch let `{"git":{"debounceMs":"abc"}}` reach
+ * `setTimeout(fn, "abc")` (treated as 0 → a commit after every single write).
+ */
+const BOOLEAN_CONFIG_PATHS = new Set<string>([
+  'bridge.enabled', 'git.autoCommit', 'note.workspaceMark', 'prompt.enabled',
+  'ui.followDshTheme', 'ui.showPanelStatus', 'ui.showQuickNote', 'ui.showQuickNoteDock',
+  'ui.showRightbarTab', 'ui.showSessionTab', 'ui.showSyncButton', 'ui.sendToAgent.enabled',
+  'wechat.enabled',
+])
+
+/** Known STRING paths (kept permissive about the VALUE; only the type is enforced). */
+const STRING_CONFIG_PATHS = new Set<string>([
+  'auth.password', 'auth.username', 'bridge.tag', 'bridge.token', 'git.branch', 'git.remote',
+  'note.tag', 'prompt.extra', 'prompt.mode', 'prompt.override', 'ui.darkPalette',
+  'ui.quickNoteMode', 'ui.sendToAgent.endpoint', 'ui.sendToAgent.token', 'ui.sidebarLabel',
+  'ui.tabLabel', 'uiLanguage', 'wechat.adapter', 'wechat.command', 'wechat.dsn', 'wechat.token',
+])
+
+/** Keys a patch must never carry (`deepMerge` would assign them onto the object). */
+const FORBIDDEN_PATCH_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
+
+/**
+ * Validate + normalise one settings-page patch before it is merged (v0.25.0).
+ *
+ * The route used to hand `JSON.parse(body)` straight to `config.set()`: any JSON
+ * at all landed in the wiki's config tiddler (`{"0":1,"1":2}` from an array body
+ * became permanent keys), and a wrong TYPE reached the consumer unchanged. This
+ * walks the patch recursively with a small whitelist of typed paths:
+ *
+ *   - known numbers: must be finite numbers, then CLAMPED into their range;
+ *   - known booleans / strings: wrong type → `ConfigPatchError` (HTTP 400);
+ *   - unknown keys: passed through (the config shape is deliberately extensible)
+ *     as long as the payload is a plain object at the top level;
+ *   - `__proto__` / `constructor` / `prototype` anywhere → rejected.
+ */
+export function normalizeConfigPatch(input: unknown): PluginConfigShape {
+  if (!isPlainObject(input)) {
+    throw new ConfigPatchError('配置补丁必须是一个 JSON 对象（例如 {"note":{"tag":"inbox"}}）')
+  }
+  const out: Record<string, unknown> = {}
+  const walk = (source: Record<string, unknown>, target: Record<string, unknown>, prefix: string): void => {
+    for (const [key, value] of Object.entries(source)) {
+      if (FORBIDDEN_PATCH_KEYS.has(key)) throw new ConfigPatchError(`配置补丁里不允许出现键「${key}」`)
+      const path = prefix.length > 0 ? `${prefix}.${key}` : key
+      if (isPlainObject(value)) {
+        const child: Record<string, unknown> = {}
+        target[key] = child
+        walk(value, child, path)
+        continue
+      }
+      if (value === undefined) continue
+      const range = NUMBER_CONFIG_RANGES[path]
+      if (range !== undefined) {
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          throw new ConfigPatchError(`配置项 ${path} 必须是数字（收到 ${typeof value}）`)
+        }
+        target[key] = Math.min(range[1], Math.max(range[0], Math.round(value)))
+        continue
+      }
+      if (BOOLEAN_CONFIG_PATHS.has(path)) {
+        if (typeof value !== 'boolean') throw new ConfigPatchError(`配置项 ${path} 必须是 true/false（收到 ${typeof value}）`)
+        target[key] = value
+        continue
+      }
+      if (STRING_CONFIG_PATHS.has(path)) {
+        if (typeof value !== 'string') throw new ConfigPatchError(`配置项 ${path} 必须是字符串（收到 ${typeof value}）`)
+        target[key] = value
+        continue
+      }
+      target[key] = value
+    }
+  }
+  walk(input, out, '')
+  return out as PluginConfigShape
+}
+
 /**
  * Runtime config store: caches the override tiddler and exposes the effective
  * (merged) config. `load` runs at startup and after every write/restart.
@@ -310,10 +412,19 @@ export class ConfigStore {
       // Unreadable config tiddler → merge onto the in-memory cache.
       void err
     }
-    this.overrides = deepMerge(stored, patch) as PluginConfigShape
+    const merged = deepMerge(stored, patch) as PluginConfigShape
+    const nextText = JSON.stringify(merged, null, 2)
+    this.overrides = merged
+    // Skip a byte-identical write (v0.25.0): the settings page saves whatever
+    // changed, but an empty/unchanged patch still reached here and re-PUT the
+    // tiddler — which bumps `.meta`'s `modified` on disk, so every「保存配置」
+    // click produced a git diff and two machines clicking it conflicted on a file
+    // whose CONTENT never differed. Same class the $:/language pin fixed in
+    // v0.24.2; the config tiddler had no such guard.
+    if (storedText !== undefined && storedText === nextText) return this.get()
     await client.put({
       title: CONFIG_TIDDLER,
-      text: JSON.stringify(this.overrides, null, 2),
+      text: nextText,
       type: 'application/json',
       tags: [],
       ...(existingCreated !== undefined ? { created: existingCreated } : {}),

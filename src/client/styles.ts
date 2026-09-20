@@ -390,7 +390,13 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-settings-btn.dsh-tw-settings-danger:hover:not(:disabled) {
   background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d13b3b) 10%, transparent);
 }
+/* 字段旁的行内错误提示（v0.25.0：数值字段越界/非法时不再静默回落）：它只在
+   .dsh-tw-settings-field 这个横向 flex 行里独占一行，窄屏才不会把提示挤成竖排单字。
+   ⚠️ 必须限定在字段内：同一个 class 也用于页面级加载失败横幅，而外层
+   .dsh-tw-settings 是 flex-direction: column —— 在那里 flex-basis:100% 会把横幅
+   撑成整屏高。CSS 注释里不要出现反引号：本文件的样式整体放在 JS 模板串里。 */
 .dsh-tw-settings-error { color: var(--dsw-alias-state-error-primary, #d13b3b); font-size: 12px; }
+.dsh-tw-settings-field .dsh-tw-settings-error { flex: 1 1 100%; }
 .dsh-tw-settings-search { flex: 0 0 auto; max-width: 220px; }
 .dsh-tw-settings-check { accent-color: var(--dsw-alias-brand-primary, #3e63dd); }
 

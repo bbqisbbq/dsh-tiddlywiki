@@ -20,13 +20,13 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.24.2` | `package.json` `version`（三处一致性由 `scripts/verify-version-consistency.mjs` 守门：package.json / 本文件 / README「版本记录」顶部） |
-| **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
+| **插件版本** | `0.25.0` | `package.json` `version`（三处一致性由 `scripts/verify-version-consistency.mjs` 守门：package.json / 本文件 / README「版本记录」顶部） |
+| **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册；客户端 `TOOL_VIEW_KEYS` 由 `scripts/verify-tool-views.mjs` 源码级守门——必须与注册表完全一致）。并发令牌现覆盖 `put`/`delete`/`attach`/`append`/`rename`/`batch_put`（逐条目 `expectedModified`）；`tags: []` = 清空标签（不传 = 保留） |
 | **Seed 注册表（13 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（默认写、可移除）：`doc-note`、`starter-docs` + **gated 3 项**（`publish-spec`/`wechat-setup`/`wechat-publish`，仅 `wechat.enabled` 开启时写）；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge` | `src/host/seeds.ts` 的 `SEED_DEFS` + `src/host/seed-util.ts` |
 | **bundle 版本** | send-to-agent `0.3.5` · render `0.2.0` · wechat-publish `0.2.0` | `scripts/bundle/versions.mjs`（唯一来源） |
 | **注入提示词** | `prompt{enabled,mode,extra,override}`，默认 `slim`（v0.24.0 起 1918 字符 / 预算 2100，守门 `scripts/verify-prompt.mjs`）；`full` 的参数索引由 `tiddlywikiToolSummary()` 实时生成 | `src/host/prompt.ts` |
 | **工作区标记** | 新建笔记自动带 `ws/<项目名>` 标签 + `workspace` 字段（取自会话 cwd，`note.workspaceMark` 可关）；检索先在工作区内查、0 条才扩全库；`query` 多词 **AND** | `src/host/workspace.ts` + `src/host/tools.ts`（守门 `verify-workspace.mjs` / `verify-tools.mjs`） |
-| **配置项** | `wikiRoot`/`wiki`（**只是默认值**，运行中以指针文件优先）/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag,workspaceMark}`/`startup{readyTimeoutMs}`/`prompt{…}`/`bridge{enabled,port,token,tag}`/`wechat{enabled,command,token,adapter,dsn}`/`ui{…}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts` |
+| **配置项** | `wikiRoot`/`wiki`（**只是默认值**，运行中以指针文件优先）/`port`/`git{autoCommit,debounceMs,remote,branch}`/`note{tag,workspaceMark}`/`startup{readyTimeoutMs}`/`prompt{…}`/`bridge{enabled,port,token,tag}`/`wechat{enabled,command,token,adapter,dsn}`/`ui{…}`/`uiLanguage`/`auth{username,password}` | `src/host/config.ts`。`git.autoCommit/debounceMs/remote` 保存后**即时生效**（`reapplyGitConfig` 重建 committer）；`/admin/config` 的补丁必须先过 `normalizeConfigPatch()`（数值夹取 / 类型错误 400 / `__proto__` 等拒绝 / 未知键透传，守门 `scripts/verify-config-patch.mjs`） |
 | **DSH 路由** | `/status` `/note` `/edit` `/tags` `/recent` `/get` `/search` `/render` `/sync` `/upload` `/restart` `/session/summary` `/agent/{sessions,modes,send,create}` `/wechat/{ready,publish,publish/status}` `/api/*` `/tw/*`；admin：`/admin/{state,prompt,info,config,restart,seeds,seeds/run,seeds/remove}` + `/admin/wiki/{location,switch,reset}` | `src/host/routes.ts` + `src/host/admin.ts` |
 | **客户端 Slot** | `settings.section`(50) · `conversation.input.dock`(`quick-note`,8) · `conversation.view`(`dsh-tiddlywiki-summary`,20) · `sidebar.right.pane.tab`(keyed `dsh-tiddlywiki`) · `tool.call.toolview`(15 个工具 key) | `src/client/index.ts` 等 |
 

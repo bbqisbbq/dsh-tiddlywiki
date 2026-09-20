@@ -401,7 +401,29 @@ function ListCard(props: {
   return React.createElement(ToolCardShell, { toolName: props.toolName, title: props.title, subtitle: props.subtitle }, body)
 }
 
-function SearchCard(props: { toolName: string; args: Record<string, unknown> }): React.ReactElement {
+/**
+ * The workspace scope the agent tool reported in its model-visible receipt
+ * (v0.25.0). `tiddlywiki_search` narrows to the session's workspace and says so
+ * in the rendered text; the reply-stream card used to call `/search` WITHOUT
+ * that scope, so it listed a different (larger) result set than the model saw.
+ * Echoing the id back lets the route reproduce the tool's exact behaviour
+ * (including the widen-when-empty fallback).
+ *
+ * The prefix literal must stay in sync with `WORKSPACE_TAG_PREFIX`
+ * (src/host/workspace.ts) — `scripts/verify-tool-views.mjs` asserts that.
+ */
+const WORKSPACE_TAG_PREFIX = 'ws/'
+
+function receiptWorkspace(text: string): string | null {
+  // Matches both shapes: 「已在工作区 ws/<id> 内缩小范围」 and
+  // 「工作区 ws/<id> 内 0 条，已扩大到全库」.
+  const m = /工作区\s+(ws\/[^\s（(]+)/.exec(text)
+  if (m === null || m[1] === undefined) return null
+  const id = m[1].slice(WORKSPACE_TAG_PREFIX.length)
+  return id.length > 0 ? id : null
+}
+
+function SearchCard(props: { toolName: string; args: Record<string, unknown>; text: string }): React.ReactElement {
   const query = str(props.args.query)
   const params = new URLSearchParams()
   if (query.length > 0) params.set('query', query)
@@ -416,6 +438,9 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown> }):
   if (typeof props.args.field === 'string' && props.args.field.length > 0) params.set('field', props.args.field)
   if (typeof props.args.value === 'string' && props.args.value.length > 0) params.set('value', props.args.value)
   if (typeof props.args.limit === 'number') params.set('limit', String(props.args.limit))
+  // Workspace scope (v0.25.0) — see receiptWorkspace above.
+  const workspace = receiptWorkspace(props.text)
+  if (workspace !== null) params.set('workspace', workspace)
   const paramsKey = params.toString()
   const data = useAsync(() => fetchJson(`${SEARCH_ENDPOINT}?${paramsKey}`), [paramsKey])
   const payload = data.data
@@ -427,7 +452,14 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown> }):
     snippet: typeof item.snippet === 'string' ? (item.snippet as string) : '',
   }))
   const total = typeof payload?.total === 'number' ? (payload.total as number) : undefined
-  const subtitle = `关键词「${query || '（全部）'}」${total !== undefined ? ` · 共 ${total} 条` : ''}`
+  const payloadWorkspace = typeof payload?.workspace === 'string' && payload.workspace.length > 0 ? payload.workspace : null
+  let scopeNote = ''
+  if (payloadWorkspace !== null && payload?.scope === 'workspace') {
+    scopeNote = ` · 已在工作区 ${WORKSPACE_TAG_PREFIX}${payloadWorkspace} 内缩小范围`
+  } else if (payloadWorkspace !== null && payload?.fellBack === true) {
+    scopeNote = ` · 工作区 ${WORKSPACE_TAG_PREFIX}${payloadWorkspace} 内 0 条，已扩大到全库`
+  }
+  const subtitle = `关键词「${query || '（全部）'}」${total !== undefined ? ` · 共 ${total} 条` : ''}${scopeNote}`
   return React.createElement(ListCard, {
     toolName: props.toolName,
     title: query.length > 0 ? query : '检索',
@@ -435,6 +467,23 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown> }):
     rows,
     fallbackText: '没有匹配的笔记',
   })
+}
+
+/**
+ * Attachment card (v0.25.0): `tiddlywiki_attach` used to fall through to the
+ * generic text card, so saving an image showed a receipt with no way to open it.
+ * The binary payload is never inlined (the host withholds base64 on `/get`), so
+ * the card offers the title + 「在 TW 打开」 instead.
+ */
+function AttachCard(props: { toolName: string; title: string }): React.ReactElement {
+  const body = props.title.length > 0
+    ? React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, '附件已保存进 wiki（二进制条目，卡片不内联渲染）。')
+    : React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, '附件已保存。')
+  return React.createElement(ToolCardShell, {
+    toolName: props.toolName,
+    title: props.title.length > 0 ? props.title : undefined,
+    ...(props.title.length > 0 ? { onOpen: openTw(props.title) } : {}),
+  }, body)
 }
 
 function RecentCard(props: { toolName: string; args: Record<string, unknown> }): React.ReactElement {
@@ -605,10 +654,13 @@ function TiddlywikiToolView(props: ToolCallOwnerProps): React.ReactNode {
     case 'tiddlywiki_delete':
       // 删除类卡片只展示工具文本，没有 body 缓存；旧标题的残留缓存由 TTL 兜底。
       return React.createElement(DeleteCard, { toolName: name, title: str(args.title), text })
+    case 'tiddlywiki_attach':
+      return React.createElement(AttachCard, { toolName: name, title: str(args.title) })
     case 'tiddlywiki_batch_put':
       return React.createElement(BatchCard, { toolName: name, args })
     case 'tiddlywiki_search':
-      return React.createElement(SearchCard, { toolName: name, args })
+      // `text` carries the scope note the tool rendered (v0.25.0).
+      return React.createElement(SearchCard, { toolName: name, args, text })
     case 'tiddlywiki_recent':
       return React.createElement(RecentCard, { toolName: name, args })
     case 'tiddlywiki_list_tags':

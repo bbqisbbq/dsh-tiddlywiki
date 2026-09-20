@@ -12,10 +12,14 @@
  * - `assistant/message` 事件 `message.content` 的 text 块可扫
  *   `/dsh-tiddlywiki/tw/#...` 引用链接（视为「读取」）。
  *
- * 归类规则（§三 定稿）：
- *   产生 📝 tiddlywiki_put / batch_put / rename（arguments 取 title）
+ * 归类规则（§三 定稿 + v0.24.x 补齐）：
+ *   产生 📝 put / batch_put / append（增量写入）/ attach（附件）/ rename /
+ *           trash 的 action=restore（arguments 取 title）
  *   读取 👀 tiddlywiki_get（title）+ 助手回复里的 wiki 引用链接
  *   检索 🔍 search / recent（记关键词，不算单篇）
+ *   删除 🗑 delete / trash（restore 以外）——注入提示词推荐「纯增量内容优先 append」，
+ *           漏掉 append 会让用 append 写的笔记整篇不出现在 Tab 里，会话被误判成
+ *           「没产生过任何笔记」；删除同理（做过的事就该看得见）。
  *   范围   本会话 + 后代 subagent（traceSession 递归，仅子代理触达的笔记标注）
  *
  * 渲染（§四）：写入 `$:/temp/...`——TW 5.4.1 默认 `$:/config/SyncFilter` 显式
@@ -31,16 +35,34 @@ import { formatLocalMinute } from './text-util.ts'
 /** 会话汇总 tiddler 的 $:/temp 命名空间前缀。 */
 export const SESSION_SUMMARY_PREFIX = '$:/temp/dsh/session-summary/'
 
-/** 会话内能触达 wiki 的 tiddlywiki_* 工具名（search/recent 只记检索记录，不算单篇）。 */
-const NOTE_TOOL_NAMES = new Set(['tiddlywiki_put', 'tiddlywiki_batch_put', 'tiddlywiki_rename', 'tiddlywiki_get', 'tiddlywiki_search', 'tiddlywiki_recent'])
+/**
+ * 会话内能触达 wiki 的 tiddlywiki_* 工具名（search/recent 只记检索记录，不算单篇）。
+ *
+ * 必须与「产生 / 读取 / 删除」的三条实际写读路径对齐：注入的系统提示词明确推荐
+ * 「纯增量内容优先用 tiddlywiki_append」，`tiddlywiki_attach` 写附件条目、
+ * `tiddlywiki_delete` / `tiddlywiki_trash` 动已有笔记——漏掉任何一个，那一类操作
+ * 都会从汇总里整体消失（会话被误判成「没碰过任何笔记」）。
+ */
+const NOTE_TOOL_NAMES = new Set([
+  'tiddlywiki_put',
+  'tiddlywiki_batch_put',
+  'tiddlywiki_append',
+  'tiddlywiki_attach',
+  'tiddlywiki_rename',
+  'tiddlywiki_get',
+  'tiddlywiki_search',
+  'tiddlywiki_recent',
+  'tiddlywiki_delete',
+  'tiddlywiki_trash',
+])
 
 /** 每篇笔记的触达摘要（按 title 去重，时间取最近一次）。 */
 export interface NoteEntry {
   title: string
-  action: 'produced' | 'read'
+  action: 'produced' | 'read' | 'deleted'
   /** 最近一次触达的 epoch ms。 */
   time: number
-  /** 附加说明（如 rename 的旧标题）。 */
+  /** 附加说明（如 rename 的旧标题、append 的「增量写入」）。 */
   detail?: string
   /** true = 仅由后代 subagent 触达过（本会话自己没碰过）。 */
   subagent: boolean
@@ -59,6 +81,8 @@ export interface SearchRecord {
 export interface Collected {
   produced: Map<string, NoteEntry>
   read: Map<string, NoteEntry>
+  /** 被删除 / 移入回收站的笔记（trash 的 restore 反之计入 produced）。 */
+  deleted: Map<string, NoteEntry>
   searches: SearchRecord[]
 }
 
@@ -103,6 +127,17 @@ const MAX_SESSIONS = 40
 const MAX_SEARCH_RECORDS = 200
 const MAX_ENRICH_TITLES = 300
 
+/** 读会话事件日志的并发路数（风格同 `enrichTitles` 的 8 路；日志比单篇条目重，减半）。 */
+const SESSION_READ_CONCURRENCY = 4
+
+/**
+ * 探测整段的墙钟预算（v0.24.x）：`enrichTitles` 最多 300 篇 × 每篇一次 `client.get`
+ * （内部超时 10s）÷ 8 路并发 ≈ 最坏 375s，远超客户端 25s 的 abort——TW 卡顿时宿主
+ * 会一直压着 TW 打，客户端却早就放弃了。超预算的标题按既有「未探测」分支渲染：
+ * 少几行状态可以接受，把一次汇总变成对 TW 的持续拒绝服务不行。
+ */
+const ENRICH_BUDGET_MS = 12_000
+
 /** 递归收集后代树里所有 session id（不含根自身，超过上限即停）。 */
 function collectDescendantIds(nodes: SessionLineageNode[] | undefined, out: string[]): void {
   if (!Array.isArray(nodes)) return
@@ -144,14 +179,35 @@ function record(map: Map<string, NoteEntry>, entry: NoteEntry): void {
   map.set(entry.title, { ...entry })
 }
 
+/**
+ * 削掉链接语法留下的收尾符 `)`/`]`。
+ *
+ * TW 标题允许 `)` / `]`（`[标题](/dsh-tiddlywiki/tw/#标题)` 里的标题也常带括号），
+ * 但它们同时是 Markdown/链接的收尾符——一律截断会切掉合法标题（老正则的 bug），
+ * 一律保留又会把收尾符吃进标题。折中：只在「剩余部分里没有与之配对的开启符」时
+ * 判定它是收尾符。必须**先削尾再 decodeURIComponent**，否则编码过的 `%29` 会被
+ * 当成收尾符削掉。
+ */
+function trimTrailingClosers(raw: string): string {
+  let s = raw
+  for (;;) {
+    const last = s.slice(-1)
+    if (last !== ')' && last !== ']') return s
+    const open = last === ')' ? '(' : '['
+    if (s.slice(0, -1).includes(open)) return s
+    s = s.slice(0, -1)
+  }
+}
+
 /** 扫助手回复文本里的 `/dsh-tiddlywiki/tw/#标题` 引用链接 → 读取。 */
 function scanRefs(text: string, time: number, subagent: boolean, collected: Collected): void {
-  // 只认到下一个 `)` / 空白 / `]` / `#` 为止——`#` 会截断后续碎片（模型示例常写成
-  // `#…` 或 `#标题`，这些由 isPlausibleTitle 在 record 时过滤）。
-  const re = /\/dsh-tiddlywiki\/tw\/#([^#)\s\]]+)/g
+  // 只认到下一个 `#` / 空白为止（`#` 之后再出现 `#` 是 URL 片段分隔，标题里的 `#`
+  // 按链接约定必须编码）；`)` / `]` 不再一律截断——它们是合法标题字符，只有落在
+  // 末尾且无配对开启符时才当收尾符削掉（见 trimTrailingClosers）。
+  const re = /\/dsh-tiddlywiki\/tw\/#([^#\s]+)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
-    const raw = m[1] ?? ''
+    const raw = trimTrailingClosers(m[1] ?? '')
     if (raw.length === 0) continue
     let title = raw
     try {
@@ -198,6 +254,19 @@ function scanSnapshot(snap: SessionLogSnapshot | undefined, subagent: boolean, c
             }
           }
           break
+        case 'tiddlywiki_append':
+          // 注入提示词推荐「纯增量内容优先用 append」——它和 put 一样是「产生笔记」，
+          // 且是最高频的笔记写入路径，漏掉它整篇汇总就空了。
+          if (typeof args.title === 'string' && args.title.length > 0) {
+            record(collected.produced, { title: args.title, action: 'produced', time: t, detail: '增量写入', subagent })
+          }
+          break
+        case 'tiddlywiki_attach':
+          // 附件写成二进制 tiddler（标题 = args.title），同样是本会话产生的内容。
+          if (typeof args.title === 'string' && args.title.length > 0) {
+            record(collected.produced, { title: args.title, action: 'produced', time: t, detail: '附件', subagent })
+          }
+          break
         case 'tiddlywiki_rename':
           if (typeof args.newTitle === 'string' && args.newTitle.length > 0) {
             const old = typeof args.oldTitle === 'string' && args.oldTitle.length > 0 ? args.oldTitle : undefined
@@ -215,6 +284,27 @@ function scanSnapshot(snap: SessionLogSnapshot | undefined, subagent: boolean, c
             record(collected.read, { title: args.title, action: 'read', time: t, subagent })
           }
           break
+        case 'tiddlywiki_delete':
+          // 默认软删除（进回收站）也算删除：这个 Tab 的职责是「本会话动过哪些笔记」，
+          // 删掉的东西不该凭空消失。
+          if (typeof args.title === 'string' && args.title.length > 0) {
+            record(collected.deleted, { title: args.title, action: 'deleted', time: t, subagent })
+          }
+          break
+        case 'tiddlywiki_trash': {
+          // action=restore 把笔记从回收站救回来 = 产生；list / empty 是回收站维护，
+          // 没有单篇标题（empty 清空整个回收站）→ 没有可链接的标题就什么都不记，
+          // 免得在汇总里凭空造出一个死链。
+          const trashAction = typeof args.action === 'string' ? args.action : ''
+          const trashTitle = typeof args.title === 'string' && args.title.length > 0 ? args.title : undefined
+          if (trashTitle === undefined) break
+          if (trashAction === 'restore') {
+            record(collected.produced, { title: trashTitle, action: 'produced', time: t, detail: '回收站恢复', subagent })
+          } else {
+            record(collected.deleted, { title: trashTitle, action: 'deleted', time: t, detail: '移入回收站', subagent })
+          }
+          break
+        }
         case 'tiddlywiki_search': {
           if (collected.searches.length >= MAX_SEARCH_RECORDS) break
           const query = typeof args.query === 'string' ? args.query : ''
@@ -245,18 +335,24 @@ function scanSnapshot(snap: SessionLogSnapshot | undefined, subagent: boolean, c
 }
 
 /**
- * 内联文本净化（v0.19.3）：汇总 wikitext 会被 TW 渲染成 HTML 片段再注入 DSH 页面，
- * 而 TW 的解析器**原样透传 HTML**。凡是来自会话日志/请求体的字符串（sessionId、
- * rename 的旧标题、检索词）都要先转义 HTML 元字符并去掉控制字符，别指望上层净化。
+ * 内联文本净化（v0.19.3，v0.24.x 补 `{}` + 截断顺序）：汇总 wikitext 会被 TW 渲染成
+ * HTML 片段再注入 DSH 页面，而 TW 的解析器**原样透传 HTML**，并且会把 `{{…}}`
+ * 当**转写**展开（会话日志里随手出现的 `{{$:/plugins/dsh-tiddlywiki/config}}`
+ * 实测能直接把插件配置 JSON 读出来）。凡是来自会话日志/请求体的字符串（sessionId、
+ * rename 的旧标题、检索词、tags、modified 解析失败时的原样回显）都要先中和
+ * HTML 元字符 + 链接语法 + 转写花括号，别指望上层净化。
+ *
+ * 顺序上**先截断再转义**：反过来会把 `&amp;` 从中间截成 `&am`（既不可读，又留下
+ * 半个实体）。
  */
 export function escapeInline(text: string, max = 200): string {
   return text
+    .slice(0, max)
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/[[\]|]/g, ' ')
-    .slice(0, max)
+    .replace(/[[\]|{}]/g, ' ')
 }
 
 /** 当前状态（存在？标签？修改时间？摘要）。 */
@@ -292,7 +388,11 @@ async function enrichTitles(client: TiddlyWebClient, titles: string[]): Promise<
   }
   // Bounded batches: parallel within a batch, insertion order preserved across
   // batches (Map order = the caller's title order, same as the old sequential).
+  // 整段还有墙钟预算：每批开始前检查，超预算的标题直接不放进 Map → 调用方按
+  // 「未探测」分支渲染（宁可少几行状态，也不能一直压着 TW 打）。
+  const deadline = Date.now() + ENRICH_BUDGET_MS
   for (let i = 0; i < titles.length; i += 8) {
+    if (Date.now() >= deadline) break
     const batch = titles.slice(i, i + 8)
     for (const [title, state] of await Promise.all(batch.map(enquire))) out.set(title, state)
   }
@@ -318,50 +418,60 @@ function fmtModified(value: string | undefined): string {
   return ms === undefined ? value : fmtTime(ms)
 }
 
-/** 组装分组 wikitext：产生 / 读取（未产生过的）/ 检索记录。 */
+/** 组装分组 wikitext：产生 / 读取（未产生过的）/ 检索记录 / 删除。 */
 function buildWikitext(
   sessionId: string,
+  readFailed: string[],
   collected: Collected,
   producedTitles: string[],
   readTitles: string[],
+  deletedTitles: string[],
   stateByTitle: Map<string, TitleState>,
 ): string {
   const lines: string[] = []
   lines.push('! 会话相关 wiki 汇总')
   lines.push('')
   lines.push(
-    `本页列出会话 \`${escapeInline(sessionId, 120)}\`（含其后代子代理）在本会话中产生 / 读取 / 检索过的知识库笔记。`,
+    `本页列出会话 \`${escapeInline(sessionId, 120)}\`（含其后代子代理）在本会话中产生 / 读取 / 检索 / 删除过的知识库笔记。`,
   )
   lines.push('')
+  // 事件日志读不出来的会话必须在**页面上**明说：否则它的笔记整体消失，读者只会
+  // 得出「本会话没碰过笔记」这个错误结论（readFailed 为空时这行整体不出现）。
+  if (readFailed.length > 0) {
+    lines.push(`> ⚠️ ${readFailed.length} 个会话的事件日志读取失败，汇总可能不完整：${readFailed.map((id) => escapeInline(id, 120)).join('、')}`)
+    lines.push('')
+  }
   const producedCount = producedTitles.length
   const readCount = readTitles.length
   const searchCount = collected.searches.length
+  const deletedCount = deletedTitles.length
   // Was anything touched ONLY through a descendant subagent? (The old column
   // said「本会话 + 子代理」whenever anything existed at all.)
   const anySubagent =
     [...collected.produced.values()].some((e) => e.subagent) ||
     [...collected.read.values()].some((e) => e.subagent) ||
+    [...collected.deleted.values()].some((e) => e.subagent) ||
     collected.searches.some((s) => s.subagent)
-  if (producedCount + readCount + searchCount === 0) {
-    lines.push('> 本会话暂时没有产生、读取或检索过任何知识库笔记。')
+  if (producedCount + readCount + searchCount + deletedCount === 0) {
+    lines.push('> 本会话暂时没有产生、读取、检索或删除过任何知识库笔记。')
     lines.push('>')
     lines.push('> 本页为会话自动生成的临时汇总（`$:/temp`，不落盘、不进 git，重启 TW 即消失）；需要时点 Tab 顶栏的「🔄 刷新」重新生成。')
     return lines.join('\n')
   }
   lines.push(
-    '| 产生 📝 | 读取 👀 | 检索 🔍 | 涉及会话 |',
-    '| --- | --- | --- | --- |',
-    `| ${producedCount} | ${readCount} | ${searchCount} | ${anySubagent ? '本会话 + 子代理' : '本会话'} |`,
+    '| 产生 📝 | 读取 👀 | 检索 🔍 | 删除 🗑 | 涉及会话 |',
+    '| --- | --- | --- | --- | --- |',
+    `| ${producedCount} | ${readCount} | ${searchCount} | ${deletedCount} | ${anySubagent ? '本会话 + 子代理' : '本会话'} |`,
   )
   lines.push('')
 
   const entryLine = (title: string, state: TitleState | undefined, entry: NoteEntry): string => {
     const bits: string[] = [`[[${title}]]`]
     if (state === undefined) {
-      // Not probed at all: `enrichTitles` only queries the first
-      // MAX_ENRICH_TITLES titles, so a long session's tail must NOT be reported
-      // as「已删除/不存在」(v0.19.5) — that is a false accusation, not a status.
-      bits.push('（未探测，超出单次查询上限）')
+      // Not probed at all: `enrichTitles` stops at MAX_ENRICH_TITLES / the wall-clock
+      // budget, so a long session's tail must NOT be reported as「已删除/不存在」
+      // (v0.19.5) — that is a false accusation, not a status.
+      bits.push('（本轮查询预算用尽，未探测）')
     } else if (state.unknown === true) {
       bits.push('⚠️ 状态未知（查询失败）')
     } else if (!state.exists) {
@@ -370,6 +480,10 @@ function buildWikitext(
       if (state.tags.length > 0) bits.push(`标签 ${state.tags.slice(0, 6).map((tag) => escapeInline(tag, 40)).join('、')}${state.tags.length > 6 ? '…' : ''}`)
       const mod = fmtModified(state.modified)
       if (mod.length > 0) bits.push(`修改 ${mod}`)
+      // v0.24.x：snippet 之前只被赋值、从没渲染（每篇白做一次全文归一化）。
+      // 渲染出来信息量更大，也顺手兑现了 enrichTitles 的探测成本。
+      const snip = state.snippet ?? ''
+      if (snip.length > 0) bits.push(`摘要 ${escapeInline(snip, 60)}`)
     }
     const t = fmtTime(entry.time)
     if (t.length > 0) bits.push(`会话内 ${t}`)
@@ -411,6 +525,14 @@ function buildWikitext(
     }
     lines.push('')
   }
+  if (deletedCount > 0) {
+    lines.push('!!! 🗑 删除 / 回收站')
+    for (const title of deletedTitles) {
+      const entry = collected.deleted.get(title)
+      if (entry !== undefined) lines.push(entryLine(title, stateByTitle.get(title), entry))
+    }
+    lines.push('')
+  }
   lines.push('---')
   lines.push('> 本页为会话自动生成的临时汇总（`$:/temp`，不落盘、不进 git，重启 TW 即消失）；需要时点 Tab 顶栏的「🔄 刷新」重新生成。')
   return lines.join('\n')
@@ -418,7 +540,12 @@ function buildWikitext(
 
 export interface SessionSummaryResult {
   title: string
-  counts: { produced: number; read: number; searches: number; sessions: number }
+  counts: { produced: number; read: number; searches: number; deleted: number; sessions: number }
+  /**
+   * 事件日志读取失败的会话 id（按发现顺序）。`counts.sessions` 只统计**成功读取**
+   * 的会话——失败被静默吞掉时页面会把「读不出来」显示成「这个会话没碰过笔记」。
+   */
+  readFailed: string[]
   empty: boolean
   generatedAt: string
 }
@@ -440,15 +567,33 @@ export async function writeSessionSummary(client: TiddlyWebClient, sq: SessionQu
     /* trace unavailable → self only */
   }
 
-  // 2) 逐个会话读完整事件日志并收集（任一失败跳过，其余照常）。
-  const collected: Collected = { produced: new Map(), read: new Map(), searches: [] }
-  for (const id of ids) {
-    try {
-      const snap = await sq.readSession(id)
-      scanSnapshot(snap, id !== sessionId, collected)
-    } catch {
-      /* one bad session must not fail the whole summary */
+  // 2) 读每个会话的完整事件日志：有界并发（4 路），再按 ids 原始顺序逐个
+  //    scanSnapshot——并发只提速，收集顺序仍与串行一致（结果确定）。串行读最多
+  //    MAX_SESSIONS 个会话（每个都是完整日志）会让延迟线性叠加，而 readSession
+  //    的接口签名没有 signal（不改签名：宿主其它消费方共用它）。
+  //    单条失败只记进 readFailed，其余照常（一个坏会话不该毁掉整页汇总）。
+  const collected: Collected = { produced: new Map(), read: new Map(), deleted: new Map(), searches: [] }
+  const readResults: Array<{ id: string; snap?: SessionLogSnapshot }> = []
+  for (let i = 0; i < ids.length; i += SESSION_READ_CONCURRENCY) {
+    const batch = ids.slice(i, i + SESSION_READ_CONCURRENCY)
+    const done = await Promise.all(
+      batch.map(async (id) => {
+        try {
+          return { id, snap: await sq.readSession(id) }
+        } catch {
+          return { id }
+        }
+      }),
+    )
+    readResults.push(...done)
+  }
+  const readFailed: string[] = []
+  for (const r of readResults) {
+    if (r.snap === undefined) {
+      readFailed.push(r.id)
+      continue
     }
+    scanSnapshot(r.snap, r.id !== sessionId, collected)
   }
 
   // 3) 产生优先：同时被产生+读取的笔记只列在「产生」，读取区只放未产生过的。
@@ -456,21 +601,33 @@ export async function writeSessionSummary(client: TiddlyWebClient, sq: SessionQu
   const readTitles = [...collected.read.keys()]
     .filter((t) => !collected.produced.has(t))
     .sort((a, b) => (collected.read.get(b)?.time ?? 0) - (collected.read.get(a)?.time ?? 0))
+  const deletedTitles = [...collected.deleted.keys()].sort((a, b) => (collected.deleted.get(b)?.time ?? 0) - (collected.deleted.get(a)?.time ?? 0))
   collected.searches.sort((a, b) => b.time - a.time)
 
-  // 4) 查询当前状态（存在？标签？时间？）→ 组装 wikitext → PUT volatile tiddler。
-  //    探测量有上限：一篇超长会话可能触碰成百上千篇笔记。
-  const allTitles = [...new Set([...producedTitles, ...readTitles])]
+  // 4) 查询当前状态（存在？标签？时间？摘要）→ 组装 wikitext → PUT volatile tiddler。
+  //    探测量有上限（篇数 + 墙钟预算）：一篇超长会话可能触碰成百上千篇笔记。
+  //    删除过的标题同样探测：这样它们能显示「已删除/不存在」或「已恢复」，而不是
+  //    因为没进探测集被误标成「未探测」。
+  const allTitles = [...new Set([...producedTitles, ...readTitles, ...deletedTitles])]
   const probedTitles = allTitles.slice(0, MAX_ENRICH_TITLES)
   const stateByTitle = await enrichTitles(client, probedTitles)
-  const text = buildWikitext(sessionId, collected, producedTitles, readTitles, stateByTitle)
+  const text = buildWikitext(sessionId, readFailed, collected, producedTitles, readTitles, deletedTitles, stateByTitle)
   const title = `${SESSION_SUMMARY_PREFIX}${sessionId}`
   await client.put({ title, text, type: 'text/vnd.tiddlywiki', tags: [] })
 
   return {
     title,
-    counts: { produced: producedTitles.length, read: readTitles.length, searches: collected.searches.length, sessions: ids.length },
-    empty: producedTitles.length + readTitles.length + collected.searches.length === 0,
+    counts: {
+      produced: producedTitles.length,
+      read: readTitles.length,
+      searches: collected.searches.length,
+      deleted: deletedTitles.length,
+      // 只算成功读取的会话：读取失败的会话要在页面上被看见（readFailed），而不是
+      // 混进「一共汇总了 N 个会话」里假装一切正常。
+      sessions: ids.length - readFailed.length,
+    },
+    readFailed,
+    empty: producedTitles.length + readTitles.length + collected.searches.length + deletedTitles.length === 0,
     generatedAt: new Date().toISOString(),
   }
 }

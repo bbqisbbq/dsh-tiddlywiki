@@ -702,6 +702,69 @@ try {
     assert.ok(kinds.includes('stale-expired'), `默认体检必须包含时效检查：${JSON.stringify(kinds)}`)
   })
 
+  // ── v0.25.0：清空标签 / 并发令牌 / lint 检查名校验 ────────────────────────
+  await test('put：显式 tags: [] 必须真的清空标签，不传 tags 仍是「保留」', async () => {
+    await call('tiddlywiki_put', { title: 'ToolsTagClear', text: 'x', tags: ['keep-me', 'drop-me'] })
+    const cleared = await call('tiddlywiki_put', { title: 'ToolsTagClear', text: 'x', tags: [] })
+    assert.deepEqual(cleared.tags, [], `显式空数组应清空标签，回执实际 ${JSON.stringify(cleared.tags)}`)
+    const t = await api.get('ToolsTagClear')
+    assert.deepEqual(t.tags ?? [], [], `落库标签应为空，实际 ${JSON.stringify(t.tags)}`)
+    // 未传 tags 的语义必须没变（否则「不传就保留原标签」这条契约被改坏了）。
+    // 注意：新建时自动补的 agent-written 也在「原有标签」里，所以断言包含关系。
+    await call('tiddlywiki_put', { title: 'ToolsTagKeep', text: 'x', tags: ['kept'] })
+    const kept = await call('tiddlywiki_put', { title: 'ToolsTagKeep', text: 'y' })
+    assert.ok(kept.tags.includes('kept'), `不传 tags 必须保留原标签，实际 ${JSON.stringify(kept.tags)}`)
+  })
+
+  await test('append：expectedModified 不匹配必须拒绝（append 是整篇回写）', async () => {
+    await call('tiddlywiki_put', { title: 'ToolsAppendGuard', text: 'base' })
+    const stale = await api.get('ToolsAppendGuard')
+    // 模拟「人类在 TW 里改过」：再写一次，modified 必然前进（间隔 5ms 避免同毫秒）。
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await call('tiddlywiki_put', { title: 'ToolsAppendGuard', text: 'human edit' })
+    await assert.rejects(
+      () => call('tiddlywiki_append', { title: 'ToolsAppendGuard', text: 'agent add', expectedModified: stale.modified }),
+      /写入冲突/,
+      'append 带过期令牌必须报写入冲突',
+    )
+    assert.equal((await api.get('ToolsAppendGuard')).text, 'human edit', '被拒后正文必须仍是人类版本')
+    // 令牌正确时照常写入（新参数不能把正常路径卡死）。
+    const fresh = await api.get('ToolsAppendGuard')
+    const okResult = await call('tiddlywiki_append', { title: 'ToolsAppendGuard', text: 'agent add', expectedModified: fresh.modified })
+    assert.equal(okResult.ok, true, `令牌匹配时应写入成功：${JSON.stringify(okResult)}`)
+    assert.ok((await api.get('ToolsAppendGuard')).text.includes('agent add'), '追加内容应落库')
+  })
+
+  await test('batch_put：单条 expectedModified 不匹配只让该条失败，其余照常写入', async () => {
+    await call('tiddlywiki_put', { title: 'ToolsBatchA', text: 'a1' })
+    const stale = await api.get('ToolsBatchA')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await call('tiddlywiki_put', { title: 'ToolsBatchA', text: 'a2' })
+    const r = await call('tiddlywiki_batch_put', {
+      items: [
+        { title: 'ToolsBatchA', text: 'stale write', expectedModified: stale.modified },
+        { title: 'ToolsBatchB', text: 'b1' },
+      ],
+    })
+    assert.equal(r.failed, 1, `过期的那条应失败：${JSON.stringify(r)}`)
+    assert.equal(r.written, 1, `另一条应写入成功：${JSON.stringify(r)}`)
+    assert.equal((await api.get('ToolsBatchA')).text, 'a2', '过期条目不得被覆盖')
+    assert.equal((await api.get('ToolsBatchB')).text, 'b1', '同一批次里的其余条目必须照常写入')
+  })
+
+  await test('lint：无法识别的 checks 必须报出来，且不得谎报「没有发现问题」', async () => {
+    const bad = await call('tiddlywiki_lint', { checks: ['broken-link'], limit: 3 })
+    assert.deepEqual(bad.checks, [], `拼错的检查名不该运行任何检查，实际 ${JSON.stringify(bad.checks)}`)
+    assert.deepEqual(bad.unknownChecks, ['broken-link'], `应报出无法识别的名字，实际 ${JSON.stringify(bad.unknownChecks)}`)
+    const rendered = tools.get('tiddlywiki_lint').output.render({}, bad).map((b) => b.text).join('\n')
+    assert.ok(rendered.includes('无法识别'), `回执必须说明忽略了哪些检查名：${rendered}`)
+    assert.ok(!rendered.includes('没有发现问题'), `没跑任何检查时不得谎报「没有发现问题」：${rendered}`)
+    // 合法子集：回执要说清实际跑了哪些检查。
+    const one = await call('tiddlywiki_lint', { checks: ['empty-notes'], limit: 3 })
+    assert.deepEqual(one.checks, ['empty-notes'], `应只运行请求的检查，实际 ${JSON.stringify(one.checks)}`)
+    assert.deepEqual(one.unknownChecks, [], '合法名字不该被当成未知')
+  })
+
   // ── git 工具 ─────────────────────────────────────────────────────────────
   await test('git_sync：未配置 remote 时 push 必须 ok:false', async () => {
     const r = await call('tiddlywiki_git_sync', { action: 'push' })

@@ -26,7 +26,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TiddlyWebClient } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { ROUTE_PREFIX, redactLogLines, redactRemoteUrl, type WebServerFace } from './routes.ts'
-import { ConfigUnreadableError, type ConfigStore, type PluginConfigShape } from './config.ts'
+import { ConfigPatchError, ConfigUnreadableError, normalizeConfigPatch, type ConfigStore, type PluginConfigShape } from './config.ts'
 import { readBody, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
 import { waitForFileWrite, needsRestartAfterSeeds, drainThenStop } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
@@ -683,20 +683,31 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
   const handleConfig = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      const body = JSON.parse(await readBody(req)) as PluginConfigShape
+      const body = JSON.parse(await readBody(req)) as unknown
       const client = deps.getClient()
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
       }
+      // Validate/normalise BEFORE merging (v0.25.0): the raw body used to be
+      // merged verbatim, so any JSON at all (an array → `{"0":1}` keys) became
+      // permanent config, and a wrong TYPE (git.debounceMs: "abc") reached the
+      // consumer and changed behaviour silently. See normalizeConfigPatch.
+      const patch = normalizeConfigPatch(body)
       // Never persist the masked placeholders the page read back from /state
       // (v0.19.3): saving an untouched form must not clobber a real token.
-      await deps.config.set(client, stripMaskedSecrets(body as Record<string, unknown>, deps.config.get()) as PluginConfigShape)
+      await deps.config.set(client, stripMaskedSecrets(patch as Record<string, unknown>, deps.config.get()) as PluginConfigShape)
       // prompt.* may have changed: let the plugin re-register its prompt
       // section now (a no-op when the built text is unchanged).
       deps.onConfigChanged?.()
       json(res, { ok: true, config: maskConfigSecrets(deps.config.get()) })
     } catch (err) {
+      // A malformed patch is the caller's problem (400): the page can then show
+      // exactly which field was wrong instead of a generic 500.
+      if (err instanceof ConfigPatchError) {
+        json(res, { ok: false, error: err.message }, 400)
+        return
+      }
       // A config tiddler that EXISTS but cannot be parsed is a user-fixable data
       // problem, not a server fault (v0.23.4): 409 + the actionable text, so the
       // settings page can tell the user what to fix instead of showing「保存失败」.

@@ -292,6 +292,33 @@ export function isJunkTag(tag: string): boolean {
 }
 
 /**
+ * The checks `tiddlywiki_lint` can actually run, in report order (v0.25.0).
+ *
+ * The parameter used to be free-form: any unrecognised name was silently
+ * dropped by `new Set(checks)`, so `checks: ["broken-link"]` (a typo) ran
+ * NOTHING and the receipt still said「发现 0 个问题 / 没有发现问题」. Keeping the
+ * list in one place lets the tool report both what RAN and what was ignored.
+ */
+const LINT_CHECKS = ['junk-tags', 'broken-links', 'empty-notes', 'missing-type', 'stale'] as const
+
+/**
+ * Expiry instant for the time-boxed fields `valid-until` / `review-after`.
+ *
+ * A bare `YYYY-MM-DD` means「当天整天有效」to a human, but `parseTiddlerDate`
+ * resolves it to UTC midnight — in UTC+8 that flags the note expired at 08:00 of
+ * that same day. Local end-of-day matches the documented wording; anything else
+ * (ISO timestamps, TW compact dates) keeps the shared parser's behaviour.
+ */
+function expiryOf(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim())
+  if (dateOnly !== null) {
+    return new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]), 23, 59, 59, 999).getTime()
+  }
+  return parseTiddlerDate(value)
+}
+
+/**
  * tiddler 的非内容字段（自定义字段 + 内容类型 + 时间戳 + revision），供模型读。
  *
  * v0.19.1 修复：单条 GET 把自定义字段**嵌在 `fields` 里**，旧实现只把顶层条目
@@ -397,7 +424,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_search ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_search',
-    description: '检索 TiddlyWiki 持久知识库：按关键词（可选 tags 数组 / since 修改时间 / type / field+value / limit）搜索非系统 tiddler，按相关度排序返回标题、标签、修改时间与命中处上下文片段。二进制 tiddler（图片等附件，正文为 base64）不参与检索。查询按空白切词、**所有词都必须命中**（AND）。若当前会话属于某个工作区，会**先在该工作区内检索、命中为空才自动扩大到全库**，回执会写明用了哪个范围。',
+    description: '检索 TiddlyWiki 持久知识库：按关键词（可选 tags 数组 / since 修改时间 / type / field+value / limit）搜索非系统 tiddler，按相关度排序返回标题、标签、修改时间与命中处上下文片段。二进制 tiddler（图片等附件，正文为 base64）不参与检索。查询按空白切词、**所有词都必须命中**（AND）。若当前会话属于某个工作区，会**先在该工作区内检索、命中为空才自动扩大到全库**，回执会写明用了哪个范围（传了 tags / tag / field / value 时视为调用方已给出明确范围，不再自动收窄）。',
     parameters: {
       query: { type: 'string', description: '搜索关键词（大小写不敏感，子串匹配；命中标题/标签/正文，标题命中权重最高）。多词按空白切分，**全部词都要命中**才算（AND）——例如「部署 步骤」只返回同时含这两词的笔记' },
       tags: { type: 'array', items: { type: 'string' }, description: '可选：要求同时包含的标签（AND）' },
@@ -592,11 +619,11 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_put ───────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_put',
-    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；**覆盖已有条目时，未传的 tags / 自定义字段 / 内容类型都会原样保留**（不会静默丢掉笔记原有的标签、字段或 type；显式传 tags 才整体替换标签）。写入后触发防抖自动 commit（默认 60s；手动同步用 tiddlywiki_git_sync）。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加；同时按当前会话工作目录自动打 `ws/<项目名>` 工作区标签与 `workspace` 字段（可用配置 `note.workspaceMark` 关闭；要归到别的项目就显式传 fields.workspace）。内容类型：**只有新建**条目且未指定时才默认 text/markdown（$:/ 系统条目除外）——覆盖 text/css、wikitext 等既有条目时保持原类型；要改类型用 fields 传 {"type":"..."}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
+    description: '写入（新建或覆盖）一个 TiddlyWiki tiddler。同名覆盖；**覆盖已有条目时，未传的 tags / 自定义字段 / 内容类型都会原样保留**（不会静默丢掉笔记原有的标签、字段或 type；显式传 tags 才整体替换标签，**传空数组 [] 表示清空全部标签**）。写入后触发防抖自动 commit（默认 60s；手动同步用 tiddlywiki_git_sync）。新建（title 不存在）时自动补打 agent-written 标签标记「由 Agent 撰写」，无需手动添加；同时按当前会话工作目录自动打 `ws/<项目名>` 工作区标签与 `workspace` 字段（可用配置 `note.workspaceMark` 关闭；要归到别的项目就显式传 fields.workspace）。内容类型：**只有新建**条目且未指定时才默认 text/markdown（$:/ 系统条目除外）——覆盖 text/css、wikitext 等既有条目时保持原类型；要改类型用 fields 传 {"type":"..."}。⚠️ fields.type 是 TW 的内容类型保留字段，不要把业务分类值（如 "meeting"）写进去——业务分类请放 tags。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配，覆盖同名）', required: true },
       text: { type: 'string', description: 'tiddler 全文（默认按 Markdown 解析）', required: true },
-      tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）' },
+      tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）。不传 = 保留既有条目的原标签；传空数组 [] = 清空全部标签；有内容 = 整体替换' },
       fields: { type: 'json', description: '附加自定义字段，如 {"date":"2026-09-02"}（可选）。fields.type 是**改内容类型的正规入口**（如 {"type":"text/css"}）：新建条目未指定时默认 text/markdown，覆盖既有条目时保留原类型。注意不要把业务分类值（如 "meeting"）写进 type——业务分类请放 tags' },
       expectedModified: { type: 'string', description: '可选：乐观并发保护。传 tiddlywiki_get 读到的 modified 值，若该条目已被他人改动则拒绝写入（避免覆盖人类在 TW 编辑器里的修改）' },
       expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——传 tiddlywiki_get 返回字段里的 revision（刚写入、还没落盘的条目没有 modified，此时用 revision）' },
@@ -671,7 +698,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_batch_put ─────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_batch_put',
-    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果（单条失败不影响其余条目，失败原因逐条列出）。写入后触发防抖自动 commit（默认 60s）。新建（title 不存在）的条目会自动补打 agent-written 标签与 `ws/<项目名>` 工作区标记，无需手动添加。内容类型：只有**新建**条目未指定 fields.type 时才默认 text/markdown（$:/ 系统条目除外）；**覆盖既有条目时保留其原有 type/tags/自定义字段**。',
+    description: '批量写入/覆盖多个 TiddlyWiki tiddler（一次工具调用）。overwrite=false 时跳过已存在的标题；返回逐条结果（单条失败不影响其余条目，失败原因逐条列出）。写入后触发防抖自动 commit（默认 60s）。新建（title 不存在）的条目会自动补打 agent-written 标签与 `ws/<项目名>` 工作区标记，无需手动添加。内容类型：只有**新建**条目未指定 fields.type 时才默认 text/markdown（$:/ 系统条目除外）；**覆盖既有条目时保留其原有 type/tags/自定义字段**。每条目可带 `expectedModified`（来自 tiddlywiki_get）做乐观并发保护：该条在你读取后被改过就只让这一条失败，其余照常写入。条目内传 `tags: []` 表示清空该条目的标签。',
     parameters: {
       items: {
         type: 'array',
@@ -687,8 +714,9 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
             // unreachable. The implementation validates per item instead.
             title: { type: 'string', description: '标题（精确匹配，覆盖同名）' },
             text: { type: 'string', description: '全文（默认按 Markdown 解析）' },
-            tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）' },
+            tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）。不传 = 保留原标签；传空数组 [] = 清空全部标签' },
             fields: { type: 'json', description: '附加自定义字段（可选）。注意：fields.type 是 TW 内容类型（保留字段，默认已自动补 text/markdown），不要写业务分类值' },
+            expectedModified: { type: 'string', description: '可选（v0.25.0）：该条目的乐观并发令牌，来自 tiddlywiki_get 的 modified。覆盖已存在条目时若已被改动，只让这一条失败并说明原因，其余条目照常' },
           },
         },
       },
@@ -704,7 +732,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { items: Array<{ title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }>; overwrite?: boolean }, exec: unknown): Promise<BatchResult> => {
+    execute: async (args: { items: Array<{ title: string; text: string; tags?: string[]; fields?: Record<string, unknown>; expectedModified?: string }>; overwrite?: boolean }, exec: unknown): Promise<BatchResult> => {
       const wiki = requireWiki()
       const list = Array.isArray(args.items) ? args.items : []
       if (list.length === 0) return { ok: true, written: 0, skipped: 0, failed: 0, items: [] }
@@ -722,7 +750,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       // listing caches are invalidated per write, which only costs a refetch),
       // and results are stored BY INDEX so the report keeps the caller's order
       // regardless of completion order.
-      const writeOne = async (item: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown> }, index: number): Promise<void> => {
+      const writeOne = async (item: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown>; expectedModified?: string }, index: number): Promise<void> => {
         const title = typeof item?.title === 'string' ? item.title : ''
         try {
           if (title.length === 0) throw new Error('缺少非空 title')
@@ -734,6 +762,11 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
             results[index] = { title, written: false, skipped: true, failed: false }
             return
           }
+          // Per-item optimistic guard (v0.25.0): an overwrite built from a stale
+          // read silently reverts whatever a human changed in between. A mismatch
+          // fails THIS item only (the batch contract keeps the others) — which is
+          // why the check lives inside the per-item try, not before the loop.
+          assertNoConflict(title, existing, { expectedModified: item.expectedModified })
           const marked = existing === undefined && !title.startsWith('$:/')
             ? withWorkspaceMark(workspaceMarkFor(deps, exec), normalizeTagArg(item.tags), item.fields)
             : { tags: normalizeTagArg(item.tags), fields: item.fields }
@@ -763,30 +796,46 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_rename ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_rename',
-    description: '重命名一个 TiddlyWiki tiddler：把旧标题的内容复制到新标题、删除旧标题，并可选地更新其他 tiddler 里的 [[旧标题]] / {{旧标题}} 引用（最佳努力）。',
+    description: '重命名一个 TiddlyWiki tiddler：把旧标题的内容复制到新标题、删除旧标题，并可选地更新其他 tiddler 里的 [[旧标题]] / {{旧标题}} 引用（最佳努力）。引用更新会逐个整篇回写引用者，所以每个引用者在写入前都会重新读一次：**遍历期间被改动过的会被跳过而不是覆盖**，跳过数量在回执里报告。',
     parameters: {
       oldTitle: { type: 'string', description: '当前标题', required: true },
       newTitle: { type: 'string', description: '新标题', required: true },
       updateRefs: { type: 'boolean', description: '可选：是否同步更新其他 tiddler 里的引用（默认 true）' },
+      expectedModified: { type: 'string', description: '可选（v0.25.0）：旧标题的乐观并发令牌，传 tiddlywiki_get 读到的 modified；不匹配则拒绝重命名（避免把人类刚改过的正文写进新标题）' },
+      expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——tiddlywiki_get 返回字段里的 revision' },
+      force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制重命名（默认 false）' },
     },
     output: {
       render: (_args, value: RenameResult) => {
         const lines = [`已重命名「${value.from}」→「${value.to}」`]
         lines.push(`更新了 ${value.refsUpdated} 处引用（${value.refsTiddlers} 个 tiddler）`)
+        if ((value.refsSkipped ?? 0) > 0) {
+          const names = (value.skippedTitles ?? []).join('、')
+          lines.push(`跳过了 ${value.refsSkipped} 个引用者（遍历期间被改动过，未覆盖）${names.length > 0 ? `：${names}` : ''}`)
+        }
         if (value.warning !== undefined) lines.push(`注意: ${value.warning}`)
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { oldTitle: string; newTitle: string; updateRefs?: boolean }): Promise<RenameResult> => {
+    execute: async (args: { oldTitle: string; newTitle: string; updateRefs?: boolean; expectedModified?: string; expectedRevision?: number; force?: boolean }): Promise<RenameResult> => {
       const wiki = requireWiki()
       const { oldTitle, newTitle } = args
       if (oldTitle === newTitle) return { ok: true, from: oldTitle, to: newTitle, refsUpdated: 0, refsTiddlers: 0 }
       const existing = await wiki.get(oldTitle)
       if (existing === undefined) throw new Error(`tiddler「${oldTitle}」不存在`)
+      // The rename re-writes the OLD note's body under the NEW title: an edit that
+      // landed after the caller's read would be lost silently (v0.25.0).
+      assertNoConflict(oldTitle, existing, {
+        expectedModified: args.expectedModified,
+        expectedRevision: args.expectedRevision,
+        force: args.force,
+      })
       const target = await wiki.get(newTitle)
       if (target !== undefined) throw new Error(`新标题「${newTitle}」已存在（可先用 tiddlywiki_delete 删除）`)
       let refsUpdated = 0
       let refsTiddlers = 0
+      let refsSkipped = 0
+      const skippedTitles: string[] = []
       let warning: string | undefined
       if (args.updateRefs !== false) {
         const all = await wiki.list(undefined, true)
@@ -797,11 +846,22 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           if (text.length === 0) continue
           const rewritten = rewriteRefs(text, oldTitle, newTitle)
           if (rewritten.count > 0) {
+            // The list is a SNAPSHOT (and may come from the client's short-TTL
+            // listing cache): re-read this referrer and skip it when it changed
+            // since. A skipped link is recoverable by hand; a silently clobbered
+            // paragraph is not (v0.25.0).
+            const fresh = await wiki.get(t.title)
+            if (fresh === undefined) continue
+            if (fresh.modified !== t.modified) {
+              refsSkipped++
+              skippedTitles.push(t.title)
+              continue
+            }
             // Shared policy (v0.22.10): a rewrite of the note's text is an
             // overwrite — keep its `created`, refresh `modified`, and preserve
             // tags/custom fields/type. Hand-building the PUT (the old
             // `cleanTiddler(t)` + text) carried the STALE `modified` through.
-            const { tiddler } = buildWriteTiddler(t.title, rewritten.text, { existing: t })
+            const { tiddler } = buildWriteTiddler(t.title, rewritten.text, { existing: fresh })
             await wiki.put(tiddler)
             refsUpdated += rewritten.count
             refsTiddlers++
@@ -822,22 +882,34 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       } catch (err) {
         deleteFailed = err instanceof Error ? err.message : String(err)
       }
-      if (refsTiddlers === 0) {
+      if (refsTiddlers === 0 && refsSkipped === 0) {
         warning = '未找到任何其他 tiddler 引用旧标题；如确实需要，可手动补充链接。'
+      }
+      if (refsSkipped > 0) {
+        const note = `有 ${refsSkipped} 个引用者因在遍历期间被改动而跳过（${skippedTitles.join('、')}），它们里面仍指向旧标题，请手动确认或重跑一次重命名。`
+        warning = warning === undefined ? note : `${warning} ${note}`
       }
       if (deleteFailed !== undefined) {
         const partial = `新标题「${newTitle}」已写入，但旧标题「${oldTitle}」删除失败（${deleteFailed}）：现在两个标题都存在同一份内容，请手动删除旧标题。`
         warning = warning === undefined ? partial : `${warning} ${partial}`
       }
       deps.autoCommit()
-      return { ok: true, from: oldTitle, to: newTitle, refsUpdated, refsTiddlers, ...(warning !== undefined ? { warning } : {}) }
+      return {
+        ok: true,
+        from: oldTitle,
+        to: newTitle,
+        refsUpdated,
+        refsTiddlers,
+        ...(refsSkipped > 0 ? { refsSkipped, skippedTitles } : {}),
+        ...(warning !== undefined ? { warning } : {}),
+      }
     },
   }))
 
   // ── tiddlywiki_delete ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_delete',
-    description: '删除一个 TiddlyWiki tiddler（不存在时是幂等空操作）。默认是**软删除**：内容移入回收站（$:/dsh-tiddlywiki/trash/…，不再出现在检索/最近列表里）后删除原条目，可用 tiddlywiki_trash 恢复；permanent=true 才真正永久删除。删除后触发自动 commit。',
+    description: '删除一个 TiddlyWiki tiddler（不存在时是幂等空操作）。默认是**软删除**：内容移入回收站（$:/dsh-tiddlywiki/trash/…，不再出现在检索/最近列表里）后删除原条目，可用 tiddlywiki_trash 恢复；permanent=true 才真正永久删除。删除后触发自动 commit。⚠️ 例外：`$:/` 系统条目不进回收站（回收站的约定是只收普通笔记，且系统标题无法被枚举），删除它们等同于 permanent=true——只有 git 历史可回退。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配）', required: true },
       permanent: { type: 'boolean', description: '可选：true = 永久删除（回收站也拿不回来，仅剩 git 历史）；默认 false = 移入回收站' },
@@ -998,15 +1070,18 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_append ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_append',
-    description: '向已有 tiddler 追加/前插文本，或写入指定标题段落的末尾（无需先读全文、不会整篇覆盖）——适合日志、批注、清单的增量写入。条目不存在时默认新建（createIfMissing=false 则报错）。**写入既有条目走与 tiddlywiki_put 同一套写策略**：原有 tags、自定义字段与**内容类型**全部保留（不会把 Markdown 笔记改成 wikitext、也不会把 CSS 改成 Markdown）；可用 fields 显式覆盖字段/类型。新建条目未指定内容类型时才默认 text/markdown（并像 tiddlywiki_put 一样自动补 agent-written 与 `ws/<项目名>` 工作区标记）。',
+    description: '向已有 tiddler 追加/前插文本，或写入指定标题段落的末尾（无需先读全文、不会整篇覆盖）——适合日志、批注、清单的增量写入。条目不存在时默认新建（createIfMissing=false 则报错）。**写入既有条目走与 tiddlywiki_put 同一套写策略**：原有 tags、自定义字段与**内容类型**全部保留（不会把 Markdown 笔记改成 wikitext、也不会把 CSS 改成 Markdown）；可用 fields 显式覆盖字段/类型。新建条目未指定内容类型时才默认 text/markdown（并像 tiddlywiki_put 一样自动补 agent-written 与 `ws/<项目名>` 工作区标记）。⚠️ 本工具内部是「读全文 → 整篇回写」，属于覆盖写入：改前请先 `tiddlywiki_get`，并把读到的 `modified` 作为 `expectedModified` 传回（v0.25.0 起支持），否则人类在 TW 编辑器里的并发修改会被静默回滚。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题', required: true },
       text: { type: 'string', description: '要追加/前插的文本（默认按 Markdown 写；既有条目保持它自己的内容类型）', required: true },
       mode: { type: 'string', enum: ['append', 'prepend'], description: '可选：append（默认，追加到末尾）/ prepend（插到开头）' },
       heading: { type: 'string', description: '可选：append 时改为插入到该标题（Markdown # 或 wikitext ! 标题，按标题文本匹配）对应段落的末尾' },
       createIfMissing: { type: 'boolean', description: '可选：条目不存在时是否新建（默认 true）' },
-      tags: { type: 'array', items: { type: 'string' }, description: '可选：标签（不传则保留既有条目的原标签；新建条目会额外自动补 agent-written）' },
+      tags: { type: 'array', items: { type: 'string' }, description: '可选：标签（不传则保留既有条目的原标签，传空数组 [] 表示清空全部标签；新建条目会额外自动补 agent-written）' },
       fields: { type: 'json', description: '可选：显式覆盖的自定义字段（如 {"type":"text/css"}）。不传则保留既有条目的原字段与内容类型' },
+      expectedModified: { type: 'string', description: '可选：乐观并发保护。传 tiddlywiki_get 读到的 modified；若条目在你读取之后被改动（人类在 TW 编辑器里改过）则拒绝写入——本工具是整篇回写，这一步能防止吞掉别人的修改' },
+      expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——传 tiddlywiki_get 返回字段里的 revision（注意 revision 是 TW 的内存计数器，重启后会复位，长时间跨度请用 expectedModified）' },
+      force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制写入（默认 false）' },
     },
     output: {
       render: (_args, value: AppendResult) => {
@@ -1017,11 +1092,21 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { title: string; text: string; mode?: 'append' | 'prepend'; heading?: string; createIfMissing?: boolean; tags?: string[]; fields?: Record<string, unknown> }, exec: unknown): Promise<AppendResult> => {
+    execute: async (args: { title: string; text: string; mode?: 'append' | 'prepend'; heading?: string; createIfMissing?: boolean; tags?: string[]; fields?: Record<string, unknown>; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<AppendResult> => {
       const wiki = requireWiki()
       const title = args.title.trim()
       if (title.length === 0) throw new Error('tiddlywiki_append: title 不能为空')
       const existing = await wiki.get(title)
+      // v0.25.0: append is a read-modify-write of the WHOLE note (`next` below is
+      // the stale base plus the addition), so it needs the same optimistic guard
+      // as put/delete. Without it, a human edit landing between our GET and PUT
+      // was silently reverted — and the injected prompt recommends append for
+      // exactly the incremental writes that hit this path most often.
+      assertNoConflict(title, existing, {
+        expectedModified: args.expectedModified,
+        expectedRevision: args.expectedRevision,
+        force: args.force,
+      })
       if (existing === undefined && args.createIfMissing === false) {
         throw new Error(`tiddler「${title}」不存在（createIfMissing=false）`)
       }
@@ -1213,6 +1298,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       if (typeof args.noteTitle === 'string' && args.noteTitle.trim().length > 0) {
         embedInto = args.noteTitle.trim()
         const note = await wiki.get(embedInto)
+        // A binary tiddler holds base64 in `text`: appending an embed line would
+        // corrupt it (and `type: image/png` would stay, so the receipt would look
+        // fine). Same class `tiddlywiki_put` refuses — refuse here too (v0.25.0).
+        if (note !== undefined && isBinaryType(typeof note.type === 'string' ? note.type : undefined)) {
+          throw new Error(
+            `tiddlywiki_attach: noteTitle「${embedInto}」是二进制附件（type=${String(note.type)}），`
+            + '把嵌入链接写进去会写坏附件；请改用普通笔记，或去掉 noteTitle 参数单独保存附件。',
+          )
+        }
         // `[img[Title]]` breaks if the attachment title itself contains `]]`;
         // fall back to a plain link (which has the same constraint, so strip the
         // sequence) instead of silently producing a broken embed.
@@ -1235,13 +1329,21 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     description: '知识库体检（**只读，绝不改动任何笔记**）：找出垃圾/异常标签、指向不存在条目的死链、空笔记、疑似 Markdown 却缺 type 的笔记，以及**时效性内容**（已过期 / 待复查 / 建议复查的候选）。返回按类别分组的问题清单与建议；淘汰与否完全由你决定。',
     parameters: {
       limit: { type: 'integer', description: '可选：每类最多返回多少条示例（默认 10，最大 100）' },
-      checks: { type: 'array', items: { type: 'string' }, description: '可选：只跑指定检查（junk-tags / broken-links / empty-notes / missing-type / stale）' },
+      checks: { type: 'array', items: { type: 'string' }, description: '可选：只跑指定检查。合法值只有 junk-tags / broken-links / empty-notes / missing-type / stale；回执会列出**实际运行**的检查，无法识别的名字会被明确报出来（不会静默当成「库很干净」）' },
       staleAfterDays: { type: 'integer', description: '可选：`stale` 检查里「长期未改动」的阈值天数（默认 180）。只影响候选的判定，不影响 valid-until / review-after 的硬判定' },
     },
     output: {
       render: (_args, value: LintResult) => {
-        const lines = [`知识库体检：扫描 ${value.scanned} 条文本笔记，发现 ${value.issues.reduce((sum, i) => sum + i.count, 0)} 个问题。`]
-        if (value.issues.length === 0) lines.push('没有发现问题。')
+        const ran = value.checks.length > 0 ? value.checks.join(', ') : '（无）'
+        const lines = [`知识库体检：扫描 ${value.scanned} 条文本笔记，已检查 ${ran}，发现 ${value.issues.reduce((sum, i) => sum + i.count, 0)} 个问题。`]
+        if (value.unknownChecks.length > 0) {
+          lines.push(`⚠️ 忽略了无法识别的检查名：${value.unknownChecks.join(', ')}——合法值只有 ${LINT_CHECKS.join(' / ')}`)
+        }
+        if (value.issues.length === 0) {
+          lines.push(value.checks.length === 0
+            ? '没有运行任何检查（请求的检查名全部无法识别）。'
+            : '没有发现问题。')
+        }
         for (const issue of value.issues) {
           lines.push(`- ${issue.kind}：${issue.count} 处 — ${issue.hint}`)
           for (const sample of issue.samples) lines.push(`    · ${sample}`)
@@ -1252,8 +1354,18 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     execute: async (args: { limit?: number; checks?: string[]; staleAfterDays?: number }): Promise<LintResult> => {
       const wiki = requireWiki()
       const limit = Math.max(1, Math.min(args.limit ?? 10, 100))
-      const wanted = Array.isArray(args.checks) && args.checks.length > 0 ? new Set(args.checks) : undefined
-      const want = (kind: string): boolean => wanted === undefined || wanted.has(kind)
+      // Validate `checks` against the real list (v0.25.0). The old `new Set(checks)`
+      // silently ignored an unknown name, so a typo ('broken-link') ran NO checks
+      // and the receipt still read「发现 0 个问题 / 没有发现问题」—— a false clean
+      // bill of health, measured on a 2933-note wiki.
+      const requested = Array.isArray(args.checks)
+        ? args.checks.filter((c): c is string => typeof c === 'string' && c.trim().length > 0).map((c) => c.trim())
+        : []
+      const unknownChecks = requested.filter((c) => !(LINT_CHECKS as readonly string[]).includes(c))
+      const checks: string[] = requested.length > 0
+        ? LINT_CHECKS.filter((c) => requested.includes(c))
+        : [...LINT_CHECKS]
+      const want = (kind: string): boolean => checks.includes(kind)
       const items = await wiki.list(undefined, true)
       // 死链检查需要**全部**标题（含图片/PDF 等二进制附件）——只拿文本列表会
       // 把每一条 `[[图.png]]` / `{{附件}}` 都误报成死链（v0.19.1 修复）。
@@ -1359,12 +1471,12 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         let candidateCount = 0
         for (const t of items) {
           if (t.title.startsWith('$:/')) continue
-          const validUntil = typeof t['valid-until'] === 'string' ? parseTiddlerDate(t['valid-until']) : undefined
+          const validUntil = expiryOf(t['valid-until'])
           if (validUntil !== undefined && validUntil < now) {
             expiredCount++
             if (expired.length < limit) expired.push(`「${t.title}」（valid-until 已过）`)
           }
-          const reviewAfter = typeof t['review-after'] === 'string' ? parseTiddlerDate(t['review-after']) : undefined
+          const reviewAfter = expiryOf(t['review-after'])
           if (reviewAfter !== undefined && reviewAfter < now) {
             reviewCount++
             if (review.length < limit) review.push(`「${t.title}」（review-after 已到）`)
@@ -1396,7 +1508,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         }
       }
 
-      return { scanned: items.length, issues }
+      return { scanned: items.length, checks, unknownChecks, issues }
     },
   }))
 
@@ -1569,7 +1681,7 @@ interface GetResult {
 interface PutResult { ok: boolean; title: string; tags: string[]; type: string | null; typeDefaulted?: boolean; /** 覆盖时内容类型真的变了（v0.20.1）。 */ typeChanged?: { from: string; to: string }; fields: Record<string, unknown> | null; /** 新建时自动打上的工作区标记（v0.24.0）。 */ workspace?: string }
 interface BatchItemResult { title: string; written: boolean; skipped: boolean; failed: boolean; error?: string; /** 该条是新建且自动打了工作区标记（v0.24.0）。 */ workspace?: string }
 interface BatchResult { ok: boolean; written: number; skipped: number; failed: number; items: BatchItemResult[] }
-interface RenameResult { ok: boolean; from: string; to: string; refsUpdated: number; refsTiddlers: number; warning?: string }
+interface RenameResult { ok: boolean; from: string; to: string; refsUpdated: number; refsTiddlers: number; /** 因遍历期间被改动而跳过的引用者数量（v0.25.0）。 */ refsSkipped?: number; skippedTitles?: string[]; warning?: string }
 interface DeleteResult { ok: boolean; title: string; /** true = moved to the trash (recoverable). */ trashed?: boolean; trashTitle?: string }
 interface TrashItem { title: string; at?: string; of?: string }
 interface TrashResult { action: string; message: string; items?: TrashItem[] }
@@ -1578,7 +1690,7 @@ interface BacklinkHit { title: string; refs: number; via: 'link' | 'tag'; modifi
 interface BacklinkResult { title: string; total: number; linkCount: number; tagCount: number; items: BacklinkHit[] }
 interface AttachResult { ok: boolean; title: string; mime: string; bytes: number; chars: number; source: string | null; embedInto: string | null }
 interface LintIssue { kind: string; count: number; hint: string; samples: string[] }
-interface LintResult { scanned: number; issues: LintIssue[] }
+interface LintResult { scanned: number; /** 实际运行的检查（v0.25.0）。 */ checks: string[]; /** 请求里无法识别的检查名（回执必须报出来）。 */ unknownChecks: string[]; issues: LintIssue[] }
 interface SyncResult {
   action: string
   ok: boolean

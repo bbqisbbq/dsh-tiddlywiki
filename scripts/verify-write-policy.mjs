@@ -71,6 +71,16 @@ test('buildWriteTiddler：覆盖既有 wikitext 笔记仍写 wikitext', () => {
   assert.equal(tiddler.type, 'text/vnd.tiddlywiki', `wikitext 笔记不得被默认成 markdown，实际 ${tiddler.type}`)
 })
 
+test('buildWriteTiddler：tags: [] 清空标签，不传 tags 保留原标签（v0.25.0）', () => {
+  const existing = { title: 'TagNote', text: 'old', type: 'text/markdown', tags: ['a', 'b'] }
+  const cleared = buildWriteTiddler('TagNote', 'new', { existing, tags: [] }).tiddler
+  assert.equal(cleared.tags, undefined, `显式空数组必须删除 tags 字段，实际 ${JSON.stringify(cleared.tags)}`)
+  const kept = buildWriteTiddler('TagNote', 'new', { existing }).tiddler
+  assert.deepEqual(kept.tags, ['a', 'b'], '不传 tags 必须保留原标签（两种语义不能混）')
+  const replaced = buildWriteTiddler('TagNote', 'new', { existing, tags: ['c'] }).tiddler
+  assert.deepEqual(replaced.tags, ['c'], '有内容的数组仍是整体替换')
+})
+
 test('buildWriteTiddler：新建条目才默认 Markdown 并补 agent-written', () => {
   const { tiddler, typeDefaulted } = buildWriteTiddler('FreshNote', 'body')
   assert.equal(tiddler.type, DEFAULT_NOTE_TYPE, `新建应默认 markdown，实际 ${tiddler.type}`)

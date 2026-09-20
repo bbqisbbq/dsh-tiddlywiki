@@ -133,11 +133,27 @@ function applyCustomFields(tiddler: Tiddler, fields: Record<string, unknown> | u
   }
 }
 
-/** 归一化工具/路由的 `tags` 参数（非数组或全空 → undefined）。 */
+/**
+ * 归一化工具/路由的 `tags` 参数（非数组 → undefined）。
+ *
+ * ⚠️ 三种输入三种语义（v0.25.0 修复「无法清空标签」）：
+ *   - 未传 / 非数组 → `undefined` = 「保留基底里原有的标签」；
+ *   - `[]`（显式空数组）→ `[]` = 「清空全部标签」（`buildWriteTiddler` 会
+ *     `delete tiddler.tags`）；
+ *   - 有内容的数组 → 该数组 = 「整体替换」。
+ *
+ * 旧实现把 `[]` 过滤成 `undefined`，而 `tags` 又是 `RESERVED_TIDDLER_FIELDS`
+ * 成员（`fields.tags` 会被拒），于是**没有任何途径**把一篇既有笔记的标签改成
+ * 空：模型按 `tiddlywiki_lint` 的 junk-tags 建议去「清标签」，传 `[]` 却什么
+ * 都没发生，回执还把旧标签原样列出来（实测）。全是空白字符串的数组（`['  ']`）
+ * 同样是「清空」意图，一并按清空处理。
+ */
 export function normalizeTagArg(tags: unknown): string[] | undefined {
   if (!Array.isArray(tags)) return undefined
   const list = tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim())
-  return list.length > 0 ? list : undefined
+  if (list.length > 0) return list
+  // 显式给了数组、但里面没有有效标签（`[]` 或 `['  ']`）：一律按「清空」处理。
+  return []
 }
 
 /**

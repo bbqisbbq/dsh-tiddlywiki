@@ -27,7 +27,7 @@
  * @module dsh-tiddlywiki/host/git
  */
 import { execFile } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
@@ -38,6 +38,12 @@ const QUICK_TIMEOUT_MS = 5_000
 
 /** Timeout for structural/network operations. */
 const HEAVY_TIMEOUT_MS = 60_000
+
+/** Max files whose CONTENT is scanned for conflict markers (v0.25.0). */
+const MAX_CONTENT_SCAN_FILES = 200
+
+/** Max size of a file worth scanning for conflict markers (v0.25.0). */
+const MAX_CONFLICT_SCAN_FILE_BYTES = 2 * 1024 * 1024
 
 export interface ExecResult { ok: boolean; stdout: string; stderr: string }
 export type ExecFn = (args: string[], options: { cwd?: string; timeout?: number }) => Promise<ExecResult>
@@ -341,7 +347,13 @@ export class GitFace {
     if (unmerged.length > 0) return { conflicted: true, reason: 'unmerged paths', files: unmerged }
     if (options.contentScan !== true) return { conflicted: false, reason: '', files: [] }
     const marked: string[] = []
-    for (const file of await this.changedFiles(dir)) {
+    // BOUNDED SCAN (v0.25.0): `/status` runs this on every poll, and a bulk import
+    // leaves thousands of changed files — reading every one of them synchronously
+    // blocked the event loop (and TW's own requests) for no extra safety: a real
+    // conflict also shows up as unmerged index entries or `REBASE_HEAD`, both of
+    // which the cheap probes above already cover.
+    const changed = await this.changedFiles(dir)
+    for (const file of changed.slice(0, MAX_CONTENT_SCAN_FILES)) {
       if (this.fileHasConflictMarkers(join(dir, file))) marked.push(file)
     }
     return marked.length > 0
@@ -370,14 +382,30 @@ export class GitFace {
   /**
    * Does this file contain a conflict block? Read failures and binary content
    * are treated as "no" — the guard is a safety net, not a content auditor.
+   *
+   * Size-guarded since v0.25.0: the scan runs on every `/status` poll while the
+   * tree is dirty, and a wiki can hold multi-MB attachments; those are never
+   * where a rebase marker lands. A stat failure (an injected reader in tests)
+   * falls through to the reader instead of silently skipping the file.
    */
   private fileHasConflictMarkers(absPath: string): boolean {
     try {
+      if (!this.isScannableFile(absPath)) return false
       const text = this.readTextFile(absPath)
       if (text.includes('\u0000')) return false
       return CONFLICT_MARKER_RE.test(text)
     } catch {
       return false
+    }
+  }
+
+  /** Is this a small-ish regular file worth reading? (unknown → yes) */
+  private isScannableFile(absPath: string): boolean {
+    try {
+      const info = statSync(absPath)
+      return info.isFile() && info.size <= MAX_CONFLICT_SCAN_FILE_BYTES
+    } catch {
+      return true
     }
   }
 
