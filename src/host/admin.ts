@@ -28,7 +28,7 @@ import type { WikiServer } from './wiki.ts'
 import { ROUTE_PREFIX, redactLogLines, redactRemoteUrl, type WebServerFace } from './routes.ts'
 import { ConfigUnreadableError, type ConfigStore, type PluginConfigShape } from './config.ts'
 import { readBody, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead } from './http.ts'
-import { waitForFileWrite, needsRestartAfterSeeds, flushPendingWrites } from './seeds.ts'
+import { waitForFileWrite, needsRestartAfterSeeds, drainThenStop } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
 import { normalizePromptPreview, type PromptPreviewConfig } from './prompt.ts'
 import type { WikiLocationInfo } from './wiki-location.ts'
@@ -593,7 +593,15 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       const changed = JSON.stringify(info) !== beforeInfo
       if (changed) {
         await writeWikiInfo(wikiPath, info)
-        await deps.server.restart()
+        // v0.24.1: plugins/themes/languages change → restart, but drain first.
+        // This path predates the "restarting over unflushed writes loses them"
+        // insight that the seed path below already documents (rule #1).
+        await drainThenStop({
+          client: deps.getClient(),
+          tiddlersDir: join(deps.getWikiPath(), 'tiddlers'),
+          stop: () => deps.server.restart(),
+          log: (message) => console.warn('[dsh-tiddlywiki]', message),
+        })
       }
       // Activate the chosen theme tiddler (mirrors TW's own Control Panel).
       if (Array.isArray(body.themes) && activatedTheme !== undefined) {
@@ -663,8 +671,15 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
   const handleRestart = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      await deps.server.restart()
-      json(res, { ok: true, status: deps.server.status().status })
+      // v0.24.1: drain the syncer queue first (ironclad rule #1) — this route
+      // used to kill the child with writes still queued, losing them silently.
+      const drained = await drainThenStop({
+        client: deps.getClient(),
+        tiddlersDir: join(deps.getWikiPath(), 'tiddlers'),
+        stop: () => deps.server.restart(),
+        log: (message) => console.warn('[dsh-tiddlywiki]', message),
+      })
+      json(res, { ok: true, status: deps.server.status().status, drained })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -724,9 +739,14 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
           // Drain the rest of the syncer queue too: force-all writes every seed,
           // and a restart that boots from a stale snapshot silently loses the
           // ones still queued (v0.19.0 — repeatedly lost tw-web-host here).
-          const drained = await flushPendingWrites(client, join(deps.getWikiPath(), 'tiddlers'))
+          // v0.24.1: the drain+restart pair is now the shared primitive.
+          const drained = await drainThenStop({
+            client,
+            tiddlersDir: join(deps.getWikiPath(), 'tiddlers'),
+            stop: () => deps.server.restart(),
+            log: (message) => console.warn('[dsh-tiddlywiki]', message),
+          })
           if (!drained) console.warn('[dsh-tiddlywiki] seed writes may not have been flushed before restart')
-          await deps.server.restart()
           restarted = true
         } catch (err) {
           restartError = err instanceof Error ? err.message : String(err)

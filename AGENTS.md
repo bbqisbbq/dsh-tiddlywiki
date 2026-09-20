@@ -20,7 +20,7 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.24.0` | `package.json` `version`（三处一致性由 `scripts/verify-version-consistency.mjs` 守门：package.json / 本文件 / README「版本记录」顶部） |
+| **插件版本** | `0.24.1` | `package.json` `version`（三处一致性由 `scripts/verify-version-consistency.mjs` 守门：package.json / 本文件 / README「版本记录」顶部） |
 | **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册；客户端 `TOOL_VIEW_KEYS` 要同步加 key） |
 | **Seed 注册表（13 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（默认写、可移除）：`doc-note`、`starter-docs` + **gated 3 项**（`publish-spec`/`wechat-setup`/`wechat-publish`，仅 `wechat.enabled` 开启时写）；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge` | `src/host/seeds.ts` 的 `SEED_DEFS` + `src/host/seed-util.ts` |
 | **bundle 版本** | send-to-agent `0.3.5` · render `0.2.0` · wechat-publish `0.2.0` | `scripts/bundle/versions.mjs`（唯一来源） |
@@ -32,7 +32,7 @@
 
 ## 3. 铁律（不可协商）
 
-1. **重启 TW 前必须把 syncer 队列排干** —— 走 `flushPendingWrites()`（两段式哨兵 + throttle 窗口）。**所有**重启路径（seed / 启动自举 / `/sync` / 知识库切换）都必须先过它，否则写入被静默吞掉。
+1. **重启/停止 TW 前必须把 syncer 队列排干** —— **只能经 `drainThenStop()`**（`src/host/seeds.ts`，v0.24.1）：排干（`flushPendingWrites` 两段式哨兵 + throttle 窗口）就发生在它内部，裸调 `server.restart()` / `server.stop()` 等于丢写入。**所有**路径（启动自举 / seed / `/sync` / `/restart` / 知识库切换）都必须走它；守门 `scripts/verify-restart-drain.mjs`（源码级：routes/admin 里每个 restart 都必须包在 `drainThenStop` 内 + 行为级：stop 必须在排干之后、排干失败也必须继续 stop）。
 2. **所有写路径必须「先读旧条目、再走共享写策略」** —— `get` → `buildWriteTiddler()`。TW REST 的 PUT 是**整体替换**，手拼 body 会丢 tags / 自定义字段 / `type` / 时间戳。同名且非新建、无 `force` 时**宁可报错也不静默覆盖**。
 3. **绝不把「读取失败」当「条目不存在」** —— `wiki.get()` 只有 404 返回 `undefined`，其余抛错。禁止 `.catch(() => undefined)` 兜底（那会让 seed 覆盖用户内容、给人类笔记误打 `agent-written`）。
 4. **每个写路由必须显式声明 HTTP 方法** —— 宿主 webserver 只按 pathname 分发。写用 `rejectCrossSiteWrite(req,res,['POST'])`，读用 `rejectNonRead`。

@@ -25,7 +25,7 @@ import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type UiDefaultsPublic, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, ensureLanguage, ensurePlugin, resolveTwRoot, type AdminDeps } from './host/admin.ts'
-import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds } from './host/seeds.ts'
+import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, drainThenStop } from './host/seeds.ts'
 import { RENDER_PLUGIN_FILE } from './host/seed-render.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
@@ -114,7 +114,7 @@ export {
   type WechatPublishJobView,
   type WechatReadyView,
 } from './host/wechat-publish.ts'
-export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
+export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, drainThenStop, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUnavailableError, isJunkTag } from './host/tools.ts'
 export { tiddlywikiToolSummary } from './host/tools.ts'
 export {
@@ -862,7 +862,19 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       const result = await switchWiki({
         currentLocation: () => server.currentLocation,
         currentPath: () => wikiPath,
-        stopServer: () => server.stop(),
+        // v0.24.1: ironclad rule #1 lists the knowledge-base switch as a path
+        // that MUST drain first, but the switch only called `server.stop()` —
+        // writes still in the OLD wiki's syncer queue were killed with the
+        // child. `drainThenStop` is the shared primitive; the rollback path
+        // reuses it, and a missing client (child already down) is a no-op.
+        stopServer: async () => {
+          await drainThenStop({
+            client: client(),
+            tiddlersDir: join(wikiPath, 'tiddlers'),
+            stop: () => server.stop(),
+            log: (message) => console.warn('[dsh-tiddlywiki]', message),
+          })
+        },
         applyLocation: (nextLocation) => {
           server.setLocation({ root: nextLocation.root, name: nextLocation.name })
           wikiPath = locationPath(nextLocation)

@@ -61,7 +61,7 @@ import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace } from './session-summary.ts'
 import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 import { sanitizeTwFragment } from './sanitize.ts'
-import { flushPendingWrites } from './seeds.ts'
+import { drainThenStop } from './seeds.ts'
 import { snippetOf, formatLocalMinute } from './text-util.ts'
 import { WriteConflictError, assertNoConflict, buildWriteTiddler, flattenTiddlerFields } from './write-policy.ts'
 import { WECHAT_ADAPTERS, type WechatAdapter, type WechatPublishConfig, type WechatPublishJobView, type WechatPublishStartResult, type WechatReadyView } from './wechat-publish.ts'
@@ -1241,12 +1241,21 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: '另一个重启/同步正在进行中，请稍候' }, 429)
         return
       }
+      let drained = true
       try {
-        await deps.server.restart()
+        // v0.24.1: the drain lives inside `drainThenStop` (ironclad rule #1).
+        // This route used to SIGKILL the child directly, so clicking「重启 TW」
+        // within ~1s of any write silently lost that write.
+        drained = await drainThenStop({
+          client: deps.getClient(),
+          tiddlersDir: join(deps.getWikiPath(), 'tiddlers'),
+          stop: () => deps.server.restart(),
+          log: (message) => console.warn('[dsh-tiddlywiki]', message),
+        })
       } finally {
         endMutation()
       }
-      json(res, { ok: true, status: deps.server.status().status })
+      json(res, { ok: true, status: deps.server.status().status, drained })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
@@ -1290,12 +1299,15 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           // Restarting TW before the flush kills those writes — the restarted
           // server boots from the pre-write snapshot and the note is gone, and
           // the `git commit` right below cannot recover what never hit disk.
-          // Seeds/admin/index already used this sentinel; this route did not.
-          const flushClient = deps.getClient()
-          if (flushClient !== undefined) {
-            await flushPendingWrites(flushClient, join(dir, 'tiddlers')).catch(() => undefined)
-          }
-          await deps.server.restart()
+          // v0.24.1: the drain lives inside `drainThenStop` (ironclad rule #1 is
+          // one primitive, not a per-route habit).
+          const drained = await drainThenStop({
+            client: deps.getClient(),
+            tiddlersDir: join(dir, 'tiddlers'),
+            stop: () => deps.server.restart(),
+            log: (message) => console.warn('[dsh-tiddlywiki]', message),
+          })
+          if (!drained) console.warn('[dsh-tiddlywiki] sync: syncer queue may not be drained before restart')
           restarted = true
         } catch (err) {
           restartError = err instanceof Error ? err.message : String(err)

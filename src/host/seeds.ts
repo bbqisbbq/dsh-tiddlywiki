@@ -243,6 +243,53 @@ export function needsRestartAfterSeeds(results: Array<{ id: string; ok: boolean;
   return results.some((r) => r.ok && r.wrote && (RESTART_REQUIRED_SEED_IDS as readonly string[]).includes(r.id))
 }
 
+/**
+ * THE ONLY SANCTIONED WAY TO STOP OR RESTART THE TW CHILD (v0.24.1).
+ *
+ * WHY THIS WRAPPER EXISTS
+ * -----------------------
+ * Ironclad rule #1 ("drain the syncer queue before restarting TW") had four
+ * call sites and only three of them obeyed it. The two manual restart routes
+ * (`POST /restart`, `POST /admin/restart`), the plugins/themes restart in
+ * `POST /admin/info` and the knowledge-base switch (`stopServer`) all killed the
+ * child with writes still queued — and a queued write is simply lost, silently,
+ * exactly like the v0.19.0 `tw-web-host` loss. A rule that lives only in prose
+ * gets re-broken by the next person who adds a restart.
+ *
+ * So the drain is now INSIDE the primitive: a caller cannot stop TW without
+ * going through it, and `scripts/verify-restart-drain.mjs` asserts that no
+ * `server.restart()` / `server.stop()` call site exists outside this wrapper.
+ *
+ * Best-effort by design: a failed drain logs and still stops (refusing to
+ * restart would leave the user unable to recover from a wedged TW). Returns
+ * whether the store was provably quiescent — callers surface it in their
+ * response so an incomplete drain is observable rather than silent.
+ */
+export async function drainThenStop(options: {
+  /** The REST client for the RUNNING child, or undefined when it is down. */
+  client: TiddlyWebClient | undefined
+  /** Absolute path of `<wiki>/tiddlers`. */
+  tiddlersDir: string
+  /**
+   * The actual stop/restart to run after the drain. `unknown` because
+   * `WikiServer.restart()` resolves a status view while `stop()` resolves void —
+   * the drain does not care about either.
+   */
+  stop: () => Promise<unknown>
+  /** Warning sink (defaults to silence so the helper stays dependency-free). */
+  log?: (message: string) => void
+}): Promise<boolean> {
+  // No client ⇒ the child is not running ⇒ nothing is queued to lose.
+  const drained = options.client === undefined
+    ? true
+    : await flushPendingWrites(options.client, options.tiddlersDir).catch(() => false)
+  if (!drained) {
+    options.log?.('syncer queue may not be fully drained — writes still queued at restart time could be lost')
+  }
+  await options.stop()
+  return drained
+}
+
 /** A registered seed: check current state + run (optionally force) + remove. */
 export interface SeedDef {
   id: string
