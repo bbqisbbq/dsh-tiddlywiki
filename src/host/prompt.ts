@@ -172,11 +172,13 @@ pull 冲突后：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep
 
 /** Governance block: knowledge-base conventions (tags, memory, links). */
 const NOTE_RULES = `### 笔记约定
-- 把 wiki 当作长期记忆与知识沉淀的地方：会议纪要、决策记录、调研笔记、随手的想法都可存成独立 tiddler（tag 建议用 inbox/meeting/decision 等便于检索）。
-- **把有价值但不在当前执行范围内的想法沉淀进 wiki**：遇到「未来可能有用 / 值得做」的想法，用 \`tiddlywiki_put\` 写成独立 tiddler，打上 \`todo\` + \`agent-written\` 标签（并附当前工作区名），正文简要说明来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
-- 自动创建笔记时，除了业务性 tag 外，请把**当前工作区（项目）的名字**也作为标签之一，方便按项目归集与检索。
-- \`agent-written\`：\`put\`/\`batch_put\` 新建条目时工具自动补打，无需手动添加、也不要手动移除（除非用户明确要求）；若某篇 Agent 笔记之后被人类编辑过，请补打 \`human-edited\`。
-- **引用 wiki 笔记用可点击链接**：在回复流中引用笔记时用 \`[标题](/dsh-tiddlywiki/tw/#标题)\`（标题含空格/特殊字符时做 URL 编码，如 \`A%20B\`；中文可直接写）。点击会打开中央 TW 面板并跳转到该笔记，请优先用它代替纯文本标题。`
+- wiki 是长期记忆：会议纪要、决策记录、调研笔记、随手的想法都存成独立 tiddler（tag 用 inbox/meeting/decision 等便于检索）。
+- **值得做但不在当前范围内的想法**：用 \`tiddlywiki_put\` 写成独立 tiddler、打 \`todo\`，正文简述来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
+- **工作区标记自动打**：新建笔记自动带 \`ws/<项目名>\` 标签与 \`workspace\` 字段（取自会话工作目录），**不要手动再加**；只有内容显然属于**另一个**项目时才显式写 \`workspace\` 字段。
+- **检索先窄后宽**：\`tiddlywiki_search\` 先在工作区内查、没命中才自动扩到全库，回执写明实际范围——**「工作区内 0 条」不等于库里没有**。查询按空白切词、**全部词命中**才算（AND）。
+- **阶段性内容标时效**：会过期的笔记（版本记录 / 部署步骤 / 排期 / 临时方案 / 一次性口令）写时带 \`valid-until: YYYY-MM-DD\`（硬过期）或 \`review-after: YYYY-MM-DD\`（该复查）；被取代时写 \`superseded-by: [[新笔记]]\` 并打 \`superseded\` 标签、**保留旧笔记**。**淘汰只由人决定**，不要自行删除。
+- \`agent-written\` 由工具自动补打，别手动加或删；人类编辑过 Agent 笔记后补 \`human-edited\`。
+- **引用笔记用可点击链接**：\`[标题](/dsh-tiddlywiki/tw/#标题)\`（空格等特殊字符做 URL 编码；中文可直写）。点击会打开中央 TW 面板并跳转，优先用它代替纯文本标题。`
 
 /**
  * Publish-metadata rule, appended ONLY when `wechat.enabled` is on (v0.23.0).
@@ -211,7 +213,7 @@ export function toolSignatureLines(tools: readonly PromptToolSummary[], bullet =
 function slimIntro(count: number): string {
   return `## TiddlyWiki 持久知识库
 
-本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。插件提供 ${count} 个 \`tiddlywiki_*\` 工具：检索与读取、写入与批量写入、增量追加、重命名、删除与回收站、反向链接、二进制附件、知识库体检、git 同步与冲突解决。**每个工具的参数与返回契约以工具 schema 的 description 为准**，本段只补充 schema 之外仍需知道的规则。`
+本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。插件提供 ${count} 个 \`tiddlywiki_*\` 工具：检索/读写/批量/增量追加/重命名/删除与回收站/反向链接/附件/体检/git 同步与冲突解决。**参数与返回契约以各工具 schema 的 description 为准**，本段只补充 schema 表达不了的约定。`
 }
 
 /** Heading + the generated signature catalogue (full intro). */

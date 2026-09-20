@@ -37,7 +37,19 @@ export interface PluginConfigShape {
    * 剪藏笔记默认 tag；`port` 改动需重启 dsh web（监听只在启动时绑定一次）。
    */
   bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
-  note?: { tag?: string }
+  note?: {
+    tag?: string
+    /**
+     * 自动给 **Agent 新建**的笔记打工作区标记（默认 true，v0.24.0）：
+     * 标签 `ws/<项目名>` + 字段 `workspace: <项目名>`。
+     *
+     * 「项目名」取调用方会话的 cwd 末段（`sessions.get(id).header.cwd`），
+     * 由插件自己解析——不再依赖提示词里那句「记得带上工作区名」。
+     * ⚠️ `ws/` 前缀是承重的：裸项目名会与业务标签撞车（本机 `dsh-tiddlywiki`
+     * 已被 2510 条书章节占用），撞了以后「按工作区检索」就失去意义。
+     */
+    workspaceMark?: boolean
+  }
   /**
    * TW 子进程启动策略（v0.22.5）。`readyTimeoutMs` 是**软就绪窗口**（默认 60000，
    * 夹在 5s–600s）：超过它只写一条「slow start」日志并继续等，硬上限 = 3×，

@@ -27,9 +27,11 @@
 | 📍 **知识库位置可切换** | 设置页「知识库位置」可把插件切换到**任意本地文件夹**（不用改 cordis 配置、不用重装）：就地停/起 TW 子进程，目标目录没有 `tiddlywiki.info` 时自动 `--init server` 建一个全新知识库；选择记在 `$DSH_HOME/dsh-tiddlywiki/location.json`——一个**在 wiki 之外**的指针文件（所以切到新 wiki 后仍记得「我用的是哪个」），「恢复为配置默认」一键清除；**切换失败自动回滚**到原知识库并如实告知（v0.22.0） |
 | 🔄 **seed 更新检测** | seed 标记记录**内容哈希**：内置内容在本 wiki 预置之后更新过 → 设置页显示「⬆ 有更新」；被你改过 → 显示「✏️ 本地已修改」，且「重新初始化」前**二次确认**；两者都基于哈希判定，绝不猜（旧格式标记会明确显示「尚未启用更新检测」，不会误报为「你改过」，v0.22.0） |
 | 🎨 **自定义样式** | 「自定义样式」seed：编辑器美化 / 窄屏侧栏隐藏 / menubar 加高 / 批注弹窗等 5 张通用样式表，新 wiki 也能一键初始化（可选，v0.16.22） |
-| 📝 **可配置的注入提示词** | 插件注入每个会话的「TiddlyWiki 持久知识库」提示词可在设置页配置：**默认精简版**（~1.7KB，只保留工具 schema 表达不了的约定——同步纪律 / 标签约定 / 链接格式），可选**完整版**（额外附一份**由工具注册表实时生成**的参数索引，不会再过期）；`extra` 追加自定义规范、`override` 整段接管、可整体停用；**保存后无需重启 dsh web**（section 即时重注册，当前会话下一步即生效），设置页可**按表单当前值预览**即将注入的全文（未保存的形态切换也立刻可见，v0.21.0 / v0.22.7） |
+| 📝 **可配置的注入提示词** | 插件注入每个会话的「TiddlyWiki 持久知识库」提示词可在设置页配置：**默认精简版**（v0.24.0 起 ~1.9KB，只保留工具 schema 表达不了的约定——同步纪律 / 工作区标记 / 先窄后宽检索 / 时效标注 / 链接格式），可选**完整版**（额外附一份**由工具注册表实时生成**的参数索引，不会再过期）；`extra` 追加自定义规范、`override` 整段接管、可整体停用；**保存后无需重启 dsh web**（section 即时重注册，当前会话下一步即生效），设置页可**按表单当前值预览**即将注入的全文（未保存的形态切换也立刻可见，v0.21.0 / v0.22.7） |
 | 🤖 **Agent 工具** | 15 个 `tiddlywiki_*` 工具：检索（**相关度排序 + 命中处片段 + 字段过滤**）、读写、**增量追加**、批量、重命名、**软删除/回收站**、**反向链接**、**附件入库**、**知识库体检**、git 同步与冲突解决（v0.19.0；检索/最近仍在**服务端**排除二进制附件，大 wiki 上从 515MB/17s 降到 ~0.4s） |
 | 🛡️ **不会被覆盖的写入** | 所有写入路径（agent 工具 **与** 快速笔记/编辑器路由）都**先读后写**：不传 tags 就保留原有标签、自定义字段与**内容类型**（`text/css`/wikitext 等不会被重置成 Markdown，v0.20.1）；`tiddlywiki_put(..., expectedModified/expectedRevision)` 与 `tiddlywiki_delete(..., expectedModified/expectedRevision)` 乐观并发——读取后若有人（在 TW 编辑器里）改过，写入/删除被拒绝（HTTP 409）而不是静默覆盖或丢进回收站；**给了哪个令牌就必须匹配哪个**（v0.23.5：两个令牌是 AND 不是 OR——`revision` 是 TW 的内存计数器、重启会复位，旧逻辑会因此静默放行跨重启的覆盖）；`tiddlywiki_attach` 的同名标题**默认拒绝**（要覆盖必须 `force: true`）；`tiddlywiki_delete` 默认**软删除进回收站**，`tiddlywiki_trash` 可恢复（v0.19.0 / v0.19.1 / v0.19.5 / v0.23.5） |
+| 🏷 **工作区感知的读写** | **新建**笔记自动带 `ws/<项目名>` 标签 + `workspace` 字段（项目名取自会话工作目录，`note.workspaceMark` 可关）；`tiddlywiki_search` 因此默认**先在本项目里找、区内 0 条才自动扩大到全库**并在回执里写明实际范围，`query` 按空白切词、**全部词命中**才算（AND）。工作区只是**附加**标记，绝不改写笔记原有的标签/字段，也**只在新建时**打（v0.24.0） |
+| 🕰 **时效性内容只提示不删** | 阶段性笔记（版本记录 / 部署步骤 / 排期 / 临时方案）可声明 `valid-until`（硬过期）或 `review-after`（该复查），被取代时写 `superseded-by` + `superseded` 标签并**保留旧笔记**；`tiddlywiki_lint` 的 `stale` 检查**只报告**（含「版本号或 done 标签 + 长期未改动」的**候选**，明确标注非判定）——**淘汰永远由人决定**，插件不会自动删除或归档任何笔记（v0.24.0） |
 | 🕒 **时间戳不再丢** | 插件写入的每条笔记都会带上 TW 的 `created`/`modified`（17 位紧凑 UTC，与 TW 编辑器逐字节一致）：新建 = 两者都取当前时刻，覆盖 = **保留原 `created`、刷新 `modified`**。此前这两个字段被当成「TW 服务端会补」而丢弃，而服务端**从不补**——缺 `modified` 的条目会被 TW 的 `sortTiddlers` 当空串，在 `+[!sort[modified]]` 页面上**直接沉到最后一名**（表现为「新日记没被收录」）。`TiddlyWebClient.put()` 还有一道兜底，任何写路径都不会写出无时间戳的条目（v0.22.5） |
 | 🧼 **渲染片段净化** | 回复流卡片与会话汇总注入的 TW 片段先经 **host 白名单净化**（丢 `iframe`/`script`/`svg`/`on*`/`javascript:`/`data:text/html` 等）——TW 自己的解析器只剥 `on*`，`<iframe src="javascript:…">` 会原样通过并在 DSH 页面里执行（v0.19.1 修复的存储型 XSS） |
 | 🔒 **写路由方法校验** | 每个写路由只接受自己的 HTTP 方法：跨站 `GET /sync`、`GET /restart`、`GET /upload` 一律 405 且无副作用（v0.19.0 修复了「任意网页一张 `<img>` 即可触发 pull/commit/push」的 CSRF 面） |
@@ -88,7 +90,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 | 工具 | 说明 |
 |---|---|
-| `tiddlywiki_search` | 检索（`query` + 可选 `tags[]/tag/since/type/field/value/limit`），**按相关度排序**（标题命中 > 标签 > 正文命中次数），摘要取自**命中处上下文**而不是正文开头 |
+| `tiddlywiki_search` | 检索（`query` + 可选 `tags[]/tag/since/type/field/value/limit`），**按相关度排序**（标题命中 > 标签 > 正文命中次数），摘要取自**命中处上下文**而不是正文开头。v0.24.0：`query` 按空白切词、**全部词命中**才算（AND）；默认**先在工作区内查、区内 0 条才自动扩大到全库**，回执里写明实际范围 |
 | `tiddlywiki_recent` | 最近修改的笔记（倒序，支持 `limit`/`since`），开工快速了解动态 |
 | `tiddlywiki_list_tags` | 现有非系统 tag 及计数（已排除只挂在二进制附件上的 tag）；默认列使用最多的 200 个（`limit` 可调、上限 1000），截断时返回 `total`/`truncated` |
 | `tiddlywiki_get` | 读单个 tiddler 全文（`modified` 以 ISO 返回，可直接用作 `expectedModified`） |
@@ -100,7 +102,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 | `tiddlywiki_trash` | 回收站：`action=list\|restore\|empty`（索引读不到或损坏时显式报错，绝不把回收站当空的重建） |
 | `tiddlywiki_backlinks` | 反向链接：谁用 `[[标题]]`/`{{标题}}` 引用了它、谁把它当标签 |
 | `tiddlywiki_attach` | 把**本机文件或公网 http(s) 地址**存成二进制附件（图片/PDF/…），可嵌入某篇笔记；URL 走 SSRF 守卫；**同名 tiddler 已存在时默认拒绝**（避免静默覆盖笔记），确认覆盖要传 `force: true`（tags/自定义字段仍保留） |
-| `tiddlywiki_lint` | 知识库体检：垃圾标签 / 死链 / 空笔记 / 缺内容类型的类 Markdown 笔记 |
+| `tiddlywiki_lint` | 知识库体检（**只读**）：垃圾标签 / 死链 / 空笔记 / 缺内容类型的类 Markdown 笔记 / **时效性内容**（`valid-until`·`review-after` 过期，以及「版本号或 done 标签 + 长期未改动」的**候选**，`staleAfterDays` 可调） |
 | `tiddlywiki_git_sync` | `action: pull\|push\|sync` |
 | `tiddlywiki_git_resolve` | pull 冲突后按 tiddler 二选一（`keep-local\|keep-remote`） |
 
@@ -117,6 +119,10 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 
 > ⚠️ `fields.type` 是 TW 的**内容类型保留字段**（`text/markdown` 等），业务分类请放 `tags`，别写进 `fields.type`。
 
+> 🕰 **过期内容怎么淘汰**（v0.24.0）：很多笔记是**阶段性**的（版本记录、部署步骤、排期、临时方案、一次性口令），过一段时间就不适用了。策略是**声明时效 + 人工决定，插件绝不自动删**：写这类笔记时带 `valid-until: YYYY-MM-DD`（硬过期）或 `review-after: YYYY-MM-DD`（该复查）；被取代时写 `superseded-by: [[新笔记]]` 并打 `superseded` 标签，**旧笔记保留**（wiki 是 git 仓库，留着的成本几乎为零，删错的成本很高）。`tiddlywiki_lint` 的 `stale` 检查会**只报告**三类：`stale-expired`（`valid-until` 已过）、`stale-review`（`review-after` 已到）、`stale-candidates`（带版本号或 `done` 标签且长期未改动——**明确标注是候选，不是判定**）。要清理就自己用 `tiddlywiki_delete`（默认进回收站，可恢复）。
+
+> 🏷 **新建笔记自动标工作区**（v0.24.0，可用 `note.workspaceMark: false` 关闭）：`put`/`batch_put`/`append` **新建**条目时会自动带上 **`ws/<项目名>` 标签 + `workspace` 字段**，项目名取自当前会话的工作目录（`C:\work\alpha` → `ws/alpha`）。于是 `tiddlywiki_search` 默认就能「先在本项目里找」，而 `field: workspace, value: <项目名>` 可以精确按项目过滤。**不需要也不应该手动加**这两个标记（会在 `agent-written` 之外重复）；内容明显属于**另一个**项目时，显式传 `fields: {"workspace": "那个项目"}` 即可（显式值优先，不会被自动值覆盖）。为什么标签要带 `ws/` 前缀：裸项目名会和真实业务标签撞车——作者库里 `dsh-tiddlywiki` 这个标签已挂着 2510 篇导入的书籍章节，去掉前缀会让「在工作区内搜索」返回那 2510 篇。
+
 ### 🧠 注入的系统提示词（可配置）
 
 插件会往每个会话的系统提示词里注入一段「TiddlyWiki 持久知识库」约定（**设置页 → 系统提示词**）：
@@ -124,7 +130,7 @@ dsh plugin --profile web add link:/path/to/dsh-tiddlywiki
 | 配置 | 作用 |
 |---|---|
 | `prompt.enabled` | 关掉后本插件不注入任何文本 |
-| `prompt.mode` | `slim`（**默认**）：只保留工具 schema 表达不了的约定（写入/并发纪律、同步纪律、标签约定、可点击链接格式）；`full`：额外附一份**参数索引**，由工具注册表在运行时生成，因此永远不会与真实工具脱节 |
+| `prompt.mode` | `slim`（**默认**，v0.24.0 起约 1.9KB）：只保留工具 schema 表达不了的约定（写入/并发纪律、同步纪律、工作区标记、先窄后宽检索、时效标注、可点击链接格式）；`full`：额外附一份**参数索引**，由工具注册表在运行时生成，因此永远不会与真实工具脱节 |
 | `prompt.extra` | 追加在末尾的自定义规范（团队 / 个人偏好），始终生效 |
 | `prompt.override` | 非空时整段取代内置文本（`extra` 仍会追加）——想完全自写提示词时用 |
 
@@ -240,6 +246,7 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       branch: "main"
     note:
       tag: "inbox"                     # 快速笔记默认 tag
+      workspaceMark: true              # v0.24.0：新建笔记自动带 ws/<项目名> 标签 + workspace 字段（项目名取自会话工作目录）
     startup:
       readyTimeoutMs: 60000            # TW 启动就绪窗口（v0.22.5，5s–600s；超出只警告并继续等，硬上限 = 3×，仍未就绪才判失败）
     prompt:
@@ -404,6 +411,8 @@ lib/                    # 预构建产物（发布含 lib/**，提交入库；�
 ## 🕘 版本记录
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
+
+- **v0.24.0**（2026-09-20）：**三处「Agent 读写 wiki 的规矩」按用户要求改进 + 一个 lint 误报修复**。① **新建笔记自动标工作区**：`put`/`batch_put`/`append` 新建条目时自动带上 **`ws/<项目名>` 标签 + `workspace` 字段**，项目名取自调用会话的工作目录（新 `src/host/workspace.ts` 纯函数：Windows/Unix 路径、尾斜杠、CJK、非法字符规范化；`home`/`tmp`/`desktop` 这类通用目录与**驱动器根目录**一律拒绝——后者是写这个模块的守门脚本抓出来的真缺陷：`C:\` 会被算成 `C:`，在盘根开会话时全盘笔记都挂上 `ws/C:`）。标记是**附加式**（调用方标签在前）、**仅新建**（覆盖不追打，也不会改写已有 `workspace` 字段）、`$:/` 豁免、`note.workspaceMark: false` 可关、调用方显式 `fields.workspace` 优先；`exec` 缺失 / 会话无 `cwd` / 未知会话一律**安全降级为不标记**（不猜、不抛错）。为什么标签必须带 `ws/` 前缀：裸项目名与真实业务标签撞车——作者库里 `dsh-tiddlywiki` 已挂着 2510 篇导入的书籍章节。② **检索先窄后宽 + 多词 AND**：`tiddlywiki_search` 先在工作区内查、**区内 0 条才自动扩大到全库**，回执明确写出「已在工作区 ws/X 内缩小范围」或「工作区 ws/X 内 0 条，已扩大到全库」（**「工作区内 0 条」不等于库里没有**，这是把「搜不到」错判成「不存在」的主要来源）；`query` 从**整串子串匹配**改为按空白切词、**全部词命中**才算（旧行为连 `alphaprobe betaprobe` 这种自然的双词查询都永远匹配不到）；调用方显式传 `tag`/`field`/`value` 时**不自动收窄**（显式范围不被二次猜测）。③ **过期内容淘汰策略（只提示，绝不自动删）**：阶段性笔记写 `valid-until`（硬过期）/ `review-after`（该复查），被取代时写 `superseded-by` + `superseded` 标签、**保留旧笔记**；`tiddlywiki_lint` 新增 `stale` 检查（默认开启、`staleAfterDays` 默认 180），报 `stale-expired` / `stale-review` 两类**硬判定**加一类 `stale-candidates`（带版本号或 `done` 标签且长期未改动，**明确标注「候选，非判定」**）。**淘汰只由人决定**——报告全程只读，不删不改不归档。④ **修 lint 死链误报**（v0.23.6 的内容并入本版）：死链正则 `\{\{([^}]+)\}\}` 会把 `{{{ [tag[todo]count[]] }}}` 这类**三花括号过滤器表达式**从第 1 个 `{` 开始捕获成「转写目标」并报死链（实测线上 480 条死链报告里 8 条属此类），现在用前后瞻 + 捕获内容守卫排除。**明确不改的**：≈440 条真实死链**保留不修**——多数是用户手工删掉的笔记，属预期状态（只读报告是对的，自动「修复」是错的）。**守门**：新增 `scripts/verify-workspace.mjs`（进 `verify:unit`，9 组纯函数断言，含「任何 cwd 算出的标签都不得是垃圾标签 / 含空白 / 丢前缀」这条与 `isJunkTag()` 的跨模块一致性检查，以及 `ws/` 前缀不得被「简化」掉的回归），`verify-tools.mjs` +12 条真实 TW 断言（工作区标记六种形态 + 多词 AND + 先窄后宽 + `fellBack` + `stale` 三类），`verify-prompt.mjs` +1 条「三条新治理规则必须在场」并把 slim 长度预算从 1800 调至 2100（**预算上调与新增的逐条断言绑定**：删掉任何一条规则即红）。**所有新守门都做过反向验证**：分别还原旧行为（整串子串检索 / 关掉工作区收窄 / 关掉自动标记 / 关掉 stale 检查 / 去掉驱动器根目录判定 / 从规范化字符集里删掉 `|`）后，对应断言稳定变红。slim 正文实测 1918 字符（full 2722）。
 
 - **v0.23.5**（2026-09-18）：**修 15 处审计缺陷**（第三轮全面审查列出的 18 条，逐条核实后修掉其中 15 条真缺陷；跳过 3 条纯理论性的信息泄露。完整审计报告见知识库笔记「dsh-tiddlywiki 第三轮代码审计」——审计报告是工作文档，不再进 git）。按性质分四组。**① 数据安全（最重）**：`tiddlywiki_delete` 原先**先删原条目、后读回收站索引**，于是「快照已写 → 原条目已删 → 索引读失败」时报"已中止"，但笔记其实已经没了、且没进索引——`trash list` 看不见、`restore` 找不到、`empty` 清不掉，成为永久孤儿（只能从 git 捞）；现在**读校验索引排在所有破坏性步骤之前**，中止即等于"没删"。同一处还有两个洞：`$:/` 系统条目会被**软删除**（删掉 `trash-index` 自己 → 下一次读 404 → 被当成"回收站为空" → 索引被重写成 1 条，丢掉全部记录），现在系统条目一律走永久删除分支，且**删回收站索引被显式拒绝**（要清空请用 `trash action=empty`）。`tiddlywiki_put` 不再把**二进制附件**写成文本（保留基底 `type: image/png` 会让 base64 解不出、图裂而回执说"类型没变"；要转换得显式 `fields.type`）。`git pull` 不再**无条件 `rebase --abort`**——此前只要 pull 失败（含没配 remote、离线等与被 rebase 无关的原因），用户在 wiki 仓库里正在做的 rebase 与冲突解决就被清掉；现在只 abort「我们自己发起」的那个。乐观并发的两个令牌从 **OR 改回 AND**：`revision` 是 TW 的内存计数器（重启/拉取后复位），旧逻辑「`modified` 命中就放行、否则看 `revision`」会让跨重启的写入被判"一致"而**静默覆盖**人类改动，同时传两个令牌也**并不更安全**。配置 tiddler 的 `modified` 不再被钉死成 `created`（`ensureTiddlerTimestamps` 只补缺的那一半，用 now）。**② 崩溃与资源泄漏**：`fs.watch` 补上常驻 `error` 监听（Node 在无监听器时把 `error` 抛成未捕获异常 → 整个 `dsh web` 进程退出；Windows EPERM / Linux ENOSPC 都能触发）；`WikiServer.startOnce()` 在 `spawn` 前**复查 `stopping`**（`stop()` 可在 `await findFreePort()` 期间跑完，此后 spawn 的子进程没人杀 = 孤儿 TW）；知识库切换**回滚失败也必须重装 extras**（此前从 catch 直接返回、跳过 `setupExtras()`，此后所有 wiki 写入都不再被提交，而"迟到就绪"复探让 `/status` 看着一切正常——静默停摆）；`runSwitch` 补 `disposed` 守卫（热重载/关闭期间的在途切换不再重新挂上 committer/watcher，也不在 teardown 之后再 spawn TW）。**③ 行为瑕疵**：`escapePromptBraces` 对**连续花括号**失效（`{{{name}}}` 会残留 `{{`，而 DSH 对未知变量直接抛错、能炸掉整个系统提示词装配正是该函数存在的理由）；`?limit=` 空值不再被夹成 1（`Number('' ?? fallback)` 是 0，`/recent?limit=` 曾只返回 1 条而不是默认 15）；`tiddlywiki_append` 在 `mode=prepend` 时不再回执谎报「写进了某段落」（`heading` 只对 append 生效）；`POST /render` 的超限 body 从 400 改为 **413**。**④ 两处零成本的安全收口**：代理路径判定不再只看字面量 `/tiddlers/`——TW core 的 `get-tiddler-html` 路由是**单段**（`/^\/([^\/]+)$/`），把 `/` 编码成 `%2F` 即可绕过旧守卫（本机实测：修复前 `/tw/...%2Fconfig` 与 `/api/...%2Fconfig` 都返回 **200 + 715 字节配置 JSON**）；`/render` 的 **`text` 分支**也不再是旁路（TW 会解析 `{{…}}` 转写，实测修复前 `{"text":"{{$:/plugins/dsh-tiddlywiki/config}}"}` 返回 200 + 3123 字节配置正文，净化器只管标签、管不住正文），`contextTitle` 一并校验。**守门**：`verify-write-policy` +6 条（令牌 AND 语义 +「证据不足判冲突」+ `onlyCreated` 不再钉死 modified）、`verify-prompt` +1 条连续花括号、`verify-frame-guards` +4 条源码级生命周期断言（`fs.watch` error 监听 / spawn 前复查 `stopping` / 回滚 finally / `runSwitch` disposed）、`verify-audit-fixes` +4 条 E2E（删除顺序：索引读失败后原条目必须仍在、`$:/` 与索引不得被软删、二进制附件拒写、`?limit=` 空值）、`verify-conflict-config-guards` +1 条**真 git E2E**（在真 rebase 中途 pull 失败，用户的 rebase 必须原样保留）、selftest +8 条（编码/双编码代理路径 403、`/render` 转写与 `contextTitle` 403、普通转写仍 200）。**全部 15 条修复都做过反向验证**：把修复还原后，新断言稳定变红。
 - **v0.23.4**（2026-09-18）：**三处硬化，全部来自 v0.23.3 上线当天暴露的真实事故**。① **提交前拦冲突（数据安全）**：`git pull --rebase --autostash` 的 **autostash 重新应用**冲突后，`rebase --abort` 已无事可 abort，冲突标记留在工作树里，随后 60s 的 AutoCommitter 照常 `git add -A && commit` —— `<<<<<<< Updated upstream` 就这样被**永久提交并推送**进了 wiki 的配置 tiddler（`0b19ca6`，2026-09-17），插件随即解析不了自己的配置（微信发布一直是关的、`prompt.extra` 静默失效）。现在 `GitFace.conflictState()` 三重探测（进行中的 rebase / 未合并路径 / **工作树里残留的冲突块**），`commit()` 直接抛 `GitConflictStateError` 拒绝提交；`/sync` 回 409 + 文件名、agent 工具返回结构化失败、AutoCommitter 去重上报一次（不去刷屏）；`pull()` 在 abort 后**复检**（autostash 形态正是 abort 之后才暴露）；`/status` 与设置页状态行显示「冲突未解决（N 个文件，已阻止提交）」。⚠️ `MERGE_HEAD`/`CHERRY_PICK_HEAD` 故意**不**硬拒——`git commit` 正是收尾它们的动作（真 git E2E 抓出了这个设计错误）。② **配置解析失败拒绝写（数据丢失）**：`ConfigStore.set()` 在存量 tiddler 解析失败时，原先拿**空缓存**合并 → 一次设置页保存就把配置写成只剩表单里那几个字段的"残版"（18 日 13:38 实测：`prompt.extra`/`git.remote`/`ui.*` 全丢）。现在抛 `ConfigUnreadableError`、不 PUT，并把原因经 `/admin/state` 的 `configError` 渲染成设置页顶部红色横幅；瞬时**读**失败仍走"合并到缓存"（回归断言守住）。③ **adapter 版本校验**：`/wechat/ready` 原先只数文件在不在，旧版 adapter（不认识 `--title-file`、标题仍是必填位置参数）也会报"就绪"，点按钮才在 opencli 里报"缺少必填参数"。现在按**定义**判新旧（`weixin-flow.js` 必须 `export function resolveNoteTitle(`、两个入口必须声明 `name: 'titleFile'`——**不是**字符串出现，注释里提到不算），`missing`（不存在）与 `stale`（过旧）语义互斥；按钮预检与路由 503 分别说「版本过旧」和「缺少发布脚本」。bundle 升 `0.2.0`。守门：新增 `scripts/verify-conflict-config-guards.mjs`（23 条：伪 exec 纯逻辑 + **真起临时 git 仓库的冲突 E2E**（真 merge 冲突 / 真残留标记，且解决后必须能提交）+ ConfigStore 拒绝写/回归/接线断言；**已反向验证**：拆掉 `contentScan` 或配置拒绝各红 2 条），`verify-wechat-publish.mjs` 17→24 条（+注释里提及新符号必须判旧、真源码符号对齐），bundle 守门 +3 条。

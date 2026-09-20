@@ -305,6 +305,9 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   }
 
   textField('note.tag', '快速笔记默认 tag', typeof note.tag === 'string' ? note.tag : 'inbox')
+  // 工作区标记（v0.24.0）：新建笔记自动带 ws/<项目名> 标签 + workspace 字段，
+  // 项目名取自会话工作目录。关掉只是不做标记，不影响任何写入。
+  checkField('note.workspaceMark', '新建笔记自动标工作区（ws/<项目名> 标签 + workspace 字段，取自当前会话工作目录）', note.workspaceMark !== false)
   checkField('git.autoCommit', '自动 commit（防抖）', git.autoCommit !== false)
   numField('git.debounceMs', '自动 commit 防抖(ms)', typeof git.debounceMs === 'number' ? git.debounceMs : 60_000)
   textField('git.remote', 'git 远端（空=仅本地）', typeof git.remote === 'string' ? git.remote : '')

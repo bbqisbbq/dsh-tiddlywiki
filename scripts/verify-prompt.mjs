@@ -58,6 +58,12 @@ const tools = (() => {
 const slim = buildPromptText({ mode: 'slim', tools })
 const full = buildPromptText({ mode: 'full', tools })
 
+/**
+ * slim 正文字符预算（见下面「slim 有长度预算」用例的长注释）。
+ * 单点定义：wechat 开关那条断言也必须用同一个数字，否则改一处漏一处。
+ */
+const SLIM_BUDGET = 2100
+
 test('默认形态是 slim 且与 section 名一致', () => {
   assert.equal(DEFAULT_PROMPT_MODE, 'slim', 'v0.21.0 起默认应为 slim')
   assert.equal(PROMPT_SECTION_NAME, 'dsh-tiddlywiki')
@@ -88,7 +94,13 @@ test('slim 不含参数清单（无第二份可漂移的 schema 副本）', () =
 })
 
 test('slim 有长度预算（防止再次膨胀成工具手册）', () => {
-  const limit = 1800
+  // 1800 → 2100（v0.24.0）：本条新增了三条**用户要求**的治理规则
+  // （自动工作区标记 / 检索先窄后宽 / 阶段性内容标时效），正文从 1949 起跳。
+  // 预算的作用只是「别偷偷长回工具手册」——真正的守门是上面两条
+  // 「slim 不含参数清单」+ 下面「关键约定必须在场」：谁想把 15 个工具的签名
+  // 抄回来，签名断言先红，光靠预算也藏不住（一份签名目录 ≫ 300 字符）。
+  // 因此这里只做**窄幅**上调；下一次要动它时请先证明规则不是冗余。
+  const limit = SLIM_BUDGET
   assert.ok(slim.length <= limit, `slim 已 ${slim.length} 字符，超出预算 ${limit}`)
   assert.ok(slim.length < full.length, 'full 必须比 slim 长（否则说明模式没生效）')
 })
@@ -100,7 +112,7 @@ test('可选功能默认不打扰：不进提示词（v0.23.0）', () => {
   // 显式开启后才出现，且只多一行（~61 字符），仍在预算内。
   const on = buildPromptText({ mode: 'slim', tools, wechat: true })
   assert.ok(on.includes('发布元数据规范'), 'wechat:true 时必须带发布约定')
-  assert.ok(on.length <= 1800, `开启后 slim 已 ${on.length} 字符，超出预算 1800`)
+  assert.ok(on.length <= SLIM_BUDGET, `开启后 slim 已 ${on.length} 字符，超出预算 ${SLIM_BUDGET}`)
   const added = on.split('\n').filter((l) => !slim.split('\n').includes(l))
   assert.equal(added.length, 1, `开关应当只增加 1 行，实际 ${added.length}`)
   // 两种形态都受开关控制
@@ -142,6 +154,28 @@ test('两种形态都保留治理约定块', () => {
   for (const needle of ['tiddlywiki_git_sync action=pull', 'tiddlywiki_git_resolve', '[标题](/dsh-tiddlywiki/tw/#标题)', 'human-edited', 'agent-written', 'expectedModified']) {
     assert.ok(slim.includes(needle), `slim 缺少关键约定：${needle}`)
   }
+})
+
+test('三条新治理规则必须在场（v0.24.0：工作区标记 / 先窄后宽 / 时效标注）', () => {
+  // 这几条是用户明确要求写进注入提示词的；文本一旦被改写掉就是静默失效，
+  // 所以逐条断言，同时把它们与 slim 预算上调绑定（预算不是白给的）。
+  const needles = [
+    ['工作区标记', 'ws/<项目名>'],
+    ['工作区标记字段', 'workspace` 字段'],
+    ['先窄后宽', '先在工作区内查'],
+    ['先窄后宽的回执口径', '「工作区内 0 条」不等于库里没有'],
+    ['多词 AND 口径', '全部词命中'],
+    ['硬过期字段', 'valid-until'],
+    ['复查字段', 'review-after'],
+    ['被取代字段', 'superseded-by'],
+    ['淘汰权归属（只由人决定）', '淘汰只由人决定'],
+  ]
+  for (const [what, needle] of needles) {
+    assert.ok(slim.includes(needle), `slim 缺少「${what}」：${needle}`)
+    assert.ok(full.includes(needle), `full 缺少「${what}」：${needle}`)
+  }
+  // 反向：插件自己绝不删除 — 文本里必须留下这条禁令，而不是只字未提。
+  assert.ok(/不要自行删除|只由人决定/u.test(slim), 'slim 必须写明「不要自行删除 / 只由人决定」')
 })
 
 test('enabled=false → 不产生任何文本（不注册空 section）', () => {

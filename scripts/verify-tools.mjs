@@ -13,6 +13,15 @@
  *     error）；overwrite:false 跳过已存在。
  *   - search / recent / list_tags：二进制 tiddler（type: image/png + base64 正文）
  *     不出现在结果里（含标题命中）；limit 上限被 clamp 到 200；since 过滤生效。
+ *   - 工作区标记（v0.24.0）：新建自动补 `ws/<项目名>` 标签 + `workspace` 字段、
+ *     调用方标签在前（附加式）、仅新建（覆盖不追打）、`$:/` 豁免、配置可关、
+ *     显式 `fields.workspace` 优先，以及无 exec / 无 cwd / 未知会话的降级安全。
+ *   - search（v0.24.0）：多词 AND（不是整串子串、更不是 OR）；先在工作区内查、
+ *     命中即 `scope=workspace`，区内 0 条才扩到全库并如实报告 `fellBack`；
+ *     调用方显式传 tag/field 时不自动收窄。
+ *   - lint（v0.24.0）：`stale` 报 `valid-until` / `review-after` 过期，`stale-candidates`
+ *     只把「版本号或 done 标签 + 长期未改动」当**候选**并自述「非判定」；
+ *     报告全程只读（不删不改）。
  *   - delete 幂等；rename 更新 `[[旧标题]]` / `{{旧标题}}` 引用；
  *     git_sync push 无 remote 必须 ok:false；git_resolve 空 files 必须显式失败。
  *
@@ -73,14 +82,40 @@ try {
   await git.initialCommit(wikiDir)
 
   const tools = new Map()
+  /**
+   * 会话 → 工作目录（模拟宿主 `sessions.get(id).header.cwd`）。
+   * v0.24.0 的新特性全靠这条链路：`exec.agent.id` → session → cwd → `ws/<名>`。
+   * 这里用假映射，因为本脚本不启动 DSH 宿主；`session-nocwd` 覆盖「会话存在但
+   * 没有 cwd」这一必须安全降级的真实情况。
+   */
+  const WORKSPACES = new Map([
+    ['session-alpha', 'C:\\work\\alpha-project'],
+    ['session-beta', 'C:\\work\\beta-project'],
+    ['session-nocwd', undefined],
+  ])
+  /** 配置开关 `note.workspaceMark`（默认 true）的可变替身。 */
+  let workspaceMarkEnabled = true
   registerTiddlywikiTools(
     { tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } },
-    { wiki: () => api, git, wikiPath: () => wikiDir, autoCommit: () => {} },
+    {
+      wiki: () => api,
+      git,
+      wikiPath: () => wikiDir,
+      autoCommit: () => {},
+      workspaceName: (sessionId) => WORKSPACES.get(sessionId),
+      workspaceMarkEnabled: () => workspaceMarkEnabled,
+    },
   )
   const call = (name, args) => {
     const tool = tools.get(name)
     assert.ok(tool !== undefined, `工具 ${name} 未注册`)
     return tool.execute(args, undefined)
+  }
+  /** 带「调用会话」的工具调用（`exec.agent.id` 是唯一的工作区线索）。 */
+  const callAs = (name, args, sessionId) => {
+    const tool = tools.get(name)
+    assert.ok(tool !== undefined, `工具 ${name} 未注册`)
+    return tool.execute(args, { agent: { id: sessionId } })
   }
   /** 非标准字段在单条 GET 里被 TW 折进 `fields`（knownFields 之外），两处都要看。 */
   const fieldOf = (tiddler, name) => (tiddler === undefined ? undefined : (tiddler[name] ?? tiddler.fields?.[name]))
@@ -343,6 +378,28 @@ try {
     assert.ok(joined.includes('真正不存在的条目XYZ'), `真正缺失的标题应该被报出来：${joined}`)
   })
 
+  await test('lint：`{{{…}}}` 过滤器表达式不得被当成死链转写（v0.23.6）', async () => {
+    // The old transclusion branch `\{\{([^}]+)\}\}` started at the FIRST two
+    // braces of `{{{`, captured `{ [tag[todo]count[]] ` (target begins with `{`)
+    // and reported it — flagging the home page and every counting page as broken.
+    await api.put({
+      title: 'FilterProbe',
+      text: '共 {{{ [tag[todo]!tag[done]count[]] }}} 件；真正的死链 [[确实不存在ZZZ]]。',
+      type: 'text/markdown',
+      tags: ['human'],
+    })
+    const r = await call('tiddlywiki_lint', { checks: ['broken-links'], limit: 50 })
+    const issue = r.issues.find((i) => i.kind === 'broken-links')
+    assert.ok(issue !== undefined, `应报出真正的死链：${JSON.stringify(r.issues)}`)
+    const joined = issue.samples.join('\n')
+    assert.ok(
+      !joined.includes('FilterProbe「') || !/\{\s*\[tag/.test(joined),
+      `{{{…}}} 过滤器表达式不得被当成死链：${joined}`,
+    )
+    assert.ok(!/FilterProbe.*→.*\{/.test(joined), `捕获目标不得以 { 开头（那是三花括号）：${joined}`)
+    assert.ok(joined.includes('确实不存在ZZZ'), `真正的死链仍须报出：${joined}`)
+  })
+
   await test('lint：真正没有 type 字段的 Markdown 笔记会被报出来', async () => {
     // 绕过工具直接 PUT，得到一个**没有 type 字段**的条目——TW 服务端在 listing
     // 里会替它补 text/vnd.tiddlywiki，所以只能靠 [!has[type]] 过滤器识别。
@@ -426,6 +483,223 @@ try {
     const noop = await call('tiddlywiki_rename', { oldTitle: 'ToolsRenamed', newTitle: 'ToolsRenamed' })
     assert.equal(noop.ok, true, '同名 rename 应是安全 no-op')
     assert.ok((await api.get('ToolsRenamed')) !== undefined, '同名 rename 不得删掉条目')
+  })
+
+  // ── 工作区标记（v0.24.0：用户要求「默认添加时打上工作区/项目名」）──────────
+  // 设计要点（写进断言，别只写在注释里）：
+  //   · 附加式 —— 调用方标签在前，工作区标签在后，绝不替换；
+  //   · 仅新建 —— 覆盖已有笔记不得追打，也不得改写它的 workspace 字段；
+  //   · 降级安全 —— 无 exec / 无会话 / 会话无 cwd / 未知会话都不标记（而不是
+  //     打成空标签或抛错）；
+  //   · 可关 —— 配置 note.workspaceMark=false 时完全不出现；
+  //   · 显式优先 —— 调用方自己写的 fields.workspace 不被自动值覆盖。
+  await test('put：新建自动带 ws/<项目名> 标签 + workspace 字段（调用方标签在前）', async () => {
+    const r = await callAs('tiddlywiki_put', { title: 'WsMarked', text: '工作区标记探针', tags: ['probe-tag'] }, 'session-alpha')
+    assert.equal(r.ok, true, `put 应成功：${JSON.stringify(r)}`)
+    assert.equal(r.workspace, 'alpha-project', `应报告工作区 id：${JSON.stringify(r.workspace)}`)
+    assert.ok(r.tags.includes('ws/alpha-project'), `新建应补 ws/alpha-project，实际 ${JSON.stringify(r.tags)}`)
+    assert.ok(r.tags.includes('probe-tag'), `调用方标签不得丢：${JSON.stringify(r.tags)}`)
+    assert.ok(r.tags.includes(AGENT_TAG), `agent-written 仍须在场：${JSON.stringify(r.tags)}`)
+    assert.ok(
+      r.tags.indexOf('probe-tag') < r.tags.indexOf('ws/alpha-project'),
+      `工作区标签必须是「附加」在调用方标签之后，实际 ${JSON.stringify(r.tags)}`,
+    )
+    const t = await api.get('WsMarked')
+    assert.equal(fieldOf(t, 'workspace'), 'alpha-project', 'workspace 字段必须落库（供 field/value 过滤检索）')
+    assert.ok((t.tags ?? []).includes('ws/alpha-project'), `标签必须落库：${JSON.stringify(t.tags)}`)
+  })
+
+  await test('put：覆盖已有笔记不得追打工作区标记（仅新建；含 workspace 字段）', async () => {
+    await callAs('tiddlywiki_put', { title: 'WsOverwrite', text: '第一版' }, 'session-alpha')
+    const second = await callAs('tiddlywiki_put', { title: 'WsOverwrite', text: '第二版' }, 'session-beta')
+    assert.equal(second.ok, true, `覆盖应成功：${JSON.stringify(second)}`)
+    assert.equal(second.workspace, undefined, '覆盖不是新建，不得报告工作区标记')
+    const t = await api.get('WsOverwrite')
+    assert.ok(
+      !(t.tags ?? []).includes('ws/beta-project'),
+      `覆盖不得追打第二个工作区的标签（否则一篇笔记会越挂越多项目）：${JSON.stringify(t.tags)}`,
+    )
+    assert.equal(fieldOf(t, 'workspace'), 'alpha-project', '覆盖不得改写已有的 workspace 字段')
+  })
+
+  await test('put：无 exec / 无会话 cwd / 未知会话都安全降级为不标记（不猜、不抛错）', async () => {
+    const noExec = await call('tiddlywiki_put', { title: 'WsNoExec', text: 'x' })
+    assert.equal(noExec.ok, true, '没有 exec 时工具本身必须照常工作')
+    assert.equal(noExec.workspace, undefined, '没有 exec.agent 时不得猜工作区')
+    const noAgent = await call('tiddlywiki_put', { title: 'WsNoAgent', text: 'x' })
+    assert.equal(noAgent.workspace, undefined)
+    const noCwd = await callAs('tiddlywiki_put', { title: 'WsNoCwd', text: 'x' }, 'session-nocwd')
+    assert.equal(noCwd.ok, true, '会话没有 cwd 必须照常写入')
+    assert.equal(noCwd.workspace, undefined, '会话无 cwd 时必须降级为不标记，而不是打成空标签')
+    const unknown = await callAs('tiddlywiki_put', { title: 'WsUnknown', text: 'x' }, 'session-does-not-exist')
+    assert.equal(unknown.ok, true)
+    assert.equal(unknown.workspace, undefined, '未知会话不得猜工作区')
+    for (const title of ['WsNoExec', 'WsNoAgent', 'WsNoCwd', 'WsUnknown']) {
+      const t = await api.get(title)
+      assert.ok(!(t.tags ?? []).some((tag) => tag.startsWith('ws/')), `${title} 不该带工作区标签：${JSON.stringify(t.tags)}`)
+      assert.equal(fieldOf(t, 'workspace'), undefined, `${title} 不该带 workspace 字段`)
+    }
+  })
+
+  await test('put：$:/ 系统条目豁免工作区标记（与 agent-written 同一条豁免）', async () => {
+    const r = await callAs('tiddlywiki_put', { title: '$:/WsProbeConfig', text: 'x' }, 'session-alpha')
+    assert.equal(r.ok, true, `$:/ 条目应写得进去：${JSON.stringify(r)}`)
+    assert.equal(r.workspace, undefined, '$:/ 条目不得被当成「项目产出」')
+    const t = await api.get('$:/WsProbeConfig')
+    assert.ok(!(t.tags ?? []).some((tag) => tag.startsWith('ws/')), `${JSON.stringify(t.tags)}`)
+  })
+
+  await test('put：note.workspaceMark=false 时完全不标记（配置可关）', async () => {
+    workspaceMarkEnabled = false
+    try {
+      const r = await callAs('tiddlywiki_put', { title: 'WsDisabled', text: 'x' }, 'session-alpha')
+      assert.equal(r.ok, true)
+      assert.equal(r.workspace, undefined, '开关关闭时必须完全不标记')
+      const t = await api.get('WsDisabled')
+      assert.ok(!(t.tags ?? []).some((tag) => tag.startsWith('ws/')), `${JSON.stringify(t.tags)}`)
+      assert.equal(fieldOf(t, 'workspace'), undefined)
+    } finally {
+      workspaceMarkEnabled = true
+    }
+  })
+
+  await test('put：调用方显式写的 fields.workspace 优先于自动值（不静默覆盖）', async () => {
+    const r = await callAs('tiddlywiki_put', {
+      title: 'WsExplicit',
+      text: 'x',
+      fields: { workspace: 'legacy-project' },
+    }, 'session-alpha')
+    assert.equal(r.ok, true, `显式字段应可写：${JSON.stringify(r)}`)
+    const t = await api.get('WsExplicit')
+    assert.equal(fieldOf(t, 'workspace'), 'legacy-project', '调用方显式归属不得被自动值改写')
+  })
+
+  await test('batch_put / append：新建时同样自动打工作区标记并逐条报告', async () => {
+    const b = await callAs('tiddlywiki_batch_put', { items: [{ title: 'WsBatch', text: 'x' }] }, 'session-alpha')
+    assert.equal(b.failed, 0, `批量写应成功：${JSON.stringify(b.items)}`)
+    assert.equal(b.items[0].workspace, 'alpha-project', `逐条结果应报告工作区：${JSON.stringify(b.items[0])}`)
+    assert.ok((await api.get('WsBatch')).tags.includes('ws/alpha-project'), 'batch_put 新建也应补标签')
+    const a = await callAs('tiddlywiki_append', { title: 'WsAppendNew', text: '新条目增量' }, 'session-beta')
+    assert.equal(a.ok, true, `append 应成功：${JSON.stringify(a)}`)
+    assert.equal(a.created, true, '（前置条件）这次 append 应当是新建')
+    assert.equal(a.workspace, 'beta-project', `append 新建也应报告工作区：${JSON.stringify(a)}`)
+    assert.ok((await api.get('WsAppendNew')).tags.includes('ws/beta-project'), 'append 新建也应补标签')
+    // 覆盖式 append 不得追打（与 put 同一规则）
+    const a2 = await callAs('tiddlywiki_append', { title: 'WsAppendNew', text: '再追加' }, 'session-alpha')
+    assert.equal(a2.created, false, '（前置条件）这次 append 应当是覆盖既有条目')
+    assert.equal(a2.workspace, undefined, 'append 到已有条目不得追打工作区标记')
+    assert.ok(
+      !(await api.get('WsAppendNew')).tags.includes('ws/alpha-project'),
+      'append 到已有条目不得追打第二个工作区的标签',
+    )
+  })
+
+  // ── search：多词 AND + 先窄后宽（v0.24.0）────────────────────────────────
+  await test('search：多词按 AND（全部词命中才算）——旧实现只做整串子串匹配', async () => {
+    await api.put({ title: 'AndProbeBoth', text: 'alphaprobe 与 betaprobe 都在这里', type: 'text/markdown', tags: ['and-probe'] })
+    await api.put({ title: 'AndProbeOnly', text: '这里只有 alphaprobe 一个词', type: 'text/markdown', tags: ['and-probe'] })
+    // 整串子串（旧行为）永远匹配不到这条笔记 → 这是 AND 的判别器
+    const both = await call('tiddlywiki_search', { query: 'alphaprobe betaprobe', tag: 'and-probe', limit: 50 })
+    assert.ok(
+      both.results.some((r) => r.title === 'AndProbeBoth'),
+      `两个词都命中的笔记必须出现在结果里（AND 生效）：${JSON.stringify(both.results.map((r) => r.title))}`,
+    )
+    assert.ok(
+      !both.results.some((r) => r.title === 'AndProbeOnly'),
+      `只命中一个词的笔记不得出现（那会退化成 OR）：${JSON.stringify(both.results.map((r) => r.title))}`,
+    )
+    // 空查询保持旧的「空结果」语义（别把空串切成 '' 后匹配一切）
+    const empty = await call('tiddlywiki_search', { query: '   ', tag: 'and-probe' })
+    assert.equal(empty.total, 0, `空白查询必须返回 0 条，实际 ${empty.total}`)
+  })
+
+  await test('search：先在工作区内查，命中就报 scope=workspace 且不带出别的工作区', async () => {
+    await callAs('tiddlywiki_put', { title: 'ScopeAlphaNote', text: 'scopeprobe 内容在 alpha', fields: {} }, 'session-alpha')
+    await callAs('tiddlywiki_put', { title: 'ScopeBetaNote', text: 'scopeprobe 内容在 beta', fields: {} }, 'session-beta')
+    const r = await callAs('tiddlywiki_search', { query: 'scopeprobe', limit: 50 }, 'session-alpha')
+    assert.equal(r.workspace, 'alpha-project', `应识别出当前工作区：${JSON.stringify(r.workspace)}`)
+    assert.equal(r.scope, 'workspace', `工作区内有命中就该缩在区内：${JSON.stringify(r)}`)
+    assert.equal(r.fellBack, false, '没有扩大范围时 fellBack 必须为 false')
+    const titles = r.results.map((x) => x.title)
+    assert.ok(titles.includes('ScopeAlphaNote'), `本工作区的笔记必须在结果里：${JSON.stringify(titles)}`)
+    assert.ok(!titles.includes('ScopeBetaNote'), `别的工作区的同名关键词笔记不得混进来：${JSON.stringify(titles)}`)
+  })
+
+  await test('search：工作区内 0 条时扩大到全库，并如实报告 fellBack（回执不许假装「库里没有」）', async () => {
+    await callAs('tiddlywiki_put', { title: 'OnlyInBetaNote', text: 'betaonlyprobe 只在 beta', fields: {} }, 'session-beta')
+    const r = await callAs('tiddlywiki_search', { query: 'betaonlyprobe', limit: 50 }, 'session-alpha')
+    assert.equal(r.workspace, 'alpha-project', '仍应报告当前工作区')
+    assert.equal(r.scope, 'all', `区内 0 条必须落到全库：${JSON.stringify({ scope: r.scope, total: r.total })}`)
+    assert.equal(r.fellBack, true, '扩大范围必须标记 fellBack=true（回执据此提示「区内 0 条」）')
+    assert.ok(
+      r.results.some((x) => x.title === 'OnlyInBetaNote'),
+      `扩大到全库后必须能找到别的工作区的笔记：${JSON.stringify(r.results.map((x) => x.title))}`,
+    )
+  })
+
+  await test('search：调用方显式传 tag/field 时不自动收窄（显式范围不被二次猜测）', async () => {
+    const r = await callAs('tiddlywiki_search', { query: 'scopeprobe', tag: 'and-probe', limit: 50 }, 'session-alpha')
+    assert.equal(r.workspace, null, `显式传 tag 时不得启用工作区收窄：${JSON.stringify(r.workspace)}`)
+    assert.equal(r.fellBack, false, '未启用收窄时 fellBack 必须为 false（它不是「搜不到」的同义词）')
+    assert.equal(r.scope, 'all')
+    const r2 = await callAs('tiddlywiki_search', { query: 'scopeprobe', field: 'workspace', limit: 50 }, 'session-alpha')
+    assert.equal(r2.workspace, null, '显式传 field 时同样不得收窄')
+  })
+
+  // ── lint：时效性内容（v0.24.0，只读）────────────────────────────────────
+  await test('lint：stale 报出 valid-until / review-after 过期，且不报未到期的（只读）', async () => {
+    await call('tiddlywiki_put', { title: 'StaleExpired', text: '这张表 2020 年就失效了', fields: { 'valid-until': '2000-01-01' } })
+    await call('tiddlywiki_put', { title: 'StaleReview', text: '该复查了', fields: { 'review-after': '2000-01-01' } })
+    await call('tiddlywiki_put', { title: 'StaleFresh', text: '还早', fields: { 'valid-until': '2999-01-01' } })
+    const r = await call('tiddlywiki_lint', { checks: ['stale'], limit: 50 })
+    const expired = r.issues.find((i) => i.kind === 'stale-expired')
+    const review = r.issues.find((i) => i.kind === 'stale-review')
+    assert.ok(expired !== undefined, `valid-until 已过必须报 stale-expired：${JSON.stringify(r.issues)}`)
+    assert.ok(review !== undefined, `review-after 已到必须报 stale-review：${JSON.stringify(r.issues)}`)
+    const all = [...expired.samples, ...review.samples].join('\n')
+    assert.ok(all.includes('StaleExpired'), `样本应含 StaleExpired：${all}`)
+    assert.ok(all.includes('StaleReview'), `样本应含 StaleReview：${all}`)
+    assert.ok(!all.includes('StaleFresh'), `未到期的笔记不得报出来：${all}`)
+    // 只读：报告不得改动任何东西
+    const still = await api.get('StaleExpired')
+    assert.ok(still !== undefined, 'lint 绝不允许删除条目')
+    assert.equal(fieldOf(still, 'valid-until'), '2000-01-01', 'lint 不得改写时效字段')
+  })
+
+  await test('lint：stale-candidates 只把「版本号/done 标签 + 长期未改动」当候选，并自述是候选', async () => {
+    // 直接 PUT 带一个很久以前的 modified（TW 会沿用调用方给的时间戳），
+    // 这才是「长期未改动」的真实形态；再挂一个版本号标签。
+    await api.put({
+      title: 'StaleVersioned',
+      text: 'v0.1.0 的旧版本说明',
+      type: 'text/markdown',
+      tags: ['v0.1.0'],
+      modified: '20200101120000000',
+    })
+    const stored = await api.get('StaleVersioned')
+    assert.equal(stored.modified, '20200101120000000', '（前置条件）旧的 modified 必须落库，否则候选判定无从谈起')
+    const r = await call('tiddlywiki_lint', { checks: ['stale'], limit: 50 })
+    const cand = r.issues.find((i) => i.kind === 'stale-candidates')
+    assert.ok(cand !== undefined, `带版本号标签 + 长期未改动应进入候选：${JSON.stringify(r.issues)}`)
+    assert.ok(
+      cand.samples.some((s) => s.includes('StaleVersioned')),
+      `候选样本应含 StaleVersioned：${JSON.stringify(cand.samples)}`,
+    )
+    // 「候选」必须自述为候选 —— 这是「只提示、不判定」的唯一可见凭据
+    assert.ok(/候选/.test(cand.hint), `候选类必须自述是候选而非判定：${cand.hint}`)
+    assert.ok(/非判定/.test(cand.hint), `候选类必须写明「非判定」：${cand.hint}`)
+    // …而且它只是一条 issue，绝不能顺手把笔记删了/改了
+    assert.ok((await api.get('StaleVersioned')) !== undefined, 'lint 绝不允许删除条目')
+    // 阈值可调：把窗口收到 1 天以内也不会把这条排除（它本来就是 2020 年的）
+    const tight = await call('tiddlywiki_lint', { checks: ['stale'], staleAfterDays: 1, limit: 50 })
+    const tightCand = tight.issues.find((i) => i.kind === 'stale-candidates')
+    assert.ok(tightCand !== undefined, '阈值调小后这条仍应留在候选里')
+  })
+
+  await test('lint：默认体检（不传 checks）也包含时效检查', async () => {
+    const full = await call('tiddlywiki_lint', { limit: 10 })
+    const kinds = full.issues.map((i) => i.kind)
+    assert.ok(kinds.includes('stale-expired'), `默认体检必须包含时效检查：${JSON.stringify(kinds)}`)
   })
 
   // ── git 工具 ─────────────────────────────────────────────────────────────

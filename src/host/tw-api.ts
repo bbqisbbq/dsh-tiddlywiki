@@ -460,10 +460,20 @@ export class TiddlyWebClient {
    * first) rather than returned in listing order, and `limit` is clamped to
    * 1…200 like the HTTP route always did (v0.19.0). Binary tiddlers are not in
    * the listing at all, so they can never flood the results.
+   *
+   * v0.24.0 — MULTI-TERM: the query is split on whitespace and EVERY term must
+   * match somewhere (title / tags / body), i.e. AND. Before this the whole
+   * string was one substring needle, so `"书籍 索引"` looked for the literal
+   * `书籍 索引` (with the space) and returned 0 hits while each word matched
+   * dozens — a query shape every model produces naturally, and one that reads
+   * as "the knowledge base is empty" rather than as a syntax error.
    */
   async search(query: string, options: SearchOptions = {}): Promise<{ items: Tiddler[]; total: number }> {
     const items = await this.list(undefined, true)
-    const needle = query.toLowerCase()
+    const terms = query.split(/\s+/).map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0)
+    // An empty query matched nothing before (every hit flag was gated on a
+    // non-empty needle) — keep that, rather than "match everything".
+    if (terms.length === 0) return { items: [], total: 0 }
     const sinceTime = parseSince(options.since)
     const wantedTags = [...(options.tags ?? []), options.tag].filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
     const limit = clampLimit(options.limit, 30)
@@ -472,19 +482,28 @@ export class TiddlyWebClient {
     const matched: Array<{ t: Tiddler; score: number }> = []
     for (const t of items) {
       if (t.title.startsWith('$:/')) continue
-      const titleHit = needle.length > 0 && t.title.toLowerCase().includes(needle)
-      const text = t.text ?? ''
-      const textHit = needle.length > 0 && text.toLowerCase().includes(needle)
-      const tagHit = needle.length > 0 && (t.tags ?? []).some((tag) => tag.toLowerCase().includes(needle))
-      if (!titleHit && !textHit && !tagHit) continue
+      const lowerTitle = t.title.toLowerCase()
+      const lowerTags = (t.tags ?? []).map((tag) => tag.toLowerCase())
+      const lowerText = (t.text ?? '').toLowerCase()
+      let score = 0
+      let allTerms = true
+      for (const term of terms) {
+        const inTitle = lowerTitle.includes(term)
+        const inTags = lowerTags.some((tag) => tag.includes(term))
+        const occurrences = countOccurrences(lowerText, term)
+        if (!inTitle && !inTags && occurrences === 0) { allTerms = false; break }
+        if (inTitle) score += 6
+        if (inTags) score += 3
+        score += Math.min(occurrences, 5)
+      }
+      if (!allTerms) continue
       if (sinceTime !== undefined) {
         const modified = parseTiddlerDate(t.modified)
         if (modified === undefined || modified < sinceTime) continue
       }
       if (options.type !== undefined && options.type.length > 0 && (t.type ?? 'text/vnd.tiddlywiki') !== options.type) continue
       if (wantedTags.length > 0) {
-        const tags = (t.tags ?? []).map((tag) => tag.toLowerCase())
-        if (!wantedTags.every((w) => tags.includes(w.toLowerCase()))) continue
+        if (!wantedTags.every((w) => lowerTags.includes(w.toLowerCase()))) continue
       }
       // Custom-field match: exact value comparison on any field (note metadata
       // such as `q`, `due`, `clip-url` is not part of title/text, so it used to
@@ -494,10 +513,6 @@ export class TiddlyWebClient {
         if (typeof actual !== 'string') continue
         if (fieldValue !== undefined && actual !== fieldValue) continue
       }
-      let score = 0
-      if (titleHit) score += 6
-      if (tagHit) score += 3
-      if (needle.length > 0) score += Math.min(countOccurrences(text.toLowerCase(), needle), 5)
       matched.push({ t, score })
     }
     matched.sort((a, b) => {

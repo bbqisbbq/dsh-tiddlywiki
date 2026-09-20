@@ -61,6 +61,7 @@ export { ConfigStore, deepMerge, ConfigUnreadableError, describeUnreadableConfig
 export { describeConflict, GitConflictStateError } from './host/git.ts'
 export { sanitizeTwFragment, isSafeUrl } from './host/sanitize.ts'
 export { MISSING_TYPE_FILTER, ensureTiddlerTimestamps, formatTiddlerDate, parseTiddlerDate, toIsoDateString } from './host/tw-api.ts'
+export { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX, normalizeWorkspaceName, workspaceMarkFromCwd, workspaceNameFromCwd, workspaceTagName } from './host/workspace.ts'
 export {
   AGENT_WRITTEN_TAG,
   DEFAULT_NOTE_TYPE,
@@ -114,7 +115,7 @@ export {
   type WechatReadyView,
 } from './host/wechat-publish.ts'
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
-export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUnavailableError } from './host/tools.ts'
+export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUnavailableError, isJunkTag } from './host/tools.ts'
 export { tiddlywikiToolSummary } from './host/tools.ts'
 export {
   buildPromptText,
@@ -214,7 +215,7 @@ interface ResolvedConfig {
   wiki: string
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
-  note: { tag: string }
+  note: { tag: string; workspaceMark: boolean }
   bridge: { enabled: boolean; port: number; token: string; tag: string }
   ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
   startup: { readyTimeoutMs: number }
@@ -243,7 +244,7 @@ const DEFAULTS: ResolvedConfig = {
   wiki: 'main',
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
-  note: { tag: 'inbox' },
+  note: { tag: 'inbox', workspaceMark: true },
   bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip' },
   ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
   startup: { readyTimeoutMs: READY_TIMEOUT_DEFAULT_MS },
@@ -405,6 +406,15 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   const effectiveNoteTag = (): string => {
     const tag = eff().note?.tag
     return typeof tag === 'string' && tag.trim().length > 0 ? tag : config.note.tag
+  }
+  /**
+   * Whether agent-created notes get the automatic workspace marker (v0.24.0):
+   * tag `ws/<project>` + field `workspace`. Default ON (cordis default true);
+   * the settings-page overlay can turn it off, and an explicit `false` there wins.
+   */
+  const effectiveWorkspaceMark = (): boolean => {
+    const value = eff().note?.workspaceMark
+    return typeof value === 'boolean' ? value : config.note.workspaceMark
   }
   /**
    * Effective bridge config (defaults + settings-page overlay). Used PER
@@ -645,6 +655,16 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // After a pull that changed the working tree, restart TW so the server
     // (and the agent's reads) see the pulled content, not the old snapshot.
     restartWiki: async () => { await server.restart() },
+    // Workspace (project) marking for agent-created notes (v0.24.0): a tool call
+    // carries its session id, and the session header carries the cwd — so the
+    // plugin can tag new notes with the project all by itself instead of asking
+    // the model to remember. Resolved lazily per call; every hop is optional.
+    workspaceName: (sessionId: string) => {
+      const sessions = ctx.get('sessions') as SessionsFace | undefined
+      const header = (sessions?.get(sessionId) as { header?: { cwd?: unknown } } | undefined)?.header
+      return typeof header?.cwd === 'string' ? header.cwd : undefined
+    },
+    workspaceMarkEnabled: () => effectiveWorkspaceMark(),
   }
   disposers.push(...registerTiddlywikiTools(ctx, toolsDeps))
   // Register the prompt section only AFTER the tools: `full` mode's signature
