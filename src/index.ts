@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type UiDefaultsPublic, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
-import { registerAdminRoutes, ensureLanguage, ensurePlugin, resolveTwRoot, type AdminDeps } from './host/admin.ts'
+import { registerAdminRoutes, ensureLanguage, ensurePlugin, pinLanguageTiddler, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, drainThenStop } from './host/seeds.ts'
 import { RENDER_PLUGIN_FILE } from './host/seed-render.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
@@ -75,7 +75,7 @@ export {
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './host/routes.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './host/routes.ts'
-export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, ensurePlugin, bundledCatalog, ensureLanguage, normalizeThemes, readActiveThemeName, MASKED_SECRET, maskConfigSecrets, stripMaskedSecrets } from './host/admin.ts'
+export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, ensurePlugin, bundledCatalog, ensureLanguage, pinLanguageTiddler, normalizeThemes, readActiveThemeName, MASKED_SECRET, maskConfigSecrets, stripMaskedSecrets } from './host/admin.ts'
 export { escapeInline } from './host/session-summary.ts'
 export { seedDocNote, docNoteText, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
 export { hashText, parseSeedMarker, readSeedMarker, writeSeedMarker, SEED_MARKER_VERSION } from './host/seed-util.ts'
@@ -736,9 +736,16 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         const changed = await ensureLanguage(wikiPath, resolveTwRoot(), code)
         if (changed && !disposed) await server.restart()
         // Pin the active language tiddler so TW's UI actually switches.
+        // v0.24.2: conditional — an identical body still rewrites
+        // `$__language.txt.meta`'s created/modified on EVERY dsh web startup, and
+        // two machines doing that conflict on every pull (2026-09-20: twice in
+        // one session, on a file whose content never differed).
         const langClient = client()
         if (langClient !== undefined) {
-          await langClient.put({ title: '$:/language', text: `$:/languages/${code}`, type: 'text/plain', tags: [] }).catch(() => undefined)
+          await pinLanguageTiddler(langClient, `$:/languages/${code}`, (message, err) => {
+            if (err === undefined) console.warn('[dsh-tiddlywiki]', message)
+            else console.warn('[dsh-tiddlywiki] pinning $:/language failed:', err)
+          }).catch(() => undefined)
         }
       } catch (err) {
         console.warn('[dsh-tiddlywiki] applying uiLanguage:', err)

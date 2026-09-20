@@ -299,6 +299,44 @@ export function normalizeThemes(selected: string[], deps: Record<string, string[
 }
 
 /**
+ * Point `$:/language` at a language plugin — but ONLY when the stored text
+ * differs (v0.24.2).
+ *
+ * WHY THE CONDITIONAL WRITE MATTERS
+ * ---------------------------------
+ * Both callers used to PUT this tiddler unconditionally: on EVERY dsh web
+ * startup (`uiLanguage` auto-apply) and on every languages change. The body was
+ * identical every time, but TW stamps a fresh `created`/`modified` into the
+ * `.meta` file, so on a two-machine setup BOTH sides rewrote the same lines and
+ * `git pull` conflicted on `tiddlers/$__language.txt.meta` **every single time**
+ * — the repo's git log already carries a commit whose whole job was cleaning up
+ * one of those leftovers. Same cause produced two conflict rounds in one session
+ * on 2026-09-20.
+ *
+ * Returns whether anything was written (`changed: false` is the common case).
+ *
+ * ⚠️ A READ FAILURE MUST NOT BE TREATED AS "ALREADY CORRECT" (ironclad rule #3):
+ * `client.get()` only returns undefined on a 404; anything else throws, and we
+ * then write. Skipping on a transient read error would leave the user's language
+ * pinned to the wrong value with no way to fix it.
+ */
+export async function pinLanguageTiddler(
+  client: TiddlyWebClient,
+  desired: string,
+  log?: (message: string, err?: unknown) => void,
+): Promise<boolean> {
+  let existing: { text?: string } | undefined
+  try {
+    existing = await client.get('$:/language')
+  } catch (err) {
+    log?.('reading $:/language failed — writing it anyway', err)
+  }
+  if (existing !== undefined && existing.text === desired) return false
+  await client.put({ title: '$:/language', text: desired, type: 'text/plain', tags: [] })
+  return true
+}
+
+/**
  * Ensure a language code (e.g. "zh-Hans") is in tiddlywiki.info `languages`.
  * Returns whether tiddlywiki.info changed (caller decides whether to restart).
  */
@@ -620,8 +658,13 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         if (client !== undefined) {
           const langs = info.languages ?? []
           const active = langs.length > 0 ? `$:/languages/${langs[0]}` : '$:/languages/en-GB'
-          await client.put({ title: '$:/language', text: active, type: 'text/plain', tags: [] })
-            .catch((err) => { console.warn('[dsh-tiddlywiki] pinning $:/language failed:', err) })
+          // v0.24.2: conditional write — an identical body still churns the
+          // `created`/`modified` in `$__language.txt.meta` and conflicts on every
+          // pull across two machines.
+          await pinLanguageTiddler(client, active, (message, err) => {
+            if (err === undefined) console.warn('[dsh-tiddlywiki]', message)
+            else console.warn('[dsh-tiddlywiki] pinning $:/language failed:', err)
+          })
           // Keep the startup auto-apply hint (config uiLanguage) consistent with
           // the active language, so a later dsh-web restart doesn't re-enable
           // a language the user just disabled here.
