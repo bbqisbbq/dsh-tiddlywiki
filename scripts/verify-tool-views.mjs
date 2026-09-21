@@ -88,5 +88,16 @@ test('SearchCard 会把工作区范围回传给 /search（卡片与工具结果�
   assert.ok(toolsSrc.includes('已在工作区 ${WORKSPACE_TAG_PREFIX}'), 'host 侧的工作区回执措辞变了，客户端解析会失效')
 })
 
+test('wiki 链接拦截器同时匹配相对与绝对同源 /dsh-tiddlywiki/tw/#标题（DSH 会把 markdown 链接渲染成绝对 http(s) URL → 当作外链）', () => {
+  // 旧实现只匹配相对路径 /^\/dsh-tiddlywiki\/tw\/#(.+)$/；DSH 的 markdown 渲染器
+  // 会把 `/dsh-tiddlywiki/tw/#标题` 解析成绝对 URL，于是旧拦截器漏掉、点击落入
+  // DSH 的「外链」处理（target=_blank + openExternalLink）→ 笔记在新标签页打开而
+  // 不是 TW 面板。修复必须用 new URL(...) 归一化后再判同源 + 代理 pathname。
+  assert.ok(/new URL\(href, window\.location\.origin\)/.test(viewsSrc), '拦截器必须用 new URL(href, location.origin) 解析相对与绝对 href')
+  assert.ok(/url\.origin === window\.location\.origin/.test(viewsSrc), '拦截器必须校验同源（跨源外链放行给 DSH）')
+  assert.ok(/url\.pathname === TW_PROXY_BASE/.test(viewsSrc), '拦截器必须校验 pathname 命中 TW 代理基址（/dsh-tiddlywiki/tw/）')
+  assert.ok(!/^\/dsh-tiddlywiki\\\/tw\\\/#/.test(viewsSrc.replace(/\n/g, ' ')) || !/new RegExp\(`\^\$\{TW_PROXY_BASE/.test(viewsSrc), '旧的「仅相对路径」正则拦截器已移除')
+})
+
 console.log(failures === 0 ? '\nTOOL VIEWS OK' : `\nTOOL VIEWS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)

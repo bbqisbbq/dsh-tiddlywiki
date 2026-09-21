@@ -735,10 +735,15 @@ export function registerToolViews(slots: {
  * convention `[标题](/dsh-tiddlywiki/tw/#标题)` and the links inside render
  * fragments — opens the center TW panel at that tiddler instead of navigating
  * the DSH page. Returns a disposer.
+ *
+ * The href may be RELATIVE (`/dsh-tiddlywiki/tw/#标题`, what agents/tools emit)
+ * or ABSOLUTE (`https://host/dsh-tiddlywiki/tw/#标题`, what the DSH web app's
+ * markdown renderer resolves to before classifying http(s) links as "external"
+ * and giving them its own `target="_blank"` + `openExternalLink` onClick). Both
+ * must be matched, otherwise the click falls through to DSH's external-link
+ * handler and the note opens in a new browser tab instead of the TW panel.
  */
 export function installWikiLinkInterceptor(): () => void {
-  // Derived from the one proxy-base literal so the route can never drift.
-  const proxyHash = new RegExp(`^${TW_PROXY_BASE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}#(.+)$`)
   const onDocumentClick = (event: MouseEvent): void => {
     // 只接管「普通左键点击」：中键 / Ctrl(⌘)·Shift·Alt+点击是浏览器的新标签页、
     // 新窗口、下载等语义，一律放行（否则无法新标签页打开、无法复制链接）。
@@ -748,11 +753,20 @@ export function installWikiLinkInterceptor(): () => void {
     const anchor = target.closest('a')
     if (anchor === null) return
     const href = anchor.getAttribute('href') ?? ''
-    const match = href.match(proxyHash)
-    if (match === null || match[1] === undefined) return
+    // Resolve relative AND absolute hrefs against the current origin, then only
+    // take same-origin links to the TW proxy index whose hash carries a title.
+    let title: string | null = null
+    try {
+      const url = new URL(href, window.location.origin)
+      if (url.origin === window.location.origin && url.pathname === TW_PROXY_BASE && url.hash.length > 1) {
+        title = url.hash.substring(1)
+      }
+    } catch {
+      /* not a parseable URL — leave for the browser's default handling */
+    }
+    if (title === null) return
     event.preventDefault()
     event.stopPropagation()
-    let title = match[1]
     try {
       title = decodeURIComponent(title)
     } catch {
