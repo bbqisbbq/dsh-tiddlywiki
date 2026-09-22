@@ -359,16 +359,25 @@ export async function bundledCatalog(twRoot: string): Promise<Catalog> {
     }
     const out: CatalogEntry[] = []
     for (const dir of dirs) {
-      let info: { name?: string; description?: string; dependents?: string[] } = {}
+      let info: { title?: string; name?: string; description?: string; dependents?: string[] } = {}
       try {
         info = JSON.parse(await readFile(join(root, dir, 'plugin.info'), 'utf8')) as typeof info
       } catch {
         info = {}
       }
       if (sub === 'themes' && dir !== 'vanilla' && !(await themeHasCss(dir))) continue
+      // The tiddler title comes from plugin.info, NOT from the folder name
+      // (v0.26.2): they normally agree, but `plugins/tiddlywiki/codemirror-fullscreen-editing`
+      // declares `"title": "$:/plugins/tiddlywiki/codemirror-fullscreen"` — deriving
+      // the title from the directory made every title-keyed comparison miss that
+      // plugin (the settings page's 「TW 内已禁用」/「wiki 内已装」 badges match on
+      // the full tiddler title, so a disabled codemirror-fullscreen showed no badge).
+      // plugin.info IS the tiddler TW loads, so it is the source of truth; the
+      // folder-derived form stays only as a fallback for a missing/empty title.
+      const declaredTitle = typeof info.title === 'string' && info.title.length > 0 ? info.title : undefined
       out.push({
         name: `tiddlywiki/${dir}`,
-        title: sub === 'plugins' ? `$:/plugins/tiddlywiki/${dir}` : `$:/themes/tiddlywiki/${dir}`,
+        title: declaredTitle ?? (sub === 'plugins' ? `$:/plugins/tiddlywiki/${dir}` : `$:/themes/tiddlywiki/${dir}`),
         label: info.name ?? dir,
         description: info.description ?? '',
         // plugin.info `dependents` are full plugin titles → convert to names.

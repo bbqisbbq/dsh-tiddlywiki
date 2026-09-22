@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
-import { scanWikiRuntimePlugins } from '../src/host/admin.ts'
+import { scanWikiRuntimePlugins, bundledCatalog, resolveTwRoot } from '../src/host/admin.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..')
@@ -142,6 +142,42 @@ await test('三个同步函数存在，且在勾选变化时重算按钮状态',
 
 await test('徽标判据取服务器集合，不随未应用的勾选抖动', () => {
   assert.match(pageSrc, /!serverPlugins\.includes\(plugin\.name\) && wikiTitles\.has\(plugin\.title\)/, '「wiki 内已装」徽标必须基于服务器集合判定')
+})
+
+console.log('v0.26.2 —— catalog 标题必须取自 plugin.info，不得用目录名推导')
+
+await test('行为：plugin.info 声明的 title 优先，缺失才回落目录名', async () => {
+  const twRoot = await mkdtemp(join(tmpdir(), 'dsh-tw-catalog-'))
+  const mk = async (dir, info) => {
+    await mkdir(join(twRoot, 'plugins', 'tiddlywiki', dir), { recursive: true })
+    await writeFile(join(twRoot, 'plugins', 'tiddlywiki', dir, 'plugin.info'), JSON.stringify(info))
+  }
+  // 真实形状：目录名与插件真名不一致（npm 包里的 codemirror-fullscreen-editing）
+  await mk('codemirror-fullscreen-editing', { title: '$:/plugins/tiddlywiki/codemirror-fullscreen', name: 'Fullscreen' })
+  // 常规形状：plugin.info 不带 title → 回落目录名
+  await mk('katex', { name: 'KaTeX' })
+  const catalog = await bundledCatalog(twRoot)
+  const fullscreen = catalog.plugins.find((p) => p.name === 'tiddlywiki/codemirror-fullscreen-editing')
+  const katex = catalog.plugins.find((p) => p.name === 'tiddlywiki/katex')
+  assert.equal(fullscreen?.title, '$:/plugins/tiddlywiki/codemirror-fullscreen', '必须用 plugin.info 的 title')
+  assert.equal(katex?.title, '$:/plugins/tiddlywiki/katex', '没有 title 时回落目录名')
+  await rm(twRoot, { recursive: true, force: true })
+})
+
+await test('不变量：真实 npm 包里每个 catalog 标题都等于其 plugin.info 的 title', async () => {
+  const twRoot = resolveTwRoot()
+  const catalog = await bundledCatalog(twRoot)
+  assert.ok(catalog.plugins.length > 0, '必须能扫到自带插件')
+  const mismatched = []
+  for (const entry of catalog.plugins) {
+    const dir = entry.name.replace(/^tiddlywiki\//, '')
+    const info = JSON.parse(await readFile(join(twRoot, 'plugins', 'tiddlywiki', dir, 'plugin.info'), 'utf8'))
+    const declared = typeof info.title === 'string' && info.title.length > 0 ? info.title : `$:/plugins/tiddlywiki/${dir}`
+    if (entry.title !== declared) mismatched.push(`${entry.name}: catalog=${entry.title} plugin.info=${declared}`)
+  }
+  assert.deepEqual(mismatched, [], `catalog 标题与 plugin.info 不一致：\n${mismatched.join('\n')}`)
+  // 这条真实数据断言的存在理由：本机 npm 包确实有一个不一致的插件，必须仍被正确解析。
+  assert.equal(catalog.plugins.find((p) => p.name === 'tiddlywiki/codemirror-fullscreen-editing')?.title, '$:/plugins/tiddlywiki/codemirror-fullscreen', 'codemirror-fullscreen 的真名必须被采用')
 })
 
 await rm(fixture, { recursive: true, force: true })
