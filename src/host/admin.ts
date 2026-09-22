@@ -181,6 +181,151 @@ export async function readActiveThemeName(client: TiddlyWebClient | undefined): 
   }
 }
 
+/** One plugin tiddler living INSIDE the wiki (installed via TW's own plugin library / import). */
+export interface WikiPluginTiddler {
+  /** Full tiddler title, e.g. "$:/plugins/kookma/pinboard". */
+  title: string
+  /** plugin.info `name`, e.g. "Pinboard". */
+  name?: string
+  description?: string
+  version?: string
+}
+
+/**
+ * Runtime plugin truth of the wiki folder (v0.26.0): which plugins exist as
+ * TIDDLERS inside the wiki, and which are currently disabled.
+ *
+ * WHY this exists: the settings page's 插件管理 checkboxes mirror the
+ * `tiddlywiki.info` `plugins` array (the BOOT-time install list the host
+ * writes), while TW's Control Panel shows the RUNTIME set — tiddlywiki.info
+ * plugins ∪ plugin tiddlers installed via TW's plugin library (they are saved
+ * as `tiddlers/$__plugins_<author>_<name>.json`, never added to tiddlywiki.info)
+ * MINUS those with a `$:/config/Plugins/Disabled/<title>` marker (text `yes`,
+ * that is exactly TW core's own test in `core/ui/WikiInformation.tid`). A user
+ * who installed TiddlyFlex in TW saw it enabled there but "not installed" in
+ * the settings page; a user who disabled menubar in TW saw it checked here.
+ * Both directions are real, and neither is a bug in the OTHER surface — the
+ * two panels read different sources. This scan surfaces the missing half so
+ * the settings page can label its rows honestly instead of lying by omission.
+ *
+ * HOW: a filesystem scan of the tiddlers/ directory — NOT a REST filter. The
+ * tiddlyweb adaptor syncs plugin tiddlers as `.json` files with a `.json.meta`
+ * companion carrying the full plugin.info (title/name/description/version), so
+ * only tiny metadata files are read (a `[prefix[$:/plugins/]]` listing would
+ * drag the multi-100KB plugin payloads into the response). Disabled markers
+ * are `.tid` files whose own `title:` header is the exact plugin title — no
+ * filename→title decoding (which is lossy for names containing underscores).
+ *
+ * Returns `null` when the tiddlers/ directory cannot be listed: "scan failed"
+ * must stay distinguishable from "no wiki plugins" (the §3 read-failure rule),
+ * so the client can hide the section instead of showing an empty lie.
+ */
+export async function scanWikiRuntimePlugins(wikiPath: string): Promise<{ wikiPlugins: WikiPluginTiddler[]; disabled: string[] } | null> {
+  const tiddlersDir = join(wikiPath, 'tiddlers')
+  let files: string[]
+  try {
+    files = await readdir(tiddlersDir)
+  } catch {
+    return null
+  }
+  /** Parse `key: value` lines of a .tid header / .meta file into a map. */
+  const parseMetaFields = (raw: string): Map<string, string> => {
+    const fields = new Map<string, string>()
+    for (const line of raw.split(/\r?\n/)) {
+      const idx = line.indexOf(': ')
+      if (idx <= 0) continue
+      const key = line.slice(0, idx).trim()
+      const value = line.slice(idx + 2).trim()
+      if (key.length > 0 && !fields.has(key)) fields.set(key, value)
+    }
+    return fields
+  }
+  const wikiPlugins: WikiPluginTiddler[] = []
+  const disabled: string[] = []
+  /** Dedupe across files: the same plugin title may appear in more than one shape. */
+  const seenTitles = new Set<string>()
+  for (const file of files) {
+    // Plugin tiddlers: `$:/plugins/…` saved as `$__plugins_….json` (+ `.json.meta`).
+    if (file.startsWith('$__plugins_') && (file.endsWith('.json') || file.endsWith('.json.meta'))) {
+      if (file.endsWith('.json.meta')) {
+        // Standard shape (plugin-library install): one tiddler + meta companion.
+        let fields: Map<string, string>
+        try {
+          fields = parseMetaFields(await readFile(join(tiddlersDir, file), 'utf8'))
+        } catch {
+          continue
+        }
+        const title = fields.get('title')
+        // plugin-type marks a real plugin bundle (plugin/theme/language); other
+        // `$:/plugins/…` tiddlers (demo data, shadow overrides) are not plugins.
+        if (typeof title !== 'string' || title.length === 0 || fields.get('plugin-type') !== 'plugin') continue
+        // The dsh-* namespaces are OUR OWN seeds/bundles — plugin-managed, not
+        // user-installed via TW; listing them as "installed in TW" is noise.
+        if (title.startsWith('$:/plugins/dsh/') || title.startsWith('$:/plugins/dsh-tiddlywiki/')) continue
+        if (seenTitles.has(title)) continue
+        seenTitles.add(title)
+        wikiPlugins.push({
+          title,
+          name: fields.get('name'),
+          description: fields.get('description'),
+          version: fields.get('version'),
+        })
+        continue
+      }
+      // No .meta companion: a bare `.json` tiddler file. It may hold ONE tiddler
+      // or a multi-tiddler EXPORT ARRAY (drag-imported .json — real shape on the
+      // author's wiki: `$__plugins_oeyoews_mermaid.json` is an array whose
+      // element IS the plugin tiddler). Parse and keep plugin entries only.
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(await readFile(join(tiddlersDir, file), 'utf8'))
+      } catch {
+        continue
+      }
+      const entries = Array.isArray(parsed) ? parsed : [parsed]
+      for (const entry of entries) {
+        if (typeof entry !== 'object' || entry === null) continue
+        const t = entry as Record<string, unknown>
+        if (t['plugin-type'] !== 'plugin') continue
+        const title = typeof t.title === 'string' ? t.title : ''
+        if (!title.startsWith('$:/plugins/')) continue
+        if (title.startsWith('$:/plugins/dsh/') || title.startsWith('$:/plugins/dsh-tiddlywiki/')) continue
+        if (seenTitles.has(title)) continue
+        seenTitles.add(title)
+        wikiPlugins.push({
+          title,
+          name: typeof t.name === 'string' ? t.name : undefined,
+          description: typeof t.description === 'string' ? t.description : undefined,
+          version: typeof t.version === 'string' ? t.version : undefined,
+        })
+      }
+      continue
+    }
+    // Disabled markers: tiddler `$:/config/Plugins/Disabled/<plugin title>`.
+    // TW core disables a plugin when that tiddler exists AND its text is `yes`
+    // (WikiInformation.tid filters `[all[tiddlers]prefix[...]] :filter[{!!text}match[yes]]`).
+    if (file.startsWith('$__config_Plugins_Disabled_') && file.endsWith('.tid')) {
+      let raw: string
+      try {
+        raw = await readFile(join(tiddlersDir, file), 'utf8')
+      } catch {
+        continue
+      }
+      const header = raw.split(/\r?\n\r?\n/, 1)[0] ?? ''
+      const fields = parseMetaFields(header)
+      const title = fields.get('title')
+      if (typeof title !== 'string' || !title.startsWith('$:/config/Plugins/Disabled/')) continue
+      const pluginTitle = title.slice('$:/config/Plugins/Disabled/'.length)
+      if (pluginTitle.length === 0) continue
+      const body = raw.slice(header.length).trim()
+      if (/^yes$/i.test(body)) disabled.push(pluginTitle)
+    }
+  }
+  wikiPlugins.sort((a, b) => a.title.localeCompare(b.title))
+  disabled.sort((a, b) => a.localeCompare(b))
+  return { wikiPlugins, disabled }
+}
+
 /** Enumerate bundled official plugins + themes + languages of tiddlywiki. */
 export async function bundledCatalog(twRoot: string): Promise<Catalog> {
   // TW themes are SKINS layered on the vanilla base (which carries the full
@@ -524,12 +669,18 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       // theme displayed the wrong radio — and re-applying it (even without
       // touching the radios) rewrote `$:/theme` to that wrong pick.
       const themeActive = await readActiveThemeName(deps.getClient())
+      // Runtime plugin truth (v0.26.0): wiki-installed plugin tiddlers + the
+      // disabled markers, so 插件管理 rows can be labelled honestly. `null`
+      // (scan failed) is passed through — the client hides the section rather
+      // than showing an empty lie (§3: read failure ≠ absence).
+      const runtimePlugins = await scanWikiRuntimePlugins(wikiPath)
       json(res, {
         ok: true,
         // Same redaction as GET /status: this route is unauthenticated too.
         server: { ...view, logs: redactLogLines(view.logs) },
         info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [], themeActive },
         catalog,
+        runtimePlugins,
         config: maskConfigSecrets(deps.config.get()),
         // Why the overrides above are NOT in effect (v0.23.4): a stored config
         // that does not parse keeps being ignored silently otherwise, and the

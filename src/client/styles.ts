@@ -310,6 +310,9 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-settings-chip[data-state="missing"] { color: var(--dsw-alias-state-error-primary, #d13b3b); }
 /* seed 有更新（v0.22.0 内容哈希比对）：提示色，不是错误。 */
 .dsh-tw-settings-chip[data-state="update"] { color: var(--dsw-alias-state-warning-primary, #d9822b); flex: 0 0 auto; }
+/* 插件徽标（v0.26.0）：「TW 内已禁用」= 中性灰（非错误，是用户自己的选择），不收缩。 */
+.dsh-tw-settings-chip[data-state="disabled"] { color: var(--dsw-alias-label-secondary, #666); flex: 0 0 auto; }
+.dsh-tw-settings-chip[data-state="ok"] { flex: 0 0 auto; }
 .dsh-tw-settings-section { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.18)); }
 .dsh-tw-settings-h { margin: 0; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
 /* 字段行：标签自然换行（不再固定 170px 列导致断行错乱），输入框右对齐限宽。

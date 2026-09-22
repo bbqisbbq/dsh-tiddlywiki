@@ -53,6 +53,15 @@ interface AdminState {
   server?: { status?: string; url?: string; wikiPath?: string; error?: string }
   info?: { plugins?: string[]; themes?: string[]; languages?: string[]; themeActive?: string }
   catalog?: { plugins?: CatalogEntry[]; themes?: CatalogEntry[]; languages?: CatalogEntry[] }
+  /**
+   * Runtime plugin truth of the wiki folder (v0.26.0): plugins installed as
+   * tiddlers via TW's own plugin library / import (they live in the wiki, NOT
+   * in tiddlywiki.info) and the plugin titles currently disabled via TW's
+   * Control Panel. `null`/absent = the host could not scan the tiddlers dir;
+   * renderers must treat that as "unknown" (hide the section, no badges),
+   * never as "none".
+   */
+  runtimePlugins?: { wikiPlugins?: Array<{ title: string; name?: string; description?: string; version?: string }>; disabled?: string[] } | null
   config?: Record<string, unknown>
   /**
    * Set when the stored config tiddler exists but cannot be parsed (v0.23.4):
@@ -613,6 +622,7 @@ function renderCatalogSection(
   body: HTMLElement,
   info: AdminState['info'],
   catalog: AdminState['catalog'],
+  runtimePlugins: AdminState['runtimePlugins'],
   refresh: () => Promise<void>,
   pending: CatalogPending,
 ): void {
@@ -626,10 +636,17 @@ function renderCatalogSection(
   const desiredPlugins = (): Set<string> => pending.plugins ?? new Set(serverPlugins)
   const desiredThemes = (): Set<string> => pending.themes ?? new Set(serverLoadedThemes)
   const desiredLanguages = (): Set<string> => pending.languages ?? new Set(serverLanguages)
+  // 运行时真相（v0.26.0）：被 TW 禁用的插件标题集合 + wiki 内插件 tiddler 的标题集合。
+  // `runtimePlugins == null` = 宿主扫不出（tiddlers 目录读失败）→ 一律当「未知」，
+  // 不显示徽标也不显示只读小节，绝不显示「空的假象」（读失败 ≠ 不存在）。
+  const disabledTitles = new Set(runtimePlugins?.disabled ?? [])
+  const wikiTitles = new Set((runtimePlugins?.wikiPlugins ?? []).map((p) => p.title))
 
   // ── plugins ──────────────────────────────────────────────────────────────
   const pluginSection = make('section', 'dsh-tw-settings-section')
   pluginSection.append(make('h3', 'dsh-tw-settings-h', '插件管理（自带官方插件）'))
+  const pluginHint = make('div', 'dsh-tw-settings-muted', '勾选 = 写入 tiddlywiki.info 的启动安装清单（离线、与引擎版本配套），应用后重启 TW。这里只管引擎自带插件；在 TW 控制面板里安装/禁用/卸载的插件见下方「wiki 内插件」。')
+  pluginSection.append(pluginHint)
   const search = make('input', 'dsh-tw-settings-input dsh-tw-settings-search')
   search.placeholder = '搜索插件…'
   const listWrap = make('div', 'dsh-tw-settings-list')
@@ -654,7 +671,22 @@ function renderCatalogSection(
       const name = make('span', 'dsh-tw-settings-name', plugin.label)
       name.title = plugin.name
       const desc = make('span', 'dsh-tw-settings-muted', plugin.description || plugin.name)
-      label.append(input, name, desc)
+      label.append(input, name)
+      // 状态徽标（v0.26.0）：勾选只反映 tiddlywiki.info，运行时真相反映在这里。
+      // ① 已在启动清单（勾选）但被 TW 禁用；② 不在启动清单但 wiki 内有同名 tiddler
+      // 版本（TW 原生装的）。两种都常见，且不显示就会让用户误判「没装成功」。
+      if (runtimePlugins != null && disabledTitles.has(plugin.title)) {
+        const badge = make('span', 'dsh-tw-settings-chip', 'TW 内已禁用')
+        badge.dataset.state = 'disabled'
+        badge.title = '该插件在 tiddlywiki.info 里，但已在 TW 控制面板被禁用（$:/config/Plugins/Disabled）——去 TW 面板重新启用'
+        label.append(badge)
+      } else if (runtimePlugins != null && !desiredPlugins().has(plugin.name) && wikiTitles.has(plugin.title)) {
+        const badge = make('span', 'dsh-tw-settings-chip', 'wiki 内已装')
+        badge.dataset.state = 'update'
+        badge.title = '不在启动清单，但 wiki 里存在同名插件 tiddler（经 TW 原生安装），TW 运行时已在用'
+        label.append(badge)
+      }
+      label.append(desc)
       listWrap.append(label)
     }
   }
@@ -677,6 +709,49 @@ function renderCatalogSection(
   renderPluginList('')
   pluginSection.append(search, listWrap, applyPlugins)
   body.append(pluginSection)
+
+  // ── wiki-installed plugins (read-only mirror of TW's own management) ─────
+  // v0.26.0：这些插件以 tiddler 形式存在 wiki 里（TW 原生插件库/导入装的），
+  // tiddlywiki.info 与上面的勾选都不覆盖它们——不列出来，用户就会像作者本人
+  // 一样疑惑「TW 里明明启用着，这里怎么没有」。只读：启停/卸载去 TW 控制面板。
+  if (runtimePlugins != null) {
+    const catalogTitles = new Set(plugins.map((p) => p.title))
+    const externals = (runtimePlugins.wikiPlugins ?? []).filter((p) => !catalogTitles.has(p.title) || disabledTitles.has(p.title))
+    if (externals.length > 0) {
+      const wikiSection = make('section', 'dsh-tw-settings-section')
+      wikiSection.append(make('h3', 'dsh-tw-settings-h', 'wiki 内插件（经 TW 原生安装，只读）'))
+      wikiSection.append(
+        make(
+          'div',
+          'dsh-tw-settings-muted',
+          '下列插件以 tiddler 形式随 wiki 文件保存（TW 控制面板 → 插件 安装/导入），不受上面勾选影响。启用 / 禁用 / 卸载请到 TW 控制面板操作。',
+        ),
+      )
+      const wikiWrap = make('div', 'dsh-tw-settings-list')
+      for (const plugin of externals) {
+        const row = make('div', 'dsh-tw-settings-row dsh-tw-settings-plugin')
+        const name = make('span', 'dsh-tw-settings-name', plugin.name || plugin.title)
+        name.title = plugin.title
+        row.append(name)
+        if (disabledTitles.has(plugin.title)) {
+          const badge = make('span', 'dsh-tw-settings-chip', '已禁用')
+          badge.dataset.state = 'disabled'
+          badge.title = '该插件已在 TW 控制面板被禁用'
+          row.append(badge)
+        } else if (plugin.version) {
+          const ver = make('span', 'dsh-tw-settings-chip', `v${plugin.version}`)
+          ver.dataset.state = 'ok'
+          row.append(ver)
+        }
+        const desc = make('span', 'dsh-tw-settings-muted', plugin.description || plugin.title)
+        desc.title = plugin.title
+        row.append(desc)
+        wikiWrap.append(row)
+      }
+      wikiSection.append(wikiWrap)
+      body.append(wikiSection)
+    }
+  }
 
   // ── themes ───────────────────────────────────────────────────────────────
   // `info.themes` = WHICH theme plugins are LOADED (multi-select; TW's own
@@ -1203,7 +1278,7 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
   }
   body.append(configState.host)
   renderWikiLocationSection(body, isDisposed, refresh)
-  renderCatalogSection(body, state.info, state.catalog, refresh, catalogPending)
+  renderCatalogSection(body, state.info, state.catalog, state.runtimePlugins, refresh, catalogPending)
   renderSeedsSection(body, isDisposed)
 }
 
