@@ -169,8 +169,19 @@ function mountSettingsPage(container: HTMLElement): () => void {
   const disposers: Array<() => void> = []
   /** Config-section DOM + the server signature it was built from (see renderMain). */
   const configState: ConfigRenderState = {}
-  /** 插件/主题/语言的「未应用勾选」（见 CatalogPending）。 */
-  const catalogPending: CatalogPending = { plugins: new Set(), themes: new Set(), languages: new Set() }
+  /**
+   * 插件/主题/语言的「未应用勾选」（见 CatalogPending）。
+   *
+   * ⚠️ 必须是**空对象**，绝不能预置空 Set（v0.26.1 修 P0；回归由 v0.25.0 的
+   * commit 883196f 引入）：契约是 `undefined` = 用户还没碰过、完全跟随服务器，
+   * 而 `desiredPlugins()` 等用 `??` 回退 —— **空 Set 不是 undefined**，预置成
+   * 空 Set 会让「没碰过」被读成「用户期望集合为空」，后果有两层：
+   *   ① 设置页所有插件/主题/语言勾选框**全部显示为未勾选**（用户看到「装了却没勾」）；
+   *   ② 更严重——什么都没改就点「应用插件」，会 POST 一个**空数组**，把
+   *      `tiddlywiki.info` 的插件清单整个清空（主题清单、语言同理）。
+   * 守门：`scripts/verify-plugin-runtime.mjs` 的「未碰过 ≠ 空集合」一节。
+   */
+  const catalogPending: CatalogPending = {}
   /** 首屏是否已成功渲染过内容：决定占位提示与失败时能不能清 body。 */
   let rendered = false
 
@@ -652,6 +663,13 @@ function renderCatalogSection(
   const listWrap = make('div', 'dsh-tw-settings-list')
   const applyPlugins = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '应用插件（重启 TW）')
   applyPlugins.type = 'button'
+  /**
+   * 没碰过勾选时禁用「应用」（v0.26.1）：`pending.plugins === undefined` = 跟随服务器，
+   * 提交没有意义；把它当成「空期望集合」误提交就是清空整个启动清单。勾选变化时重算。
+   */
+  const syncApplyPlugins = (): void => {
+    applyPlugins.disabled = pending.plugins === undefined
+  }
 
   const renderPluginList = (needle: string): void => {
     listWrap.replaceChildren()
@@ -666,6 +684,7 @@ function renderCatalogSection(
         if (input.checked) next.add(plugin.name)
         else next.delete(plugin.name)
         pending.plugins = next
+        syncApplyPlugins()
       })
       const label = make('label', 'dsh-tw-settings-row dsh-tw-settings-plugin')
       const name = make('span', 'dsh-tw-settings-name', plugin.label)
@@ -675,12 +694,14 @@ function renderCatalogSection(
       // 状态徽标（v0.26.0）：勾选只反映 tiddlywiki.info，运行时真相反映在这里。
       // ① 已在启动清单（勾选）但被 TW 禁用；② 不在启动清单但 wiki 内有同名 tiddler
       // 版本（TW 原生装的）。两种都常见，且不显示就会让用户误判「没装成功」。
+      // 判据取**服务器集合**而不是 desiredPlugins()：徽标描述的是当前事实，
+      // 不该随「还没应用的勾选」抖动（v0.26.1）。
       if (runtimePlugins != null && disabledTitles.has(plugin.title)) {
         const badge = make('span', 'dsh-tw-settings-chip', 'TW 内已禁用')
         badge.dataset.state = 'disabled'
         badge.title = '该插件在 tiddlywiki.info 里，但已在 TW 控制面板被禁用（$:/config/Plugins/Disabled）——去 TW 面板重新启用'
         label.append(badge)
-      } else if (runtimePlugins != null && !desiredPlugins().has(plugin.name) && wikiTitles.has(plugin.title)) {
+      } else if (runtimePlugins != null && !serverPlugins.includes(plugin.name) && wikiTitles.has(plugin.title)) {
         const badge = make('span', 'dsh-tw-settings-chip', 'wiki 内已装')
         badge.dataset.state = 'update'
         badge.title = '不在启动清单，但 wiki 里存在同名插件 tiddler（经 TW 原生安装），TW 运行时已在用'
@@ -692,6 +713,7 @@ function renderCatalogSection(
   }
   search.addEventListener('input', () => renderPluginList(search.value))
   applyPlugins.addEventListener('click', () => {
+    if (pending.plugins === undefined) return
     applyPlugins.disabled = true
     void (async () => {
       try {
@@ -702,11 +724,12 @@ function renderCatalogSection(
         void refresh()
       } catch (err) {
         toast(`应用失败：${err instanceof Error ? err.message : String(err)}`)
-        applyPlugins.disabled = false
+        syncApplyPlugins()
       }
     })()
   })
   renderPluginList('')
+  syncApplyPlugins()
   pluginSection.append(search, listWrap, applyPlugins)
   body.append(pluginSection)
 
@@ -782,6 +805,15 @@ function renderCatalogSection(
       : lastLoadedTheme ?? 'tiddlywiki/vanilla'
   /** 活动主题同样走 pending：单选按钮的未应用选择也要活过 refresh（见 CatalogPending）。 */
   const activeThemeName = (): string => pending.themeActive ?? serverActiveThemeName
+  const applyThemes = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '应用主题（重启 TW）')
+  applyThemes.type = 'button'
+  /**
+   * 没碰过主题的任何控件时禁用「应用」（v0.26.1，同插件管理）：`pending.* === undefined`
+   * 才是「跟随服务器」；未碰过就提交会把「空期望集合」写成 `themes: []`，把主题清空。
+   */
+  const syncApplyThemes = (): void => {
+    applyThemes.disabled = pending.themes === undefined && pending.themeActive === undefined
+  }
   const themeWrap = make('div', 'dsh-tw-settings-list')
   for (const theme of themes) {
     const load = make('input', 'dsh-tw-settings-check')
@@ -793,6 +825,7 @@ function renderCatalogSection(
       if (load.checked) next.add(theme.name)
       else next.delete(theme.name)
       pending.themes = next
+      syncApplyThemes()
     })
     const act = make('input', 'dsh-tw-settings-check')
     act.type = 'radio'
@@ -801,6 +834,7 @@ function renderCatalogSection(
     act.title = '设为活动主题'
     act.addEventListener('change', () => {
       if (act.checked) pending.themeActive = theme.name
+      syncApplyThemes()
     })
     const name = make('span', 'dsh-tw-settings-name', theme.label)
     name.title = theme.name
@@ -809,9 +843,8 @@ function renderCatalogSection(
     row.append(load, act, name, desc)
     themeWrap.append(row)
   }
-  const applyThemes = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '应用主题（重启 TW）')
-  applyThemes.type = 'button'
   applyThemes.addEventListener('click', () => {
+    if (pending.themes === undefined && pending.themeActive === undefined) return
     applyThemes.disabled = true
     void (async () => {
       try {
@@ -827,10 +860,11 @@ function renderCatalogSection(
         void refresh()
       } catch (err) {
         toast(`应用失败：${err instanceof Error ? err.message : String(err)}`)
-        applyThemes.disabled = false
+        syncApplyThemes()
       }
     })()
   })
+  syncApplyThemes()
   themeSection.append(themeHint, themeHead, themeWrap, applyThemes)
   body.append(themeSection)
 
@@ -839,6 +873,12 @@ function renderCatalogSection(
   langSection.append(make('h3', 'dsh-tw-settings-h', '语言管理（自带官方语言包）'))
   const langHint = make('div', 'dsh-tw-settings-muted', '勾选启用语言插件并重启 TW；如中文请选 zh-Hans（简体）或 zh-CN。')
   const langWrap = make('div', 'dsh-tw-settings-list')
+  const applyLangs = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '应用语言（重启 TW）')
+  applyLangs.type = 'button'
+  /** 没碰过语言勾选时禁用「应用」（v0.26.1，同插件管理）：未碰过 ≠ 期望集合为空。 */
+  const syncApplyLangs = (): void => {
+    applyLangs.disabled = pending.languages === undefined
+  }
   for (const lang of languages) {
     const input = make('input', 'dsh-tw-settings-check')
     input.type = 'checkbox'
@@ -848,6 +888,7 @@ function renderCatalogSection(
       if (input.checked) next.add(lang.name)
       else next.delete(lang.name)
       pending.languages = next
+      syncApplyLangs()
     })
     const label = make('label', 'dsh-tw-settings-row dsh-tw-settings-plugin')
     const name = make('span', 'dsh-tw-settings-name', lang.label)
@@ -856,9 +897,8 @@ function renderCatalogSection(
     label.append(input, name, desc)
     langWrap.append(label)
   }
-  const applyLangs = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '应用语言（重启 TW）')
-  applyLangs.type = 'button'
   applyLangs.addEventListener('click', () => {
+    if (pending.languages === undefined) return
     applyLangs.disabled = true
     void (async () => {
       try {
@@ -868,10 +908,11 @@ function renderCatalogSection(
         void refresh()
       } catch (err) {
         toast(`应用失败：${err instanceof Error ? err.message : String(err)}`)
-        applyLangs.disabled = false
+        syncApplyLangs()
       }
     })()
   })
+  syncApplyLangs()
   langSection.append(langHint, langWrap, applyLangs)
   body.append(langSection)
 }

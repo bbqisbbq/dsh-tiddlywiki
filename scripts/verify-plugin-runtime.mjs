@@ -116,6 +116,34 @@ await test('只读小节「wiki 内插件」在场，且 null 时不渲染', () 
   assert.match(pageSrc, /if \(runtimePlugins != null\) \{/, '扫描失败（null）必须隐藏，而不是显示空')
 })
 
+console.log('v0.26.1 —— 「没碰过」绝不等于「空集合」（P0：误点应用会清空启动清单）')
+
+await test('catalogPending 必须是空对象，不得预置空 Set', () => {
+  // 回归形状（v0.25.0 引入、v0.26.1 修）：`{ plugins: new Set(), … }` 会让
+  // `pending.plugins ?? server` 永远取到空集合 → 勾选框全空 + 误点应用提交空数组。
+  assert.doesNotMatch(pageSrc, /catalogPending: CatalogPending = \{ plugins: new Set\(\)/, 'catalogPending 不得预置空 Set')
+  assert.match(pageSrc, /const catalogPending: CatalogPending = \{\}/, 'catalogPending 必须初始化成空对象（未碰过 = undefined = 跟随服务器）')
+})
+
+await test('三个「应用」按钮都必须以 pending 未定义作为不提交的闸门', () => {
+  assert.match(pageSrc, /if \(pending\.plugins === undefined\) return/, '插件应用必须拒绝「未碰过」状态')
+  assert.match(pageSrc, /if \(pending\.themes === undefined && pending\.themeActive === undefined\) return/, '主题应用必须拒绝「未碰过」状态')
+  assert.match(pageSrc, /if \(pending\.languages === undefined\) return/, '语言应用必须拒绝「未碰过」状态')
+})
+
+await test('三个同步函数存在，且在勾选变化时重算按钮状态', () => {
+  for (const fn of ['syncApplyPlugins', 'syncApplyThemes', 'syncApplyLangs']) {
+    assert.match(pageSrc, new RegExp(`const ${fn} = \\(\\): void => \\{`), `${fn} 必须存在`)
+    // 定义 1 次 + 初始调用 1 次 + 至少 1 处 change 回调调用
+    const calls = pageSrc.split(`${fn}()`).length - 1
+    assert.ok(calls >= 3, `${fn}() 至少要在定义、初始、change 回调三处出现（实际 ${calls}）`)
+  }
+})
+
+await test('徽标判据取服务器集合，不随未应用的勾选抖动', () => {
+  assert.match(pageSrc, /!serverPlugins\.includes\(plugin\.name\) && wikiTitles\.has\(plugin\.title\)/, '「wiki 内已装」徽标必须基于服务器集合判定')
+})
+
 await rm(fixture, { recursive: true, force: true })
 
 if (failures > 0) {
