@@ -27,6 +27,7 @@ import {
   assertNoConflict,
   buildWriteTiddler,
   flattenTiddlerFields,
+  normalizeFieldsArg,
   normalizeTagArg,
 } from './write-policy.ts'
 import { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX, workspaceMarkFromCwd } from './workspace.ts'
@@ -113,11 +114,36 @@ function workspaceMarkFor(deps: ToolsDeps, exec: unknown): { id: string; tag: st
 }
 
 /**
+ * 工具参数的 `fields` 归一化（v0.26.5，见 `normalizeFieldsArg`）。
+ *
+ * 历史：`fields` 的参数 schema 曾是 `{ type: 'json' }`——编译后是**纯注解**，
+ * 模型收不到「这是个对象」的信息，于是把 JSON 当字符串发来，被
+ * `withWorkspaceMark` 的 `{ ...fields }` 拆成单字符字段。schema 已改成 object；
+ * 这里再兜一层，字符串能解析成对象就直接用，不必让模型重发一次。
+ * 解析不出对象 → 抛错（绝不静默丢字段，也不按字符展开）。
+ */
+function normalizeFieldsInArgs(args: Record<string, unknown>): Record<string, unknown> {
+  if (!('fields' in args)) return args
+  return { ...args, fields: normalizeFieldsArg(args.fields) }
+}
+
+/** batch_put 专用：逐条目归一化 `fields`（非对象条目原样留给逐条校验报错）。 */
+function normalizeBatchItemsFields(items: unknown): unknown {
+  if (!Array.isArray(items)) return items
+  return items.map((item) => (item !== null && typeof item === 'object' && !Array.isArray(item))
+    ? normalizeFieldsInArgs(item as Record<string, unknown>)
+    : item)
+}
+
+/**
  * Merge the workspace marker into a NEW note's explicit tags and fields.
  *
  * ADDITIVE, never replacing: the caller's tags are kept in front and the caller's
  * own `workspace` field (if it set one) wins, so an explicit value is never
  * silently overwritten. Returns the inputs untouched when there is no marker.
+ *
+ * ⚠️ `fields` 必须已经过 `normalizeFieldsArg()`（v0.26.5）：下面这行 `{ ...fields }`
+ * 对字符串会按字符展开成 `{0:'{',1:'"',…}`——那正是 fields bug 的现场。
  */
 function withWorkspaceMark(
   mark: { id: string; tag: string } | undefined,
@@ -624,11 +650,14 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       title: { type: 'string', description: 'tiddler 标题（精确匹配，覆盖同名）', required: true },
       text: { type: 'string', description: 'tiddler 全文（默认按 Markdown 解析）', required: true },
       tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）。不传 = 保留既有条目的原标签；传空数组 [] = 清空全部标签；有内容 = 整体替换' },
-      fields: { type: 'json', description: '附加自定义字段，如 {"date":"2026-09-02"}（可选）。fields.type 是**改内容类型的正规入口**（如 {"type":"text/css"}）：新建条目未指定时默认 text/markdown，覆盖既有条目时保留原类型。注意不要把业务分类值（如 "meeting"）写进 type——业务分类请放 tags' },
+      fields: { type: 'object', additionalProperties: true, description: '附加自定义字段，如 {"date":"2026-09-02"}（可选）。fields.type 是**改内容类型的正规入口**（如 {"type":"text/css"}）：新建条目未指定时默认 text/markdown，覆盖既有条目时保留原类型。注意不要把业务分类值（如 "meeting"）写进 type——业务分类请放 tags' },
       expectedModified: { type: 'string', description: '可选：乐观并发保护。传 tiddlywiki_get 读到的 modified 值，若该条目已被他人改动则拒绝写入（避免覆盖人类在 TW 编辑器里的修改）' },
       expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——传 tiddlywiki_get 返回字段里的 revision（刚写入、还没落盘的条目没有 modified，此时用 revision）' },
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制覆盖（默认 false）' },
     },
+    // v0.26.5: `fields` 是对象，但模型可能按 JSON 字符串发来（历史遗留），
+    // 归一化必须发生在 schema 预校验之前——见 normalizeFieldsArg。
+    normalizeArgs: normalizeFieldsInArgs,
     output: {
       render: (_args, value: PutResult) => {
         const lines = [`已写入 tiddler「${value.title}」`]
@@ -715,13 +744,14 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
             title: { type: 'string', description: '标题（精确匹配，覆盖同名）' },
             text: { type: 'string', description: '全文（默认按 Markdown 解析）' },
             tags: { type: 'array', items: { type: 'string' }, description: '标签数组（可选）。不传 = 保留原标签；传空数组 [] = 清空全部标签' },
-            fields: { type: 'json', description: '附加自定义字段（可选）。注意：fields.type 是 TW 内容类型（保留字段，默认已自动补 text/markdown），不要写业务分类值' },
+            fields: { type: 'object', additionalProperties: true, description: '附加自定义字段（可选）。注意：fields.type 是 TW 内容类型（保留字段，默认已自动补 text/markdown），不要写业务分类值' },
             expectedModified: { type: 'string', description: '可选（v0.25.0）：该条目的乐观并发令牌，来自 tiddlywiki_get 的 modified。覆盖已存在条目时若已被改动，只让这一条失败并说明原因，其余条目照常' },
           },
         },
       },
       overwrite: { type: 'boolean', description: '可选：true=覆盖同名（默认），false=跳过已存在的标题' },
     },
+    normalizeArgs: (args) => ({ ...args, items: normalizeBatchItemsFields(args.items) }),
     output: {
       render: (_args, value: BatchResult) => {
         const lines = [`批量写入完成：成功 ${value.written}，跳过 ${value.skipped}，失败 ${value.failed}，共 ${value.items.length} 条。`]
@@ -1078,11 +1108,12 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       heading: { type: 'string', description: '可选：append 时改为插入到该标题（Markdown # 或 wikitext ! 标题，按标题文本匹配）对应段落的末尾' },
       createIfMissing: { type: 'boolean', description: '可选：条目不存在时是否新建（默认 true）' },
       tags: { type: 'array', items: { type: 'string' }, description: '可选：标签（不传则保留既有条目的原标签，传空数组 [] 表示清空全部标签；新建条目会额外自动补 agent-written）' },
-      fields: { type: 'json', description: '可选：显式覆盖的自定义字段（如 {"type":"text/css"}）。不传则保留既有条目的原字段与内容类型' },
+      fields: { type: 'object', additionalProperties: true, description: '可选：显式覆盖的自定义字段（如 {"type":"text/css"}）。不传则保留既有条目的原字段与内容类型' },
       expectedModified: { type: 'string', description: '可选：乐观并发保护。传 tiddlywiki_get 读到的 modified；若条目在你读取之后被改动（人类在 TW 编辑器里改过）则拒绝写入——本工具是整篇回写，这一步能防止吞掉别人的修改' },
       expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——传 tiddlywiki_get 返回字段里的 revision（注意 revision 是 TW 的内存计数器，重启后会复位，长时间跨度请用 expectedModified）' },
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制写入（默认 false）' },
     },
+    normalizeArgs: normalizeFieldsInArgs,
     output: {
       render: (_args, value: AppendResult) => {
         const lines = [`${value.created ? '已新建并写入' : '已增量写入'} tiddler「${value.title}」（${value.mode}${value.heading !== null ? ` · 段落「${value.heading}」` : ''}）：新增 ${value.added} 字符，现共 ${value.total} 字符。`]

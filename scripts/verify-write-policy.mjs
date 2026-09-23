@@ -19,6 +19,11 @@
  * 手写 PUT body 导致 TW 把条目回落成 `text/vnd.tiddlywiki`（磁盘上 `.md + .meta`
  * 变 `.tid`，Markdown 全按 wikitext 解析）。E2E 回归在 verify-audit-fixes.mjs。
  *
+ * v0.26.5 追加「fields 参数形状」一节：`fields` 的 schema 曾是 `{type:'json'}`
+ * （编译后纯注解），模型按字符串发参 → `withWorkspaceMark` 的 `{...fields}` 把
+ * 字符串拆成单字符字段写进条目。这里钉「非对象一律抛错」，工具 schema 的
+ * object 断言在 verify-tools.mjs。
+ *
  *   node scripts/verify-write-policy.mjs
  *
  * @module dsh-tiddlywiki/scripts/verify-write-policy
@@ -31,6 +36,7 @@ import {
   DEFAULT_NOTE_TYPE,
   ensureTiddlerTimestamps,
   formatTiddlerDate,
+  normalizeFieldsArg,
   parseTiddlerDate,
 } from '../lib/index.js'
 
@@ -101,8 +107,59 @@ test('buildWriteTiddler：fields.type 是显式改类型的正规入口', () => 
   assert.equal(tiddler.q, 'keep-me', '显式 fields 不应抹掉其它自定义字段')
 })
 
-test('buildWriteTiddler：human 路径（agentTag:false）新建不补 agent-written', () => {
-  const { tiddler } = buildWriteTiddler('HumanNote', 'body', { agentTag: false, defaultTags: ['inbox'] })
+// ── fields 参数形状（v0.26.5 修复）───────────────────────────────────────────
+// 真实事故：`fields` 的工具 schema 曾是 `{type:'json'}`——在 DSH 的 schema 里
+// `type:'json'` 是**纯注解**、编译后连 `type` 都没有（见 src/sdk.ts compileValue），
+// 模型因而不知道它是对象，把 `{"review-after":"2026-12-22"}` 当字符串发来；字符串
+// 走到 `withWorkspaceMark` 的 `{ ...(fields ?? {}) }` 被按字符展开成
+// `{0:'{',1:'"',2:'r',…}`，条目上出现几十个单字符垃圾字段、真正的字段一个没落。
+// 这组断言钉住「非对象绝不静默处理」这条底线（工具 schema 的 object 断言在
+// verify-tools.mjs，那里能拿到编译后的注册表）。
+
+test('normalizeFieldsArg：JSON 字符串被解析成对象（兼容仍按字符串发参的模型）', () => {
+  assert.deepEqual(normalizeFieldsArg('{"review-after":"2026-12-22"}'), { 'review-after': '2026-12-22' })
+  assert.deepEqual(normalizeFieldsArg('  {"a":1}  '), { a: 1 }, '前后空白不该影响解析')
+})
+
+test('normalizeFieldsArg：对象原样返回；undefined/null/空串 → undefined（保留基底）', () => {
+  const obj = { a: 1 }
+  assert.equal(normalizeFieldsArg(obj), obj, '对象必须原样（不做拷贝、不改键）')
+  assert.equal(normalizeFieldsArg(undefined), undefined)
+  assert.equal(normalizeFieldsArg(null), undefined)
+  assert.equal(normalizeFieldsArg('   '), undefined, '空白字符串视同未给')
+})
+
+test('normalizeFieldsArg：数组/数字/不可解析字符串一律抛错（不静默丢、不按字符拆）', () => {
+  assert.throws(() => normalizeFieldsArg(['a']), /fields 必须是一个对象/, '数组必须拒绝')
+  assert.throws(() => normalizeFieldsArg(42), /fields 必须是一个对象/, '数字必须拒绝')
+  assert.throws(() => normalizeFieldsArg('not json'), /fields 必须是一个对象/, '解析不出的字符串必须拒绝')
+  assert.throws(() => normalizeFieldsArg('"[1,2]"'), /fields 必须是一个对象/, '解析成数组的字符串也必须拒绝')
+})
+
+test('buildWriteTiddler：字符串 fields 抛错，绝不写单字符垃圾字段', () => {
+  assert.throws(
+    () => buildWriteTiddler('StringFieldsProbe', 'body', { fields: '{"review-after":"2026-12-22"}' }),
+    /fields 必须是对象/,
+    '字符串 fields 必须在这里被拦住（旧实现在 withWorkspaceMark 里被按字符展开）',
+  )
+  assert.throws(
+    () => buildWriteTiddler('ArrayFieldsProbe', 'body', { fields: ['a'] }),
+    /fields 必须是对象/,
+  )
+})
+
+test('buildWriteTiddler：归一化后的字符串 fields 落成真实字段且没有索引键', () => {
+  const { tiddler } = buildWriteTiddler('NormalizedFieldsProbe', 'body', { fields: normalizeFieldsArg('{"review-after":"2026-12-22"}') })
+  assert.equal(tiddler['review-after'], '2026-12-22', '真实字段必须写进去')
+  assert.equal(tiddler['0'], undefined, '不得出现 0= 这类单字符垃圾字段')
+  assert.deepEqual(
+    Object.keys(tiddler).filter((k) => /^\d+$/.test(k)),
+    [],
+    `不得出现任何索引键字段：${JSON.stringify(Object.keys(tiddler))}`,
+  )
+})
+
+test('buildWriteTiddler：human 路径（agentTag:false）新建不补 agent-written', () => {  const { tiddler } = buildWriteTiddler('HumanNote', 'body', { agentTag: false, defaultTags: ['inbox'] })
   assert.deepEqual(tiddler.tags, ['inbox'], `人类路径不该出现 agent-written：${JSON.stringify(tiddler.tags)}`)
   assert.equal(tiddler.type, DEFAULT_NOTE_TYPE)
 })
@@ -158,8 +215,7 @@ test('buildWriteTiddler：$:/ 系统条目同样补时间戳', () => {
   assert.equal(tiddler.modified, '20260916233037000', '$:/ 条目也应补 modified')
 })
 
-test('buildWriteTiddler：fields.created/modified 仍不得覆盖时间戳', () => {
-  const now = Date.UTC(2026, 8, 16, 23, 30, 37, 0)
+test('buildWriteTiddler：fields.created/modified 仍不得覆盖时间戳', () => {  const now = Date.UTC(2026, 8, 16, 23, 30, 37, 0)
   const { tiddler } = buildWriteTiddler('FieldStampGuard', 'body', {
     fields: { created: '19990101000000000', modified: '19990101000000000' },
     now,

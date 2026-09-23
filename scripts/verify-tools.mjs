@@ -7,7 +7,9 @@
  * `tool.execute(args, undefined)` 的**函数式**调用，覆盖工具层的契约（不是 HTTP
  * 层、也不是 TW 自身行为）：
  *   - put：fields 不得覆盖 title/text/tags/created/modified；fields.type 是合法
- *     的内容类型覆盖；新建自动补 agent-written；覆盖已存在的人类笔记不补；
+ *     的内容类型覆盖；fields 的 schema 必须是 object 且按字符串发来也能写对
+ *     （v0.26.5：字符串曾被 withWorkspaceMark 按字符拆成单字符垃圾字段）；
+ *     新建自动补 agent-written；覆盖已存在的人类笔记不补；
  *     `$:/` 条目豁免 agent-written 与 markdown 默认；空 title 明确报错。
  *   - batch_put：空 title / 缺 text 的单条失败不影响其余（返回 failed 计数与逐条
  *     error）；overwrite:false 跳过已存在。
@@ -169,6 +171,57 @@ try {
     assert.equal(r.type, 'text/vnd.tiddlywiki', `fields.type 应生效，实际 ${JSON.stringify(r.type)}`)
     assert.notEqual(r.typeDefaulted, true, '显式 type 不应被标记为 defaulted')
     assert.equal((await api.get('ToolsWikitext')).type, 'text/vnd.tiddlywiki', '落库类型应为显式指定的 text/vnd.tiddlywiki')
+  })
+
+  // ── fields 参数形状（v0.26.5 修复）─────────────────────────────────────────
+  // 真实事故（用户 2026-09-23 实测复现两次）：`fields` 的参数 schema 曾是
+  // `{type:'json'}`——DSH 的 schema 里 `type:'json'` 是纯注解、编译后连 `type`
+  // 都没有，模型不知道它是对象，把 `{"review-after":"2026-12-22"}` 当**字符串**
+  // 发来。字符串在 `withWorkspaceMark` 的 `{ ...(fields ?? {}) }` 里被按字符展开成
+  // `{0:'{',1:'"',2:'r',…}`，条目上出现几十个单字符垃圾字段，真正的自定义字段一个
+  // 也没落。下面先钉 schema（模型看到什么），再钉行为（发成字符串也写对）。
+  await test('schema：三个写工具的 fields 必须声明 type:object + additionalProperties:true', () => {
+    const paths = [
+      ['tiddlywiki_put', ['properties', 'fields']],
+      ['tiddlywiki_append', ['properties', 'fields']],
+      ['tiddlywiki_batch_put', ['properties', 'items', 'items', 'properties', 'fields']],
+    ]
+    for (const [name, path] of paths) {
+      const label = `${name}.${path.join('.')}`
+      let node = tools.get(name)?.parameters
+      for (const key of path) node = node?.[key]
+      assert.ok(node !== undefined, `${label} 的参数节点不存在`)
+      assert.equal(node.type, 'object', `${label} 必须声明 type:object（type:json 编译后没有任何类型约束，模型会按字符串发参），实际 ${JSON.stringify(node)}`)
+      assert.equal(node.additionalProperties, true, `${label} 必须 additionalProperties:true（自定义字段名不受限）`)
+    }
+  })
+
+  await test('put：fields 以 JSON 字符串发来仍写对字段、不产生单字符垃圾', async () => {
+    // 带会话 → 走 `withWorkspaceMark`（正是出事故的那条路径：新建 + 自动工作区标记）。
+    const r = await callAs('tiddlywiki_put', { title: 'ToolsFieldsAsString', text: 'body', fields: '{"review-after":"2026-12-22"}' }, 'session-alpha')
+    assert.equal(r.ok, true, `写入应成功：${JSON.stringify(r)}`)
+    const t = await api.get('ToolsFieldsAsString')
+    assert.equal(fieldOf(t, 'review-after'), '2026-12-22', `字符串 fields 必须被解析成对象写入，实际 ${JSON.stringify(t.fields)}`)
+    assert.equal(t['0'], undefined, '不得出现 0= 这类单字符垃圾字段')
+    assert.deepEqual(
+      Object.keys(t.fields ?? {}).filter((k) => /^\d+$/.test(k)),
+      [],
+      `fields 里不得有索引键：${JSON.stringify(t.fields)}`,
+    )
+  })
+
+  await test('put：fields 是不可解析的字符串/数组时明确报错，且不留下半成品条目', async () => {
+    await assert.rejects(() => call('tiddlywiki_put', { title: 'ToolsFieldsBad', text: 'x', fields: 'not-json' }), /fields 必须是一个对象/)
+    await assert.rejects(() => call('tiddlywiki_put', { title: 'ToolsFieldsBad', text: 'x', fields: ['a'] }), /fields 必须是一个对象/)
+    assert.equal(await api.get('ToolsFieldsBad'), undefined, '报错的写入不得留下条目')
+  })
+
+  await test('append / batch_put：字符串 fields 走同一套归一化（三个入口一致）', async () => {
+    await call('tiddlywiki_append', { title: 'ToolsAppendFields', text: 'body', fields: '{"valid-until":"2999-01-01"}' })
+    assert.equal(fieldOf(await api.get('ToolsAppendFields'), 'valid-until'), '2999-01-01', 'append 必须解析字符串 fields')
+    const br = await call('tiddlywiki_batch_put', { items: [{ title: 'ToolsBatchFields', text: 'body', fields: '{"review-after":"2026-12-22"}' }] })
+    assert.equal(br.written, 1, `批量写入应成功：${JSON.stringify(br)}`)
+    assert.equal(fieldOf(await api.get('ToolsBatchFields'), 'review-after'), '2026-12-22', 'batch_put 必须解析字符串 fields')
   })
 
   // ── 时间戳（v0.22.10）──────────────────────────────────────────────────────

@@ -155,6 +155,15 @@ export interface DefineToolOptions<A, V> {
   readonly name: string
   readonly description: string
   readonly parameters: Readonly<Record<string, ParameterSpec>>
+  /**
+   * 可选：在 schema 预校验**之前**归一化一次参数（v0.26.5）。
+   *
+   * 用途只有一个：`{ type: 'json' }` 编译后没有任何类型约束（见 `compileValue`），
+   * 模型可能把本该是对象的值按 JSON 字符串发来。把「解析成对象」这一步放在校验
+   * 之前，模型就不用先撞一次 `arguments.fields must be an object` 再重发；放在
+   * 校验之后则做不到（校验会先抛错）。抛出的错误照常变成工具错误。
+   */
+  normalizeArgs?(args: Record<string, unknown>): Record<string, unknown>
   readonly output: {
     render(args: A, value: V): Array<{ type: 'text'; text: string }>
   }
@@ -197,11 +206,14 @@ export function defineTool<A extends Record<string, unknown>, V>(options: Define
       },
     },
     async execute(args, exec) {
-      const violations = validateValue(parameters, args, 'arguments')
+      const normalized = options.normalizeArgs !== undefined
+        ? options.normalizeArgs(args as Record<string, unknown>)
+        : args
+      const violations = validateValue(parameters, normalized, 'arguments')
       if (violations.length > 0) {
         throw new Error(`Error: invalid arguments: ${violations.join('; ')}`)
       }
-      return userExecute(args, exec)
+      return userExecute(normalized as A, exec)
     },
   }
 }

@@ -71,6 +71,7 @@ export {
   buildWriteTiddler,
   cleanTiddler,
   flattenTiddlerFields,
+  normalizeFieldsArg,
 } from './host/write-policy.ts'
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './host/routes.ts'

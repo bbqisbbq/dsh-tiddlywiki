@@ -117,15 +117,81 @@ export function cleanTiddler(t: Tiddler): Tiddler {
   return out
 }
 
+/** 是不是一个「平铺对象」（`fields` 唯一合法的形状；数组不算）。 */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** 错误信息里的短样本（不把整段正文塞进回执）。 */
+function excerpt(value: string, max = 60): string {
+  const flat = value.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat
+}
+
+/**
+ * 归一化调用方给的 `fields`（v0.26.5）。
+ *
+ * 背景（真实事故）：`tiddlywiki_put`/`batch_put`/`append` 的参数 schema 曾把它声明为
+ * `{ type: 'json' }`，而 DSH 的 schema 里 `type:'json'` 是**纯注解**——编译出来的
+ * 节点连 `type` 都没有（见 `src/sdk.ts` 的 `compileValue`）。模型于是不知道它是对象，
+ * 把 `{"review-after":"2026-12-22"}` 当**字符串**发来；字符串走到
+ * `withWorkspaceMark` 的 `{ ...(fields ?? {}) }` 被按字符展开成
+ * `{0:'{', 1:'"', 2:'r', …}`，再被当成几十个单字符字段写进条目，真正的自定义字段
+ * 一个也没落（用户 2026-09-23 实测复现两次）。
+ *
+ * 这条修复同时钉两头：工具 schema 改成真正的 object（`additionalProperties: true`），
+ * 以及在任何展开/遍历之前先在这里归一化。语义：
+ *
+ * | 输入 | 结果 |
+ * |---|---|
+ * | `undefined` / `null` / 空串 | `undefined`（保留基底，不动任何字段） |
+ * | 平铺对象 | 原样返回 |
+ * | JSON 字符串（对象） | 解析后使用——兼容仍按字符串发参的模型 |
+ * | 数组 / 数字 / 布尔 / 解析不出对象的字符串 | **抛错** |
+ *
+ * 最后一条是刻意的：宁可给模型一条可读的报错让它重发，也**绝不**静默丢字段或把
+ * 字符串按字符拆成垃圾字段（那正是这次事故的形态）。
+ */
+export function normalizeFieldsArg(fields: unknown): Record<string, unknown> | undefined {
+  if (fields === undefined || fields === null) return undefined
+  if (typeof fields === 'string') {
+    const trimmed = fields.trim()
+    if (trimmed.length === 0) return undefined
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(trimmed)
+    } catch {
+      parsed = undefined
+    }
+    if (isPlainObject(parsed)) return parsed
+    throw new Error(
+      `fields 必须是一个对象（如 {"review-after":"2026-12-22"}），`
+      + `收到无法解析成对象的字符串：${excerpt(fields)}`,
+    )
+  }
+  if (isPlainObject(fields)) return fields
+  throw new Error(
+    `fields 必须是一个对象（如 {"review-after":"2026-12-22"}），收到 ${Array.isArray(fields) ? '数组' : typeof fields}`,
+  )
+}
+
 /**
  * 合并调用方显式提供的自定义字段（跳过保留字段与 undefined）。
  *
  * 模块私有（v0.22.8）：它只被 buildWriteTiddler 调用，导出会让「写策略只有一个
  * 入口」这条约定出现第二个可绕过的门。`verify-write-policy.mjs` 断的是
  * `buildWriteTiddler`/`cleanTiddler` 的对外行为，不需要这个内部步骤。
+ *
+ * v0.26.5：非对象一律**抛错**，不再静默 return。旧实现的静默 return 让模型看到
+ * 「字段没写进去」却收不到任何错误（事故的第二个症状）；配合 `withWorkspaceMark`
+ * 的字符串展开，才有了「几十个单字符字段」那一步。现在任何绕过
+ * `normalizeFieldsArg` 的调用方都会在这里被拦住，而不是往人类笔记上写垃圾。
  */
 function applyCustomFields(tiddler: Tiddler, fields: Record<string, unknown> | undefined): void {
-  if (fields === undefined || fields === null || typeof fields !== 'object') return
+  if (fields === undefined || fields === null) return
+  if (!isPlainObject(fields)) {
+    throw new Error(`内部错误：fields 必须是对象，收到 ${Array.isArray(fields) ? '数组' : typeof fields}`)
+  }
   for (const [key, value] of Object.entries(fields)) {
     if (RESERVED_TIDDLER_FIELDS.has(key)) continue
     if (value === undefined) continue
@@ -194,7 +260,11 @@ export interface BuildWriteOptions {
   existing?: Tiddler | undefined
   /** 显式标签：给了就整体替换，没给就保留基底里的原标签。 */
   tags?: string[] | undefined
-  /** 显式自定义字段（逐个覆盖在基底之上）。 */
+  /**
+   * 显式自定义字段（逐个覆盖在基底之上）。必须是平铺对象——调用方应先用
+   * `normalizeFieldsArg()` 归一化（工具层允许模型按 JSON 字符串发来），
+   * 传字符串/数组会在 `applyCustomFields` 里抛错，绝不按字符拆开（v0.26.5）。
+   */
   fields?: Record<string, unknown> | undefined
   /** 新建条目时是否自动补 `agent-written`（agent 工具 true，人类入口 false）。 */
   agentTag?: boolean
