@@ -31,9 +31,26 @@ function readConfig() {
 	return config;
 }
 
+/*
+A configured endpoint is only useful when it points at the DSH server root
+(/dsh-tiddlywiki). Browser autofill sometimes stuffs a URL into the "TW 端请求
+基址" box (实测 /dsh-tiddlywiki/tw/root), which would make every request land
+on the TW proxy and 404. Anything that already contains one of the TW proxy /
+sub-route segments (or isn't an origin or a root-absolute path) is clearly
+wrong → fall back to the automatic derivation so the button keeps working.
+*/
+function isLikelyBadEndpoint(e) {
+	if (typeof e !== "string" || e.trim().length === 0) { return true; }
+	if (/\/tw\//.test(e) || /\/api\//.test(e) || /\/recipes\//.test(e) || /\/files\//.test(e)) { return true; }
+	if (/^(https?:)?\/\//.test(e)) { return false; }
+	// Root-absolute like /dsh-tiddlywiki is fine; anything else (relative,
+	// bare "dsh-tiddlywiki", a stray token) is not an endpoint.
+	return e.charAt(0) !== "/";
+}
+
 function baseEndpoint() {
 	var config = readConfig();
-	if (config.endpoint.length > 0) { return config.endpoint.replace(/\/+$/, ""); }
+	if (config.endpoint.length > 0 && !isLikelyBadEndpoint(config.endpoint)) { return config.endpoint.replace(/\/+$/, ""); }
 	if (typeof location !== "undefined" && location.origin) { return location.origin + "/dsh-tiddlywiki"; }
 	return "/dsh-tiddlywiki";
 }

@@ -296,6 +296,11 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
 
   const textField = (key: string, label: string, initial: string): void => {
     const input = make('input', 'dsh-tw-settings-input')
+    // autocomplete=off（v0.26.4）：浏览器常把 URL 类配置框（ui.sendToAgent.endpoint、
+    // git.remote、wechat.dsn 等）当账号/URL 字段自动填充，用户一保存就把垃圾值写进 config
+    // （实测 ui.sendToAgent.endpoint 被填成 /dsh-tiddlywiki/tw/root，send-to-agent 请求拼成
+    // /tw/root/agent/sessions → 404）。tokenField 已有此属性，这里补到所有普通文本框。
+    input.autocomplete = 'off'
     input.value = initial
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)

@@ -7,7 +7,12 @@
 // Bumped 0.3.4 → 0.3.5 (v0.20.0): notify() now stores the message in a
 // $:/temp tiddler before calling $tw.notifier.display — passing free text as a
 // title made EVERY notice of the button a silent no-op.
-export const SEND_TO_AGENT_BUNDLE_VERSION = '0.3.5'
+// Bumped 0.3.5 → 0.3.6 (v0.26.4): baseEndpoint() now rejects an obviously
+// misconfigured `ui.sendToAgent.endpoint` (e.g. one containing a /tw/ or /api/
+// sub-path — browser autofill had stuffed /dsh-tiddlywiki/tw/root into it,
+// making every request land on the TW proxy and 404) and falls back to the
+// automatic origin derivation so the button keeps working.
+export const SEND_TO_AGENT_BUNDLE_VERSION = '0.3.6'
 
 // Bumped 0.1.0 → 0.2.0: render.js behavior changed (see the route source).
 export const RENDER_BUNDLE_VERSION = '0.2.0'
