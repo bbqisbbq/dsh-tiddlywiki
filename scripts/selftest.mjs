@@ -786,7 +786,15 @@ try {
   const statusJson = await statusRes.json()
   assert(statusRes.status === 200 && statusJson.anonymous === true, `proxy /status over real HTTP (${statusRes.status} anon=${statusJson.anonymous})`)
   const exactRes = await fetch(`${miniBase}/dsh-tiddlywiki/status`)
-  assert(exactRes.status === 200 && (await exactRes.json()).twProxy === TW_PROXY_PATH, 'exact /status route wins and reports the same-origin twProxy path')
+  const exactJson = await exactRes.json()
+  assert(exactRes.status === 200 && exactJson.twProxy === TW_PROXY_PATH, 'exact /status route wins and reports the same-origin twProxy path')
+  // v0.26.7: the absolute twin is derived from the request's Host header — the
+  // DSH desktop app (`dsh-app:` renderer, i.e. NOT http(s)) needs it so the
+  // embedded TW runs on a real HTTP origin where its TiddlyWeb sync adaptor
+  // loads at all (without it: no syncer → read-only stylesheet hides 添加条目 /
+  // 编辑 …, and edits cannot be saved).
+  const expectedAbsolute = `http://${new URL(miniBase).host}${TW_PROXY_PATH}`
+  assert(exactJson.twProxyAbsolute === expectedAbsolute, `/status reports the absolute loopback twin (got ${JSON.stringify(exactJson.twProxyAbsolute)}, want ${expectedAbsolute})`)
   await new Promise((resolveP) => mini.close(resolveP))
 
   disposeRoutes()

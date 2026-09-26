@@ -30,7 +30,7 @@ import { toast } from './toast.ts'
 import { openEditorPopup, isEditorPopupOpen, isEditorPopupBlank } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
 import { fetchStatus } from './status-cache.ts'
-import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, TAGS_ENDPOINT, UPLOAD_ENDPOINT } from './endpoints.ts'
+import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, TAGS_ENDPOINT, UPLOAD_ENDPOINT, resolveTwUrl } from './endpoints.ts'
 
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
@@ -557,7 +557,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         signal: AbortSignal.timeout(10_000),
       })
       const payload = (await res.json().catch(() => null)) as
-        | { ok?: boolean; title?: string; draftTitle?: string; twUrl?: string; error?: string }
+        | { ok?: boolean; title?: string; draftTitle?: string; twUrl?: string; twUrlAbsolute?: string; error?: string }
         | null
       if (!res.ok || payload?.ok !== true) {
         toast(`打开失败：${payload?.error ?? `HTTP ${res.status}`}`)
@@ -575,9 +575,12 @@ export function createNoteWidget(): NoteWidgetHandle {
       persistedSignature = draftSignature(title, text, tags)
       loadedToken = null
       // twUrl is the same-origin proxy path (e.g. /dsh-tiddlywiki/tw/);
-      // resolve it against this page's origin so the popup works from any
-      // host/domain DSH is reached on (loopback, LAN, Tailscale, HTTPS).
-      const popupUrl = `${new URL(payload.twUrl, location.origin).href}#${encodeURIComponent(payload.draftTitle)}`
+      // resolveTwUrl turns it into an absolute URL against this page's origin
+      // so the popup works from any host/domain DSH is reached on (loopback,
+      // LAN, Tailscale, HTTPS) — and, on the DSH desktop app (`dsh-app:`), to
+      // the host's loopback HTTP base, without which TW's sync adaptor refuses
+      // to load and the native editor would come up read-only.
+      const popupUrl = `${resolveTwUrl(payload.twUrl, payload.twUrlAbsolute)}#${encodeURIComponent(payload.draftTitle)}`
       openEditorPopup(popupUrl, payload.title ?? title)
       toast(`已在弹出窗口打开「${payload.title ?? title}」编辑器`)
       return true

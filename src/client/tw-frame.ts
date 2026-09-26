@@ -27,7 +27,7 @@
  * @module dsh-tiddlywiki/client/tw-frame
  */
 import * as React from 'react'
-import { RESTART_ENDPOINT } from './endpoints.ts'
+import { RESTART_ENDPOINT, resolveTwUrl } from './endpoints.ts'
 import { fetchStatus } from './status-cache.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
@@ -234,8 +234,21 @@ export function createTwFrameSurface(skin: TwFrameSkin): TwFrameSurface {
     const tryOnce = (attempt: number): void => {
       if (disposed) return // unmounted: do not keep waiting or touch the frame
       if (pendingHash !== hash) return // superseded by a newer request
-      const frameTw = win as { $tw?: unknown }
-      if (typeof frameTw.$tw !== 'object' || frameTw.$tw === null) {
+      // Cross-origin frame (v0.26.7): on the DSH desktop app the TW frame is
+      // loaded from the host's loopback HTTP origin — the only way TW's
+      // TiddlyWeb sync adaptor will load there — which makes it a different
+      // origin than the DSH page. Reading `$tw` inside it raises SecurityError,
+      // so we cannot watch for TW's boot: go straight to the full
+      // reload-with-hash fallback (TW honours the hash at startup).
+      let frameIsTw = false
+      try {
+        const frameTw = win as { $tw?: unknown }
+        frameIsTw = typeof frameTw.$tw === 'object' && frameTw.$tw !== null
+      } catch {
+        fallbackLoad(hash)
+        return
+      }
+      if (!frameIsTw) {
         if (attempt < 40) {
           // Tracked so dispose() cancels the chain (v0.19.1 — the untracked
           // 40×150ms retry kept the iframe/closure alive after unmount).
@@ -302,7 +315,10 @@ export function createTwFrameSurface(skin: TwFrameSkin): TwFrameSurface {
       // matter which host/domain the user reached DSH on. Fall back to the
       // legacy loopback `url` for older servers that do not send twProxy.
       if (typeof payload.twProxy === 'string') {
-        showFrame(new URL(payload.twProxy, window.location.origin).href)
+        // resolveTwUrl prefers the host's ABSOLUTE loopback base when THIS page
+        // is not on http(s) (the DSH desktop app's `dsh-app:` renderer), because
+        // TW refuses to load its sync adaptor anywhere else — see resolveTwUrl.
+        showFrame(resolveTwUrl(payload.twProxy, payload.twProxyAbsolute))
       } else if (typeof payload.url === 'string') {
         showFrame(payload.url)
       } else {

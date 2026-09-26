@@ -60,7 +60,7 @@ import { GitConflictStateError, type GitFace, type GitStatusView } from './git.t
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import { writeSessionSummary, type SessionQueryFace, type SessionSummaryResult } from './session-summary.ts'
 import { WORKSPACE_TAG_PREFIX } from './workspace.ts'
-import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
+import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, absoluteHostBase, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
 import { sanitizeTwFragment } from './sanitize.ts'
 import { drainThenStop } from './seeds.ts'
 import { snippetOf, formatLocalMinute } from './text-util.ts'
@@ -628,6 +628,15 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   const referencesBlockedTitle = (value: string | undefined): boolean =>
     value !== undefined && BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => value.includes(prefix))
 
+  /**
+   * Absolute twin of `twProxy` for embedders whose own document is not on
+   * http(s) — the DSH desktop app's `dsh-app:` renderer (v0.26.7). See
+   * `absoluteHostBase()` in http.ts for the full why; clients only consult it
+   * while their own page is not http(s), so nothing changes for http(s)
+   * deployments.
+   */
+  const twProxyAbsoluteBase = (req: IncomingMessage): string | undefined => absoluteHostBase(req.headers.host, TW_PROXY_PATH)
+
   const handleStatus = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
     const view = deps.server.status()
@@ -639,6 +648,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       // the spawn line's `password=…` (or a forwarded Authorization header).
       logs: redactLogLines(view.logs),
       twProxy: TW_PROXY_PATH,
+      // Absolute twin of `twProxy` for embedders whose own document is not on
+      // http(s) — the DSH desktop app (`dsh-app://app`); see
+      // twProxyAbsoluteBase(). Absent when the Host header is unusable.
+      twProxyAbsolute: twProxyAbsoluteBase(req),
       git: gitSummary,
       note: { tag: deps.noteDefaults().tag },
       ui: deps.uiDefaults(),
@@ -707,7 +720,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         })
       }
       const result = await pendingSummary
-      json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH })
+      json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH, twUrlAbsolute: twProxyAbsoluteBase(req) })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
@@ -1071,7 +1084,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       })
       deps.autoCommit()
       invalidateGitStatus()
-      json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH })
+      json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH, twUrlAbsolute: twProxyAbsoluteBase(req) })
     } catch (err) {
       if (err instanceof WriteConflictError) {
         json(res, { ok: false, error: err.message, conflict: true }, 409)

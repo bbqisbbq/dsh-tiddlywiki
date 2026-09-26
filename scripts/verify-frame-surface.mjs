@@ -107,6 +107,10 @@ globalThis.window = {
   matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
   location: { origin: 'http://127.0.0.1:3080' },
 }
+// The browser also exposes the page URL as the bare `location` global; the URL
+// resolver (endpoints.ts resolveTwUrl) reads it, and its http(s) branch decides
+// whether the relative proxy path or the host's absolute base is used.
+globalThis.location = { protocol: 'http:', origin: 'http://127.0.0.1:3080' }
 
 /* ───────────────────────── /status 打桩 ───────────────────────── */
 
@@ -356,6 +360,63 @@ await test('隐藏时 openTiddler 返回 false（链接要能落回中央面板�
   const { surface } = await readySurface()
   surface.setVisible(false)
   assert.equal(surface.openTiddler('任何条目'), false)
+  surface.dispose()
+})
+
+console.log('桌面版（dsh-app: 非 http 文档）—— 必须把 frame 指到宿主的绝对 http 基址')
+
+await test('/status 的 twProxyAbsolute 被采用；http(s) 页面继续用自身 origin', async () => {
+  const real = globalThis.location
+  invalidateStatus()
+  statusMode = 'ok'
+  statusPayload = {
+    ok: true,
+    status: 'running',
+    twProxy: '/dsh-tiddlywiki/tw/',
+    twProxyAbsolute: 'http://127.0.0.1:19387/dsh-tiddlywiki/tw/',
+  }
+  // 非 http(s) 文档（DSH 桌面版）→ 采用绝对基址。
+  globalThis.location = { protocol: 'dsh-app:', origin: 'dsh-app://app' }
+  try {
+    const made = makeSurface()
+    made.frame.contentWindow = { $tw: {}, location: { hash: '' } }
+    made.surface.setVisible(true)
+    await settle()
+    assert.equal(
+      made.frame.dataset.loaded,
+      'http://127.0.0.1:19387/dsh-tiddlywiki/tw/',
+      'dsh-app: 页面必须把 iframe 指向宿主回环 http 基址（TW 只在 http(s) 文档里加载 sync adaptor，否则没有 syncer、只读样式会把 ＋/编辑全藏掉）',
+    )
+    made.surface.dispose()
+    // 同一个载荷在 http 页面上必须**忽略**绝对基址（局域网/域名/HTTPS 部署不得被改源）。
+    globalThis.location = { protocol: 'http:', origin: 'http://127.0.0.1:3080' }
+    invalidateStatus()
+    const httpMade = makeSurface()
+    httpMade.frame.contentWindow = { $tw: {}, location: { hash: '' } }
+    httpMade.surface.setVisible(true)
+    await settle()
+    assert.equal(httpMade.frame.dataset.loaded, PROXY, 'http(s) 页面必须继续用相对路径解析出来的同源地址')
+    httpMade.surface.dispose()
+  } finally {
+    globalThis.location = real
+  }
+})
+
+await test('跨源 frame：读 $tw 抛 SecurityError 时兜底整页加载（不冒泡、不丢链接）', async () => {
+  const crossOrigin = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        // 浏览器读跨源 window 的任意属性都会抛 SecurityError —— 照抄。
+        throw new DOMException(`Blocked a frame from accessing a cross-origin frame (${String(prop)})`, 'SecurityError')
+      },
+    },
+  )
+  const { surface, frame } = await readySurface({ contentWindow: crossOrigin })
+  const before = frame.srcAssignments.length
+  assert.equal(surface.openTiddler('跨源 条目'), true, '可见时应接受请求')
+  assert.equal(frame.srcAssignments.length, before + 1, '跨源必须走整页兜底，而不是抛错或静默丢掉链接')
+  assert.equal(frame.srcAssignments.at(-1), `${PROXY}#${encodeURIComponent('跨源 条目')}`, '兜底 URL 以 dataset.loaded 为基准并带 hash')
   surface.dispose()
 })
 

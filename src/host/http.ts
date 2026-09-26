@@ -198,7 +198,40 @@ export function rejectCrossSiteWrite(
   return true
 }
 
-/** Read-only route guard: GET/HEAD only, no side effects on any other method. */
+/**
+ * Read-only route guard: GET/HEAD only, no side effects on any other method. */
 export function rejectNonRead(req: IncomingMessage, res: ServerResponse): boolean {
   return rejectCrossSiteWrite(req, res, ['GET', 'HEAD'])
+}
+
+/**
+ * Absolute loopback base for a same-origin proxy path, from a request's `Host`
+ * header (v0.26.7). Returns undefined when the header is unusable, in which
+ * case the caller simply omits the absolute twin and clients keep using the
+ * relative path.
+ *
+ * WHY THIS EXISTS: the DSH **desktop** app serves its renderer from the custom
+ * `dsh-app:` scheme, and TiddlyWiki's own TiddlyWeb sync adaptor refuses to load
+ * on a document whose protocol does not start with `http`
+ * (`plugins/tiddlywiki/tiddlyweb/tiddlywebadaptor.js`:
+ * `if($tw.browser && document.location.protocol.substr(0,4) === "http")`).
+ * Embedded from `dsh-app://app/…` the wiki therefore had NO sync adaptor:
+ * `$:/status/IsReadOnly` was never written, TW's read-only stylesheet (which
+ * treats a MISSING status as read-only) hid 添加条目 / 日志 / 导入 / 管理器 /
+ * 编辑 …, and the saver fell back to local-only dirty tracking — an edit made
+ * there could not be saved either. The client falls back to this absolute URL
+ * only while its own document is not on http(s) (see `resolveTwUrl` in
+ * `src/client/endpoints.ts`), so http(s) embedders — loopback, LAN, Tailscale,
+ * domain, HTTPS — are never moved off their own origin.
+ *
+ * `http` is deliberate rather than `x-forwarded-proto`: the desktop app's host
+ * always listens on plain HTTP loopback, and only a renderer able to reach it
+ * ever reads this value.
+ */
+export function absoluteHostBase(hostHeader: string | string[] | undefined, proxyPath: string): string | undefined {
+  const host = typeof hostHeader === 'string' ? hostHeader.trim() : Array.isArray(hostHeader) ? String(hostHeader[0] ?? '').trim() : ''
+  // `host[:port]` only — a smuggled path or credentials must never reach the
+  // URL handed back to the browser.
+  if (!/^[A-Za-z0-9.\-[\]:]+$/.test(host)) return undefined
+  return `http://${host}${proxyPath}`
 }

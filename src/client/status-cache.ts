@@ -23,6 +23,13 @@ export interface StatusPayload {
   url?: string
   /** Same-origin TW proxy path (e.g. /dsh-tiddlywiki/tw/); the iframe base. */
   twProxy?: string
+  /**
+   * Absolute twin of `twProxy` (host loopback HTTP base, v0.26.7). Used only
+   * when this document is not on http(s) — the DSH desktop app's `dsh-app:`
+   * renderer, where a relative path would leave TW without a sync adaptor.
+   * See `resolveTwUrl`.
+   */
+  twProxyAbsolute?: string
   wikiPath?: string
   error?: string
   git?: {

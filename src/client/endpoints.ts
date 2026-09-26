@@ -48,6 +48,33 @@ export const ADMIN_WIKI_LOCATION_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/location
 export const ADMIN_WIKI_SWITCH_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/switch`
 export const ADMIN_WIKI_RESET_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/reset`
 
+/**
+ * Resolve a TW proxy URL for THIS document (v0.26.7).
+ *
+ * On an http(s) page the relative proxy path is right — it keeps working behind
+ * whatever host/domain/HTTPS the user reached DSH on. But TiddlyWiki's own
+ * TiddlyWeb sync adaptor only loads when the DOCUMENT's protocol starts with
+ * `http` (`plugins/tiddlywiki/tiddlyweb/tiddlywebadaptor.js`:
+ * `if($tw.browser && document.location.protocol.substr(0,4) === "http")`), and
+ * the DSH **desktop** app serves its renderer from the custom `dsh-app:`
+ * scheme: framed from there the wiki had no sync adaptor at all, so
+ * `$:/status/IsReadOnly` was never written, TW's read-only stylesheet (which
+ * treats a missing status as read-only) hid 添加条目 / 编辑 / 导入 … and no edit
+ * could be saved.
+ *
+ * `absolute` is the host's own loopback HTTP base (`twProxyAbsolute` /
+ * `twUrlAbsolute`, built from the port it actually listens on); it is used only
+ * when this page is NOT on http(s), i.e. exactly the desktop case, so an
+ * http(s) embedder is never sent to a different origin than its own.
+ */
+export function resolveTwUrl(relative: string, absolute?: string): string {
+  const protocol = typeof location === 'undefined' ? '' : location.protocol
+  const origin = typeof location === 'undefined' ? undefined : location.origin
+  const notHttp = protocol !== 'http:' && protocol !== 'https:'
+  if (notHttp && typeof absolute === 'string' && absolute.length > 0) return absolute
+  return new URL(relative, origin).href
+}
+
 /** The subset of the `/sync` JSON body both client callers report on. */
 export interface SyncResultPayload {
   ok?: boolean
