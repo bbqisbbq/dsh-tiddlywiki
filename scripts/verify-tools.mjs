@@ -281,6 +281,59 @@ try {
     assert.match(String(r.modified ?? ''), /^\d{17}$/, `rename 后 modified 必须存在：${JSON.stringify(r.modified)}`)
   })
 
+  // ── append + heading：CRLF 笔记必须能定位；未命中必须可机读（v0.26.6）──────
+  // 这组是 v0.26.6 的回归：insertIntoSection 用 base.split('\n') 让 CRLF 文档每行
+  // 结尾都留着 \r，而 JS 的 (.*) 不匹配 \r、$ 也不匹配 \r 之前 ⇒ 标题正则对**每个**
+  // 标题都失败 ⇒ 带 heading 的 append 在 CRLF 笔记上**静默**落到文末，回执却照打
+  // 「段落「X」」。纯 LF 笔记一切正常，所以过去看起来像偶发。
+  await test('append/heading：CRLF 笔记也要能正确定位（回归）', async () => {
+    const crlf = ['## SEC-A', 'a body', '', '## SEC-B', 'b body', '', '## SEC-C', 'c body', ''].join('\r\n')
+    await call('tiddlywiki_put', { title: 'CrlfAppend', text: crlf })
+    const before = await api.get('CrlfAppend')
+    assert.ok(String(before.text).includes('\r\n'), `（前置条件）该条目正文必须是 CRLF，实际 ${JSON.stringify(String(before.text).slice(0, 40))}`)
+
+    const r = await call('tiddlywiki_append', { title: 'CrlfAppend', text: 'MARK', heading: 'SEC-B' })
+    assert.equal(r.headingMatched, true, `CRLF 笔记的标题必须定位成功：${JSON.stringify(r)}`)
+    const text = String((await api.get('CrlfAppend')).text)
+    const iB = text.indexOf('## SEC-B')
+    const iM = text.indexOf('MARK')
+    const iC = text.indexOf('## SEC-C')
+    assert.ok(iB >= 0 && iM > iB && iM < iC, `MARK 必须落在 SEC-B 段内（B=${iB} M=${iM} C=${iC}）：${JSON.stringify(text)}`)
+    // 新块跟随文档行尾：CRLF 笔记里不得混进裸 LF（否则行尾越写越乱）
+    const segment = text.slice(iB, iC)
+    assert.ok(!/[^\r]\n/.test(segment), `CRLF 笔记内不得混入裸 LF：${JSON.stringify(segment)}`)
+  })
+
+  await test('append/heading：未命中必须 headingMatched=false 且回执明说（回归）', async () => {
+    await call('tiddlywiki_put', { title: 'HeadingMiss', text: '## ONLY\nbody\n' })
+    const r = await call('tiddlywiki_append', { title: 'HeadingMiss', text: 'TAIL-MARK', heading: 'NO-SUCH-HEADING' })
+    assert.equal(r.headingMatched, false, `未命中必须报告 headingMatched=false：${JSON.stringify(r)}`)
+    const rendered = tools.get('tiddlywiki_append').output.render({}, r).map((b) => b.text).join('\n')
+    assert.match(rendered, /未找到标题/, `回执必须明说没找到：${rendered}`)
+    assert.ok(!rendered.includes('段落「NO-SUCH-HEADING」'), `未命中时不得再宣称写进了该段落：${rendered}`)
+    const t = String((await api.get('HeadingMiss')).text)
+    assert.ok(t.indexOf('TAIL-MARK') > t.indexOf('body'), `回退时应追加到文末：${JSON.stringify(t)}`)
+  })
+
+  await test('append/heading：命中时 headingMatched=true 且回执保留段落名（反向保护）', async () => {
+    await call('tiddlywiki_put', { title: 'HeadingHit', text: '## SEC-A\na\n\n## SEC-B\nb\n\n## SEC-C\nc\n' })
+    const r = await call('tiddlywiki_append', { title: 'HeadingHit', text: 'HIT-MARK', heading: 'SEC-B' })
+    assert.equal(r.headingMatched, true, `命中应报告 true：${JSON.stringify(r)}`)
+    const rendered = tools.get('tiddlywiki_append').output.render({}, r).map((b) => b.text).join('\n')
+    assert.ok(rendered.includes('段落「SEC-B」'), `命中时回执仍要写段落名：${rendered}`)
+    const t = String((await api.get('HeadingHit')).text)
+    assert.ok(t.indexOf('HIT-MARK') > t.indexOf('b') && t.indexOf('HIT-MARK') < t.indexOf('## SEC-C'), `HIT-MARK 必须落在 SEC-B 段内：${JSON.stringify(t)}`)
+  })
+
+  await test('append/heading：wikitext（! 标题）也要能被定位', async () => {
+    const base = '!WIKI-A\nalpha\n\n!WIKI-B\nbravo\n\n!WIKI-C\ncharlie\n'
+    await call('tiddlywiki_put', { title: 'WikitextHeading', text: base, fields: { type: 'text/vnd.tiddlywiki' } })
+    const r = await call('tiddlywiki_append', { title: 'WikitextHeading', text: 'WIKI-MARK', heading: 'WIKI-B' })
+    assert.equal(r.headingMatched, true, `wikitext 标题必须定位成功：${JSON.stringify(r)}`)
+    const t = String((await api.get('WikitextHeading')).text)
+    assert.ok(t.indexOf('WIKI-MARK') > t.indexOf('bravo') && t.indexOf('WIKI-MARK') < t.indexOf('!WIKI-C'), `WIKI-MARK 必须落在 WIKI-B 段内：${JSON.stringify(t)}`)
+  })
+
   await test('时间戳：fields 仍不得覆盖 created/modified', async () => {
     const r = await call('tiddlywiki_put', {
       title: 'StampReserved',

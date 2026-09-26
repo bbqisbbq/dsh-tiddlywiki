@@ -392,23 +392,47 @@ function rewriteRefs(text: string, oldTitle: string, newTitle: string): { text: 
 }
 
 /**
- * Insert `addition` at the end of the section introduced by `heading` (Markdown
- * `#`/`##`… or wikitext `!`/`!!`…). Falls back to appending at the end of the
- * document when the heading is not found. Used by tiddlywiki_append so an agent
- * can add to one section of a long note without rewriting the whole file.
+ * Insert `addition` into the section introduced by `heading` (Markdown `#`/`##`…
+ * or wikitext `!`/`!!`…). Used by tiddlywiki_append so an agent can add to one
+ * section of a long note without rewriting the whole file.
+ *
+ * **落点语义**：插在「该标题之后、**下一个任意级别的标题**之前」。所以当标题后面
+ * 紧跟子标题时（`## 4. 定时任务` + `### 槽位表`），内容落在两者**之间**，也就是
+ * 「章节开头」而不是「整节末尾」——这一点以前只在 schema 里写成「段落的末尾」，
+ * 容易让调用方误会（v0.26.6 起描述与回执都写清楚了）。
+ *
+ * **返回 `matched`**：`false` = 没找到该标题，文本被追加到**文末**。调用方**必须**
+ * 把它透出去（v0.26.6 之前这个回退是静默的，回执照样打「段落「X」」，
+ * 于是一次定位失败看起来像成功——Agent 没有任何办法自检）。
+ *
+ * **CRLF（v0.26.6 修复）**：tiddler 正文可能是 CRLF（Windows 上写的/同步来的笔记），
+ * 而 `split('\n')` 会让每行结尾都留着 `\r`。JS 里 `(.*)` 不匹配 `\r`、`$` 也不匹配
+ * `\r` 之前的位置，于是 `/^#{1,6}\s+(.*)$/` 对**每一个**标题都匹配失败 ⇒ 所有带
+ * `heading` 的 append 都静默落到了文末。**只在 CRLF 笔记上复现**（纯 LF 笔记一切正常），
+ * 这就是它像「偶发」的原因。现在只在**匹配时**剥掉行尾 CR，原文行尾一个字节都不动；
+ * 并且新块用**文档自己的行尾**写入，避免 CRLF 笔记被越写越乱（混入 LF 块）。
  */
-function insertIntoSection(base: string, heading: string, addition: string): string {
+function insertIntoSection(base: string, heading: string, addition: string): { text: string; matched: boolean } {
   const lines = base.split('\n')
   const headingText = (line: string): string | null => {
-    const md = /^#{1,6}\s+(.*)$/.exec(line)
+    // 只在匹配时剥离行尾 CR：CRLF 笔记的每一行都会带上它。
+    const s = line.replace(/\r$/, '')
+    const md = /^#{1,6}\s+(.*)$/.exec(s)
     if (md !== null) return (md[1] ?? '').trim()
-    const tw = /^!{1,6}\s*(.*)$/.exec(line)
+    const tw = /^!{1,6}\s*(.*)$/.exec(s)
     if (tw !== null) return (tw[1] ?? '').trim()
     return null
   }
   const start = lines.findIndex((line) => headingText(line) === heading)
+  // 新块跟随文档主流行尾：CRLF 文档里不要再塞 LF 块。
+  const eol = base.includes('\r\n') ? '\r\n' : '\n'
+  const adapt = (s: string): string => (eol === '\n' ? s.replace(/\r\n/g, '\n') : s.replace(/\r\n/g, '\n').split('\n').join('\r\n'))
+  const block = adapt(addition)
   if (start < 0) {
-    return base.trim().length === 0 ? addition : `${base.replace(/\s+$/, '')}\n\n${addition}`
+    return {
+      text: base.trim().length === 0 ? block : `${base.replace(/\s+$/, '')}${eol}${eol}${block}`,
+      matched: false,
+    }
   }
   let end = lines.length
   for (let i = start + 1; i < lines.length; i++) {
@@ -419,8 +443,11 @@ function insertIntoSection(base: string, heading: string, addition: string): str
   }
   const before = lines.slice(0, end).join('\n').replace(/\s+$/, '')
   const after = lines.slice(end).join('\n')
-  const head = `${before}\n\n${addition}`
-  return after.trim().length === 0 ? head : `${head}\n\n${after.replace(/^\s+/, '')}`
+  const head = `${before}${eol}${eol}${block}`
+  return {
+    text: after.trim().length === 0 ? head : `${head}${eol}${eol}${after.replace(/^\s+/, '')}`,
+    matched: true,
+  }
 }
 
 
@@ -1100,12 +1127,12 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // ── tiddlywiki_append ────────────────────────────────────────────────────
   register(defineTool({
     name: 'tiddlywiki_append',
-    description: '向已有 tiddler 追加/前插文本，或写入指定标题段落的末尾（无需先读全文、不会整篇覆盖）——适合日志、批注、清单的增量写入。条目不存在时默认新建（createIfMissing=false 则报错）。**写入既有条目走与 tiddlywiki_put 同一套写策略**：原有 tags、自定义字段与**内容类型**全部保留（不会把 Markdown 笔记改成 wikitext、也不会把 CSS 改成 Markdown）；可用 fields 显式覆盖字段/类型。新建条目未指定内容类型时才默认 text/markdown（并像 tiddlywiki_put 一样自动补 agent-written 与 `ws/<项目名>` 工作区标记）。⚠️ 本工具内部是「读全文 → 整篇回写」，属于覆盖写入：改前请先 `tiddlywiki_get`，并把读到的 `modified` 作为 `expectedModified` 传回（v0.25.0 起支持），否则人类在 TW 编辑器里的并发修改会被静默回滚。',
+    description: '向已有 tiddler 追加/前插文本，或写入指定标题段落的末尾（无需先读全文、不会整篇覆盖）——适合日志、批注、清单的增量写入。条目不存在时默认新建（createIfMissing=false 则报错）。**写入既有条目走与 tiddlywiki_put 同一套写策略**：原有 tags、自定义字段与**内容类型**全部保留（不会把 Markdown 笔记改成 wikitext、也不会把 CSS 改成 Markdown）；可用 fields 显式覆盖字段/类型。新建条目未指定内容类型时才默认 text/markdown（并像 tiddlywiki_put 一样自动补 agent-written 与 `ws/<项目名>` 工作区标记）。⚠️ 本工具内部是「读全文 → 整篇回写」，属于覆盖写入：改前请先 `tiddlywiki_get`，并把读到的 `modified` 作为 `expectedModified` 传回（v0.25.0 起支持），否则人类在 TW 编辑器里的并发修改会被静默回滚。带 `heading` 时返回 `headingMatched`：`false` = 没找到该标题、文本已追加到**文末**（CRLF 行尾的笔记也能正确定位）。',
     parameters: {
       title: { type: 'string', description: 'tiddler 标题', required: true },
       text: { type: 'string', description: '要追加/前插的文本（默认按 Markdown 写；既有条目保持它自己的内容类型）', required: true },
       mode: { type: 'string', enum: ['append', 'prepend'], description: '可选：append（默认，追加到末尾）/ prepend（插到开头）' },
-      heading: { type: 'string', description: '可选：append 时改为插入到该标题（Markdown # 或 wikitext ! 标题，按标题文本匹配）对应段落的末尾' },
+      heading: { type: 'string', description: '可选：append 时改为写入指定标题的位置（Markdown # 或 wikitext ! 标题，按标题文本匹配、忽略标题级别）。**落点 = 该标题之后、下一个任意级别标题之前**：若该标题后紧跟子标题，内容插在两者之间（即章节开头），**不是整节末尾**。标题不存在时不报错，改为追加到文末，并在回执与返回的 headingMatched=false 里明确说明（别把「没命中」当「写进去了」）' },
       createIfMissing: { type: 'boolean', description: '可选：条目不存在时是否新建（默认 true）' },
       tags: { type: 'array', items: { type: 'string' }, description: '可选：标签（不传则保留既有条目的原标签，传空数组 [] 表示清空全部标签；新建条目会额外自动补 agent-written）' },
       fields: { type: 'object', additionalProperties: true, description: '可选：显式覆盖的自定义字段（如 {"type":"text/css"}）。不传则保留既有条目的原字段与内容类型' },
@@ -1116,7 +1143,14 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     normalizeArgs: normalizeFieldsInArgs,
     output: {
       render: (_args, value: AppendResult) => {
-        const lines = [`${value.created ? '已新建并写入' : '已增量写入'} tiddler「${value.title}」（${value.mode}${value.heading !== null ? ` · 段落「${value.heading}」` : ''}）：新增 ${value.added} 字符，现共 ${value.total} 字符。`]
+        // v0.26.6：标题没定位到时必须说出来。以前回执无条件打「段落「X」」，
+        // 于是「静默追加到文末」看起来跟「精确写进那一节」一模一样。
+        const headingNote = value.heading === null
+          ? ''
+          : value.headingMatched === false
+            ? ` · ⚠️ 未找到标题「${value.heading}」，已改为追加到文末`
+            : ` · 段落「${value.heading}」`
+        const lines = [`${value.created ? '已新建并写入' : '已增量写入'} tiddler「${value.title}」（${value.mode}${headingNote}）：新增 ${value.added} 字符，现共 ${value.total} 字符。`]
         if (value.type !== null) lines.push(`类型: ${value.type}${value.typeDefaulted === true ? '（新建且未指定，已默认 markdown）' : ''}`)
         if (value.typeChanged !== undefined) lines.push(`⚠️ 内容类型已从 ${value.typeChanged.from} 改为 ${value.typeChanged.to}`)
         if (value.workspace !== undefined) lines.push(`已自动标记工作区: ${WORKSPACE_TAG_PREFIX}${value.workspace}（字段 ${WORKSPACE_FIELD}）`)
@@ -1145,8 +1179,11 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       const base = existing?.text ?? ''
       const addition = args.text
       let next: string
+      let headingMatched: boolean | undefined
       if (mode === 'append' && typeof args.heading === 'string' && args.heading.trim().length > 0) {
-        next = insertIntoSection(base, args.heading.trim(), addition)
+        const placed = insertIntoSection(base, args.heading.trim(), addition)
+        next = placed.text
+        headingMatched = placed.matched
       } else if (mode === 'prepend') {
         next = base.trim().length === 0 ? addition : `${addition}\n\n${base}`
       } else {
@@ -1177,6 +1214,10 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         heading: mode === 'append' && typeof args.heading === 'string' && args.heading.trim().length > 0
           ? args.heading.trim()
           : null,
+        // v0.26.6：给了 heading 时它到底有没有定位成功。false = 没找到该标题、文本被
+        // 追加到了**文末**。此前这个回退是静默的，回执还照打「段落「X」」，
+        // 导致一次定位失败看起来完全像成功（Agent 无法自检）。
+        ...(headingMatched !== undefined ? { headingMatched } : {}),
         created: existing === undefined,
         added: addition.length,
         total: next.length,
@@ -1716,7 +1757,7 @@ interface RenameResult { ok: boolean; from: string; to: string; refsUpdated: num
 interface DeleteResult { ok: boolean; title: string; /** true = moved to the trash (recoverable). */ trashed?: boolean; trashTitle?: string }
 interface TrashItem { title: string; at?: string; of?: string }
 interface TrashResult { action: string; message: string; items?: TrashItem[] }
-interface AppendResult { ok: boolean; title: string; mode: 'append' | 'prepend'; heading: string | null; created: boolean; added: number; total: number; type?: string | null; typeDefaulted?: boolean; typeChanged?: { from: string; to: string }; /** 新建时自动打上的工作区标记（v0.24.0）。 */ workspace?: string }
+interface AppendResult { ok: boolean; title: string; mode: 'append' | 'prepend'; heading: string | null; /** v0.26.6：给了 heading 时该标题是否真的定位成功（false = 未找到，文本已追加到文末）。 */ headingMatched?: boolean; created: boolean; added: number; total: number; type?: string | null; typeDefaulted?: boolean; typeChanged?: { from: string; to: string }; /** 新建时自动打上的工作区标记（v0.24.0）。 */ workspace?: string }
 interface BacklinkHit { title: string; refs: number; via: 'link' | 'tag'; modified: string | null }
 interface BacklinkResult { title: string; total: number; linkCount: number; tagCount: number; items: BacklinkHit[] }
 interface AttachResult { ok: boolean; title: string; mime: string; bytes: number; chars: number; source: string | null; embedInto: string | null }

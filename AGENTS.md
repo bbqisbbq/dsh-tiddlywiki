@@ -20,8 +20,8 @@
 
 | 项 | 当前值 | 位置 |
 |---|---|---|
-| **插件版本** | `0.26.5` | `package.json` `version`（三处一致性由 `scripts/verify-version-consistency.mjs` 守门：package.json / 本文件 / README「版本记录」顶部） |
-| **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册；客户端 `TOOL_VIEW_KEYS` 由 `scripts/verify-tool-views.mjs` 源码级守门——必须与注册表完全一致）。并发令牌现覆盖 `put`/`delete`/`attach`/`append`/`rename`/`batch_put`（逐条目 `expectedModified`）；`tags: []` = 清空标签（不传 = 保留）；`fields` 必须是**对象**（v0.26.5：曾声明 `type:'json'` → 编译后无类型约束 → 模型发字符串被按字符拆成单字符字段；现 schema 为 `object` + 工具层 `normalizeFieldsArg()` 兜底） |
+| **插件版本** | `0.26.6` | `package.json` `version`（三处一致性由 `scripts/verify-version-consistency.mjs` 守门：package.json / 本文件 / README「版本记录」顶部） |
+| **Agent 工具集（15 个）** | `search` `get` `put` `batch_put` `append` `rename` `delete` `trash` `backlinks` `attach` `lint` `recent` `list_tags` `git_sync` `git_resolve` | `src/host/tools.ts`（列表式注册；客户端 `TOOL_VIEW_KEYS` 由 `scripts/verify-tool-views.mjs` 源码级守门——必须与注册表完全一致）。并发令牌现覆盖 `put`/`delete`/`attach`/`append`/`rename`/`batch_put`（逐条目 `expectedModified`）；`tags: []` = 清空标签（不传 = 保留）；`fields` 必须是**对象**（v0.26.5：曾声明 `type:'json'` → 编译后无类型约束 → 模型发字符串被按字符拆成单字符字段；现 schema 为 `object` + 工具层 `normalizeFieldsArg()` 兜底）；`append` 的 `heading` 落点是「该标题之后、**下一个任意级别标题之前**」（标题后紧跟子标题时落在两者之间＝章节开头，不是整节末尾），**未命中不再静默**——返回 `headingMatched=false` 且回执明说「未找到标题…已改为追加到文末」（v0.26.6：CRLF 正文曾让标题正则全数失配、静默落文末） |
 | **Seed 注册表（13 项，三层）** | 核心（自动写、不可移除）：`send-to-agent`、`render-route`、`tw-web-host`；起步（默认写、可移除）：`doc-note`、`starter-docs` + **gated 3 项**（`publish-spec`/`wechat-setup`/`wechat-publish`，仅 `wechat.enabled` 开启时写）；可选（手动）：`home-index`、`all-articles`、`ui-styles`、`menubar-theme`、`clip-bridge` | `src/host/seeds.ts` 的 `SEED_DEFS` + `src/host/seed-util.ts` |
 | **bundle 版本** | send-to-agent `0.3.6` · render `0.2.0` · wechat-publish `0.2.0` | `scripts/bundle/versions.mjs`（唯一来源） |
 | **注入提示词** | `prompt{enabled,mode,extra,override}`，默认 `slim`（v0.24.0 起 1918 字符 / 预算 2100，守门 `scripts/verify-prompt.mjs`）；`full` 的参数索引由 `tiddlywikiToolSummary()` 实时生成 | `src/host/prompt.ts` |
