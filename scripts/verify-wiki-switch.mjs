@@ -47,6 +47,27 @@ const calls = { teardown: 0, setup: 0, reload: 0, bootstrap: 0, pointer: 0 }
 
 const clientFor = () => new TiddlyWebClient(server.url)
 
+/**
+ * TW 的 HTTP 服务可以在子进程把 store 读进内存**之前**就接受请求，所以在一次
+ * 重启之后直接 `get()` 有可能瞬时 404。有界轮询，别跟它抢时序。
+ *
+ * 为什么加（2026-09-28）：CI 上出现过一次假红 —— 失败的切换正确回滚了 B，但
+ * 断言抢在 TW 载入 store 之前读到 `undefined`。本地与重跑均通过，属于竞态。
+ */
+const waitUntilReadable = async (client, title, deadlineMs = 15_000) => {
+  const started = Date.now()
+  for (;;) {
+    try {
+      const tiddler = await client.get(title)
+      if (tiddler !== undefined) return tiddler
+    } catch {
+      // 服务还没起来 —— 继续等
+    }
+    if (Date.now() - started > deadlineMs) return undefined
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+}
+
 const deps = {
   currentLocation: () => current,
   currentPath: () => path,
@@ -114,7 +135,8 @@ try {
   assert.equal(path, join(rootB, 'wikiB'), 'the folder must be rolled back')
   assert.equal(server.status().status, 'running', 'the previous wiki must be running again')
   const afterRollback = clientFor()
-  assert.ok((await afterRollback.get('OnlyInB')) !== undefined, 'rollback must serve wiki B again')
+  const rolledBack = await waitUntilReadable(afterRollback, 'OnlyInB')
+  assert.ok(rolledBack !== undefined, 'rollback must serve wiki B again (within 15s)')
   assert.equal(await afterRollback.get('OnlyInA'), undefined, 'rollback must not land on wiki A')
   assert.deepEqual((await readLocationState(stateFile)).active, { root: rootB, name: 'wikiB' }, 'a failed switch must not touch the pointer')
 

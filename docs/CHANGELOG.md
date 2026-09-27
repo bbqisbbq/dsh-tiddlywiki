@@ -28,7 +28,7 @@
 
 - **v0.23.0**（2026-09-17）：**新增「发布到微信公众号」+ 发布元数据**（`tools/wechat/`，**可选功能，默认关闭，需额外安装**，不动 host 代码）。把 wiki 笔记一键发到公众号**草稿箱**，可选点发表。
 
-  **⚠️ 可选功能，默认关**：真正干活的是仓库 `tools/wechat/` 下的 opencli adapter + Browser Bridge 浏览器扩展——**插件本体不含它，也不会替你装**。开关 `wechat.enabled` 默认 `false`：**关闭时**不注入任何发布相关提示词、也不往 wiki 写「发布元数据规范」文档；**打开后**仅多这两项，不会安装任何东西、不启用任何后台服务。不装／不开它，插件其他功能完全不受影响。开启方式：设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」→ 勾选 → 保存配置。完整安装步骤（opencli、浏览器扩展、扫码登录）与排错见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md)。
+  **⚠️ 可选功能，默认关**：真正干活的是仓库 `tools/wechat/` 下的 opencli adapter + Browser Bridge 浏览器扩展——**插件本体不含它，也不会替你装**。开关 `wechat.enabled` 默认 `false`：**关闭时**不注入任何发布相关提示词、也不往 wiki 写「发布元数据规范」文档；**打开后**仅多这两项，不会安装任何东西、不启用任何后台服务。不装／不开它，插件其他功能完全不受影响。开启方式：设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」→ 勾选 → 保存配置。完整安装步骤（opencli、浏览器扩展、扫码登录）与排错见 [docs/wechat-publish-setup.md](wechat-publish-setup.md)。
 
   **为什么不用官方 API**：2025-07 起官方回收了「发布能力」接口对个人主体/未认证账号的调用权限（`freepublish/submit` 不可用、`draft/add` 常回 48001）；即便可用还要配 API IP 白名单、封面永久素材、正文图片必须走 `media/uploadimg`。**本方案改走浏览器自动化**，复用你**已登录**的公众号后台会话（opencli + Browser Bridge 扩展），个人号可用、零凭据落盘。数据流：笔记标题 → DSH `POST /render`（TW 自己渲染成语义 HTML，**代码高亮白蹭**）→ `wechat-html.js` 补**内联样式**（实测微信会剥 `<style>` 并删 class，**只认内联 style**；而 TW 输出零内联样式，所以必须有这一步）→ `weixin-flow.js` 驱动后台填表/写正文/传图/设封面/存草稿。
   

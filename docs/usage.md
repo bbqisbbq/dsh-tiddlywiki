@@ -87,7 +87,7 @@
 > **这是可选功能**：需要额外安装 opencli + Browser Bridge 浏览器扩展，**插件不替你装**。
 > 开关 `wechat.enabled` **默认 `false`**——关闭时不注入任何发布相关提示词、也不往 wiki 写
 > 「发布元数据规范」。开启：DSH 设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」。
-> 完整安装步骤与排错见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md)。
+> 完整安装步骤与排错见 [docs/wechat-publish-setup.md](wechat-publish-setup.md)。
 
 把 wiki 里的任意笔记**一键发到微信公众号草稿箱**（可选直接发表）。整套能力放在 `tools/wechat/`，**不依赖公众号服务端 API**——因为 2025-07 起官方已回收个人主体账号的「发布能力」接口权限；本方案改用**浏览器自动化复用你已登录的后台会话**，所以个人号也能用。
 
@@ -120,11 +120,11 @@ node tools/wechat/backfill-publish-state.mjs --write  # 写
 2. **发表必须管理员扫码**——后台点「发表」后微信要求管理员微信扫码确认，无法自动化。「一键」的真实含义是「脚本做到填表/排版/上传，你只需扫一次码」。默认走**发表**（不推送粉丝、不占群发额度），群发请自行在后台操作。
 3. **图片上传用 DataTransfer 注入**，不用 `page.setFileInput`——后者依赖 CDP `Page.fileChooserOpened`，本机扩展版本组合下稳定失败；改用页面上下文直接塞 `input.files`，实测图片真进 `mmbiz.qpic.cn`。代价是单图 **8MB** 上限（字节要以 base64 穿过 evaluate）。
 
-**换机器还原**见 [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md)（含 opencli / Browser Bridge 扩展安装、扫码登录、排错表）。设计依据与全部实测细节见 [docs/plans/2026-09-17-wechat-publish-design.md](docs/plans/2026-09-17-wechat-publish-design.md)。
+**换机器还原**见 [docs/wechat-publish-setup.md](wechat-publish-setup.md)（含 opencli / Browser Bridge 扩展安装、扫码登录、排错表）。设计依据与全部实测细节见 [docs/plans/2026-09-17-wechat-publish-design.md](plans/2026-09-17-wechat-publish-design.md)。
 
 ### 🧩 初始化（一次性预置 seed）：哪些「必备」，哪些「可有可无」
 
-seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只写缺失）+ 安全跳过（同名 tiddler 已存在绝不覆盖你的数据）**，需要时可「重新初始化」恢复、可「反初始化」移除。详细见 [docs/seed-initialization.md](docs/seed-initialization.md)。
+seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只写缺失）+ 安全跳过（同名 tiddler 已存在绝不覆盖你的数据）**，需要时可「重新初始化」恢复、可「反初始化」移除。详细见 [docs/seed-initialization.md](seed-initialization.md)。
 
 | 层级 | seed | 说明 | 首次安装 |
 |---|---|---|---|
