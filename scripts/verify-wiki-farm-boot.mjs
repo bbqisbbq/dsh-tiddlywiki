@@ -20,7 +20,8 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { GitFace, TiddlyWebClient, WikiFarm, WikiInstance, resolveTwRoot } from '../lib/index.js'
+import { GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, registerRoutes, resolveTwRoot, targetRuntimeFor } from '../lib/index.js'
+import { createRouteServer } from './lib/tw-harness.mjs'
 
 let failures = 0
 async function test(name, fn) {
@@ -144,6 +145,68 @@ try {
     await c.put({ title: 'OnlyInC', text: '丙库', tags: [] })
     assert.ok((await c.get('OnlyInC')) !== undefined)
   })
+
+  // ── 路由层：把真实路由挂到已启动的农场上（真 HTTP，不是直接调 handler）──────
+  const registered = []
+  const disposeRoutes = registerRoutes(
+    { webServer: { register: (route) => { registered.push(route); return () => {} } } },
+    {
+      // 与 index.ts 用**同一个** selector 实现（targetRuntimeFor）：测试里再写一份
+      // "怎么解析 ?wiki=" 就正好是这份仓库最贵的那种漂移（第一版就是栽在这里）。
+      server: (req) => targetRuntimeFor(farm, req)?.server,
+      serverById: (id) => farm.runtime(id)?.server,
+      wikiIds: () => farm.registry.wikis.map((e) => e.id),
+      getClient: (req) => targetRuntimeFor(farm, req)?.client(),
+      git: new GitFace(),
+      autoCommit: () => {},
+      noteDefaults: () => ({ tag: 'inbox' }),
+      uiDefaults: () => WikiInstance.uiDefaultsFrom(base),
+      getWikiPath: (req) => targetRuntimeFor(farm, req)?.path ?? '',
+    },
+  )
+  const harness = createRouteServer(registered)
+  const baseUrl = await harness.listen()
+
+  await test('/tw/<id>/ 命名代理：各打各的子进程，绝不串台', async () => {
+    await clientOf('b').put({ title: 'OnlyInB', text: '乙库', tags: [] })
+    // TW 的服务器首页会把 store 内联进 HTML，所以"谁的内容"一目了然。
+    const htmlB = await (await fetch(`${baseUrl}${TW_PROXY_PREFIX}/b/`)).text()
+    assert.ok(htmlB.includes('OnlyInB'), '命名代理 /tw/b/ 必须打到 B 的 store')
+    assert.ok(!htmlB.includes('OnlyInC'), '命名代理 /tw/b/ 不得串到 C')
+    const htmlC = await (await fetch(`${baseUrl}${TW_PROXY_PREFIX}/c/`)).text()
+    assert.ok(htmlC.includes('OnlyInC'), '命名代理 /tw/c/ 必须打到 C 的 store')
+    assert.ok(!htmlC.includes('OnlyInB'), '命名代理 /tw/c/ 不得串到 B')
+  })
+
+  await test('/tw/ 裸形式：仍是「默认库」的别名（旧链接、书签不能失效）', async () => {
+    const html = await (await fetch(`${baseUrl}${TW_PROXY_PREFIX}`)).text()
+    assert.ok(html.includes('OnlyInB'), '裸 /tw/ 必须打到默认库（B，defaultId 失守后回落）')
+    assert.ok(!html.includes('OnlyInC'), '裸 /tw/ 不得串到 C')
+  })
+
+  await test('未注册的 id 被当作 TW 自己的路径（不会被误当库名）', async () => {
+    const res = await fetch(`${baseUrl}${TW_PROXY_PREFIX}/nope/status`)
+    assert.equal(res.status, 404, 'nope 不是知识库 id，应原样交给 TW 而由 TW 回 404')
+    await res.arrayBuffer()
+  })
+
+  await test('受保护的命名空间在命名形式下同样被挡（两个形式都过守卫）', async () => {
+    const res = await fetch(`${baseUrl}${TW_PROXY_PREFIX}/b/${encodeURIComponent('$:/plugins/dsh-tiddlywiki/config')}`)
+    assert.equal(res.status, 403, '命名代理不得成为绕过 $:/plugins/dsh-tiddlywiki/ 封锁的新入口')
+    await res.arrayBuffer()
+  })
+
+  await test('?wiki=<id> 让非代理路由也能定向（设置页/工具卡走这条）', async () => {
+    const res = await fetch(`${baseUrl}/dsh-tiddlywiki/status?wiki=c`)
+    assert.equal(res.status, 200)
+    const payload = await res.json()
+    assert.equal(payload.wikiPath, farm.runtime('c').path, '?wiki=c 必须把请求指向 C')
+    const fallback = await (await fetch(`${baseUrl}/dsh-tiddlywiki/status?wiki=nope`)).json()
+    assert.equal(fallback.wikiPath, farm.runtime('b').path, '未知 id 必须回落默认库，而不是 404')
+  })
+
+  disposeRoutes()
+  await harness.close()
 } finally {
   await test('disposeAll：全部停下、无孤儿、可重复调用', async () => {
     const before = farm.runningIds()

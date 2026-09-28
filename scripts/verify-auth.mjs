@@ -126,6 +126,8 @@ try {
       { webServer: { register: (route) => { registered.push(route); return () => {} } } },
       {
         server: () => server,
+        serverById: () => server,
+        wikiIds: () => [],
         getClient: () => new TiddlyWebClient(view.url, { username: USER, password: PASS }),
         git: new GitFace(),
         autoCommit: () => {},

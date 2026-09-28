@@ -167,6 +167,22 @@ export function normalizeWikiId(raw: unknown): string | undefined {
   return id
 }
 
+/**
+ * Wiki ids that must NOT be used, because a wiki id is a PATH SEGMENT of the
+ * same-origin proxy (`/dsh-tiddlywiki/tw/<id>/…`) while the TW child serves its
+ * own endpoints at its ROOT (`/status`, `/recipes/…`, `/files/…`). An id equal
+ * to one of those would make `/tw/status` ambiguous: is it the default wiki's
+ * TW status, or the wiki named `status`? Nothing in the request can tell them
+ * apart, so the id is simply refused (v0.28.0).
+ *
+ * This list is what lets the proxy treat "first segment looks like a known id"
+ * as the per-wiki form and everything else as a TW path.
+ */
+export const RESERVED_WIKI_IDS: readonly string[] = [
+  'status', 'recipes', 'bags', 'files', 'render', 'login', 'logout',
+  'favicon.ico', 'index.html', 'static', 'assets',
+]
+
 /** Filesystem-safe slug for a wiki id (may be empty for junk input). */
 function slugifyIdPart(raw: unknown): string {
   return String(raw ?? '')
@@ -184,6 +200,9 @@ function slugifyIdPart(raw: unknown): string {
  */
 export function deriveWikiId(source: unknown, taken: Iterable<string> = []): string {
   const used = new Set<string>()
+  // Reserved ids are "taken" too: a folder literally named `status` must not
+  // produce a wiki id the proxy could never route.
+  for (const reserved of RESERVED_WIKI_IDS) used.add(reserved)
   for (const item of taken) {
     const id = normalizeWikiId(item)
     if (id !== undefined) used.add(id)
@@ -237,6 +256,9 @@ export function normalizeEntry(input: unknown): { entry?: WikiEntry; error?: str
   const id = normalizeWikiId(input.id)
   if (id === undefined) {
     return { error: `知识库 id 非法（需以小写字母或数字开头，后接 a-z0-9._-，最长 64）：${JSON.stringify(input.id)}` }
+  }
+  if (RESERVED_WIKI_IDS.includes(id)) {
+    return { error: `知识库 id「${id}」被保留：它会和 TW 自己的根路径 /${id} 撞名，同源代理无法区分两者` }
   }
   const normalized = normalizeLocation({ root: input.root, name: input.name })
   if (normalized.location === undefined) return { error: normalized.error ?? '位置非法' }

@@ -44,7 +44,7 @@ import {
 } from './host/wiki-location.ts'
 import { switchWiki, type WikiSwitchResult } from './host/wiki-switch.ts'
 import { WikiInstance } from './host/wiki-instance.ts'
-import { WikiFarm } from './host/wiki-farm.ts'
+import { WikiFarm, targetRuntimeFor } from './host/wiki-farm.ts'
 import {
   DEFAULT_WIKI_ID,
   defaultEntry,
@@ -167,6 +167,7 @@ export { switchWiki, type WikiSwitchResult, type WikiSwitchDeps } from './host/w
 export {
   DEFAULT_WIKI_ID,
   DEFAULT_WIKI_MODE,
+  RESERVED_WIKI_IDS,
   WIKI_MODES,
   WIKI_REGISTRY_VERSION,
   defaultEntry,
@@ -191,7 +192,7 @@ export {
   type WikiRegistry,
 } from './host/wiki-registry.ts'
 export { WikiInstance, type WikiInstanceBase, type WikiInstanceOptions } from './host/wiki-instance.ts'
-export { WikiFarm, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
+export { WikiFarm, targetRuntimeFor, wikiIdFromRequest, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
 export {
   READY_TIMEOUT_DEFAULT_MS,
   READY_TIMEOUT_MAX_MS,
@@ -822,13 +823,23 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // `?wiki=<id>` selector arrives with the per-wiki GUI (M5). Every accessor
     // falls back to the cordis BASE when nothing is running, so a stopped farm
     // degrades to "base defaults + 503 on writes" instead of throwing.
-    const target = (_req: IncomingMessage): WikiInstance | undefined => defaultInstance()
+    /**
+     * Which wiki does this request target? `?wiki=<id>` (a running wiki), else
+     * the farm's default — resolved by the SHARED helper in host/wiki-farm.ts,
+     * so the host wiring and the verification harness cannot disagree about the
+     * selector (and an unknown id falls back instead of 404ing).
+     */
+    const target = (req: IncomingMessage): WikiInstance | undefined => targetRuntimeFor(farm, req)
     const fallbackUi = WikiInstance.uiDefaultsFrom(config)
     const fallbackWechat = normalizeWechatConfig(config.wechat)
     /** Used only while nothing runs: base defaults, no wiki tiddler to read. */
     const idleConfig = new ConfigStore(baseShape)
     const disposeRoutes = registerRoutes({ webServer: ws }, {
       server: (req) => target(req)?.server,
+      // The `/tw/<id>/…` form: the proxy resolves the child by NAME (it cannot
+      // use `target()`, whose `?wiki=` would be lost inside the iframe).
+      serverById: (id) => farm?.runtime(id)?.server,
+      wikiIds: () => farm?.registry.wikis.map((entry) => entry.id) ?? [],
       getClient: (req) => target(req)?.client(),
       git,
       autoCommit: (req) => target(req)?.touchAutoCommit(),

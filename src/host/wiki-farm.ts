@@ -81,6 +81,40 @@ export interface FarmChange {
  * `WikiFarm<WikiInstance>` so it can reach instance-only members (config store,
  * bootstrap, committer) without a cast; tests instantiate the default with fakes.
  */
+/**
+ * The wiki id a request asks for (`?wiki=<id>`), or undefined when it asks for
+ * none. Extracted so the host wiring and the verification harness read the
+ * selector the SAME way — a second copy of "how do I parse ?wiki=" is exactly
+ * the drift this repo keeps paying for.
+ */
+export function wikiIdFromRequest(req: { url?: string | undefined }): string | undefined {
+  try {
+    const id = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('wiki')
+    return id !== null && id.length > 0 ? id : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Which runtime does this request target?
+ *
+ *   `?wiki=<id>` naming a RUNNING wiki → that one
+ *   anything else (no selector, unknown id, wiki not running)
+ *                                       → the farm's default runtime
+ *
+ * An unknown id falls back instead of 404ing on purpose: the selector comes
+ * from links the user may have bookmarked, and a stale one must not strand them
+ * on a broken editor. It also means `?wiki=` can never be used to reach a wiki
+ * that is not running — starting one is an explicit action, not a side effect
+ * of a GET.
+ */
+export function targetRuntimeFor<T extends WikiRuntime>(farm: WikiFarm<T> | undefined, req: { url?: string | undefined }): T | undefined {
+  const id = wikiIdFromRequest(req)
+  if (id === undefined) return farm?.defaultRuntime()
+  return farm?.runtime(id) ?? farm?.defaultRuntime()
+}
+
 export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
   private registryValue: WikiRegistry
   private readonly runtimes = new Map<string, T>()

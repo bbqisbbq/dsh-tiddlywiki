@@ -490,6 +490,8 @@ try {
   }
   const disposeRoutes = registerRoutes(mockCtx, {
     server: () => server,
+    serverById: () => server,
+    wikiIds: () => [],
     getClient: () => new TiddlyWebClient(server.url),
     git,
     autoCommit: () => {},
@@ -846,6 +848,8 @@ try {
     }
     const disposeSummaryRoutes = registerRoutes(summaryMockCtx, {
       server: () => server,
+      serverById: () => server,
+      wikiIds: () => [],
       getClient: () => summaryApi,
       git,
       autoCommit: () => {},
@@ -927,6 +931,8 @@ try {
     const mockSessionPersistence = { list: async () => [{ id: 'session-mock-1', agentPreset: 'default' }] }
     const disposeAgentRoutes = registerRoutes(agentMockCtx, {
       server: () => server,
+      serverById: () => server,
+      wikiIds: () => [],
       getClient: () => new TiddlyWebClient(server.url),
       git,
       autoCommit: () => {},

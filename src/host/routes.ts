@@ -214,6 +214,10 @@ export interface RouteDeps {
   server: (req: IncomingMessage) => WikiServer | undefined
   /** Lazily resolved REST client for the same wiki. */
   getClient: (req: IncomingMessage) => TiddlyWebClient | undefined
+  /** The TW child of a NAMED wiki (the `/tw/<id>/…` proxy form). */
+  serverById: (id: string) => WikiServer | undefined
+  /** Every registered wiki id (lets the proxy tell an id from a TW path). */
+  wikiIds: () => readonly string[]
   git: GitFace
   /** Debounced auto-commit touch for the targeted wiki. */
   autoCommit: (req: IncomingMessage) => void
@@ -1612,8 +1616,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     // forwarded to the TW child. The set is the TiddlyWeb API surface the TW
     // frontend uses.
     if (rejectCrossSiteWrite(req, res, ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'])) return
-    const client = deps.getClient(req)
-    if (client === undefined) {
+    // The upstream base comes straight from the child (v0.28.0: per request, so
+    // a named wiki can be proxied); the client is only a liveness proxy.
+    const server = deps.server(req)
+    if (server?.url === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
     }
@@ -1633,7 +1639,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
       const init: RequestInit = { method, headers, signal: AbortSignal.timeout(15_000) }
       if (method === 'PUT' || method === 'POST') init.body = await readBody(req, MAX_PROXY_BODY_BYTES)
-      const upstream = await fetch(`${deps.server(req)?.url}${rest}${url.search}`, init)
+      const upstream = await fetch(`${server.url}${rest}${url.search}`, init)
       const data = await upstream.text()
       res.writeHead(upstream.status, {
         'content-type': upstream.headers.get('content-type') ?? 'application/json; charset=utf-8',
@@ -1659,15 +1665,29 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     // pathname only, so without it TRACE or a typo'd verb was forwarded straight
     // to the TW child. Same set the sibling /api proxy declares.
     if (rejectCrossSiteWrite(req, res, ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'])) return
-    const client = deps.getClient(req)
-    if (client === undefined) {
-      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    // PER-WIKI FORM (v0.28.0): `/tw/<id>/<tw-path>`. The first segment is only
+    // consumed when it names a REGISTERED wiki, so TW's own `/tw/status` and
+    // `/tw/files/…` keep meaning "the default wiki's TW path" — that is exactly
+    // what the reserved-id rule guarantees (a wiki id may never equal a TW root
+    // segment; see RESERVED_WIKI_IDS in host/wiki-registry.ts).
+    const afterPrefix = url.pathname.slice(TW_PROXY_PREFIX.length).replace(/^\//, '')
+    const [firstSegment = '', ...tail] = afterPrefix.split('/')
+    const named = deps.wikiIds().includes(firstSegment) ? firstSegment : undefined
+    const rest = named === undefined
+      ? (url.pathname.replace(new RegExp(`^${TW_PROXY_PREFIX}(?=/|$)`), '') || '/')
+      : `/${tail.join('/')}`
+    // The guard runs on BOTH forms: the raw path is what a crafted request
+    // controls, and the stripped `rest` is what actually reaches TW.
+    if (isBlockedProxyPath(url.pathname) || isBlockedProxyPath(rest)) {
+      json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
       return
     }
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    const rest = url.pathname.replace(new RegExp(`^${TW_PROXY_PREFIX}(?=/|$)`), '') || '/'
-    if (isBlockedProxyPath(rest)) {
-      json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
+    // Resolve the child LAST, so a named-but-stopped wiki answers 503 instead of
+    // being proxied to whoever happens to be the default.
+    const server = named === undefined ? deps.server(req) : deps.serverById(named)
+    if (server?.url === undefined) {
+      json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
     }
     try {
@@ -1689,7 +1709,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       // frontend does not send DELETE bodies, but the proxy is a generic
       // passthrough — drain whatever is there.
       else if (req.readableEnded === false && (req.headers['content-length'] !== undefined || req.headers['transfer-encoding'] !== undefined)) req.resume()
-      const upstream = await fetch(`${deps.server(req)?.url}${rest}${url.search}`, init)
+      const upstream = await fetch(`${server.url}${rest}${url.search}`, init)
       const responseHeaders: Record<string, string> = {
         'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
         'cache-control': upstream.headers.get('cache-control') ?? 'no-store',

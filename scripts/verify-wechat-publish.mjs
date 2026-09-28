@@ -410,6 +410,8 @@ await test('路由：未启用 403 / 方法校验 405 / 同源 403 / token 401 /
   const runner = makeRunner()
   const dispose = registerRoutes({ webServer }, {
     server: () => ({}),
+    serverById: () => ({}),
+    wikiIds: () => [],
     getClient: () => ({ get: async (title) => (title === 'known' ? { title, text: 'x' } : undefined) }),
     git: {},
     autoCommit: () => {},

@@ -24,6 +24,7 @@ import { join } from 'node:path'
 import {
   DEFAULT_WIKI_ID,
   DEFAULT_WIKI_MODE,
+  RESERVED_WIKI_IDS,
   WIKI_MODES,
   WIKI_REGISTRY_VERSION,
   defaultEntry,
@@ -206,6 +207,20 @@ await test('mode：增删条目不得改变模式（模式是插件级开关，�
   const added = upsertWiki(multi, { id: 'books', label: '书籍', root: ROOT, name: 'books', agentVisible: false, autostart: false })
   assert.equal(added.mode, 'multi')
   assert.equal(removeWiki(added, 'main').registry.mode, 'multi')
+})
+
+await test('保留 id：与 TW 根路径撞名的 id 必须被拒绝（否则 /tw/status 无法区分）', () => {
+  // id 是同源代理的一个路径段（/dsh-tiddlywiki/tw/<id>/…），而 TW 子进程在自己的
+  // 根上就有 /status、/files、/recipes…… 同名时请求无法区分"默认库的 TW 路径"与
+  // "名为 status 的库"。所以保留而不是"小心处理"。
+  for (const reserved of ['status', 'files', 'recipes', 'render', 'index.html']) {
+    assert.match(normalizeEntry(entry(reserved, ROOT, 'x')).error ?? '', /保留/, `${reserved} 必须被拒绝`)
+  }
+  // 派生也要绕开：目录叫 status 时不能派生出保留 id。
+  assert.notEqual(deriveWikiId('status'), 'status')
+  assert.equal(RESERVED_WIKI_IDS.includes(deriveWikiId('status')), false)
+  // 只是前缀相同不算撞名。
+  assert.equal(normalizeEntry(entry('status-page', ROOT, 'x')).error, undefined)
 })
 
 await test('findEntry/defaultEntry/upsertWiki/removeWiki', () => {

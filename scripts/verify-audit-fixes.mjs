@@ -436,6 +436,8 @@ try {
     const { routes, face } = fakeWebServer()
     registerRoutes({ webServer: face }, {
       server: () => server,
+      serverById: () => server,
+      wikiIds: () => [],
       getClient: () => api,
       git,
       autoCommit: () => {},
@@ -509,6 +511,8 @@ try {
     const { routes, face } = fakeWebServer()
     registerRoutes({ webServer: face }, {
       server: () => server,
+      serverById: () => server,
+      wikiIds: () => [],
       getClient: () => spy,
       git,
       autoCommit: () => {},
@@ -554,6 +558,8 @@ try {
     const { routes, face } = fakeWebServer()
     registerRoutes({ webServer: face }, {
       server: () => server,
+      serverById: () => server,
+      wikiIds: () => [],
       getClient: () => spy,
       git,
       autoCommit: () => {},
