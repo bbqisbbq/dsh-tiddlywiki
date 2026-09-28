@@ -366,12 +366,25 @@ await test('index.ts：runSwitch 必须有 disposed 守卫并在收尾重新 tea
   // NB: `bodyOf` cannot be used here — the signature's own parameter type
   // (`{ root?: unknown; name?: unknown }`) is the first `{` it would find. These
   // two strings are unique to runSwitch's fixed implementation.
+  //
+  // v0.28.8: `runSwitch` moved into `src/index-wikis.ts` (pure split) and reads
+  // the flag through a hoisted getter (`deps.isDisposed()`), because `index.ts`
+  // stays the sole owner of the mutable `disposed` state. Both the message text
+  // and the hoisted shape are asserted so neither form can drift away:
+  //   - 「已取消切换」 is asserted specifically (the neighbouring `repointDefault`
+  //     guard says 「已取消修改」 — matching the wrong one would silently pass).
+  //   - the `await <runtime>.teardownExtras()` check must be **inside** the
+  //     `if (… isDisposed())` guard, not merely somewhere in the family.
   assert.match(
     hostIndex,
-    /if \(disposed\) return \{ ok: false, error: '插件正在卸载，已取消切换'/,
-    'runSwitch 必须在开始检查 disposed',
+    /if \((?:disposed|deps\.isDisposed\(\))\) return \{ ok: false, error: '插件正在卸载，已取消切换'/,
+    'runSwitch 必须在开始检查 disposed（且文本必须是「已取消切换」，不是「已取消修改」）',
   )
-  assert.match(hostIndex, /if \(disposed\) await \w+\.teardownExtras\(\)/, '切换完成时若已 disposed，必须重新释放 extras')
+  assert.match(
+    hostIndex,
+    /if \((?:disposed|deps\.isDisposed\(\))\) await \w+\.teardownExtras\(\)/,
+    '切换完成时若已 disposed，必须重新释放 extras',
+  )
 })
 
 console.log('')

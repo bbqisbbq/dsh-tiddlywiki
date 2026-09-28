@@ -24,332 +24,30 @@
  * Save posts to /dsh-tiddlywiki/note → an independent tiddler (title & tags
  * editable; defaults: timestamp title + config tag, usually "inbox").
  *
+ * v0.28.8 split: this file is the card's ASSEMBLY POINT — the state machine and
+ * the whole DOM build. Its sub-parts live next door and are re-exported at the
+ * bottom so the public surface (index.ts, quick-note-dock.ts) is unchanged:
+ *   - note-widget-draft.ts  draft persistence + pure helpers
+ *   - note-widget-tags.ts   the multi-tag chip editor
+ *   - note-widget-upload.ts attachment upload (and MAX_UPLOAD_BYTES)
+ *
  * @module dsh-tiddlywiki/client/note-widget
  */
 import { toast } from './toast.ts'
 import { openEditorPopup, isEditorPopupOpen, isEditorPopupBlank } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
-import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, TAGS_ENDPOINT, UPLOAD_ENDPOINT, resolveTwUrl, twProxyFor, withWikiQuery } from './endpoints.ts'
+import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, resolveTwUrl, twProxyFor, withWikiQuery } from './endpoints.ts'
 import { fetchStatus } from './status-cache.ts'
 import { resolveFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
-
-const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
+import { buildTagEditor } from './note-widget-tags.ts'
+import { uploadInto } from './note-widget-upload.ts'
+import { DRAFT_DEBOUNCE_MS, adoptDraft, clearDraft, draftSignature, fetchDefaultTag, loadDraft, persistDraft, relativeTime, timestampTitle } from './note-widget-draft.ts'
 
 /**
  * Broadcast by the card on open/close (detail: { open }). The input-dock quick-
  * note button (quick-note-dock.ts) listens to highlight while the card is open.
  */
 export const NOTE_STATE_EVENT = 'dsh-tw-note-state'
-
-/**
- * 旧版全局草稿 key（v0.18.0 及以前）。多标签页会互相覆盖，现在只作为一次性
- * 迁移来源读取：读到且本窗口还没有草稿 → 迁移到本窗口的 key 并删除它。
- */
-const LEGACY_DRAFT_KEY = 'dsh-tw-note-draft-v1'
-/** 本窗口草稿 key 前缀（`<前缀><窗口 id>`），窗口之间互不覆盖。 */
-const DRAFT_KEY_PREFIX = 'dsh-tw-note-draft-v1:'
-/** sessionStorage 里保存本标签页窗口 id 的 key（刷新后仍是同一个窗口）。 */
-const DRAFT_WINDOW_ID_KEY = 'dsh-tw-note-window-id'
-/** Draft auto-save debounce. */
-const DRAFT_DEBOUNCE_MS = 500
-
-/**
- * 本窗口的草稿命名空间 id：优先取 sessionStorage 里的随机 id（同一标签页刷新后
- * 仍是同一个窗口 → 自己的草稿静默恢复）；sessionStorage 不可用时退化为「本次
- * 加载一个随机 id」（刷新后会被当成「其它窗口的草稿」，恢复时给出提示而不是
- * 静默覆盖）。
- */
-const DRAFT_WINDOW_ID: string = (() => {
-  try {
-    const existing = sessionStorage.getItem(DRAFT_WINDOW_ID_KEY)
-    if (existing !== null && existing.length > 0) return existing
-    const created = Math.random().toString(36).slice(2, 10)
-    sessionStorage.setItem(DRAFT_WINDOW_ID_KEY, created)
-    return created
-  } catch {
-    return Math.random().toString(36).slice(2, 10)
-  }
-})()
-
-interface Draft { text: string; title: string; tags: string[]; savedAt: number; windowId?: string }
-
-/** 读取结果：draft = 草稿本体；foreign = 不是本窗口写的（迁移/跨窗口）。 */
-interface DraftHit { draft: Draft; foreign: boolean }
-
-function draftKey(): string {
-  return `${DRAFT_KEY_PREFIX}${DRAFT_WINDOW_ID}`
-}
-
-function parseDraft(raw: string | null): Draft | null {
-  if (raw === null) return null
-  try {
-    const parsed = JSON.parse(raw) as Partial<Draft>
-    if (typeof parsed.text !== 'string' || typeof parsed.title !== 'string') return null
-    return {
-      text: parsed.text,
-      title: parsed.title,
-      tags: Array.isArray(parsed.tags) ? parsed.tags.filter((t): t is string => typeof t === 'string') : [],
-      savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : 0,
-      windowId: typeof parsed.windowId === 'string' ? parsed.windowId : undefined,
-    }
-  } catch {
-    return null
-  }
-}
-
-function readDraftFrom(key: string): Draft | null {
-  try {
-    return parseDraft(localStorage.getItem(key))
-  } catch {
-    return null
-  }
-}
-
-/**
- * 读取本窗口草稿。本窗口 key 为空时尝试迁移旧全局 key（一次性：迁移后删除旧
- * key）。返回 null = 没有任何草稿；foreign=true = 草稿来源不是本窗口（旧 key
- * 迁移过来，或 sessionStorage 不可用时窗口 id 变了），调用方需要给出可见提示。
- */
-function loadDraft(): DraftHit | null {
-  const own = readDraftFrom(draftKey())
-  if (own !== null) {
-    return { draft: own, foreign: own.windowId !== undefined && own.windowId !== DRAFT_WINDOW_ID }
-  }
-  const legacy = readDraftFrom(LEGACY_DRAFT_KEY)
-  if (legacy === null) return null
-  // 旧 key 一次性迁移：补上本窗口标记写进本窗口 key，然后删除旧 key。
-  const migrated: Draft = { ...legacy, windowId: DRAFT_WINDOW_ID }
-  persistDraft(migrated)
-  try { localStorage.removeItem(LEGACY_DRAFT_KEY) } catch { /* ignore */ }
-  return { draft: migrated, foreign: true }
-}
-
-/** 采纳草稿（标记为本窗口所有），避免每次打开都重复提示「来自其它窗口」。 */
-function adoptDraft(draft: Draft): void {
-  persistDraft({ ...draft, windowId: DRAFT_WINDOW_ID })
-}
-
-function persistDraft(draft: Draft): void {
-  try { localStorage.setItem(draftKey(), JSON.stringify({ ...draft, windowId: DRAFT_WINDOW_ID })) } catch { /* storage unavailable */ }
-}
-
-function clearDraft(): void {
-  try { localStorage.removeItem(draftKey()) } catch { /* ignore */ }
-}
-
-/**
- * 内容签名（标题 + 正文 + 标签）：用来判断「这份内容是不是已经写进 wiki 了」。
- * 只做相等比较，不是哈希——不做安全用途（v0.19.1）。
- */
-function draftSignature(title: string, text: string, tags: string[]): string {
-  return `${title}\u0000${text}\u0000${tags.join('\u0001')}`
-}
-
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : String(n)
-}
-
-/** Default note title: `YYYY-MM-DD HH:mm`. */
-function timestampTitle(date = new Date()): string {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
-}
-
-/** Compact Chinese relative time for the recent picker (e.g. "3小时前"). */
-function relativeTime(iso: string | null): string {
-  if (iso === null) return ''
-  const ms = new Date(iso).getTime()
-  if (Number.isNaN(ms)) return ''
-  const diff = Date.now() - ms
-  const min = Math.floor(diff / 60_000)
-  if (min < 1) return '刚刚'
-  if (min < 60) return `${min}分钟前`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}小时前`
-  const day = Math.floor(hr / 24)
-  if (day < 30) return `${day}天前`
-  return new Date(ms).toLocaleDateString('zh-CN')
-}
-
-/** The default tag for a new note (settings `note.tag`).
- *
- *  Reads the shared, TTL-cached `/status` projection rather than a private copy
- *  of the `ui.*` shape (v0.22.8 — this was one of three duplicates). */
-async function fetchDefaultTag(): Promise<string> {
-  const status = await fetchStatus()
-  return typeof status?.note?.tag === 'string' && status.note.tag.length > 0 ? status.note.tag : 'inbox'
-}
-
-/** Multi-tag chip editor with autocomplete from the wiki's existing tags. */
-function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: string) => string } = {}): {
-  el: HTMLDivElement
-  /** Commits any pending input first, then returns the chips (user actions). */
-  getTags: () => string[]
-  /** Pure read of the committed chips — never commits pending input. */
-  peekTags: () => string[]
-  setDefault: (tag: string) => void
-  setTags: (tags: string[]) => void
-  /** Remove the document-level outside-click listener (unmount must not leak). */
-  dispose: () => void
-} {
-  const wrap = document.createElement('div')
-  wrap.className = 'dsh-tw-note-tags'
-
-  const chipWrap = document.createElement('div')
-  chipWrap.className = 'dsh-tw-note-chips'
-  const input = document.createElement('input')
-  input.className = 'dsh-tw-note-taginput'
-  input.placeholder = 'tag（可多选，自动补全）'
-  const suggest = document.createElement('div')
-  suggest.className = 'dsh-tw-note-tagsuggest'
-  suggest.hidden = true
-  wrap.append(chipWrap, input, suggest)
-
-  const chips: string[] = []
-  const hideSuggest = (): void => { suggest.hidden = true }
-
-  const emit = (): void => { opts.onChange?.() }
-
-  const renderChips = (): void => {
-    chipWrap.replaceChildren()
-    for (const tag of chips) {
-      const chip = document.createElement('span')
-      chip.className = 'dsh-tw-note-tagchip'
-      chip.textContent = tag
-      const x = document.createElement('span')
-      x.className = 'dsh-tw-note-tagchip-x'
-      x.textContent = '×'
-      x.title = `移除 tag「${tag}」`
-      x.addEventListener('click', (event) => {
-        event.stopPropagation()
-        const i = chips.indexOf(tag)
-        if (i >= 0) {
-          chips.splice(i, 1)
-          renderChips()
-          emit()
-        }
-      })
-      chip.append(x)
-      chipWrap.append(chip)
-    }
-  }
-
-  const addTag = (tag: string): void => {
-    const t = tag.trim()
-    if (t.length === 0 || chips.includes(t)) return
-    chips.push(t)
-    input.value = ''
-    renderChips()
-    hideSuggest()
-    input.focus()
-    emit()
-  }
-
-  const commitInput = (): void => {
-    for (const raw of input.value.split(/\s+/)) addTag(raw)
-  }
-
-  // Existing tags, fetched lazily once per widget lifetime — PER TARGET WIKI
-  // (v0.28.0): the card can be pointed at another knowledge base, and its tag
-  // suggestions must come from the same one the note is written to. The memo is
-  // keyed by the resolved URL, so switching the target re-reads automatically
-  // (no reset call, nothing to forget).
-  let knownTags: string[] = []
-  let tagsPromise: Promise<string[]> | undefined
-  let tagsPromiseKey: string | undefined
-  const ensureTags = (): Promise<string[]> => {
-    const url = opts.wikiQuery?.(TAGS_ENDPOINT) ?? TAGS_ENDPOINT
-    if (tagsPromise === undefined || tagsPromiseKey !== url) {
-      tagsPromiseKey = url
-      tagsPromise = fetch(url, { signal: AbortSignal.timeout(5_000) })
-        .then((r) => (r.ok ? (r.json() as Promise<{ tags?: string[] }>) : Promise.resolve<{ tags?: string[] }>({})))
-        .then((p) => [...(p.tags ?? [])].sort((a, b) => a.localeCompare(b, 'zh')))
-        .catch(() => [])
-      void tagsPromise.then((list) => { knownTags = list })
-    }
-    return tagsPromise
-  }
-
-  const showSuggest = (): void => {
-    const q = input.value.trim().toLowerCase()
-    const matches = knownTags
-      .filter((t) => !chips.includes(t) && (q.length === 0 || t.toLowerCase().includes(q)))
-      .slice(0, 8)
-    suggest.replaceChildren()
-    for (const tag of matches) {
-      const item = document.createElement('div')
-      item.className = 'dsh-tw-note-tagsuggest-item'
-      item.textContent = tag
-      // 键盘可达：div + mousedown 对键盘用户不可用，补 role/tabIndex/Enter·Space。
-      item.setAttribute('role', 'button')
-      item.tabIndex = 0
-      item.setAttribute('aria-label', `添加标签「${tag}」`)
-      item.addEventListener('mousedown', (event) => {
-        event.preventDefault()
-        addTag(tag)
-      })
-      item.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault()
-          addTag(tag)
-        }
-      })
-      suggest.append(item)
-    }
-    suggest.hidden = matches.length === 0
-  }
-
-  input.addEventListener('focus', () => { void ensureTags().then(showSuggest) })
-  input.addEventListener('input', () => {
-    if (knownTags.length === 0) void ensureTags().then(showSuggest)
-    else showSuggest()
-  })
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' || event.key === ',') {
-      event.preventDefault()
-      commitInput()
-    } else if (event.key === 'Backspace' && input.value.length === 0 && chips.length > 0) {
-      chips.pop()
-      renderChips()
-      emit()
-    } else if (event.key === 'Escape') {
-      hideSuggest()
-    }
-  })
-  const onDocClick = (event: Event): void => {
-    if (!wrap.contains(event.target as Node)) hideSuggest()
-  }
-  document.addEventListener('click', onDocClick, true)
-
-  return {
-    el: wrap,
-    getTags: () => {
-      commitInput()
-      return [...chips]
-    },
-    peekTags: () => [...chips],
-    setDefault: (tag: string) => {
-      // Only pre-fill when nothing is chosen yet; never steal focus.
-      if (chips.length === 0) {
-        const t = tag.trim()
-        if (t.length > 0) {
-          chips.push(t)
-          renderChips()
-        }
-      }
-    },
-    setTags: (tags: string[]) => {
-      chips.length = 0
-      for (const tag of Array.isArray(tags) ? tags : []) {
-        const t = typeof tag === 'string' ? tag.trim() : ''
-        if (t.length > 0 && !chips.includes(t)) chips.push(t)
-      }
-      input.value = ''
-      renderChips()
-      hideSuggest()
-    },
-    dispose: () => document.removeEventListener('click', onDocClick, true),
-  }
-}
 
 /** All DOM refs created by build(); undefined until the first open. */
 interface BuiltUi {
@@ -364,41 +62,6 @@ interface BuiltUi {
   /** 草稿横幅文案（恢复「其它窗口草稿」时改写为带来源的提示）。 */
   bannerText: HTMLSpanElement
   recentWrap: HTMLDivElement
-}
-
-/**
- * Upload one file to the wiki (raw body, name in ?name=), then insert a
- * Markdown image/link line at the caret of the given editor.
- *
- * `wikiQuery` scopes the upload to the CARD's target knowledge base (v0.28.0):
- * an attachment must land in the same wiki as the note that references it.
- */
-async function uploadInto(file: File, editor: MarkdownEditor, wikiQuery: (url: string) => string = (url) => url): Promise<void> {
-  if (file.size > MAX_UPLOAD_BYTES) {
-    toast(`文件过大（≤ ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`)
-    return
-  }
-  try {
-    const res = await fetch(wikiQuery(`${UPLOAD_ENDPOINT}?name=${encodeURIComponent(file.name)}`), {
-      method: 'POST',
-      headers: { 'content-type': file.type || 'application/octet-stream' },
-      body: file,
-      signal: AbortSignal.timeout(120_000),
-    })
-    const payload = (await res.json().catch(() => null)) as { ok?: boolean; name?: string; url?: string; error?: string } | null
-    if (!res.ok || payload?.ok !== true) {
-      toast(`上传失败：${payload?.error ?? `HTTP ${res.status}`}`)
-      return
-    }
-    const name = payload.name ?? file.name
-    const markdown = file.type.startsWith('image/')
-      ? `![${name}](${payload.url})`
-      : `[${name}](${payload.url})`
-    editor.insertAtCaret(markdown)
-    toast(`已上传「${name}」并插入链接`)
-  } catch (err) {
-    toast(`上传失败：${err instanceof Error ? err.message : String(err)}`)
-  }
 }
 
 interface RecentItem { title: string; tags: string[]; modified: string | null; snippet: string }
@@ -1243,3 +906,11 @@ export function createNoteWidget(): NoteWidgetHandle {
 
 // (The FAB owns the trigger since v0.5 — there is deliberately no standalone
 // mount export here; index.ts wires createNoteWidget into mountKnowledgeFab.)
+
+// ── public surface of the note-widget family (v0.28.8 split) ───────────────
+// The sub-modules above were extracted out of THIS file; re-export their parts
+// so every existing import path (`./note-widget.ts`) keeps working unchanged.
+export { DRAFT_DEBOUNCE_MS, adoptDraft, clearDraft, draftSignature, fetchDefaultTag, loadDraft, persistDraft, relativeTime, timestampTitle } from './note-widget-draft.ts'
+export type { Draft, DraftHit } from './note-widget-draft.ts'
+export { buildTagEditor } from './note-widget-tags.ts'
+export { MAX_UPLOAD_BYTES, uploadInto } from './note-widget-upload.ts'
