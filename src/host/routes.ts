@@ -253,6 +253,13 @@ export interface RouteDeps {
   uiDefaults: (req: IncomingMessage) => UiDefaultsPublic
   /** Absolute folder of the targeted wiki. */
   getWikiPath: (req: IncomingMessage) => string
+  /**
+   * After a pull moved HEAD: restart the running wikis whose content actually
+   * changed, and report their ids (v0.28.0). `changedFiles` are
+   * repository-relative paths, so a shared repository can restart exactly the
+   * affected knowledge bases. Absent in headless contexts (no restart).
+   */
+  restartAffected?: (req: IncomingMessage, dir: string, changedFiles: readonly string[]) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
   /** Optional DSH sessionController service (agent-send routes only); resolved
    *  lazily per request because it may register after webServer appears. */
   getSessionController: () => SessionControllerFace | undefined
@@ -1410,24 +1417,19 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         return
       }
       let restarted = false
+      let restartedWikis: string[] | undefined
       let restartError: string | undefined
-      if (pulled.changed === true) {
+      if (pulled.changed === true && deps.restartAffected !== undefined) {
         try {
-          // DRAIN THE SYNCER FIRST (v0.19.1, data safety): a REST PUT answers 204
-          // while the filesystem syncer still holds the tiddler (~250ms timer).
-          // Restarting TW before the flush kills those writes — the restarted
-          // server boots from the pre-write snapshot and the note is gone, and
-          // the `git commit` right below cannot recover what never hit disk.
-          // v0.24.1: the drain lives inside `drainThenStop` (ironclad rule #1 is
-          // one primitive, not a per-route habit).
-          const drained = await drainThenStop({
-            client: deps.getClient(req),
-            tiddlersDir: join(dir, 'tiddlers'),
-            stop: async () => { await deps.server(req)?.restart() },
-            log: (message) => console.warn('[dsh-tiddlywiki]', message),
-          })
-          if (!drained) console.warn('[dsh-tiddlywiki] sync: syncer queue may not be drained before restart')
-          restarted = true
+          // v0.28.0: restart ONLY the wikis whose content changed, and let the
+          // runtime drain the syncer queue first (ironclad rule #1 lives inside
+          // `WikiInstance.restart()`). Restarting "the wiki this request came
+          // from" would miss the one that actually changed when several share a
+          // repository — and would interrupt a wiki nothing happened to.
+          const outcome = await deps.restartAffected(req, dir, pulled.changedFiles ?? [])
+          restarted = outcome.restarted.length > 0
+          if (outcome.restarted.length > 0) restartedWikis = outcome.restarted
+          if (outcome.failed.length > 0) restartError = outcome.failed.map((item) => `${item.id}: ${item.message}`).join('; ')
         } catch (err) {
           restartError = err instanceof Error ? err.message : String(err)
         }
@@ -1461,6 +1463,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         pull: 'ok',
         ...(pulled.changed === true ? { changed: true } : {}),
         restarted,
+        // Which knowledge bases were restarted (v0.28.0). `restarted` stays a
+        // BOOLEAN for the existing client, which only shows a sentence.
+        ...(restartedWikis !== undefined ? { restartedWikis } : {}),
         ...(restartError !== undefined ? { restartError } : {}),
         commit: committed.message,
         push: pushed.message,

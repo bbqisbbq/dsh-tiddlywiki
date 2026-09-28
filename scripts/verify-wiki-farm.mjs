@@ -252,5 +252,23 @@ await test('defaultRuntime：defaultId 没在跑就回落第一个在跑的；�
   assert.equal(farm.defaultRuntime(), undefined)
 })
 
+await test('affectedBy：只报内容真的变了的库（共享仓库下"该重启谁"的判据）', async () => {
+  const log = []
+  const farm = new WikiFarm(registry('multi', [
+    mk('work', 'work', { autostart: true }),
+    mk('personal', 'personal', { autostart: true }),
+  ]), { createRuntime: factory(log) })
+  await farm.startAll()
+  const repoRoot = ROOT
+  const ids = (files) => farm.affectedBy(repoRoot, files).map((rt) => rt.entry.id)
+
+  assert.deepEqual(ids(['work/tiddlers/a.tid']), ['work'], '只有 work 变了 → 只该重启 work')
+  assert.deepEqual(ids(['personal/tiddlers/b.tid']), ['personal'])
+  assert.deepEqual(ids(['work/tiddlers/a.tid', 'personal/tiddlers/b.tid']), ['work', 'personal'], '两个都变了就都重启')
+  assert.deepEqual(ids(['README.md']), [], '仓库根的改动不属于任何库 → 谁都不重启')
+  assert.deepEqual(ids(['workbench/notes.tid']), [], '前缀相同的兄弟目录不算（不是 work 的内容）')
+  assert.deepEqual(ids([]), [], '没有改动就没有重启')
+})
+
 console.log(failures === 0 ? '\nWIKI FARM CHECKS OK' : `\nWIKI FARM CHECKS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)

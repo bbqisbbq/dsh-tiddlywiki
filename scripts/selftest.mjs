@@ -488,12 +488,23 @@ try {
     }
     return res
   }
+  /** Every `restartAffected` request the /sync route made (v0.28.0). */
+  const restartRequests = []
   const disposeRoutes = registerRoutes(mockCtx, {
     server: () => server,
     serverById: () => server,
     wikiIds: () => [],
     wikiSummaries: () => ({ mode: 'single', defaultId: 'main', items: [] }),
     getClient: () => new TiddlyWebClient(server.url),
+    // v0.28.0: the /sync route no longer restarts by itself — it asks the host,
+    // which restarts only the wikis whose content the pull actually changed
+    // (repository-aware, because several wikis may share one repository).
+    restartAffected: async (_req, dir, changedFiles) => {
+      assert(dir === wikiDir, `restartAffected dir must be the synced folder (got ${dir})`)
+      restartRequests.push(changedFiles)
+      await server.restart()
+      return { restarted: ['main'], failed: [] }
+    },
     git,
     autoCommit: () => {},
     noteDefaults: () => ({ tag: 'inbox' }),
@@ -648,11 +659,15 @@ try {
   const sync = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync', undefined, 'POST'), makeRes(), 60_000)
   assert(sync.ok === true && sync.pull === 'ok' && sync.status?.branch === 'main', `sync pulls+commits+pushes (${JSON.stringify(sync.message ?? sync.error)})`)
   assert(sync.changed === true && sync.restarted === true, `changed pull restarts TW (changed=${sync.changed} restarted=${sync.restarted})`)
+  assert(Array.isArray(sync.restartedWikis) && sync.restartedWikis.includes('main'), `sync reports WHICH wiki restarted (${JSON.stringify(sync.restartedWikis)})`)
+  assert(restartRequests.length === 1 && Array.isArray(restartRequests[0]) && restartRequests[0].includes('tiddlers/SyncTest.tid'),
+    `restartAffected must receive the changed paths (got ${JSON.stringify(restartRequests)})`)
   const syncText = (await readFile(join(wikiDir, 'tiddlers', 'SyncTest.tid'), 'utf8')).replace(/\r/g, '')
   assert(syncText === 'from clone\n', 'sync pulled the remote change into the wiki')
   // A no-op sync (nothing new on origin) must NOT restart TW.
   const sync2 = await callRoute(routeHandlers.get('/dsh-tiddlywiki/sync'), makeReq('/dsh-tiddlywiki/sync', undefined, 'POST'), makeRes(), 60_000)
   assert(sync2.ok === true && sync2.changed !== true && sync2.restarted !== true, `no-op sync does not restart (changed=${sync2.changed} restarted=${sync2.restarted})`)
+  assert(restartRequests.length === 1, `a no-op sync must not ask for a restart (got ${restartRequests.length} requests)`)
 
   // /recent + /get: the quick-note "最近" picker backend. Raw files written by
   // the git tests carry NO title: line, so TW titles them by their file path —

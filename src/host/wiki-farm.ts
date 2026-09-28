@@ -37,6 +37,8 @@
  *
  * @module dsh-tiddlywiki/host/wiki-farm
  */
+import { join } from 'node:path'
+import { isInsidePath } from './path-key.ts'
 import { defaultEntry, entryPath, type WikiEntry, type WikiRegistry } from './wiki-registry.ts'
 
 /**
@@ -144,6 +146,24 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
   /** Every running runtime, in start order (plugin-wide tuning walks this). */
   allRuntimes(): T[] {
     return [...this.runtimes.values()]
+  }
+
+  /**
+   * The running wikis whose CONTENT a pull just touched (v0.28.0).
+   *
+   * `changedFiles` are REPOSITORY-relative (what `git diff --name-only` prints),
+   * and a wiki is affected when the absolute form of one of them lands inside
+   * its folder. With several wikis sharing one repository this is what keeps a
+   * pull from restarting — and interrupting whoever is editing — a wiki nothing
+   * happened to.
+   */
+  affectedBy(repoRoot: string, changedFiles: readonly string[]): T[] {
+    if (changedFiles.length === 0) return []
+    const affected: T[] = []
+    for (const runtime of this.runtimes.values()) {
+      if (changedFiles.some((file) => isInsidePath(runtime.path, join(repoRoot, file)))) affected.push(runtime)
+    }
+    return affected
   }
 
   /**

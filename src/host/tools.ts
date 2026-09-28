@@ -72,10 +72,16 @@ export interface ToolsDeps {
   wikiPath: () => string
   /** Debounced auto-commit touch (fires after our writes). */
   autoCommit: () => void
-  /** Restart the TW child (same port). Called after a pull that changed the
-   *  working tree, so the server drops its stale in-memory snapshot and the
-   *  agent sees the pulled content. Optional — absent in headless contexts. */
-  restartWiki?: () => Promise<void>
+  /**
+   * After a pull moved HEAD: restart the running wikis whose CONTENT changed and
+   * report their ids (v0.28.0).
+   *
+   * `dir` is the folder the pull ran in (the repo is resolved from it) and
+   * `changedFiles` are the repository-relative paths the pull touched. Several
+   * wikis may share one repository, so "the pull changed something" is NOT the
+   * same question as "this wiki needs a restart".
+   */
+  restartAffected?: (dir: string, changedFiles: readonly string[]) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
   /**
    * Workspace (project) name for a session, resolved from its cwd (v0.24.0).
    * Absent in headless contexts → no automatic workspace marking.
@@ -1597,9 +1603,17 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     },
     execute: async (args: { action: 'pull' | 'push' | 'sync'; message?: string }): Promise<SyncResult> => {
       const dir = deps.wikiPath()
-      /** Restart TW after a pull that changed the tree (stale snapshot drop). */
-      const restartIfChanged = async (pulled: { changed?: boolean }): Promise<{ restarted?: boolean; restartError?: string }> => {
-        if (pulled.changed !== true || deps.restartWiki === undefined) return {}
+      /**
+       * Restart the RUNNING wikis whose content this pull changed.
+       *
+       * `changedFiles` is what makes this correct with several knowledge bases in
+       * one repository: restarting "the wiki I happened to pull from" would miss
+       * the one that actually changed, and would interrupt a wiki nothing
+       * happened to (v0.28.0).
+       */
+      const restartIfChanged = async (pulled: { changed?: boolean; changedFiles?: string[] }): Promise<{ restarted?: string[]; restartFailed?: Array<{ id: string; message: string }> }> => {
+        if (pulled.changed !== true) return {}
+        if (deps.restartAffected === undefined) return {}
         try {
           // DRAIN THE SYNCER FIRST (v0.19.1, data safety): a PUT answers 204 as
           // soon as the tiddler is in TW's in-memory store; the filesystem
@@ -1609,10 +1623,13 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           // The agent path is the risky one: `tiddlywiki_put` → `git_sync`
           // back-to-back. Same sentinel trick as seeds.ts / index.ts.
           await flushPendingWrites(requireWiki(), join(dir, 'tiddlers')).catch(() => undefined)
-          await deps.restartWiki()
-          return { restarted: true }
+          const outcome = await deps.restartAffected(dir, pulled.changedFiles ?? [])
+          return {
+            ...(outcome.restarted.length > 0 ? { restarted: outcome.restarted } : {}),
+            ...(outcome.failed.length > 0 ? { restartFailed: outcome.failed } : {}),
+          }
         } catch (err) {
-          return { restartError: err instanceof Error ? err.message : String(err) }
+          return { restartFailed: [{ id: '(全部)', message: err instanceof Error ? err.message : String(err) }] }
         }
       }
       switch (args.action) {
@@ -1772,8 +1789,10 @@ interface SyncResult {
   commit?: string
   push?: string
   changed?: boolean
-  restarted?: boolean
-  restartError?: string
+  /** Ids of the knowledge bases whose TW child was restarted after the pull. */
+  restarted?: string[]
+  /** Wikis that could not be restarted (the pull itself still succeeded). */
+  restartFailed?: Array<{ id: string; message: string }>
   status?: GitStatusView
 }
 interface ResolveResult {
@@ -1807,11 +1826,13 @@ function renderSync(value: SyncResult): Array<{ type: 'text'; text: string }> {
   if (value.commit !== undefined) lines.push(`本地 commit: ${value.commit}`)
   if (value.push !== undefined) lines.push(`远端 push: ${value.push}`)
   if (value.changed === true) {
-    lines.push(value.restarted === true
-      ? '本次 pull 拉取了新内容，TW 服务已自动重启（同端口），读取/搜索均为最新快照。'
-      : '本次 pull 拉取了新内容，但 TW 服务未能自动重启（如需最新快照，请手动重启 TW）。')
+    lines.push(value.restarted !== undefined && value.restarted.length > 0
+      ? `本次 pull 拉取了新内容，已重启：${value.restarted.join('、')}（同端口），其读取/搜索均为最新快照。`
+      : '本次 pull 拉取了新内容，但没有正在运行的知识库受影响（无需重启，或改动落在未运行的库里）。')
   }
-  if (value.restartError !== undefined) lines.push(`TW 重启失败: ${value.restartError}`)
+  if (value.restartFailed !== undefined) {
+    for (const item of value.restartFailed) lines.push(`TW 重启失败：${item.id} —— ${item.message}`)
+  }
   if (value.status !== undefined) {
     lines.push(`状态: ${gitStatusBits(value.status)}`)
     const s = value.status

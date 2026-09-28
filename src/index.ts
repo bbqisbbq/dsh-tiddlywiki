@@ -597,10 +597,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // per-session (the session's scope) — that is where `agentVisible` lands.
     wikiPath: () => defaultInstance()?.path ?? locationPath(defaultLocation),
     autoCommit: () => defaultInstance()?.touchAutoCommit(),
-    // After a pull that changed the working tree, restart TW so the server
-    // (and the agent's reads) see the pulled content, not the old snapshot.
-    // Routed through the instance so the syncer queue is drained first (rule #1).
-    restartWiki: async () => { await defaultInstance()?.restart() },
+    // After a pull that changed the working tree, restart the wikis whose content
+    // ACTUALLY changed (v0.28.0). The syncer drain happens inside the runtime's
+    // restart (rule #1); here we only pick the right targets — several knowledge
+    // bases may share one repository, so "something changed" is NOT the same
+    // question as "this wiki is stale".
+    restartAffected: async (dir: string, changedFiles: readonly string[]) => restartAffectedWikis(dir, changedFiles),
     // Workspace (project) marking for agent-created notes (v0.24.0): a tool call
     // carries its session id, and the session header carries the cwd — so the
     // plugin can tag new notes with the project all by itself instead of asking
@@ -887,6 +889,31 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     }
   }
 
+  /**
+   * Restart the RUNNING wikis whose content a pull just changed (v0.28.0).
+   *
+   * Shared by the agent tool and the browser `/sync` route so the two cannot
+   * drift. `dir` is where the pull ran (the repository is resolved from it) and
+   * `changedFiles` are repository-relative — which is what makes this correct
+   * when several knowledge bases share one repository.
+   */
+  const restartAffectedWikis = async (dir: string, changedFiles: readonly string[]): Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }> => {
+    if (farm === undefined) return { restarted: [], failed: [] }
+    const repoRoot = (await repos.repoRootOf(dir)) ?? dir
+    const restarted: string[] = []
+    const failed: Array<{ id: string; message: string }> = []
+    for (const runtime of farm.affectedBy(repoRoot, changedFiles)) {
+      try {
+        // `WikiInstance.restart()` drains the syncer queue first (rule #1).
+        await runtime.restart()
+        restarted.push(runtime.entry.id)
+      } catch (err) {
+        failed.push({ id: runtime.entry.id, message: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    return { restarted, failed }
+  }
+
   // Routes + settings-panel admin surface (lazy webServer).
   ctx.inject(['webServer'], (webCtx: HostCtx) => {
     const ws = (webCtx as unknown as { webServer: WebServerFace }).webServer
@@ -965,6 +992,9 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       noteDefaults: (req) => ({ tag: target(req)?.noteTag() ?? config.note.tag }),
       uiDefaults: (req) => target(req)?.uiDefaults() ?? fallbackUi,
       getWikiPath: (req) => target(req)?.path ?? defaultPath(),
+      // Same helper as the agent tool (one implementation, two callers): a pull
+      // can change several knowledge bases that share one repository.
+      restartAffected: (_req, dir, changedFiles) => restartAffectedWikis(dir, changedFiles),
       getSessionController,
       getWorkspaceRegistry,
       getAgentPresets,
