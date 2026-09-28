@@ -62,7 +62,7 @@ import {
   type WikiRegistry,
 } from './host/wiki-registry.ts'
 import { READY_TIMEOUT_DEFAULT_MS } from './host/ready-policy.ts'
-import { ANON_USERNAME, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer } from './host/wiki.ts'
+import { ANON_USERNAME, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, proxyBaseFor } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
 
 /** Cordis plugin name (also the client loader id / profile row id). */
@@ -72,7 +72,7 @@ export const name = 'dsh-tiddlywiki'
 export const inject = ['tools', 'systemPrompt']
 
 /** Re-exports for the headless selftest and future consumers. */
-export { ANON_USERNAME, AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool }
+export { ANON_USERNAME, AutoCommitter, GitFace, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER, WikiServer, dshHomePath, defineTool, proxyBaseFor }
 export { ConfigStore, ConfigPatchError, deepMerge, normalizeConfigPatch, ConfigUnreadableError, describeUnreadableConfig } from './host/config.ts'
 export { describeConflict, GitConflictStateError } from './host/git.ts'
 export { sanitizeTwFragment, isSafeUrl } from './host/sanitize.ts'
@@ -670,6 +670,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     for (const runtime of farm?.allRuntimes() ?? []) runtime.setupExtras()
   }
 
+  /**
+   * The same-origin proxy base a wiki's TW frontend must use (v0.28.0).
+   * The rule itself lives in host/wiki.ts (`proxyBaseFor`) so the harness and the
+   * host cannot disagree about it — see that function for why it matters.
+   */
+  const proxyBaseForEntry = (entry: WikiEntry): string => proxyBaseFor((farm?.registry.mode ?? 'single'), entry.id)
+
   // Tools (works even while the wiki is down; the scope resolves lazily).
   const toolsDeps: ToolsDeps = {
     // Per SESSION (v0.28.0): the session's scope decides which knowledge base a
@@ -767,6 +774,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
           twRoot: resolveTwRoot,
           touchCommit: (dir) => { void repos.touch(dir) },
           flushCommits: (dir) => repos.flush(dir),
+          proxyBase: () => proxyBaseForEntry(entry),
         }),
         log: (message) => console.warn('[dsh-tiddlywiki]', message),
       })

@@ -20,7 +20,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ConfigStore, GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, applyWikiAction, entryPath, registerAdminRoutes, registerRoutes, resolveAgentScope, resolveTwRoot, targetRuntimeFor, writeRegistry } from '../lib/index.js'
+import { ConfigStore, GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, applyWikiAction, entryPath, proxyBaseFor, registerAdminRoutes, registerRoutes, resolveAgentScope, resolveTwRoot, targetRuntimeFor, writeRegistry } from '../lib/index.js'
 import { createRouteServer } from './lib/tw-harness.mjs'
 
 let failures = 0
@@ -67,7 +67,15 @@ const registry = {
 
 const log = []
 const farm = new WikiFarm(registry, {
-  createRuntime: (entry) => new WikiInstance({ entry, base, git: new GitFace(), twRoot: resolveTwRoot }),
+  createRuntime: (entry) => new WikiInstance({
+    entry,
+    base,
+    git: new GitFace(),
+    twRoot: resolveTwRoot,
+    // 与宿主同一份规则（host/wiki.ts 的 proxyBaseFor）：多库时每个库都必须拿到
+    // 自己的 /tw/<id>/ 基址，否则它的内嵌编辑器会被代理到别的库上去。
+    proxyBase: () => proxyBaseFor(farm.registry.mode, entry.id),
+  }),
   log: (message) => { log.push(message); console.log('  [farm]', message) },
 })
 
@@ -100,11 +108,12 @@ try {
     assert.notEqual(a.status().pid, b.status().pid, '必须是两个进程')
   })
 
-  await test('每个库都被单独播种（markdown 插件 + tw-web-host 代理基址）', async () => {
+  await test('每个库都被单独播种，且各自指向**自己的** /tw/<id>/ 基址', async () => {
     for (const id of ['a', 'b']) {
       const tiddler = await clientOf(id).get('$:/config/tiddlyweb/host')
       assert.ok(tiddler !== undefined, `知识库 ${id} 必须被 seed 上同源代理基址`)
-      assert.match(tiddler.text, /^\/dsh-tiddlywiki\/tw\//, `知识库 ${id} 的代理基址不对：${tiddler.text}`)
+      assert.equal(tiddler.text.trim(), `/dsh-tiddlywiki/tw/${id}/`,
+        `知识库 ${id} 的基址必须带自己的 id —— 否则它的编辑器会打到别的库（页面显示 A、读写 B）`)
     }
   })
 

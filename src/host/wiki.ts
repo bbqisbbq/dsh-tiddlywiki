@@ -43,6 +43,25 @@ export const TW_PROXY_PREFIX = `${PATH_PREFIX}/tw`
 /** The proxy base path (trailing slash) handed to browsers / TW's frontend. */
 export const TW_PROXY_PATH = `${TW_PROXY_PREFIX}/`
 
+/**
+ * The same-origin proxy base a wiki's TW frontend must use (v0.28.0).
+ *
+ * SINGLE mode returns the LEGACY bare path: that wiki IS the default one, and
+ * every existing install already has exactly that value in its host tiddler — so
+ * the upgrade produces no diff at all.
+ *
+ * MULTI mode gives each wiki `/dsh-tiddlywiki/tw/<id>/`. That is load-bearing:
+ * TW builds every API URL from this tiddler, so a wiki using the bare path while
+ * another wiki is default would render one wiki's UI over another's data.
+ *
+ * Both forms route to the same child, so a stale value left by a mode flip is
+ * harmless. Exported so the host wiring and the verification harness use ONE
+ * implementation of the rule.
+ */
+export function proxyBaseFor(mode: 'single' | 'multi', wikiId: string): string {
+  return mode === 'multi' ? `${TW_PROXY_PATH}${encodeURIComponent(wikiId)}/` : TW_PROXY_PATH
+}
+
 /*
  * Readiness is POLICY, not a constant: `ready-policy.ts` owns the soft window
  * (default 60s, configurable), the 3× hard deadline and the polling loop — see

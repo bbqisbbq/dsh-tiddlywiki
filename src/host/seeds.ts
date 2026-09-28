@@ -106,6 +106,30 @@ export interface SeedContext {
    * their wiki. Absent (headless callers) = false.
    */
   wechat?: boolean
+  /**
+   * The same-origin proxy base THIS wiki's TW frontend must use (v0.28.0):
+   * `/dsh-tiddlywiki/tw/` (the legacy bare path, single-wiki default) or
+   * `/dsh-tiddlywiki/tw/<id>/` (one knowledge base among several).
+   *
+   * It MUST be per wiki: TW builds every API URL from this tiddler, so a wiki
+   * whose value points at the legacy path while another wiki is the default
+   * would render one wiki's UI while reading and writing another's data.
+   *
+   * Absent (headless callers / older hosts) = the legacy path.
+   */
+  proxyBase?: string
+}
+
+/**
+ * Is this value a same-origin proxy base WE wrote — for this wiki or a sibling?
+ *
+ * Used to tell "our own stale value" (safe to update) from "a base the user
+ * deliberately chose" (never touched). Matches the bare legacy path and any
+ * `/dsh-tiddlywiki/tw/<id>/` form.
+ */
+export function isOurProxyBase(value: string | undefined): boolean {
+  if (typeof value !== 'string') return false
+  return /^\/dsh-tiddlywiki\/tw\/(?:[a-z0-9][a-z0-9._-]{0,63}\/)?$/.test(value.trim())
 }
 
 /**
@@ -659,19 +683,25 @@ export const SEED_DEFS: SeedDef[] = [
     {
       check: async (ctx) => {
         // `run` (below) honors a USER-CHOSEN base: it only writes when the
-        // value is missing or still the legacy default. The check must agree,
-        // otherwise a deliberate custom host is reported as「缺失」.
+        // value is missing, still the legacy default, or one of OUR OWN bases
+        // for another wiki (see isOurProxyBase). The check must agree, otherwise
+        // a deliberate custom host is reported as「缺失」.
         //
         // Read WITHOUT swallowing (v0.19.0): the old bare `catch` turned any
         // transient failure into `present: false` — i.e. it reported the user's
         // deliberately customised base as「缺失」and invited the settings page's
         // 「重新初始化」to overwrite it. A failure propagates to checkAllSeeds,
         // which reports「检查失败」instead of a bogus missing state.
+        const desired = ctx.proxyBase ?? TW_PROXY_PATH
         const current = (await ctx.client.get(TW_WEB_HOST_TIDDLER))?.text?.trim()
         const present = typeof current === 'string' && current.length > 0 && current !== TW_WEB_HOST_DEFAULT
-        const detail = present
-          ? (current === TW_PROXY_PATH ? `已指向 ${TW_PROXY_PATH}` : `已指向自定义基址 ${current}（保留，不会覆盖）`)
-          : `当前：${current ?? '（缺失）'}，应为 ${TW_PROXY_PATH}`
+        const detail = !present
+          ? `当前：${current ?? '（缺失）'}，应为 ${desired}`
+          : (current === desired
+            ? `已指向 ${desired}`
+            : (isOurProxyBase(current)
+              ? `已指向 ${current}（本库应改为 ${desired}，下次启动会更新）`
+              : `已指向自定义基址 ${current}（保留，不会覆盖）`))
         return { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', present, removable: false, detail }
       },
       run: async (ctx, force) => {
@@ -680,13 +710,24 @@ export const SEED_DEFS: SeedDef[] = [
           // "missing" (that would overwrite a user's custom base).
           const tiddler = await ctx.client.get(TW_WEB_HOST_TIDDLER)
           const current = tiddler?.text?.trim()
-          // Non-force keeps the ensure semantics: write only when missing or still
-          // the legacy default (a user override pointing elsewhere is honored).
-          if (!force && current !== undefined && current !== TW_WEB_HOST_DEFAULT) {
+          const desired = ctx.proxyBase ?? TW_PROXY_PATH
+          // Non-force keeps the ensure semantics: write only when the value is
+          // missing, still TW's own legacy default, or a proxy base WE wrote for
+          // a DIFFERENT wiki (v0.28.0: with several knowledge bases each one needs
+          // its own `/tw/<id>/`, or its embedded editor is proxied to a sibling —
+          // the page shows wiki A while every call reads and writes wiki B).
+          const replaceable = current === undefined || current.length === 0 || current === TW_WEB_HOST_DEFAULT || isOurProxyBase(current)
+          if (!force && !replaceable) {
             return { id: 'tw-web-host', ok: true, wrote: false, detail: '已指向自定义基址，未覆盖' }
           }
-          await ctx.client.put({ title: TW_WEB_HOST_TIDDLER, text: TW_PROXY_PATH, type: 'text/plain', tags: [] })
-          return { id: 'tw-web-host', ok: true, wrote: true, detail: force ? '已重新初始化（强制写回代理基址）' : '已写入代理基址' }
+          // Idempotent: an identical value is NOT rewritten. Every re-PUT bumps
+          // `modified` on disk, which is a git diff for a file whose content never
+          // changed (the v0.24.2 language-pin lesson, same shape).
+          if (!force && current === desired) {
+            return { id: 'tw-web-host', ok: true, wrote: false, detail: `已指向 ${desired}` }
+          }
+          await ctx.client.put({ title: TW_WEB_HOST_TIDDLER, text: desired, type: 'text/plain', tags: [] })
+          return { id: 'tw-web-host', ok: true, wrote: true, detail: force ? '已重新初始化（强制写回代理基址）' : `已写入代理基址 ${desired}` }
         } catch (err) {
           return { id: 'tw-web-host', ok: false, wrote: false, error: err instanceof Error ? err.message : String(err) }
         }

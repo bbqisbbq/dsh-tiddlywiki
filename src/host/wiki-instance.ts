@@ -45,7 +45,7 @@ import { TiddlyWebClient } from './tw-api.ts'
 import { ensureLanguage, ensurePlugin, pinLanguageTiddler } from './admin.ts'
 import { drainThenStop, flushPendingWrites, needsRestartAfterSeeds, runAllSeeds, waitForFileWrite } from './seeds.ts'
 import { RENDER_PLUGIN_FILE } from './seed-render.ts'
-import { WikiServer } from './wiki.ts'
+import { WikiServer, TW_PROXY_PATH } from './wiki.ts'
 import { entryPath, type WikiEntry } from './wiki-registry.ts'
 import { tiddlywikiToolSummary } from './tools.ts'
 import { normalizeWechatConfig } from './wechat-publish.ts'
@@ -107,6 +107,19 @@ export interface WikiInstanceOptions {
   touchCommit?: (dir: string) => void
   /** Flush that repository's pending commit (teardown / explicit sync). */
   flushCommits?: (dir: string) => Promise<void> | void
+  /**
+   * The same-origin proxy base this wiki's TW frontend must use (v0.28.0).
+   *
+   * The host wires it from the current mode: single mode keeps the legacy bare
+   * path (so every existing install sees no diff), multi mode gives each wiki
+   * `/dsh-tiddlywiki/tw/<id>/`. Without it, a wiki's embedded editor would build
+   * its API URLs for the LEGACY path and be proxied to whichever wiki is default
+   * — one wiki's UI over another wiki's data.
+   *
+   * Both forms route to the same child, so a stale value left over from a mode
+   * flip is harmless.
+   */
+  proxyBase?: () => string
   /** Log sink (defaults to console.warn with the plugin prefix). */
   log?: (message: string) => void
 }
@@ -455,6 +468,8 @@ export class WikiInstance {
       // Opt-in feature gate (v0.23.0): the「发布元数据规范」seed is skipped unless
       // THIS wiki turned 微信发布 on (its own config tiddler wins over the base).
       wechat: this.wechatEnabled(),
+      // Per-wiki same-origin base: `/tw/<id>/` in multi mode (see the option).
+      proxyBase: this.options.proxyBase?.() ?? TW_PROXY_PATH,
     })
     for (const r of results) {
       if (!r.ok) this.log(`seed ${r.id} failed: ${r.error ?? r.detail}`)
