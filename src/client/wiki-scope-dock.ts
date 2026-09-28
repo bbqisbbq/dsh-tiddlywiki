@@ -20,11 +20,8 @@
  * @module dsh-tiddlywiki/client/wiki-scope-dock
  */
 import * as React from 'react'
-import { ROUTE_PREFIX } from './endpoints.ts'
 import { fetchStatus } from './status-cache.ts'
-
-/** Host endpoint: read/write one session's knowledge-base scope. */
-export const SESSION_WIKI_ENDPOINT = `${ROUTE_PREFIX}/session/wiki`
+import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
 

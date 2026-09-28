@@ -47,6 +47,14 @@ export const ADMIN_SEEDS_REMOVE_ENDPOINT = `${ROUTE_PREFIX}/admin/seeds/remove`
 export const ADMIN_WIKI_LOCATION_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/location`
 export const ADMIN_WIKI_SWITCH_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/switch`
 export const ADMIN_WIKI_RESET_ENDPOINT = `${ROUTE_PREFIX}/admin/wiki/reset`
+/**
+ * The knowledge-base LIST (v0.28.0): GET reads the control file (mode + list +
+ * default), POST applies ONE action (add / update / remove / set-default /
+ * set-mode, plus the runtime-only start / stop).
+ */
+export const ADMIN_WIKIS_ENDPOINT = `${ROUTE_PREFIX}/admin/wikis`
+/** Per-session knowledge-base scope (v0.28.0). */
+export const SESSION_WIKI_ENDPOINT = `${ROUTE_PREFIX}/session/wiki`
 
 /**
  * Resolve a TW proxy URL for THIS document (v0.26.7).

@@ -117,7 +117,10 @@ test('会话选择器：只列 agentVisible 的库，且单库时整块不渲染
 })
 
 test('会话选择器：走 /session/wiki，清空选择发 null 而不是空字符串', () => {
-  assert.match(dockSrc, /\/session\/wiki/)
+  // 路径字面量只允许有一份（endpoints.ts）；组件引用那个常量。
+  assert.match(dockSrc, /SESSION_WIKI_ENDPOINT/, '组件必须用共享端点常量，而不是自己拼路径')
+  const endpointsSrc = readFileSync(path.join(repoRoot, 'src/client/endpoints.ts'), 'utf8')
+  assert.match(endpointsSrc, /SESSION_WIKI_ENDPOINT = `\$\{ROUTE_PREFIX\}\/session\/wiki`/, '端点定义必须是 /session/wiki')
   assert.match(dockSrc, /wiki: next\.length > 0 \? next : null/, '清除选择必须发 null')
   // 选中一个没在跑的库会在宿主侧把它起起来，冷启动可能几十秒——预算必须够。
   assert.match(dockSrc, /AbortSignal\.timeout\(120_000\)/, '启动一个库可能要几十秒，超时不能太短')
@@ -127,6 +130,20 @@ test('会话选择器：挂在 conversation.input.dock（scope=session，组件�
   assert.match(indexSrc, /id: 'wiki-scope'/)
   assert.match(indexSrc, /name: 'conversation\.input\.dock'/)
   assert.match(dockSrc, /interface DockProps \{ sessionId\?: string \}/, '组件的 props 必须含 sessionId（该槽位 scope=session）')
+})
+
+test('设置页：知识库列表是第一块，且能改模式/启停/默认/可见性/移出', () => {
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  assert.match(settings, /renderWikiListSection\(body, isDisposed, refresh\)/, '设置页必须渲染知识库列表')
+  // 列表必须排在位置区**之前**：多库的其余一切都要先有第二个库才能用。
+  const listAt = settings.indexOf('renderWikiListSection(body, isDisposed, refresh)')
+  const locationAt = settings.indexOf('renderWikiLocationSection(body, isDisposed, refresh)')
+  assert.ok(listAt >= 0 && locationAt > listAt, '知识库列表必须排在位置区之前')
+  for (const action of ['set-mode', 'set-default', 'start', 'stop', 'remove']) {
+    assert.ok(settings.includes(`action: '${action}'`) || settings.includes(`action: wiki.running ? 'stop' : 'start'`) || settings.includes('action: \'set-mode\''), `设置页必须能发出 ${action}`)
+  }
+  assert.match(settings, /agentVisible: !wiki\.agentVisible/, '必须能切换对 Agent 的可见性')
+  assert.match(settings, /\*\*目录与内容不会被删除\*\*/, '移出列表必须说清"不删目录"（否则没人敢点）')
 })
 
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)

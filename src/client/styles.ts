@@ -299,6 +299,12 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 /* ── settings page (config panel §13) ────────────────────────── */
 .dsh-tw-settings { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; min-width: 0; }
 .dsh-tw-settings-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 知识库列表里的一行（v0.28.0）：卡片式，便于扫读"哪个库、在哪、在不在跑"。 */
+.dsh-tw-settings-kbrow {
+  display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.12)); border-radius: 8px;
+  padding: 8px 10px; margin: 0 0 8px;
+}
 .dsh-tw-settings-chip {
   font-size: 12px; padding: 2px 10px; border-radius: 999px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25));

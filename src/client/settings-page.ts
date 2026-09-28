@@ -36,6 +36,7 @@ import {
   ADMIN_WIKI_LOCATION_ENDPOINT as WIKI_LOCATION_ENDPOINT,
   ADMIN_WIKI_RESET_ENDPOINT as WIKI_RESET_ENDPOINT,
   ADMIN_WIKI_SWITCH_ENDPOINT as WIKI_SWITCH_ENDPOINT,
+  ADMIN_WIKIS_ENDPOINT as WIKI_LIST_ENDPOINT,
   SYNC_ENDPOINT,
   describeSyncResult,
   type SyncResultPayload,
@@ -931,6 +932,184 @@ function renderCatalogSection(
  * stops and restarts the TW child in place — a few seconds, and it can fail
  * (in which case the host rolls back and says so).
  */
+/** One knowledge base as `GET /admin/wikis` reports it (v0.28.0). */
+interface WikiListItemView {
+  id: string
+  label: string
+  root: string
+  name: string
+  path: string
+  agentVisible: boolean
+  autostart: boolean
+  running: boolean
+  status: string
+}
+
+/** `GET`/`POST /dsh-tiddlywiki/admin/wikis` payload (v0.28.0). */
+interface WikisView {
+  ok?: boolean
+  error?: string
+  mode?: string
+  defaultId?: string
+  source?: string
+  registryFile?: string
+  warnings?: string[]
+  wikis?: WikiListItemView[]
+  change?: { started?: string[]; stopped?: string[]; updated?: string[]; errors?: Array<{ id: string; message: string }> }
+}
+
+/**
+ * 知识库列表（v0.28.0）—— 设置页的**第一块**。
+ *
+ * 为什么排在最前：多库的其余一切都要先有第二个库才能用，而在此之前多库模式只能靠
+ * 手写 `$DSH_HOME/dsh-tiddlywiki/wikis.json` 打开。
+ *
+ * 它显示的是**控制文件**（用户编辑的那份），与"现在跑着什么"是两件事：single 模式下
+ * farm 跑的是从旧指针合成的单条清单，而文件里可能已经列了好几个候选。所以每行同时给出
+ * 「在不在清单里」与「现在跑没跑」。
+ *
+ * 关于「编辑哪个库的配置」：常规配置区作用于**默认库**（★ 那一行）——多库时这是刻意的
+ * 简化，`git.*` 实际按仓库生效（见下），其余字段各库自己一份。
+ */
+function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, refresh: () => Promise<void>): void {
+  const section = make('section', 'dsh-tw-settings-section')
+  section.append(make('h3', 'dsh-tw-settings-h', '知识库列表'))
+  const status = make('div', 'dsh-tw-settings-muted', '读取中…')
+  const modeRow = make('div', 'dsh-tw-settings-row')
+  const list = make('div')
+  const addRoot = make('input', 'dsh-tw-settings-input')
+  addRoot.placeholder = '根目录（绝对路径，如 D:\\notes）'
+  const addName = make('input', 'dsh-tw-settings-input')
+  addName.placeholder = '文件夹名（如 books）'
+  const addLabel = make('input', 'dsh-tw-settings-input')
+  addLabel.placeholder = '显示名（留空用文件夹名）'
+  const addBtn = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '添加知识库')
+  addBtn.type = 'button'
+  const addRow = make('div', 'dsh-tw-settings-row dsh-tw-settings-field')
+  addRow.append(addRoot, addName, addLabel, addBtn)
+  const hint = make('div', 'dsh-tw-settings-muted', '多库模式下每个知识库是一个独立的 TW 子进程（约 150MB）：标了「开局自启」的随 DSH 一起起，其余在你打开或选中它时启动。对 Agent 隐身的库不进会话选择器，检索/工具也永远不碰它。')
+  section.append(status, modeRow, list, addRow, hint)
+  body.append(section)
+
+  /** One action, then re-read (the response already carries the new state). */
+  const post = async (payload: Record<string, unknown>, busyLabel: string): Promise<void> => {
+    status.textContent = busyLabel
+    try {
+      const data = await fetchJson<WikisView>(WIKI_LIST_ENDPOINT, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+        // 新增/启动一个库可能要 `--init server` 并冷启动 TW（实测大库 40s+）。
+        signal: AbortSignal.timeout(180_000),
+      })
+      if (isDisposed()) return
+      const failures = data.change?.errors ?? []
+      if (failures.length > 0) toast(`部分操作失败：${failures.map((item) => `${item.id}：${item.message}`).join('；')}`)
+      render(data)
+      await refresh()
+    } catch (err) {
+      if (isDisposed()) return
+      toast(`操作失败：${err instanceof Error ? err.message : String(err)}`)
+      await load()
+    }
+  }
+
+  const render = (view: WikisView): void => {
+    status.textContent = view.error !== undefined && view.error.length > 0 ? `⚠️ ${view.error}` : ''
+    modeRow.replaceChildren(make('span', 'dsh-tw-settings-label', '运行模式：'))
+    const modes: Array<[string, string]> = [
+      ['single', '单库（只跑默认库）'],
+      ['multi', '多库（清单里的库都可用）'],
+    ]
+    for (const [value, text] of modes) {
+      const active = view.mode === value
+      const chip = make('button', `dsh-tw-settings-btn dsh-tw-settings-chipbtn${active ? ' dsh-tw-settings-primary' : ''}`, text)
+      chip.type = 'button'
+      chip.disabled = active
+      chip.addEventListener('click', () => {
+        const ok = window.confirm(value === 'multi'
+          ? '切换到多库模式：清单里标了「开局自启」的知识库都会启动（每个库一个 TW 子进程）。继续？'
+          : '切换到单库模式：除默认库外的知识库会被停掉（内容与清单都不受影响）。继续？')
+        if (ok) void post({ action: 'set-mode', mode: value }, '切换模式中…')
+      })
+      modeRow.append(chip)
+    }
+
+    list.replaceChildren()
+    const wikis = view.wikis ?? []
+    for (const wiki of wikis) {
+      const row = make('div', 'dsh-tw-settings-kbrow')
+      const isDefault = wiki.id === view.defaultId
+      row.append(make('div', 'dsh-tw-settings-label', `${isDefault ? '★ ' : ''}${wiki.label}（${wiki.id}）`))
+      row.append(make('div', 'dsh-tw-settings-muted', [
+        wiki.running ? '运行中' : '未运行',
+        wiki.agentVisible ? 'Agent 可见' : 'Agent 隐身',
+        wiki.autostart ? '开局自启' : '按需启动',
+        wiki.path,
+      ].join(' · ')))
+
+      const actions = make('div', 'dsh-tw-settings-row')
+      const power = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.running ? '停止' : '启动')
+      power.type = 'button'
+      power.addEventListener('click', () => {
+        void post({ action: wiki.running ? 'stop' : 'start', id: wiki.id }, wiki.running ? '停止中…' : '启动中…')
+      })
+      const makeDefault = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '设为默认')
+      makeDefault.type = 'button'
+      makeDefault.disabled = isDefault
+      makeDefault.addEventListener('click', () => { void post({ action: 'set-default', id: wiki.id }, '保存中…') })
+      const visibility = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.agentVisible ? '对 Agent 隐身' : '对 Agent 可见')
+      visibility.type = 'button'
+      visibility.addEventListener('click', () => {
+        void post({ action: 'update', wiki: { ...wiki, agentVisible: !wiki.agentVisible } }, '保存中…')
+      })
+      const autostart = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.autostart ? '取消开局自启' : '开局自启')
+      autostart.type = 'button'
+      autostart.addEventListener('click', () => {
+        void post({ action: 'update', wiki: { ...wiki, autostart: !wiki.autostart } }, '保存中…')
+      })
+      const remove = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '移出列表')
+      remove.type = 'button'
+      remove.disabled = wikis.length <= 1
+      remove.addEventListener('click', () => {
+        const ok = window.confirm(`把「${wiki.label}」移出清单？\n\n**目录与内容不会被删除**（仍在 ${wiki.path}），只是插件不再管理它。`)
+        if (ok) void post({ action: 'remove', id: wiki.id }, '移出中…')
+      })
+      actions.append(power, makeDefault, visibility, autostart, remove)
+      row.append(actions)
+      list.append(row)
+    }
+    // 新增时默认沿用第一个库的根目录（多数情况就是同一个父目录）。
+    if (addRoot.value.length === 0 && typeof wikis[0]?.root === 'string') addRoot.value = wikis[0].root
+  }
+
+  addBtn.addEventListener('click', () => {
+    const root = addRoot.value.trim()
+    const name = addName.value.trim()
+    if (root.length === 0 || name.length === 0) {
+      toast('请填写根目录与文件夹名')
+      return
+    }
+    const wiki: Record<string, unknown> = { root, name }
+    const label = addLabel.value.trim()
+    if (label.length > 0) wiki.label = label
+    void post({ action: 'add', wiki }, '添加中（新库需要初始化与冷启动，请稍候）…')
+  })
+
+  const load = async (): Promise<void> => {
+    if (isDisposed()) return
+    try {
+      const view = await fetchJson<WikisView>(WIKI_LIST_ENDPOINT)
+      if (isDisposed()) return
+      render(view)
+    } catch (err) {
+      if (isDisposed()) return
+      status.textContent = `读取知识库列表失败：${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+  void load()
+}
+
 function renderWikiLocationSection(body: HTMLElement, isDisposed: () => boolean, refresh: () => Promise<void>): void {
   const section = make('section', 'dsh-tw-settings-section')
   section.append(make('h3', 'dsh-tw-settings-h', '知识库位置（可切换）'))
@@ -1323,6 +1502,7 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
     configState.signature = signature
   }
   body.append(configState.host)
+  renderWikiListSection(body, isDisposed, refresh)
   renderWikiLocationSection(body, isDisposed, refresh)
   renderCatalogSection(body, state.info, state.catalog, state.runtimePlugins, refresh, catalogPending)
   renderSeedsSection(body, isDisposed)
