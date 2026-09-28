@@ -117,6 +117,67 @@ export function targetRuntimeFor<T extends WikiRuntime>(farm: WikiFarm<T> | unde
   return farm?.runtime(id) ?? farm?.defaultRuntime()
 }
 
+/**
+ * The knowledge base the AGENT works on for one session, plus why it might be
+ * none (v0.28.0).
+ *
+ * The rules, in order:
+ *   1. the session's EXPLICIT scope, when it names a wiki that exists — and is
+ *      `agentVisible`: a hidden wiki must stay unreachable even if a stale
+ *      selection points at it;
+ *   2. the registry's DEFAULT, when it is visible;
+ *   3. the first visible entry.
+ *
+ * Two deliberate refusals:
+ *
+ *   - an explicit scope that is visible but NOT RUNNING yields an ERROR, never a
+ *     silent fallback to another wiki. Quietly writing the user's note into a
+ *     different knowledge base is the single worst failure this feature can
+ *     have, and "the selector said X" must win over convenience.
+ *   - nothing visible → no runtime and a reason the tool can say out loud,
+ *     instead of guessing a wiki the user asked to hide.
+ */
+export interface AgentScope<T extends WikiRuntime> {
+  /** The live runtime to act on (undefined = act on nothing). */
+  runtime?: T
+  /** The entry the scope resolved to (for labels, even when it cannot serve). */
+  entry?: WikiEntry
+  /** Why there is no runtime — an actionable sentence for the tool error. */
+  reason?: string
+}
+
+export function resolveAgentScope<T extends WikiRuntime>(
+  farm: WikiFarm<T> | undefined,
+  scopes: Record<string, string>,
+  sessionId: string | undefined,
+): AgentScope<T> {
+  if (farm === undefined) return { reason: '知识库插件尚未就绪（还没读完清单）' }
+  const registry = farm.registry
+  const byId = new Map(registry.wikis.map((entry) => [entry.id, entry]))
+
+  if (sessionId !== undefined) {
+    const wantedId = scopes[sessionId]
+    const explicit = wantedId === undefined ? undefined : byId.get(wantedId)
+    if (explicit !== undefined && explicit.agentVisible) {
+      const runtime = farm.runtime(explicit.id)
+      if (runtime !== undefined) return { runtime, entry: explicit }
+      return { entry: explicit, reason: `本会话作用域指定的知识库「${explicit.label}」当前没有运行，请先在界面上启动它再试` }
+    }
+  }
+
+  const visible = registry.wikis.filter((entry) => entry.agentVisible)
+  if (visible.length === 0) return { reason: '当前没有对 Agent 可见的知识库（可在设置里把某个库设为对 Agent 可见）' }
+  const preferred = defaultEntry({ ...registry, wikis: visible })
+  const order = preferred === undefined ? visible : [preferred, ...visible.filter((entry) => entry.id !== preferred.id)]
+  for (const entry of order) {
+    const runtime = farm.runtime(entry.id)
+    if (runtime !== undefined) return { runtime, entry }
+  }
+  // Nothing visible is running: name the one we WOULD use so the sentence is
+  // actionable ("start X"), rather than a vague "no wiki".
+  return { entry: order[0], reason: `知识库「${order[0]?.label ?? ''}」当前没有运行，请先在界面上启动它再试` }
+}
+
 export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
   private registryValue: WikiRegistry
   private readonly runtimes = new Map<string, T>()

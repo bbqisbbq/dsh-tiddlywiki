@@ -27,7 +27,7 @@ import { checkAllSeeds, runSeedById, removeSeedById } from './host/seeds.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
 import { WechatPublishRunner, checkWechatReady, normalizeWechatConfig } from './host/wechat-publish.ts'
-import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps } from './host/tools.ts'
+import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps, type ToolScope } from './host/tools.ts'
 import { describePrompt, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig } from './host/prompt.ts'
 import {
   clearLocationState,
@@ -44,7 +44,8 @@ import {
 } from './host/wiki-location.ts'
 import { switchWiki, type WikiSwitchResult } from './host/wiki-switch.ts'
 import { WikiInstance } from './host/wiki-instance.ts'
-import { WikiFarm, targetRuntimeFor } from './host/wiki-farm.ts'
+import { WikiFarm, resolveAgentScope, targetRuntimeFor } from './host/wiki-farm.ts'
+import { defaultSessionScopeFile, readSessionScopes } from './host/session-scope.ts'
 import { RepoCommitters } from './host/repo-committers.ts'
 import {
   DEFAULT_WIKI_ID,
@@ -198,7 +199,19 @@ export {
 } from './host/wiki-registry.ts'
 export { WikiInstance, type WikiInstanceBase, type WikiInstanceOptions } from './host/wiki-instance.ts'
 export { isInsidePath, pathComparisonKey } from './host/path-key.ts'
-export { WikiFarm, targetRuntimeFor, wikiIdFromRequest, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
+export { WikiFarm, targetRuntimeFor, wikiIdFromRequest, resolveAgentScope, type AgentScope, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
+export {
+  SESSION_SCOPE_MAX_AGE_MS,
+  SESSION_SCOPE_VERSION,
+  defaultSessionScopeFile,
+  isSafeSessionId,
+  pruneScopes,
+  readSessionScopes,
+  setSessionScope,
+  writeSessionScopes,
+  type SessionScopeReadResult,
+  type SessionScopeState,
+} from './host/session-scope.ts'
 export { RepoCommitters, type RepoCommitSettings, type RepoCommittersOptions } from './host/repo-committers.ts'
 export {
   READY_TIMEOUT_DEFAULT_MS,
@@ -589,12 +602,39 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     for (const runtime of farm?.allRuntimes() ?? []) runtime.setupExtras()
   }
 
-  // Tools (works even while the wiki is down; wiki() resolves lazily).
+  /** sessionId → wikiId (v0.28.0). Loaded at boot, written by the GUI selector. */
+  let sessionScopes: Record<string, string> = {}
+  /** File the session scopes live in (outside every wiki, see session-scope.ts). */
+  const sessionScopeFile = defaultSessionScopeFile()
+  /**
+   * Resolve the calling session's knowledge base for a tool call, plus how to
+   * describe it. `ambiguous` drives the 「知识库：…」 header on every tool result
+   * and is true only when more than one wiki is visible to the agent.
+   */
+  const toolScope = (sessionId: string | undefined): ToolScope => {
+    const resolution = resolveAgentScope(farm, sessionScopes, sessionId)
+    const visible = farm?.registry.wikis.filter((entry) => entry.agentVisible).length ?? 0
+    const client = resolution.runtime?.client()
+    return {
+      ...(client !== undefined ? { client } : {}),
+      ...(resolution.entry !== undefined ? { id: resolution.entry.id, label: resolution.entry.label } : {}),
+      // No client ⇒ say WHY (the resolver's sentence is actionable); a bare
+      // "service not running" would send the user looking in the wrong place.
+      ...(client === undefined ? { reason: resolution.reason ?? '知识库服务尚未就绪，请稍后重试' } : {}),
+      ambiguous: visible > 1,
+    }
+  }
+
+  // Tools (works even while the wiki is down; the scope resolves lazily).
   const toolsDeps: ToolsDeps = {
-    wiki: client,
+    // Per SESSION (v0.28.0): the session's scope decides which knowledge base a
+    // call acts on, filtered by `agentVisible`. A refusal carries a REASON, so a
+    // hidden or stopped wiki fails loudly instead of writing somewhere else.
+    scope: toolScope,
     git,
-    // M1b-2b: the agent tools still target the DEFAULT wiki. M3 makes them
-    // per-session (the session's scope) — that is where `agentVisible` lands.
+    // ⚠️ The GIT tools still act on the DEFAULT wiki's repository: a sync is a
+    // repository-level operation (see host/repo-committers.ts), and per-session
+    // git is not something the user asked for.
     wikiPath: () => defaultInstance()?.path ?? locationPath(defaultLocation),
     autoCommit: () => defaultInstance()?.touchAutoCommit(),
     // After a pull that changed the working tree, restart the wikis whose content
@@ -655,7 +695,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // THE CONTROL FILE FIRST (v0.28.0): it carries the mode (single/multi), the
       // wiki list and the default id, and it must be read before anything starts
       // — which is exactly why it lives OUTSIDE every wiki (wiki-registry.ts).
+      // The control file decides: mode + the wiki list.
       const read = await readRegistry({ file: registryFile, legacyFile: locationStateFile, fallback: defaultLocation })
+      // Per-session scopes are a PREFERENCE: an unreadable file just means "no
+      // explicit scope" and every session falls back to the default wiki.
+      const scopes = await readSessionScopes(sessionScopeFile)
+      if (scopes.error !== undefined) console.warn('[dsh-tiddlywiki]', scopes.error)
+      sessionScopes = scopes.scopes
       controlRegistry = read.registry
       controlSource = read.source
       controlWarnings = read.warnings

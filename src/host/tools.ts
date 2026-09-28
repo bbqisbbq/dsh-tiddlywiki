@@ -65,9 +65,37 @@ export interface ToolsCtx {
   tools: { register(tool: unknown): () => void }
 }
 
+/**
+ * What one tool call may act on (v0.28.0).
+ *
+ * `ambiguous` is true when MORE THAN ONE knowledge base is visible to the agent:
+ * only then does every tool result carry a 「知识库：…」 header, so a single-wiki
+ * install keeps byte-identical output while a multi-wiki one always says which
+ * base a result came from (writing to the wrong one is the failure this feature
+ * most needs to make visible).
+ */
+export interface ToolScope {
+  /** Live TW client of the resolved wiki (undefined = cannot serve). */
+  client?: TiddlyWebClient
+  /** Id + display label of the resolved wiki. */
+  id?: string
+  label?: string
+  /** Actionable sentence for the tool error when there is no client. */
+  reason?: string
+  /** More than one visible wiki ⇒ results must name the one they used. */
+  ambiguous: boolean
+}
+
 export interface ToolsDeps {
-  /** Lazy TW client — undefined while the service is not up. */
-  wiki: () => TiddlyWebClient | undefined
+  /**
+   * The knowledge base a tool call acts on, resolved per SESSION (v0.28.0).
+   *
+   * `sessionId` is the calling session (`sessionIdOf(exec)`), or undefined in
+   * headless tests. The host resolves it through the session's scope, filtered
+   * by `agentVisible`, and returns a REASON instead of a client when it cannot
+   * serve — the tool then fails loudly rather than writing to another wiki.
+   */
+  scope: (sessionId: string | undefined) => ToolScope
   git: GitFace
   wikiPath: () => string
   /** Debounced auto-commit touch (fires after our writes). */
@@ -462,6 +490,49 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   // Re-collect on every pass: a hot reload re-registers the whole toolset, and
   // a stale entry must never linger in the prompt catalogue.
   REGISTERED_TOOL_SUMMARY.length = 0
+
+  /** A registered tool plus the two members the scope wrapper needs. */
+  interface WrappableTool extends RegistrableTool {
+    execute?: (args: unknown, exec: unknown) => Promise<unknown>
+    output?: { render?: (args: unknown, value: unknown) => Array<{ type: 'text'; text: string }> }
+  }
+
+  /**
+   * Give EVERY tool result a 「知识库：…」 header — but only when more than one
+   * knowledge base is visible to the agent (v0.28.0).
+   *
+   * Done HERE, once, instead of inside 15 renders: a tool result is the only
+   * place the model can learn WHICH knowledge base it just wrote to, and "wrote
+   * into the wrong wiki" is the failure this feature most needs to make visible.
+   * With a single visible wiki (`ambiguous === false`) the output stays
+   * byte-identical to before, so existing installs see no change at all.
+   */
+  const withScopeHeader = (tool: WrappableTool): WrappableTool => {
+    const render = tool.output?.render
+    const execute = tool.execute
+    if (render === undefined || execute === undefined) return tool
+    return {
+      ...tool,
+      async execute(args: unknown, exec: unknown): Promise<unknown> {
+        const scope = deps.scope(sessionIdOf(exec))
+        const value = await execute(args, exec)
+        if (!scope.ambiguous || scope.id === undefined) return value
+        if (value === null || typeof value !== 'object') return value
+        return { ...(value as Record<string, unknown>), wiki: { id: scope.id, label: scope.label ?? scope.id } }
+      },
+      output: {
+        ...tool.output,
+        render(args: unknown, value: unknown): Array<{ type: 'text'; text: string }> {
+          const lines = render(args, value)
+          const wiki = (value as { wiki?: { id: string; label: string } } | null)?.wiki
+          if (wiki === undefined || lines.length === 0) return lines
+          const [first, ...rest] = lines
+          return [{ ...(first as { type: 'text'; text: string }), text: `【知识库：${wiki.label}（${wiki.id}）】\n${(first as { text: string }).text}` }, ...rest]
+        },
+      },
+    }
+  }
+
   const register = (tool: RegistrableTool): void => {
     const properties = (tool.parameters.properties ?? {}) as Record<string, unknown>
     const required = Array.isArray(tool.parameters.required) ? (tool.parameters.required as string[]) : []
@@ -469,15 +540,15 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       name: tool.name,
       params: Object.keys(properties).map((name) => ({ name, required: required.includes(name) })),
     })
-    disposers.push(ctx.tools.register(tool))
+    disposers.push(ctx.tools.register(withScopeHeader(tool) as never))
   }
 
   /** Every read/write tool needs a live TW client — shared guard for the 8
    *  wiki-facing tools (git tools operate on the repo path instead). */
-  const requireWiki = (): TiddlyWebClient => {
-    const wiki = deps.wiki()
-    if (wiki === undefined) throw new Error('TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
-    return wiki
+  const requireWiki = (sessionId?: string): TiddlyWebClient => {
+    const scope = deps.scope(sessionId)
+    if (scope.client === undefined) throw new Error(scope.reason ?? 'TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+    return scope.client
   }
 
   // ── tiddlywiki_search ────────────────────────────────────────────────────
@@ -524,7 +595,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { query: string; tags?: string[]; tag?: string; since?: string; type?: string; field?: string; value?: string; limit?: number }, exec: unknown): Promise<SearchResult> => {
-      const wiki = requireWiki()
+      const wiki = requireWiki(sessionIdOf(exec))
       const options = {
         tags: args.tags,
         tag: args.tag,
@@ -583,8 +654,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { limit?: number; since?: string }): Promise<RecentResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { limit?: number; since?: string }, exec: unknown): Promise<RecentResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const items = await wiki.recent(args.limit ?? 15, args.since)
       return {
         since: args.since ?? null,
@@ -613,8 +684,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { limit?: number }): Promise<TagListResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { limit?: number }, exec: unknown): Promise<TagListResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const stats = await wiki.tagStats()
       const limit = typeof args.limit === 'number' && Number.isFinite(args.limit)
         ? Math.max(1, Math.min(Math.floor(args.limit), 1000))
@@ -653,8 +724,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { title: string }): Promise<GetResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { title: string }, exec: unknown): Promise<GetResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const t = await wiki.get(args.title)
       if (t === undefined) return { notFound: true, title: args.title, text: '', tags: [], fields: {}, modified: null }
       const binary = isBinaryType(typeof t.type === 'string' ? t.type : undefined)
@@ -708,7 +779,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown>; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<PutResult> => {
-      const wiki = requireWiki()
+      const wiki = requireWiki(sessionIdOf(exec))
       if (args.title.trim().length === 0) throw new Error('tiddlywiki_put: title 不能为空')
       // Read WITHOUT swallowing errors: only a 404 means "new tiddler". A
       // transient failure treated as "new" would silently tag an existing
@@ -796,7 +867,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { items: Array<{ title: string; text: string; tags?: string[]; fields?: Record<string, unknown>; expectedModified?: string }>; overwrite?: boolean }, exec: unknown): Promise<BatchResult> => {
-      const wiki = requireWiki()
+      const wiki = requireWiki(sessionIdOf(exec))
       const list = Array.isArray(args.items) ? args.items : []
       if (list.length === 0) return { ok: true, written: 0, skipped: 0, failed: 0, items: [] }
       const overwrite = args.overwrite !== false
@@ -880,8 +951,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { oldTitle: string; newTitle: string; updateRefs?: boolean; expectedModified?: string; expectedRevision?: number; force?: boolean }): Promise<RenameResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { oldTitle: string; newTitle: string; updateRefs?: boolean; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<RenameResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const { oldTitle, newTitle } = args
       if (oldTitle === newTitle) return { ok: true, from: oldTitle, to: newTitle, refsUpdated: 0, refsTiddlers: 0 }
       const existing = await wiki.get(oldTitle)
@@ -988,8 +1059,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           : `已永久删除 tiddler「${value.title}」。`,
       }],
     },
-    execute: async (args: { title: string; permanent?: boolean; expectedModified?: string; expectedRevision?: number; force?: boolean }): Promise<DeleteResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { title: string; permanent?: boolean; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<DeleteResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const existing = await wiki.get(args.title)
       // Deleting something the caller never saw is fine only when it does not
       // exist; a token means the note WAS read, so a changed revision since then
@@ -1072,8 +1143,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { action: 'list' | 'restore' | 'empty'; title?: string; limit?: number }): Promise<TrashResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { action: 'list' | 'restore' | 'empty'; title?: string; limit?: number }, exec: unknown): Promise<TrashResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const index = await readTrashIndex(wiki)
       // A failed/corrupt index must never be treated as「回收站是空的」: `empty`
       // would then report success while doing nothing, and `restore` would claim
@@ -1164,7 +1235,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
       },
     },
     execute: async (args: { title: string; text: string; mode?: 'append' | 'prepend'; heading?: string; createIfMissing?: boolean; tags?: string[]; fields?: Record<string, unknown>; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<AppendResult> => {
-      const wiki = requireWiki()
+      const wiki = requireWiki(sessionIdOf(exec))
       const title = args.title.trim()
       if (title.length === 0) throw new Error('tiddlywiki_append: title 不能为空')
       const existing = await wiki.get(title)
@@ -1254,8 +1325,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { title: string; includeTags?: boolean; limit?: number }): Promise<BacklinkResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { title: string; includeTags?: boolean; limit?: number }, exec: unknown): Promise<BacklinkResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const target = args.title.trim()
       if (target.length === 0) throw new Error('tiddlywiki_backlinks: title 不能为空')
       const includeTags = args.includeTags !== false
@@ -1301,8 +1372,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { title: string; path?: string; url?: string; tags?: string[]; noteTitle?: string; expectedModified?: string; expectedRevision?: number; force?: boolean }): Promise<AttachResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { title: string; path?: string; url?: string; tags?: string[]; noteTitle?: string; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<AttachResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const title = args.title.trim()
       if (title.length === 0) throw new Error('tiddlywiki_attach: title 不能为空')
       const hasPath = typeof args.path === 'string' && args.path.trim().length > 0
@@ -1429,8 +1500,8 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { limit?: number; checks?: string[]; staleAfterDays?: number }): Promise<LintResult> => {
-      const wiki = requireWiki()
+    execute: async (args: { limit?: number; checks?: string[]; staleAfterDays?: number }, exec: unknown): Promise<LintResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
       const limit = Math.max(1, Math.min(args.limit ?? 10, 100))
       // Validate `checks` against the real list (v0.25.0). The old `new Set(checks)`
       // silently ignored an unknown name, so a typo ('broken-link') ran NO checks
@@ -1601,7 +1672,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
     output: {
       render: (_args, value: SyncResult) => renderSync(value),
     },
-    execute: async (args: { action: 'pull' | 'push' | 'sync'; message?: string }): Promise<SyncResult> => {
+    execute: async (args: { action: 'pull' | 'push' | 'sync'; message?: string }, exec: unknown): Promise<SyncResult> => {
       const dir = deps.wikiPath()
       /**
        * Restart the RUNNING wikis whose content this pull changed.
@@ -1622,7 +1693,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
           // note is gone — not even the git commit that follows can recover it).
           // The agent path is the risky one: `tiddlywiki_put` → `git_sync`
           // back-to-back. Same sentinel trick as seeds.ts / index.ts.
-          await flushPendingWrites(requireWiki(), join(dir, 'tiddlers')).catch(() => undefined)
+          await flushPendingWrites(requireWiki(sessionIdOf(exec)), join(dir, 'tiddlers')).catch(() => undefined)
           const outcome = await deps.restartAffected(dir, pulled.changedFiles ?? [])
           return {
             ...(outcome.restarted.length > 0 ? { restarted: outcome.restarted } : {}),
@@ -1694,7 +1765,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { strategy: 'keep-local' | 'keep-remote' | 'list'; files?: string[] }): Promise<ResolveResult> => {
+    execute: async (args: { strategy: 'keep-local' | 'keep-remote' | 'list'; files?: string[] }, exec: unknown): Promise<ResolveResult> => {
       const dir = deps.wikiPath()
       if (args.strategy === 'list') {
         const status = await deps.git.status(dir)

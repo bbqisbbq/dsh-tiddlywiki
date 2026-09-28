@@ -100,7 +100,7 @@ try {
   registerTiddlywikiTools(
     { tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } },
     {
-      wiki: () => api,
+      scope: () => ({ client: api, ambiguous: false }),
       git,
       wikiPath: () => wikiDir,
       autoCommit: () => {},

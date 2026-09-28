@@ -50,7 +50,7 @@ function test(name, fn) {
 // plugin makes at startup, so the summaries are the model-facing truth.
 const tools = (() => {
   const ctx = { tools: { register: () => () => {} } }
-  const deps = { wiki: () => undefined, git: {}, wikiPath: () => '', autoCommit: () => {} }
+  const deps = { scope: () => ({ client: undefined, ambiguous: false }), git: {}, wikiPath: () => '', autoCommit: () => {} }
   registerTiddlywikiTools(ctx, deps)
   return tiddlywikiToolSummary()
 })()

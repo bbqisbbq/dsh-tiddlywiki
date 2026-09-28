@@ -104,7 +104,7 @@ try {
   const tools = new Map()
   registerTiddlywikiTools(
     { tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } },
-    { wiki: () => api, git, wikiPath: () => wikiDir, autoCommit: () => {} },
+    { scope: () => ({ client: api, ambiguous: false }), git, wikiPath: () => wikiDir, autoCommit: () => {} },
   )
   const call = (name, args) => {
     const tool = tools.get(name)
@@ -303,7 +303,7 @@ try {
     const localTools = new Map()
     registerTiddlywikiTools(
       { tools: { register: (tool) => { localTools.set(tool.name, tool); return () => {} } } },
-      { wiki: () => flaky, git, wikiPath: () => wikiDir, autoCommit: () => {} },
+      { scope: () => ({ client: flaky, ambiguous: false }), git, wikiPath: () => wikiDir, autoCommit: () => {} },
     )
     await assert.rejects(
       () => localTools.get('tiddlywiki_delete').execute({ title: 'IndexReadFailProbe' }, undefined),
@@ -410,7 +410,7 @@ try {
       },
     }
     const localTools = new Map()
-    const localDeps = { wiki: () => failing, git, wikiPath: () => wikiDir, autoCommit: () => {} }
+    const localDeps = { scope: () => ({ client: failing, ambiguous: false }), git, wikiPath: () => wikiDir, autoCommit: () => {} }
     registerTiddlywikiTools({ tools: { register: (tool) => { localTools.set(tool.name, tool); return () => {} } } }, localDeps)
     const r = await localTools.get('tiddlywiki_rename').execute({ oldTitle: 'RenamePartialOld', newTitle: 'RenamePartialNew', updateRefs: false }, undefined)
     assert.equal(r.ok, true, `rename 主流程应成功：${JSON.stringify(r)}`)

@@ -107,7 +107,7 @@ try {
   const toolsByName = new Map()
   registerTiddlywikiTools(
     { tools: { register: (tool) => { toolsByName.set(tool.name, tool); return () => {} } } },
-    { wiki: () => api, git: new GitFace(), wikiPath: () => wikiDir, autoCommit: () => {} },
+    { scope: () => ({ client: api, ambiguous: false }), git: new GitFace(), wikiPath: () => wikiDir, autoCommit: () => {} },
   )
   const renameTool = toolsByName.get('tiddlywiki_rename')
   assert(renameTool !== undefined, 'rename tool registered through the registry')
