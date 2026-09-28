@@ -47,6 +47,7 @@ import { WikiInstance } from './host/wiki-instance.ts'
 import { WikiFarm, resolveAgentScope, targetRuntimeFor } from './host/wiki-farm.ts'
 import { defaultSessionScopeFile, isSafeSessionId, readSessionScopes, setSessionScope } from './host/session-scope.ts'
 import { RepoCommitters } from './host/repo-committers.ts'
+import { installSplitSkill } from './host/skill-install.ts'
 import { isInsidePath, pathComparisonKey } from './host/path-key.ts'
 import {
   DEFAULT_WIKI_ID,
@@ -216,6 +217,15 @@ export {
   type SessionScopeState,
 } from './host/session-scope.ts'
 export { RepoCommitters, type RepoCommitSettings, type RepoCommittersOptions } from './host/repo-committers.ts'
+export {
+  SKILL_FILE_NAME,
+  SPLIT_SKILL_DIR,
+  SPLIT_SKILL_MARKER,
+  defaultSkillRoot,
+  installSplitSkill,
+  readBundledSkillText,
+  type SkillInstallResult,
+} from './host/skill-install.ts'
 export {
   READY_TIMEOUT_DEFAULT_MS,
   READY_TIMEOUT_MAX_MS,
@@ -814,6 +824,19 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       if (disposed) {
         await farm.disposeAll()
         return
+      }
+      // Ship the 「拆分知识库」 skill (v0.28.0). DSH's container for a multi-step
+      // procedure is a skill, and a plugin cannot register a skill ROOT — so it
+      // writes into the user's own root, and only ever touches its own file (the
+      // marker line decides; see host/skill-install.ts).
+      if (!disposed) {
+        try {
+          const installed = await installSplitSkill()
+          if (installed.action === 'failed') console.warn('[dsh-tiddlywiki] 拆库 skill 安装失败：', installed.error)
+          else console.info(`[dsh-tiddlywiki] 拆库 skill：${installed.action}（${installed.path}）`)
+        } catch (err) {
+          console.warn('[dsh-tiddlywiki] 拆库 skill 安装异常：', err)
+        }
       }
       // Clip bridge: bind once on the DEFAULT wiki's configured port (works even
       // while disabled — every request re-checks the effective enabled flag, so
