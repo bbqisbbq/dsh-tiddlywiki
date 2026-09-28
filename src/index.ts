@@ -177,6 +177,7 @@ export {
   type WikiRegistry,
 } from './host/wiki-registry.ts'
 export { WikiInstance, type WikiInstanceBase, type WikiInstanceOptions } from './host/wiki-instance.ts'
+export { WikiFarm, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
 export {
   READY_TIMEOUT_DEFAULT_MS,
   READY_TIMEOUT_MAX_MS,
