@@ -29,7 +29,9 @@ import {
   normalizePromptMode,
   normalizePromptPreview,
   registerTiddlywikiTools,
+  scopeBanner,
   tiddlywikiToolSummary,
+  withScopeBanner,
   PROMPT_GOVERNANCE_BLOCKS,
   DEFAULT_PROMPT_MODE,
   PROMPT_SECTION_NAME,
@@ -243,6 +245,30 @@ test('草稿预览：形态差别可见、enabled=false 为空、未知形态回
   assert.equal(describePrompt(normalizePromptPreview({ enabled: false, mode: 'full' }), tools).enabled, false)
   assert.equal(describePrompt(normalizePromptPreview({ mode: 'nonsense' }), tools).mode, 'slim')
   assert.equal(describePrompt(normalizePromptPreview({ mode: 'nonsense' }), tools).text, draftSlim.text)
+})
+
+test('多库作用域横幅（v0.28.0）：单库逐字节不变，多库必须点名', () => {
+  const SINGLE = { ambiguous: false }
+  const MULTI = { ambiguous: true, id: 'work', label: '工作' }
+
+  // 单库：横幅为空，文本逐字节不变 —— 现有用户的注入预算一个字都不多。
+  assert.equal(scopeBanner(SINGLE), '')
+  assert.equal(withScopeBanner(slim, SINGLE), slim)
+  assert.equal(withScopeBanner('', MULTI), '', 'prompt.enabled=false 时不许只剩横幅')
+
+  // 多库：必须点名，且说明所有工具都只作用于它、每条回执也会标明。
+  const banner = scopeBanner(MULTI)
+  assert.match(banner, /本会话作用域：工作（work）/)
+  assert.match(banner, /工具都只作用于这个知识库/)
+  const composed = withScopeBanner(slim, MULTI)
+  assert.ok(composed.startsWith(banner), '横幅必须在正文之前')
+  assert.ok(composed.includes(slim), '正文必须原样保留在横幅之后')
+
+  // 作用域指向一个没在跑的库时，原因要带进横幅（模型才知道该让用户做什么）。
+  assert.match(scopeBanner({ ...MULTI, reason: '知识库「工作」当前没有运行，请先在界面上启动它再试' }), /请先在界面上启动它/)
+
+  // 多库的文本仍必须有界——它每个会话都要注入一次。
+  assert.ok(composed.length <= 2600, `多库注入文本过长：${composed.length} 字符（预算 2600）`)
 })
 
 if (failures > 0) {

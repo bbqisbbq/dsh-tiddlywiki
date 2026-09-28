@@ -28,7 +28,7 @@ import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.t
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
 import { WechatPublishRunner, checkWechatReady, normalizeWechatConfig } from './host/wechat-publish.ts'
 import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps, type ToolScope } from './host/tools.ts'
-import { describePrompt, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig } from './host/prompt.ts'
+import { describePrompt, withScopeBanner, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig } from './host/prompt.ts'
 import {
   clearLocationState,
   defaultLocationStateFile,
@@ -140,7 +140,9 @@ export {
   escapePromptBraces,
   normalizePromptMode,
   normalizePromptPreview,
+  scopeBanner,
   toolSignatureLines,
+  withScopeBanner,
   PROMPT_GOVERNANCE_BLOCKS,
   PROMPT_MODES,
   PROMPT_SECTION_NAME,
@@ -271,7 +273,14 @@ export interface TiddlywikiConfig {
 /** Structural host context (subset of the dsh host + cordis surfaces). */
 export interface HostCtx {
   tools: { register(tool: unknown): () => void }
-  systemPrompt: { section(opts: { name: string; order: number; text: string }): () => void }
+  systemPrompt: {
+    /**
+     * `text` may be a function: DSH evaluates it per ASSEMBLY with the assembly's
+     * context (`{ scope: agent }`), which is how a section can differ per session
+     * (v0.28.0 — see host/prompt.ts and the multi-wiki design note).
+     */
+    section(opts: { name: string; order: number; text: string | ((context: unknown) => string) }): () => void
+  }
   inject<T = unknown>(names: string | string[], callback: (ctx: HostCtx) => T, config?: unknown): unknown
   effect(fn: () => unknown, label?: string): void
   get(name: string): unknown
@@ -433,6 +442,32 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   const effectiveWorkspaceMark = (): boolean => defaultInstance()?.workspaceMark() ?? config.note.workspaceMark
   const effectiveBridge = (): BridgeConfig => defaultInstance()?.bridgeConfig() ?? config.bridge
 
+  /** sessionId → wikiId (v0.28.0). Loaded at boot, written by the GUI selector. */
+  let sessionScopes: Record<string, string> = {}
+  /** File the session scopes live in (outside every wiki, see session-scope.ts). */
+  const sessionScopeFile = defaultSessionScopeFile()
+  /**
+   * What the AGENT may act on for one session: the client, the wiki's identity
+   * and — when there is none — an actionable reason.
+   *
+   * `ambiguous` is true when more than one knowledge base is visible; that is
+   * what makes every tool result (and the injected prompt) name the wiki. With a
+   * single visible wiki nothing changes, so existing installs see no difference.
+   */
+  const toolScope = (sessionId: string | undefined): ToolScope => {
+    const resolution = resolveAgentScope(farm, sessionScopes, sessionId)
+    const visible = farm?.registry.wikis.filter((entry) => entry.agentVisible).length ?? 0
+    const client = resolution.runtime?.client()
+    return {
+      ...(client !== undefined ? { client } : {}),
+      ...(resolution.entry !== undefined ? { id: resolution.entry.id, label: resolution.entry.label } : {}),
+      // No client ⇒ say WHY (the resolver's sentence is actionable); a bare
+      // "service not running" would send the user looking in the wrong place.
+      ...(client === undefined ? { reason: resolution.reason ?? '知识库服务尚未就绪，请稍后重试' } : {}),
+      ambiguous: visible > 1,
+    }
+  }
+
   const disposers: Array<() => void> = []
   const disposeAll = (): void => {
     for (const dispose of disposers.splice(0)) dispose()
@@ -475,21 +510,44 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   let disposePromptSection: (() => void) | undefined
   let currentPromptText: string | undefined
   /**
-   * Built text for the current effective config (also the saved-state preview).
-   * The signature catalogue for `full` mode comes from the live tool registry,
-   * never from hand-written prose (v0.21.0 — the old copy had drifted).
+   * The prompt section's text for ONE session.
    *
-   * `wechat.enabled` (v0.23.0) is read here too: it is NOT a `prompt.*` field but
-   * it gates the publish rule, and the WeChat feature is opt-in + separately
-   * installed, so users who never enabled it must see no publishing text.
+   * It is a FUNCTION (v0.28.0): the section is registered once, but the text is
+   * evaluated per assembly with that assembly's agent, so a session scoped to
+   * wiki B is told it is working on wiki B. Single-wiki installs get exactly the
+   * previous text — the scope line appears only when more than one knowledge
+   * base is visible.
+   *
+   * Per-wiki `prompt.*` is honoured too: the config read is the SCOPE wiki's, so
+   * the 「每库定制提示词」decision from the design doc actually takes effect.
    */
-  const promptText = (): string => {
-    const cfg = eff()
-    return describePrompt(
+  const promptTextFor = (sessionId: string | undefined): string => {
+    const scope = toolScope(sessionId)
+    const cfg = resolveAgentScope(farm, sessionScopes, sessionId).runtime?.eff() ?? baseShape
+    // `wechat.enabled` (v0.23.0) is NOT a `prompt.*` field but it gates the
+    // publish rule, and the feature is opt-in + separately installed — users who
+    // never enabled it must see no publishing text.
+    const built = withScopeBanner(describePrompt(
       { ...((cfg.prompt ?? {}) as PromptConfig), wechat: (cfg.wechat ?? {}).enabled === true },
       tiddlywikiToolSummary(),
-    ).text
+    ).text, scope)
+    return built
   }
+
+  /**
+   * Built text for the DEFAULT scope (also the saved-state preview / the
+   * re-registration key). The signature catalogue for `full` mode comes from the
+   * live tool registry, never from hand-written prose (v0.21.0 — the old copy had
+   * drifted).
+   */
+  const promptText = (): string => promptTextFor(undefined)
+
+  /**
+   * (Re-)register the section. The text is a function, so a scope change needs
+   * no re-registration at all; this still runs on config saves so the
+   * `system-prompt/change` signal (and the history re-render) fires, and the
+   * skip-if-unchanged check keeps an unrelated save from churning anything.
+   */
   const applyPrompt = (): void => {
     const next = promptText()
     if (next === currentPromptText) return
@@ -497,7 +555,17 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     disposePromptSection?.()
     disposePromptSection = undefined
     if (next.length === 0) return
-    disposePromptSection = ctx.systemPrompt.section({ name: PROMPT_SECTION_NAME, order: PROMPT_SECTION_ORDER, text: next })
+    disposePromptSection = ctx.systemPrompt.section({
+      name: PROMPT_SECTION_NAME,
+      order: PROMPT_SECTION_ORDER,
+      text: (context: unknown) => {
+        // `AssembleContext.scope` IS the agent (see assembleContextFor in
+        // @deepseek-ai/dsh-agent), and Agent.id is the session id — the documented
+        // way a section learns whose prompt it is building.
+        const agent = (context as { scope?: { id?: unknown } } | undefined)?.scope
+        return promptTextFor(typeof agent?.id === 'string' ? agent.id : undefined)
+      },
+    })
   }
   disposers.push(() => {
     disposePromptSection?.()
@@ -600,29 +668,6 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     }
     repos.rebuild()
     for (const runtime of farm?.allRuntimes() ?? []) runtime.setupExtras()
-  }
-
-  /** sessionId → wikiId (v0.28.0). Loaded at boot, written by the GUI selector. */
-  let sessionScopes: Record<string, string> = {}
-  /** File the session scopes live in (outside every wiki, see session-scope.ts). */
-  const sessionScopeFile = defaultSessionScopeFile()
-  /**
-   * Resolve the calling session's knowledge base for a tool call, plus how to
-   * describe it. `ambiguous` drives the 「知识库：…」 header on every tool result
-   * and is true only when more than one wiki is visible to the agent.
-   */
-  const toolScope = (sessionId: string | undefined): ToolScope => {
-    const resolution = resolveAgentScope(farm, sessionScopes, sessionId)
-    const visible = farm?.registry.wikis.filter((entry) => entry.agentVisible).length ?? 0
-    const client = resolution.runtime?.client()
-    return {
-      ...(client !== undefined ? { client } : {}),
-      ...(resolution.entry !== undefined ? { id: resolution.entry.id, label: resolution.entry.label } : {}),
-      // No client ⇒ say WHY (the resolver's sentence is actionable); a bare
-      // "service not running" would send the user looking in the wrong place.
-      ...(client === undefined ? { reason: resolution.reason ?? '知识库服务尚未就绪，请稍后重试' } : {}),
-      ambiguous: visible > 1,
-    }
   }
 
   // Tools (works even while the wiki is down; the scope resolves lazily).

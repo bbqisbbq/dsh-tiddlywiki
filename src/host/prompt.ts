@@ -34,6 +34,30 @@
  * @module dsh-tiddlywiki/host/prompt
  */
 
+/**
+ * The scope banner prepended to the injected prompt when MORE THAN ONE knowledge
+ * base is visible to the agent (v0.28.0).
+ *
+ * Why a banner at all: with several wikis the model has no way to know which one
+ * its `tiddlywiki_*` calls act on, and the failure mode (writing a note into the
+ * wrong knowledge base) is silent. The banner names the scope, and every tool
+ * result repeats it. With a single visible wiki this returns `''`, so existing
+ * installs keep exactly the text they had.
+ */
+export function scopeBanner(scope: { id?: string; label?: string; reason?: string; ambiguous: boolean }): string {
+  if (!scope.ambiguous || scope.id === undefined) return ''
+  const why = scope.reason === undefined ? '' : `（${scope.reason}）`
+  return `> **本会话作用域：${scope.label ?? scope.id}（${scope.id}）**${why}\n`
+    + '> 本会话所有 `tiddlywiki_*` 工具都只作用于这个知识库，每条工具回执也会标明它。'
+}
+
+/** Built prompt text plus the optional scope banner (the section's final text). */
+export function withScopeBanner(text: string, scope: { id?: string; label?: string; reason?: string; ambiguous: boolean }): string {
+  if (text.length === 0) return ''
+  const banner = scopeBanner(scope)
+  return banner.length === 0 ? text : `${banner}\n\n${text}`
+}
+
 /** Prompt section name (stable id; a re-registration replaces the old one). */
 export const PROMPT_SECTION_NAME = 'dsh-tiddlywiki'
 
