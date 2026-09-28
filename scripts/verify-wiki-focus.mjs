@@ -12,6 +12,7 @@
  * @module dsh-tiddlywiki/scripts/verify-wiki-focus
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -322,9 +323,50 @@ test('每库图标：host 校验 + 客户端渲染都不得成为注入点（v0.
   // 客户端：emoji 走 textContent，绝不 innerHTML —— 值来自用户可编辑的文件
   assert.match(icon, /el\.textContent = icon\.trim\(\)/, 'emoji 必须用 textContent 渲染（不是 innerHTML）')
   assert.match(icon, /isIconName\(icon\)[\s\S]{0,80}innerHTML = ICON_SVG/, '只有内置名才允许 innerHTML，且用的是我们自己的 SVG')
-  // 设置页：有下拉选择器；当前值不在候选里要保留
-  assert.match(settings, /dsh-tw-settings-icon-select/, '设置页必须有图标选择器')
-  assert.match(settings, /!options\.some\(\(\[v\]\) => v === currentIcon\)/, '自定义 emoji 不能被下拉抹掉')
+  // 设置页：弹出式网格选择器（v0.28.8 起不再是 <select>）；当前值不在候选里要保留
+  assert.match(settings, /dsh-tw-iconpicker/, '设置页必须有图标选择器（弹出网格）')
+  assert.match(settings, /function openIconPicker\(/, '选择器必须走 openIconPicker')
+  assert.match(settings, /!choices\.some\(\(c\) => c\.value === current\)/, '自定义 emoji 不能被候选列表抹掉')
+})
+
+test('图标集：host 名单与客户端可渲染集合必须完全一致，且真的用上官方 DSH 图标（v0.28.8，反馈 1）', () => {
+  // 需求原文：「配置界面里面给每个 wiki 设置图标时能否使用 dsh 系统中的图标系统…
+  // 一个弹出框可以弹出展示系统中所有的图标，太多的话可以考虑分页展示」。
+  const registry = readFileSync(path.join(repoRoot, 'src/host/wiki-registry.ts'), 'utf8')
+  const generated = readFileSync(path.join(repoRoot, 'src/client/wiki-icon.generated.ts'), 'utf8')
+  const icon = readFileSync(path.join(repoRoot, 'src/client/wiki-icon.ts'), 'utf8')
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+
+  // host 是权威名单（值会存进 wikis.json）。
+  const namesBlock = registry.slice(registry.indexOf('export const WIKI_ICON_NAMES = ['))
+  const hostNames = [...namesBlock.slice(0, namesBlock.indexOf('] as const')).matchAll(/'([^']+)'/g)].map((m) => m[1])
+  assert.ok(hostNames.length >= 40, `图标名单应有 40+ 项（实际 ${hostNames.length}）`)
+
+  // 客户端可渲染集合 = 生成的官方图形 + 自绘。
+  const generatedKeys = [...generated.matchAll(/^\s*"([^"]+)":\s*"/gm)].map((m) => m[1])
+  const handDrawn = [...(icon.match(/const HAND_DRAWN: Record<string, string> = \{[\s\S]*?\n\}/)?.[0] ?? '').matchAll(/^\s*(\w+):/gm)].map((m) => m[1])
+  const clientNames = new Set([...generatedKeys, ...handDrawn])
+
+  // 双向：host 认的每个名字客户端都得能画（否则静默变默认图标）；客户端有的名字
+  // host 也得认（否则用户在网格里点得到、保存时被拒 = 「选了不生效」）。
+  const hostOnly = hostNames.filter((n) => !clientNames.has(n))
+  const clientOnly = [...clientNames].filter((n) => !hostNames.includes(n))
+  assert.deepEqual(hostOnly, [], `host 接受但客户端画不出来的图标：${hostOnly.join(', ')}`)
+  assert.deepEqual(clientOnly, [], `客户端能画但 host 不接受的图标：${clientOnly.join(', ')}`)
+
+  // 官方集合必须是**上游真数据**（由生成脚本产出），不是手画的替代品：
+  // 判据是生成文件里有明显来自 DSH 的长路径 + 生成器存在 + 出处注释在。
+  assert.ok(generatedKeys.length >= 30, `内联的官方图标应 ≥30 个（实际 ${generatedKeys.length}）`)
+  assert.match(generated, /GENERATED FILE/, '生成文件必须标明是生成的')
+  assert.match(generated, /gen-wiki-icons\.mjs/, '生成文件必须写明再生成命令')
+  assert.ok(fs.existsSync(path.join(repoRoot, 'scripts/gen-wiki-icons.mjs')), '生成脚本必须在仓库里（否则数据无法复现）')
+
+  // 分页：作者明确要求「太多的话可以考虑分页展示」。
+  assert.match(settings, /ICON_PAGE_SIZE/, '选择器必须有分页常量')
+  assert.match(settings, /上一页/, '选择器必须有上一页')
+  assert.match(settings, /下一页/, '选择器必须有下一页')
+  // 单页时不显示分页控件（少量图标别多出没用的按钮）。
+  assert.match(settings, /if \(pages > 1\)/, '只有超过一页才显示分页控件')
 })
 
 test('每库图标：/admin/wikis 的 GET 必须回传 icon（v0.28.8 修「选完立刻变回默认」）', () => {
