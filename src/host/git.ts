@@ -28,7 +28,7 @@
  */
 import { execFile } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileP = promisify(execFile)
@@ -148,6 +148,42 @@ export class GitFace {
     return r.ok && r.stdout.trim() === 'true'
   }
 
+  /**
+   * The repository a folder belongs to (`git rev-parse --show-toplevel`), or
+   * undefined when it is not inside a work tree (v0.28.0).
+   *
+   * WHY THE PLUGIN NEEDS THIS: several knowledge bases may be SUBFOLDERS of one
+   * repository — the "工作 + 个人 共用现有仓库、按文件夹物理划分" topology. Git
+   * then has ONE index and `git add -A` (from any subdirectory) stages the WHOLE
+   * working tree, so the auto-committer must be keyed by the REPOSITORY rather
+   * than by the wiki; two per-folder committers would each commit the other's
+   * changes and one would forever report "nothing to commit" (see
+   * host/repo-committers.ts).
+   */
+  async repoRoot(dir: string): Promise<string | undefined> {
+    const r = await this.exec(['rev-parse', '--show-toplevel'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
+    if (!r.ok) return undefined
+    const root = r.stdout.trim()
+    // git prints forward slashes even on Windows; `resolve` normalises to the
+    // platform form so the value can be compared/passed on directly.
+    return root.length > 0 ? resolve(root) : undefined
+  }
+
+  /**
+   * Repository-relative paths that differ between two commits (v0.28.0).
+   *
+   * Used after a pull to decide WHICH knowledge bases need their TW child
+   * restarted: with one repository holding several wikis, "the pull changed
+   * something" is not the same question as "THIS wiki's content changed".
+   * Returns [] for an unusable range (no commits yet, unknown ref).
+   */
+  async filesChangedBetween(dir: string, from: string, to: string): Promise<string[]> {
+    if (from.length === 0 || to.length === 0 || from === to) return []
+    const r = await this.exec(['diff', '--name-only', from, to], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
+    if (!r.ok) return []
+    return r.stdout.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
+  }
+
   async init(dir: string, branch = 'main'): Promise<boolean> {
     const r = await this.exec(['init', '-b', branch], { cwd: dir, timeout: HEAVY_TIMEOUT_MS })
     return r.ok
@@ -219,13 +255,15 @@ export class GitFace {
   /** `git pull --rebase --autostash`; on conflict: abort + report files.
    *  On success, `changed: true` means HEAD actually moved (files came in /
    *  commits were replayed) — callers use it to decide whether a running TW
-   *  child needs a restart to drop its stale in-memory snapshot.
+   *  child needs a restart to drop its stale in-memory snapshot, and
+   *  `changedFiles` (v0.28.0) says WHICH paths moved, so a caller serving
+   *  several wikis out of one repository can restart only the affected ones.
    *  Serialized against `commit()` (index.lock). */
-  pull(dir: string): Promise<GitActionResult & { changed?: boolean }> {
+  pull(dir: string): Promise<GitActionResult & { changed?: boolean; changedFiles?: string[] }> {
     return this.withLock(() => this.pullUnlocked(dir))
   }
 
-  private async pullUnlocked(dir: string): Promise<GitActionResult & { changed?: boolean }> {
+  private async pullUnlocked(dir: string): Promise<GitActionResult & { changed?: boolean; changedFiles?: string[] }> {
     const before = await this.exec(['rev-parse', 'HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
     const beforeHead = before.ok ? before.stdout.trim() : ''
     // Did a rebase already exist BEFORE we ran? (v0.23.5)
@@ -241,7 +279,14 @@ export class GitFace {
       const after = await this.exec(['rev-parse', 'HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
       const afterHead = after.ok ? after.stdout.trim() : ''
       const changed = beforeHead.length > 0 && beforeHead !== afterHead
-      return { ok: true, message: r.stdout.trim() || 'pull ok', ...(changed ? { changed: true } : {}) }
+      if (!changed) return { ok: true, message: r.stdout.trim() || 'pull ok' }
+      const changedFiles = await this.filesChangedBetween(dir, beforeHead, afterHead)
+      return {
+        ok: true,
+        message: r.stdout.trim() || 'pull ok',
+        changed: true,
+        ...(changedFiles.length > 0 ? { changedFiles } : {}),
+      }
     }
     const conflictFiles = await this.unmergedFiles(dir)
     // Only abort when WE left a rebase behind: either it did not exist before,

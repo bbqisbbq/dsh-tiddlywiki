@@ -196,6 +196,7 @@ export {
   type WikiRegistry,
 } from './host/wiki-registry.ts'
 export { WikiInstance, type WikiInstanceBase, type WikiInstanceOptions } from './host/wiki-instance.ts'
+export { isInsidePath, pathComparisonKey } from './host/path-key.ts'
 export { WikiFarm, targetRuntimeFor, wikiIdFromRequest, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
 export {
   READY_TIMEOUT_DEFAULT_MS,

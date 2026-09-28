@@ -51,8 +51,9 @@
  * @module dsh-tiddlywiki/host/wiki-registry
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, relative } from 'node:path'
+import { basename, dirname } from 'node:path'
 import { dshHomePath } from '../sdk.ts'
+import { isInsidePath, pathComparisonKey } from './path-key.ts'
 import { defaultLocationStateFile, locationPath, normalizeLocation, readLocationState, type WikiLocation } from './wiki-location.ts'
 
 /** Registry schema version (bumped only on an incompatible change). */
@@ -228,18 +229,12 @@ export function entryPath(entry: Pick<WikiEntry, 'root' | 'name'>): string {
 }
 
 /**
- * Comparison key for duplicate/nesting detection.
+ * Comparison key for duplicate/nesting detection — the SHARED one from
+ * host/path-key.ts (the repo grouping and the farm's path-change check need the
+ * same answer to "is this the same folder?", so there is exactly one rule).
  *
- * Case-INSENSITIVE on every platform on purpose: the check exists to catch
- * "two entries, one folder" and "one entry inside another", and on a
- * case-insensitive filesystem (Windows, default macOS) two ids differing only
- * in case ARE one folder. Rejecting the case-variant on Linux too is a
- * deliberate anti-footgun, not an oversight: no honest setup registers both
- * `D:/notes/A` and `D:/notes/a` as separate wikis.
+ * @see pathComparisonKey
  */
-function comparisonKey(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-}
 
 /** Display label for an entry that came without one. */
 function defaultLabel(location: WikiLocation): string {
@@ -288,7 +283,7 @@ export function findPathConflicts(entries: readonly WikiEntry[]): string[] {
   const byKey = new Map<string, WikiEntry>()
   for (const entry of entries) {
     const path = entryPath(entry)
-    const key = comparisonKey(path)
+    const key = pathComparisonKey(path)
     const duplicate = byKey.get(key)
     if (duplicate !== undefined) {
       problems.push(`知识库「${entry.id}」与「${duplicate.id}」指向同一个目录：${path}`)
@@ -298,13 +293,12 @@ export function findPathConflicts(entries: readonly WikiEntry[]): string[] {
   }
   const unique = [...byKey.values()]
   for (const outer of unique) {
-    const outerPath = comparisonKey(entryPath(outer))
+    const outerPath = entryPath(outer)
     for (const inner of unique) {
       if (inner === outer) continue
-      const rel = relative(outerPath, comparisonKey(entryPath(inner)))
-      // `''` = same path (already reported as a duplicate); `..`-prefixed or
-      // absolute = not inside (different branch, or a different drive).
-      if (rel.length === 0 || rel.startsWith('..') || isAbsolute(rel)) continue
+      // Strictly inside: `''` (same path) is already reported as a duplicate, and
+      // a sibling (`D:/notes` vs `D:/notes2`) is not nesting.
+      if (!isInsidePath(outerPath, entryPath(inner))) continue
       problems.push(
         `知识库「${inner.id}」位于「${outer.id}」目录内部（${entryPath(inner)} ⊂ ${entryPath(outer)}）：嵌套登记会让外层知识库的 git 一并提交内层内容，已拒绝`,
       )
