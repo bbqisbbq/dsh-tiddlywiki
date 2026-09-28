@@ -24,3 +24,9 @@ lib/client.bundle.js
 # the issue tracker. Keeping them in the repo made them look like maintained docs.
 # The authoritative copy of the 2026-09-17 report now lives in the knowledge base.
 docs/code-review-*.md
+
+# Scratch commit-message file an agent writes before `git commit -F`. It got
+# committed by accident twice (v0.22.x, v0.28.8) — it is a temp file, never a
+# deliverable, and a tracked one forces a follow-up cleanup commit every time.
+.gitmsg
+
