@@ -152,6 +152,8 @@ export {
 export { switchWiki, type WikiSwitchResult, type WikiSwitchDeps } from './host/wiki-switch.ts'
 export {
   DEFAULT_WIKI_ID,
+  DEFAULT_WIKI_MODE,
+  WIKI_MODES,
   WIKI_REGISTRY_VERSION,
   defaultEntry,
   defaultRegistryFile,
@@ -171,6 +173,7 @@ export {
   type RegistryReadResult,
   type RegistryValidation,
   type WikiEntry,
+  type WikiMode,
   type WikiRegistry,
 } from './host/wiki-registry.ts'
 export { WikiInstance, type WikiInstanceBase, type WikiInstanceOptions } from './host/wiki-instance.ts'

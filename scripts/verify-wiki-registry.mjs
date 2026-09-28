@@ -23,6 +23,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   DEFAULT_WIKI_ID,
+  DEFAULT_WIKI_MODE,
+  WIKI_MODES,
   WIKI_REGISTRY_VERSION,
   defaultEntry,
   deriveWikiId,
@@ -166,13 +168,44 @@ await test('validateRegistry：可修复问题只警告（丢一条不该让整�
   assert.deepEqual(noDefault.warnings, [])
 })
 
-await test('singleEntryRegistry：迁移形态 = 可见 + 自启（等于升级前的行为）', () => {
+await test('singleEntryRegistry：迁移形态 = 可见 + 自启 + 单库模式（等于升级前的行为）', () => {
   const reg = singleEntryRegistry({ root: ROOT, name: 'notes' })
   assert.equal(reg.version, WIKI_REGISTRY_VERSION)
+  // 模式默认必须是 single：升级用户的观感与行为一个字都不该变。
+  assert.equal(reg.mode, DEFAULT_WIKI_MODE)
+  assert.equal(reg.mode, 'single')
   assert.equal(reg.defaultId, DEFAULT_WIKI_ID)
   assert.equal(reg.wikis.length, 1)
   assert.deepEqual(reg.wikis[0], { id: DEFAULT_WIKI_ID, label: 'notes', root: ROOT, name: 'notes', agentVisible: true, autostart: true })
   assert.equal(entryPath(reg.wikis[0]), join(ROOT, 'notes'))
+})
+
+await test('mode：缺省=single、显式 multi 保留、未知值治愈为 single（不致命）', () => {
+  assert.deepEqual(WIKI_MODES, ['single', 'multi'], '模式清单就是设置页的单选顺序')
+  const base = { version: 1, defaultId: 'a', wikis: [entry('a', ROOT, 'a')] }
+
+  // 缺字段 = 老清单 = 升级用户：必须是 single，而不是抛错、也不许猜 multi。
+  const missing = validateRegistry(base)
+  assert.equal(missing.fatal.length, 0)
+  assert.equal(missing.registry.mode, 'single')
+  assert.deepEqual(missing.warnings, [])
+
+  const multi = validateRegistry({ ...base, mode: 'multi' })
+  assert.equal(multi.registry.mode, 'multi')
+  assert.deepEqual(multi.warnings, [])
+
+  // 打错一个字不该让整座农场"什么都不跑"，也不该静默按 multi 跑起来。
+  const typo = validateRegistry({ ...base, mode: 'Multi' })
+  assert.equal(typo.fatal.length, 0)
+  assert.equal(typo.registry.mode, 'single')
+  assert.match(typo.warnings[0], /未知的 mode/)
+})
+
+await test('mode：增删条目不得改变模式（模式是插件级开关，不是条目属性）', () => {
+  const multi = singleEntryRegistry({ root: ROOT, name: 'main' }, DEFAULT_WIKI_ID, 'multi')
+  const added = upsertWiki(multi, { id: 'books', label: '书籍', root: ROOT, name: 'books', agentVisible: false, autostart: false })
+  assert.equal(added.mode, 'multi')
+  assert.equal(removeWiki(added, 'main').registry.mode, 'multi')
 })
 
 await test('findEntry/defaultEntry/upsertWiki/removeWiki', () => {
@@ -200,15 +233,16 @@ await test('findEntry/defaultEntry/upsertWiki/removeWiki', () => {
   assert.match(removeWiki(base, 'nope').error, /不在清单里/)
 })
 
-await test('readRegistry：清单合法 → source=file，无噪音', async () => {
+await test('readRegistry：清单合法 → source=file，无噪音，且 mode 原样往返', async () => {
   const file = join(scratch, 'ok', 'wikis.json')
-  const registry = upsertWiki(singleEntryRegistry({ root: ROOT, name: 'main' }), { id: 'books', label: '书籍', root: ROOT, name: 'books', agentVisible: false, autostart: false })
+  const registry = { ...upsertWiki(singleEntryRegistry({ root: ROOT, name: 'main' }), { id: 'books', label: '书籍', root: ROOT, name: 'books', agentVisible: false, autostart: false }), mode: 'multi' }
   await writeRegistry(registry, file)
   const read = await readRegistry({ file, legacyFile: join(scratch, 'ok', 'absent-location.json'), fallback: { root: ROOT, name: 'main' } })
   assert.equal(read.source, 'file')
   assert.equal(read.error, undefined)
   assert.deepEqual(read.warnings, [])
   assert.equal(read.registry.wikis.length, 2)
+  assert.equal(read.registry.mode, 'multi', 'multi 必须能从磁盘原样读回（否则一重启就退回单库）')
 })
 
 await test('readRegistry：没有清单但有旧指针 → legacy（迁移是正常路径，不是错误）', async () => {

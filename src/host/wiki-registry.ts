@@ -61,6 +61,27 @@ export const WIKI_REGISTRY_VERSION = 1
 /** Id of the entry a migrated single-wiki install gets. */
 export const DEFAULT_WIKI_ID = 'main'
 
+/**
+ * How many knowledge bases the plugin runs at once.
+ *
+ *   - `single` (default): exactly the behaviour every existing install already
+ *     has — ONE wiki, chosen by the legacy pointer file over the cordis default.
+ *     The registry is then only a memory of `mode` + the candidate list.
+ *   - `multi`: the registry drives a farm — one TW child per entry, `autostart`
+ *     entries come up at boot, and GUI/agent can address each one by id.
+ *
+ * WHY IT LIVES IN THIS FILE (and not in a wiki's config tiddler): the decision
+ * must be readable BEFORE any wiki starts, and a config tiddler only exists
+ * inside a wiki that is already running. Same reasoning as `agentVisible`.
+ */
+export type WikiMode = 'single' | 'multi'
+
+/** The accepted modes, in declaration order (settings-page radio list). */
+export const WIKI_MODES: readonly WikiMode[] = ['single', 'multi']
+
+/** Mode assumed when the registry says nothing (upgrades, fresh installs). */
+export const DEFAULT_WIKI_MODE: WikiMode = 'single'
+
 /** One registered knowledge base. */
 export interface WikiEntry {
   /**
@@ -88,9 +109,14 @@ export interface WikiEntry {
   autostart: boolean
 }
 
-/** The whole registry: a non-empty list plus the default-wiki pointer. */
+/** The whole registry: the mode, a non-empty list, and the default-wiki pointer. */
 export interface WikiRegistry {
   version: number
+  /**
+   * `single` = one wiki, legacy behaviour (the pointer file still decides which);
+   * `multi` = run every entry, `defaultId` decides the agent's fallback scope.
+   */
+  mode: WikiMode
   /** Id of the wiki a session with no explicit scope falls back to. */
   defaultId: string
   wikis: WikiEntry[]
@@ -314,7 +340,16 @@ export function validateRegistry(input: unknown): RegistryValidation {
     if (rawDefault.length > 0) warnings.push(`defaultId「${rawDefault}」不在清单里，已回退到「${entries[0]?.id ?? DEFAULT_WIKI_ID}」`)
     defaultId = entries[0]?.id ?? DEFAULT_WIKI_ID
   }
-  return { registry: { version: WIKI_REGISTRY_VERSION, defaultId, wikis: entries }, fatal, warnings }
+  // Mode: a missing field means "the behaviour you already had" (single), and an
+  // UNKNOWN value is healed to single rather than being fatal — a typo must not
+  // collapse a working farm into `nothing runs`.
+  const rawMode = input.mode
+  let mode: WikiMode = DEFAULT_WIKI_MODE
+  if (rawMode !== undefined) {
+    if (rawMode === 'single' || rawMode === 'multi') mode = rawMode
+    else warnings.push(`未知的 mode「${String(rawMode)}」，已按 ${DEFAULT_WIKI_MODE} 处理`)
+  }
+  return { registry: { version: WIKI_REGISTRY_VERSION, mode, defaultId, wikis: entries }, fatal, warnings }
 }
 
 /** One localised entry for the current location, or undefined. */
@@ -354,13 +389,19 @@ export function removeWiki(registry: WikiRegistry, id: unknown): { registry?: Wi
   return { registry: { ...registry, defaultId, wikis } }
 }
 
-/** A one-entry registry for a single location (migration / first run). */
-export function singleEntryRegistry(location: WikiLocation, id: string = DEFAULT_WIKI_ID): WikiRegistry {
+/**
+ * A one-entry registry for a single location (migration / first run).
+ *
+ * `mode` defaults to `single` — a migrated install must reproduce exactly the
+ * behaviour it had before the registry existed.
+ */
+export function singleEntryRegistry(location: WikiLocation, id: string = DEFAULT_WIKI_ID, mode: WikiMode = DEFAULT_WIKI_MODE): WikiRegistry {
   const normalized = normalizeLocation({ root: location.root, name: location.name })
   const resolved: WikiLocation = normalized.location ?? { root: location.root, name: location.name }
   const entryId = normalizeWikiId(id) ?? DEFAULT_WIKI_ID
   return {
     version: WIKI_REGISTRY_VERSION,
+    mode,
     defaultId: entryId,
     wikis: [{
       id: entryId,
