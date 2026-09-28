@@ -12,7 +12,9 @@
  *   - `ConfigStore`     the wiki's own `$:/plugins/dsh-tiddlywiki/config`
  *                       overlay (which is why per-wiki config already worked
  *                       before this refactor — it just was not addressable);
- *   - `AutoCommitter` + fs watcher (they hold the folder).
+ *   - fs watcher for its own folder (the AUTO-COMMITTER is per REPOSITORY — see
+ *     host/repo-committers.ts — because several wikis may share one repository
+ *     and only one `git add -A` per repository may run);
  *
  * Shared by the whole plugin, therefore NOT here:
  *
@@ -37,7 +39,7 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { AutoCommitter, type GitFace } from './git.ts'
+import { type GitFace } from './git.ts'
 import { ConfigStore, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './config.ts'
 import { TiddlyWebClient } from './tw-api.ts'
 import { ensureLanguage, ensurePlugin, pinLanguageTiddler } from './admin.ts'
@@ -95,6 +97,16 @@ export interface WikiInstanceOptions {
   git: GitFace
   /** Resolve the installed tiddlywiki package root (plugin / language management). */
   twRoot: () => string
+  /**
+   * Debounced auto-commit for the folder this wiki lives in (v0.28.0).
+   *
+   * It goes through host/repo-committers.ts, NOT through a committer owned here:
+   * several wikis may share one repository, and only ONE `git add -A` per
+   * repository may run. Fire-and-forget by design (the fs watcher calls it).
+   */
+  touchCommit?: (dir: string) => void
+  /** Flush that repository's pending commit (teardown / explicit sync). */
+  flushCommits?: (dir: string) => Promise<void> | void
   /** Log sink (defaults to console.warn with the plugin prefix). */
   log?: (message: string) => void
 }
@@ -183,10 +195,8 @@ export class WikiInstance {
   private wikiPath: string
   private clientCache: TiddlyWebClient | undefined
   private clientPort: number | undefined
-  private committer: AutoCommitter | undefined
   private unwatch: (() => void) | undefined
   private disposed = false
-  private gitReconfiguring = false
   private readonly log: (message: string) => void
 
   constructor(private readonly options: WikiInstanceOptions) {
@@ -363,68 +373,34 @@ export class WikiInstance {
     this.server.setReadyTimeout(this.eff().startup?.readyTimeoutMs)
   }
 
-  /** Debounced auto-commit touch (fired after our own writes). */
+  /**
+   * Debounced auto-commit touch for this wiki's folder. Routed to the
+   * REPOSITORY's committer (several wikis may share one repository).
+   */
   touchAutoCommit(): void {
-    this.committer?.touch()
+    this.options.touchCommit?.(this.wikiPath)
   }
 
-  /** Flush a pending auto-commit now (teardown / explicit sync). */
+  /** Flush this wiki's repository commit now (teardown / explicit sync). */
   async flushCommitter(): Promise<void> {
-    try { await this.committer?.flush() } catch { /* best-effort */ }
+    try { await this.options.flushCommits?.(this.wikiPath) } catch { /* best-effort */ }
   }
 
   /**
-   * Create (or re-create) the auto-committer + fs watcher for the CURRENT
-   * folder. Split from teardown so a wiki switch can release and re-arm them.
+   * Arm the fs watcher for the CURRENT folder.
+   *
+   * The committer is NOT here any more (v0.28.0): it is per repository, in
+   * host/repo-committers.ts, and this watcher only reports "something changed in
+   * this wiki's folder" to it.
    */
   setupExtras(): void {
-    const g = this.eff().git ?? {}
-    this.committer = new AutoCommitter({
-      git: this.options.git,
-      dir: this.wikiPath,
-      enabled: g.autoCommit ?? this.options.base.git.autoCommit,
-      debounceMs: g.debounceMs ?? this.options.base.git.debounceMs,
-      message: () => `wiki autocommit ${new Date().toISOString()}`,
-      onError: (err) => this.log(`autocommit: ${err instanceof Error ? err.message : String(err)}`),
-    })
-    this.unwatch = watchWiki(this.wikiPath, () => this.committer?.touch())
+    this.unwatch = watchWiki(this.wikiPath, () => this.touchAutoCommit())
   }
 
-  /** Release the committer + watcher, flushing a pending commit first. */
+  /** Release the fs watcher (the repository's committer outlives it). */
   async teardownExtras(): Promise<void> {
     try { this.unwatch?.() } catch { /* already closed */ }
     this.unwatch = undefined
-    const current = this.committer
-    this.committer = undefined
-    // Flush a pending auto-commit BEFORE dropping the folder, so a write made
-    // within the debounce window is not left uncommitted (switch + shutdown).
-    try { await current?.flush() } catch { /* best-effort */ }
-    current?.dispose()
-  }
-
-  /**
-   * Re-apply the effective git config to the running instance (v0.25.0):
-   * `git.*` used to be read once, so saving it changed nothing until a restart.
-   * The flag (plus teardownExtras' own idempotence) keeps a burst of saves from
-   * leaving two committers or a dangling fs watcher.
-   */
-  async reapplyGitConfig(): Promise<void> {
-    if (this.gitReconfiguring) return
-    this.gitReconfiguring = true
-    try {
-      await this.teardownExtras()
-      const g = this.eff().git ?? {}
-      const remote = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : this.options.base.git.remote).trim()
-      if (remote.length > 0) {
-        const ensured = await this.options.git.ensureRemote(this.wikiPath, remote)
-        if (!ensured.ok) this.log(`git remote update: ${ensured.message}`)
-      }
-      this.setupExtras()
-    } catch (err) {
-      this.log(`applying git config: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      this.gitReconfiguring = false
-    }
   }
 
   /**

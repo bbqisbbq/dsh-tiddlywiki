@@ -45,6 +45,7 @@ import {
 import { switchWiki, type WikiSwitchResult } from './host/wiki-switch.ts'
 import { WikiInstance } from './host/wiki-instance.ts'
 import { WikiFarm, targetRuntimeFor } from './host/wiki-farm.ts'
+import { RepoCommitters } from './host/repo-committers.ts'
 import {
   DEFAULT_WIKI_ID,
   DEFAULT_WIKI_MODE,
@@ -198,6 +199,7 @@ export {
 export { WikiInstance, type WikiInstanceBase, type WikiInstanceOptions } from './host/wiki-instance.ts'
 export { isInsidePath, pathComparisonKey } from './host/path-key.ts'
 export { WikiFarm, targetRuntimeFor, wikiIdFromRequest, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
+export { RepoCommitters, type RepoCommitSettings, type RepoCommittersOptions } from './host/repo-committers.ts'
 export {
   READY_TIMEOUT_DEFAULT_MS,
   READY_TIMEOUT_MAX_MS,
@@ -391,6 +393,25 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   /** The cordis-level default location (last resort in the registry chain). */
   const defaultLocation: WikiLocation = { root: config.wikiRoot, name: config.wiki }
   const git = new GitFace()
+  /**
+   * Auto-commit is keyed by REPOSITORY, not by wiki (v0.28.0): several knowledge
+   * bases may be subfolders of one repository, and only one `git add -A` per
+   * repository may run (see host/repo-committers.ts).
+   */
+  const repos = new RepoCommitters({
+    git,
+    // Read the EFFECTIVE settings each time a committer is (re)built, so a
+    // settings-page save still applies without a dsh web restart.
+    settings: () => {
+      const g = eff().git ?? {}
+      return {
+        autoCommit: g.autoCommit ?? config.git.autoCommit,
+        debounceMs: g.debounceMs ?? config.git.debounceMs,
+      }
+    },
+    message: () => `wiki autocommit ${new Date().toISOString()}`,
+    log: (message) => console.warn('[dsh-tiddlywiki]', message),
+  })
   /** Created by the startup task, once the control file has been read. */
   let farm: WikiFarm<WikiInstance> | undefined
   /** The runtime legacy/agent traffic falls back to (undefined = nothing up). */
@@ -524,8 +545,17 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // (they hold the OLD folder) and re-arm them for the new one. The teardown is
   // registered exactly ONCE below — a per-switch `disposers.push()` would leak a
   // disposer per switch.
-  /** Release every running wiki's committer + fs watcher (plugin teardown). */
-  const teardownCommitter = async (): Promise<void> => { for (const runtime of farm?.allRuntimes() ?? []) await runtime.teardownExtras() }
+  /**
+   * Release every running wiki's fs watcher AND flush every repository's pending
+   * commit (plugin teardown / a wiki switch). The COMMITTERS themselves are
+   * plugin-wide — one per repository — so they are NOT dropped here: a switch
+   * must not throw away the debounce window of unrelated wikis that share the
+   * same repository.
+   */
+  const teardownCommitter = async (): Promise<void> => {
+    for (const runtime of farm?.allRuntimes() ?? []) await runtime.teardownExtras()
+    await repos.flush()
+  }
   disposers.push(() => { void teardownCommitter() })
 
   /**
@@ -546,7 +576,17 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
    * never promised). Both are documented in the settings page + README.
    */
   const reapplyGitConfig = async (): Promise<void> => {
-    for (const runtime of farm?.allRuntimes() ?? []) await runtime.reapplyGitConfig()
+    await teardownCommitter()
+    const g = eff().git ?? {}
+    const remote = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : config.git.remote).trim()
+    if (remote.length > 0) {
+      // Repo-level operation: running it inside any wiki folder of that
+      // repository sets the repository's `origin` (there is only one).
+      const ensured = await git.ensureRemote(defaultPath(), remote)
+      if (!ensured.ok) console.warn('[dsh-tiddlywiki] git remote update:', ensured.message)
+    }
+    repos.rebuild()
+    for (const runtime of farm?.allRuntimes() ?? []) runtime.setupExtras()
   }
 
   // Tools (works even while the wiki is down; wiki() resolves lazily).
@@ -627,7 +667,14 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         ? read.registry
         : singleEntryRegistry(await singleModeLocation(), DEFAULT_WIKI_ID, 'single')
       farm = new WikiFarm<WikiInstance>(runRegistry, {
-        createRuntime: (entry) => new WikiInstance({ entry, base: config, git, twRoot: resolveTwRoot }),
+        createRuntime: (entry) => new WikiInstance({
+          entry,
+          base: config,
+          git,
+          twRoot: resolveTwRoot,
+          touchCommit: (dir) => { void repos.touch(dir) },
+          flushCommits: (dir) => repos.flush(dir),
+        }),
         log: (message) => console.warn('[dsh-tiddlywiki]', message),
       })
       // Every instance brings ITSELF up (child → its config tiddler → seeds →
@@ -1039,9 +1086,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // debounce window is not left uncommitted when dsh web stops (best-effort).
       try { await defaultInstance()?.flushCommitter() } catch { /* best-effort */ }
       disposeAll()
-      // Release EVERY knowledge base (stop + committer + watcher). A failure in
-      // one must not leave the others running — the farm already guarantees that.
+      // Release EVERY knowledge base (stop + watcher + pending commit). A failure
+      // in one must not leave the others running — the farm guarantees that.
       await farm?.disposeAll()
+      // …and the plugin-wide commit layer (one committer per repository).
+      repos.dispose()
     })()
   }, 'dsh-tiddlywiki: host teardown')
 }

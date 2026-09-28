@@ -20,7 +20,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
-import { GitFace, isInsidePath, pathComparisonKey } from '../lib/index.js'
+import { GitFace, RepoCommitters, isInsidePath, pathComparisonKey } from '../lib/index.js'
 
 const execFileP = promisify(execFile)
 let failures = 0
@@ -126,6 +126,52 @@ try {
     assert.deepEqual(await repo.filesChangedBetween(shared, '', second), [])
     assert.deepEqual(await repo.filesChangedBetween(shared, first, first), [])
     assert.deepEqual(await repo.filesChangedBetween(shared, 'deadbeef', second), [])
+  })
+
+  // ── RepoCommitters：一个仓库一个 committer ──────────────────────────────────
+  // 用大 debounce + 显式 flush，让时序确定（debounce=0 会让两次 touch 各自触发一次
+  // 提交，恰好把"应该合成一个提交"这件事测不出来）。
+  const settings = { autoCommit: true, debounceMs: 60_000 }
+
+  await test('RepoCommitters：共享仓库只产生一个 committer；独立仓库各一个；裸目录没有', async () => {
+    const rc = new RepoCommitters({ git: repo, settings: () => settings, message: () => 'shared-repo commit', log: () => {} })
+    await rc.touch(work)
+    await rc.touch(personal)
+    assert.equal(rc.repoRoots().length, 1, '同一个仓库只许有一个 committer（两个 per-folder committer 会互相抢占 index）')
+    assert.equal(rc.repoRoots()[0], resolve(shared), 'committer 必须挂在仓库根上，而不是某个库目录')
+    await rc.touch(books)
+    assert.equal(rc.repoRoots().length, 2, '独立仓库各有一个')
+    await rc.touch(loose)
+    assert.equal(rc.repoRoots().length, 2, '不是仓库的目录不产生 committer')
+    rc.dispose()
+    assert.deepEqual(rc.repoRoots(), [], 'dispose 必须释放全部')
+  })
+
+  await test('RepoCommitters：共享仓库里两个库的改动合成**一个**提交（本步存在的理由）', async () => {
+    const rc = new RepoCommitters({ git: repo, settings: () => settings, message: () => 'shared-repo commit', log: () => {} })
+    await writeFile(join(work, 'from-work.txt'), 'w\n', 'utf8')
+    await mkdir(join(personal, 'tiddlers'), { recursive: true })
+    await writeFile(join(personal, 'tiddlers', 'from-personal.tid'), 'x\n', 'utf8')
+    await rc.touch(work)
+    await rc.touch(personal)
+    await rc.flush()
+
+    const subjects = (await git(shared, ['log', '--format=%s'])).split('\n').filter((l) => l === 'shared-repo commit')
+    assert.equal(subjects.length, 1, `两个库的改动必须是同一个提交，实际 ${subjects.length} 个`)
+    const changed = await git(shared, ['show', '--name-only', '--format=', 'HEAD'])
+    assert.ok(changed.includes('from-work.txt'), `提交必须包含工作库的改动：\n${changed}`)
+    assert.ok(changed.includes('personal/tiddlers/from-personal.tid'), `提交必须包含个人库的改动：\n${changed}`)
+    rc.dispose()
+  })
+
+  await test('RepoCommitters：独立仓库互不牵连（书籍库的提交里不得有别的库）', async () => {
+    const rc = new RepoCommitters({ git: repo, settings: () => settings, message: () => 'books commit', log: () => {} })
+    await writeFile(join(books, 'corpus.txt'), 'c\n', 'utf8')
+    await rc.touch(books)
+    await rc.flush(books)
+    const changed = await git(books, ['show', '--name-only', '--format=', 'HEAD'])
+    assert.deepEqual(changed.split('\n').filter(Boolean), ['corpus.txt'])
+    rc.dispose()
   })
 } finally {
   await rm(scratch, { recursive: true, force: true })
