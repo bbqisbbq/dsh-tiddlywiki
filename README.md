@@ -61,11 +61,13 @@ dsh plugin --profile web add dsh-tiddlywiki
 | 完整能力清单（每条的**为什么**） | [docs/features.md](docs/features.md) |
 | 使用指南 / 工具参考 / 配置 / 远程访问 | [docs/usage.md](docs/usage.md) |
 | 发布到微信公众号（可选，需额外安装） | [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md) |
+| 把知识库拆成几个独立的小库（含可复制给 Agent 的提示词） | [docs/wiki-split.md](docs/wiki-split.md) |
 | 开发与发布流程（给维护者） | [docs/development.md](docs/development.md) |
 | 完整版本变更历史 | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
 
 ## 🕘 版本记录
 
+- **v0.28.0**（2026-09-28）：**多知识库**——同一进程内可同时运行多个 TiddlyWiki，每个库独立配置、独立 git、按会话选择作用域，且可对 Agent **彻底隐身**。起因是作者自己的库：`书籍` 语料 2468 条与日常笔记挤在一个 800MB 仓库里，Agent 检索/lint/backlink 每天在约 30 倍于工作集的内容上跑。拆库需要**同时在线**——只切换位置的话，你切到语料库翻资料时 Agent 也跟着切过去了。要点：① 三个模块各司其职（`wiki-registry` 清单/模式/动作、`wiki-instance` 单库运行时、`wiki-farm` 谁该在跑 + 会话作用域）；② 模式开关 `wikis.json` 的 `mode`（缺省 `single`，升级用户逐字不变）；③ 路由按库定向 `/tw/<id>/…`（每个库 seed 自己的同源基址——不区分 id 就会「页面显示 A、读写落在 B」），裸 `/tw/` 仍是默认库别名，为此引入**保留 id 名单**；④ **git 按仓库重构**：多库可共用一个仓库，`git add -A` 只允许一个 committer，pull 后只重启受影响的库；⑤ Agent 侧：会话单选作用域 + `agentVisible`，工具回执在可见库多于一个时**标明库名**，注入提示词**按会话求值**并读作用域库的 `prompt.*`；两条刻意拒绝（隐身库→忽略；没在跑→报错而非静默换库）；⑥ GUI：输入框上方的会话选择器、FAB 的知识库分组、设置页「知识库列表」与**显式配置作用域**；⑦ **拆库引导** `docs/wiki-split.md` + 随包 skill（安装时只覆盖带标记的文件）。新增 6 个守门脚本（共约 96 条断言，含**真起两个 TW 子进程**与**真 git 仓库**两类集成验证），全部反向验证；4 个既有守门跟着间接层更新。**未做**：per-wiki 认证（`auth.*` 仍全局）、快速笔记目标切换策略。
 - **v0.27.3**（2026-09-28）：**修 v0.27.1 拆文档时打断的 6 个相对链接**（`docs/` 内的链接仍按仓库根写成 `docs/xxx.md`，从 `docs/` 内部点击打不开）；新增守门 `scripts/verify-doc-links.mjs`（校验 README + `docs/**` 的全部相对链接，已挂进 `verify:static`，让这类错误下次发不出来）；**修 CI 偶发假红**：`verify-wiki-switch` 的回滚断言会抢在 TW 载入 store 之前读取，改为 15s 有界轮询后再断言。**无运行时行为改动。**
 - **v0.27.2**（2026-09-28）：修本页一处**指向不存在内容的死链**（"不适合"那段曾让人去看 `docs/features.md` 末尾的说明，那里并没有）。纯文案，无代码改动。
 - **v0.27.1**（2026-09-28）：**README 从 175KB 精简成本页**——原来 68% 的篇幅是变更历史。能力清单 / 使用指南 / 开发发布 / 完整变更历史拆到 `docs/`（内容未删），首页只留"是什么、怎么装、好在哪、适不适合你"。**无代码改动。**
