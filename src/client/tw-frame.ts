@@ -27,8 +27,9 @@
  * @module dsh-tiddlywiki/client/tw-frame
  */
 import * as React from 'react'
-import { RESTART_ENDPOINT, resolveTwUrl } from './endpoints.ts'
+import { RESTART_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
 import { fetchStatus } from './status-cache.ts'
+import { getFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
 /** Cross-plugin activation event; detail is the activating panel name. */
@@ -140,7 +141,16 @@ export interface TwFrameSurface {
  * (starting / error / running, iframe URL, theme config, shared chip label)
  * and every tiddler-hash navigation is implemented here ONCE.
  */
-export function createTwFrameSurface(skin: TwFrameSkin): TwFrameSurface {
+/**
+ * Per-surface hooks (v0.28.0). `wikiId` answers "which knowledge base should
+ * this surface embed?" — the center panel and the rightbar tab both embed the
+ * wiki the user focused, and reload when that choice changes.
+ */
+export interface TwFrameHooks {
+  wikiId?: () => string | undefined
+}
+
+export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}): TwFrameSurface {
   let visible = false
   let started = false
   let disposed = false
@@ -318,7 +328,10 @@ export function createTwFrameSurface(skin: TwFrameSkin): TwFrameSurface {
         // resolveTwUrl prefers the host's ABSOLUTE loopback base when THIS page
         // is not on http(s) (the DSH desktop app's `dsh-app:` renderer), because
         // TW refuses to load its sync adaptor anywhere else — see resolveTwUrl.
-        showFrame(resolveTwUrl(payload.twProxy, payload.twProxyAbsolute))
+        // WHICH knowledge base (v0.28.0): the focused one in multi mode, else the
+        // bare path (= the default wiki, exactly as before).
+        const bases = twProxyFor(payload.mode, hooks.wikiId?.(), payload.twProxy, payload.twProxyAbsolute)
+        showFrame(resolveTwUrl(bases.relative, bases.absolute))
       } else if (typeof payload.url === 'string') {
         showFrame(payload.url)
       } else {
@@ -354,6 +367,16 @@ export function createTwFrameSurface(skin: TwFrameSkin): TwFrameSurface {
     if (loaded !== null) frame.src = loaded
   }
   document.addEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
+
+  /**
+   * Switching the focused knowledge base needs a different proxy path, so the
+   * frame reloads (v0.28.0). TW reloads inside the iframe — one iframe cannot
+   * host two editors, and silently keeping the old wiki's data while the UI says
+   * otherwise is exactly the confusion this feature must not create.
+   */
+  const unsubscribeFocus = subscribeFocusWiki(() => {
+    if (!disposed && visible) void doRefresh()
+  })
 
   const build = (): HTMLDivElement => {
     if (view !== undefined) return view
@@ -429,6 +452,7 @@ export function createTwFrameSurface(skin: TwFrameSkin): TwFrameSurface {
       if (disposed) return
       disposed = true
       document.removeEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
+      unsubscribeFocus()
       clearRetry()
       for (const timer of hashWaitTimers) window.clearTimeout(timer)
       hashWaitTimers.clear()
@@ -505,7 +529,7 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
   // liveFrames forever. Hand back a no-op controller and build nothing.
   if (signal.aborted) return disposedController()
 
-  const surface = createTwFrameSurface(RIGHTBAR_SKIN)
+  const surface = createTwFrameSurface(RIGHTBAR_SKIN, { wikiId: getFocusWiki })
   host.append(surface.build())
 
   let disposed = false

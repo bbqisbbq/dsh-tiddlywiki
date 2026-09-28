@@ -20,6 +20,8 @@ import type { PanelState } from './state.ts'
 import type { NoteWidgetHandle } from './note-widget.ts'
 import type { SyncController } from './sync-button.ts'
 import { PANEL_RELOAD_EVENT } from './tw-frame.ts'
+import { ROUTE_PREFIX } from './endpoints.ts'
+import { resolveFocusWiki, setFocusWiki } from './wiki-focus.ts'
 
 import { fetchStatus } from './status-cache.ts'
 import { fetchUiConfig } from './ui-config.ts'
@@ -28,6 +30,28 @@ import { fetchUiConfig } from './ui-config.ts'
 const BOOK_ICON = '<svg viewBox="0 0 16 16" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2.5h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z"/><path d="M6 6h4M6 8.5h2.5"/></svg>'
 
 interface UiFlags { showQuickNote: boolean; showPanelStatus: boolean; showSyncButton: boolean }
+
+/** One knowledge base as the FAB's switcher lists it (v0.28.0). */
+interface FabWiki { id: string; label: string; running: boolean; path: string }
+
+/** The knowledge-base roster for the FAB switcher. */
+interface FabRoster { mode: string; defaultId?: string; wikis: FabWiki[] }
+
+/**
+ * Fetch the roster (v0.28.0). The switcher only appears when there is MORE THAN
+ * ONE wiki, so a single-wiki install keeps exactly the menu it always had.
+ */
+async function fetchRoster(): Promise<FabRoster> {
+  const payload = await fetchStatus()
+  const wikis = Array.isArray(payload?.wikis)
+    ? payload.wikis.map((wiki) => ({ id: wiki.id, label: wiki.label, running: wiki.running, path: wiki.path }))
+    : []
+  return {
+    mode: typeof payload?.mode === 'string' ? payload.mode : 'single',
+    ...(typeof payload?.defaultId === 'string' ? { defaultId: payload.defaultId } : {}),
+    wikis,
+  }
+}
 
 /** Read the three FAB-menu gates from the shared, TTL-cached ui config.
  *
@@ -114,7 +138,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     renderTip()
   }
 
-  const build = (flags: UiFlags): void => {
+  const build = (flags: UiFlags, roster: FabRoster): void => {
     if (disposed) return
     root = document.createElement('div')
     root.className = 'dsh-tw-fab-wrap'
@@ -169,6 +193,41 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     }
 
     if (flags.showPanelStatus) {
+      // 多知识库切换（v0.28.0）：只有多于一个库时才长出这一段，单库安装的菜单不变。
+      // 点一下 = 把"焦点库"切过去并打开面板——面板会加载那个库自己的 /tw/<id>/。
+      if (roster.wikis.length > 1) {
+        const focus = resolveFocusWiki(roster.wikis, roster.defaultId)
+        const heading = document.createElement('div')
+        heading.className = 'dsh-tw-fab-group'
+        heading.textContent = '知识库'
+        menu.append(heading)
+        for (const wiki of roster.wikis) {
+          const item = document.createElement('button')
+          item.type = 'button'
+          item.className = 'dsh-tw-fab-item'
+          item.dataset.current = wiki.id === focus ? '1' : '0'
+          item.textContent = `${wiki.id === focus ? '●' : '○'} ${wiki.label}`
+          item.title = `${wiki.path}${wiki.running ? '' : '（未运行，打开会启动）'}`
+          item.addEventListener('click', () => {
+            closeMenu()
+            setFocusWiki(wiki.id)
+            // 打开面板前把它起起来（v0.28.0）：`/tw/<id>/` 对没在跑的库回 503，
+            // 而这条菜单项的提示恰恰写着"打开会启动"。启动是显式 POST——代理路由
+            // 绝不能在 GET 里顺手 spawn 子进程。
+            if (!wiki.running) {
+              void fetch(`${ROUTE_PREFIX}/admin/wikis`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ action: 'start', id: wiki.id }),
+                signal: AbortSignal.timeout(120_000),
+              }).catch(() => undefined)
+            }
+            state.openPanel()
+          })
+          menu.append(item)
+        }
+      }
+
       panelLabel = document.createElement('span')
       panelLabel.textContent = '打开 TW 面板'
       const item = document.createElement('button')
@@ -240,10 +299,10 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
   const unsubSync = sync.subscribe(renderDot)
 
   void (async () => {
-    const flags = await fetchUiFlags()
+    const [flags, roster] = await Promise.all([fetchUiFlags(), fetchRoster()])
     if (disposed) return
     if (!flags.showQuickNote && !flags.showPanelStatus && !flags.showSyncButton) return
-    build(flags)
+    build(flags, roster)
   })()
 
   return () => {

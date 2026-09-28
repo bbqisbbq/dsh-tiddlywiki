@@ -30,6 +30,7 @@ import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
 // 事件名与 frame 生命周期助手都只有一份，住在 tw-frame.ts（内核）。
 import { ACTIVATE_EVENT, createTwFrameSurface, openTiddlerInLiveTab, type TwFrameSkin } from './tw-frame.ts'
+import { getFocusWiki } from './wiki-focus.ts'
 
 /**
  * Center-column targets, most-specific shell generation first. The official
@@ -125,7 +126,7 @@ export function mountPanel(state: PanelState): () => void {
   let lastHasHost: boolean | undefined
 
   /** iframe + /status lifecycle (shared with the rightbar tab, tw-frame.ts). */
-  const surface = createTwFrameSurface(PANEL_SKIN)
+  const surface = createTwFrameSurface(PANEL_SKIN, { wikiId: getFocusWiki })
 
   /** Pin the overlay to the center column's current viewport rect. */
   const syncRect = (): void => {

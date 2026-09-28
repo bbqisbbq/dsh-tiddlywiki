@@ -43,6 +43,23 @@ export interface StatusPayload {
     behind?: number
   }
   note?: { tag?: string }
+  /**
+   * The knowledge-base roster (v0.28.0). `mode` decides whether per-wiki paths
+   * are used at all; `defaultId` is what the agent falls back to. Deliberately
+   * WITHOUT per-wiki git status — that would spawn up to five git processes per
+   * wiki on every poll.
+   */
+  mode?: string
+  defaultId?: string
+  wikis?: Array<{
+    id: string
+    label: string
+    status: string
+    agentVisible: boolean
+    autostart: boolean
+    running: boolean
+    path: string
+  }>
   ui?: {
     showQuickNote?: boolean
     showQuickNoteDock?: boolean

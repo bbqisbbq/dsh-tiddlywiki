@@ -116,8 +116,11 @@ await test('resolveTwUrl：非 http(s) 文档（桌面版 dsh-app:）改用宿�
 
 await test('客户端接线：frame 与快速笔记弹窗都走 resolveTwUrl', () => {
   const frame = read('src/client/tw-frame.ts')
-  assert.match(frame, /showFrame\(resolveTwUrl\(payload\.twProxy, payload\.twProxyAbsolute\)\)/)
-  assert.match(frame, /import \{ RESTART_ENDPOINT, resolveTwUrl \} from '\.\/endpoints\.ts'/)
+  // v0.28.0：先经 twProxyFor(mode, wikiId, …) 得到**本库**的基址（相对与绝对都带 id），
+  // 再交给 resolveTwUrl 决定用相对还是宿主的绝对基址。两步都不能少：
+  assert.match(frame, /const bases = twProxyFor\(payload\.mode, hooks\.wikiId\?\.\(\), payload\.twProxy, payload\.twProxyAbsolute\)/)
+  assert.match(frame, /showFrame\(resolveTwUrl\(bases\.relative, bases\.absolute\)\)/)
+  assert.match(frame, /import \{ RESTART_ENDPOINT, resolveTwUrl, twProxyFor \} from '\.\/endpoints\.ts'/)
   const note = read('src/client/note-widget.ts')
   assert.match(note, /resolveTwUrl\(payload\.twUrl, payload\.twUrlAbsolute\)/)
   const cache = read('src/client/status-cache.ts')

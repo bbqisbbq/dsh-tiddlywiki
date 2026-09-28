@@ -189,14 +189,14 @@ await test('tw-frame：每个生命周期函数恰好一份', () => {
   for (const signature of LIFECYCLE) {
     assert.equal(countOf(twFrame, signature), 1, `tw-frame.ts 应有且仅有一份 \`${signature.trim()}\``)
   }
-  assert.match(twFrame, /export function createTwFrameSurface\(skin: TwFrameSkin\)/, '内核必须是 createTwFrameSurface')
+  assert.match(twFrame, /export function createTwFrameSurface\(skin: TwFrameSkin, hooks: TwFrameHooks = \{\}\)/, '内核必须是 createTwFrameSurface（v0.28.0 起带 per-surface hooks）')
 })
 
 await test('panel：不得再自带第二份生命周期（v0.22.3 漂移的根因）', () => {
   for (const signature of LIFECYCLE) {
     assert.equal(countOf(panel, signature), 0, `panel.ts 不得定义 \`${signature.trim()}\`——用 tw-frame.ts 的内核`)
   }
-  assert.match(panel, /createTwFrameSurface\(PANEL_SKIN\)/, 'panel 必须用共享内核建 surface')
+  assert.match(panel, /createTwFrameSurface\(PANEL_SKIN, \{ wikiId: getFocusWiki \}\)/, 'panel 必须用共享内核建 surface，并把"当前焦点库"交给它')
   assert.match(panel, /surface\.setVisible\(/, 'panel 的可见性必须交给内核')
   assert.match(panel, /surface\.openTiddler\(/, 'panel 的 tiddler 导航必须交给内核')
 })

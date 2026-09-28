@@ -288,6 +288,21 @@ try {
       })),
     }),
     apply: async (body) => {
+      // 运行态动作（与 index.ts 同一形态）：start/stop 不改清单，只改"谁在跑"。
+      // GUI 需要它——打开一个没在跑的知识库面板时必须能把它起起来。
+      if (body?.action === 'start' || body?.action === 'stop') {
+        const entry = control.wikis.find((w) => w.id === body.id)
+        if (entry === undefined) return { ok: false, error: `知识库「${String(body.id)}」不在清单里` }
+        const change = { started: [], stopped: [], updated: [], running: farm.runningIds(), errors: [] }
+        if (body.action === 'start') {
+          if (farm.runtime(entry.id) === undefined) { await farm.startEntry(entry); change.started.push(entry.id) }
+        } else {
+          await farm.stopEntry(entry.id)
+          change.stopped.push(entry.id)
+        }
+        change.running = farm.runningIds()
+        return { ok: true, info: await wikisFace.info(), change }
+      }
       const action = applyWikiAction(control, body)
       if (action.registry === undefined) return { ok: false, error: action.error }
       control = action.registry
@@ -358,6 +373,23 @@ try {
   })
 
   // ── 会话级作用域（composer 选择器的后端，v0.28.0）────────────────────────────
+  await test('/admin/wikis：start/stop 是运行态动作，不得改动清单', async () => {
+    const post = (payload) => fetch(`${baseUrl}/dsh-tiddlywiki/admin/wikis`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
+    })
+    const stopped = await (await post({ action: 'stop', id: 'c' })).json()
+    assert.deepEqual(stopped.change.stopped, ['c'])
+    assert.equal(farm.runtime('c'), undefined, 'stop 必须真的停掉并释放')
+    const started = await (await post({ action: 'start', id: 'c' })).json()
+    assert.deepEqual(started.change.started, ['c'])
+    assert.equal(farm.runtime('c').server.status().status, 'running', 'start 必须真的起起来')
+    const onDisk = JSON.parse(await readFile(controlFile, 'utf8'))
+    assert.deepEqual(onDisk.wikis.map((w) => w.id), ['a', 'b', 'c'], '启停不得改写清单')
+    const unknown = await (await post({ action: 'start', id: 'nope' })).json()
+    assert.equal(unknown.ok, false)
+    assert.match(unknown.error, /不在清单里/)
+  })
+
   await test('/session/wiki：未选时给出解析结果（正在跑的可见库），且没有 scope', async () => {
     const payload = await (await fetch(`${baseUrl}/dsh-tiddlywiki/session/wiki?session=s-1`)).json()
     assert.equal(payload.ok, true)

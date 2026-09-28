@@ -486,6 +486,11 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-fab-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 .dsh-tw-fab-item:active { background: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.18)); }
+/* 多知识库切换分组（v0.28.0）：一行小标题 + 每库一行；当前焦点用 ● 标记。 */
+.dsh-tw-fab-group {
+  font-size: 11px; opacity: .6; padding: 6px 9px 2px; letter-spacing: .04em;
+}
+.dsh-tw-fab-item[data-current="1"] { font-weight: 600; }
 
 /* ── input-dock quick-note button（聊天输入框上方，conversation.input.dock）──
    该槽位渲染为「输入框上方的全宽条目」纵向 flex 排列（todo/cost-meter/goal/

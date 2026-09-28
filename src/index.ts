@@ -1207,6 +1207,30 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         info: async (): Promise<AdminWikisView> => buildWikisView(),
         apply: async (body: unknown): Promise<AdminWikisApplyResult> => {
           if (disposed) return { ok: false, error: '插件正在卸载，已取消修改' }
+          // RUNTIME actions first (v0.28.0): `start`/`stop` do not change the list,
+          // they change what is running. They live here rather than in the pure
+          // `applyWikiAction` because they touch processes, not configuration —
+          // and the GUI needs them: opening a wiki's panel must be able to bring
+          // a stopped knowledge base up.
+          const runtimeAction = (body as { action?: unknown } | null)?.action
+          if (runtimeAction === 'start' || runtimeAction === 'stop') {
+            if (farm === undefined) return { ok: false, error: '插件尚未就绪，请稍后再试' }
+            const id = (body as { id?: unknown }).id
+            const entry = typeof id === 'string' ? farm.registry.wikis.find((item) => item.id === id.trim().toLowerCase()) : undefined
+            if (entry === undefined) return { ok: false, error: `知识库「${String(id)}」不在清单里` }
+            const change = { started: [] as string[], stopped: [] as string[], updated: [] as string[], running: farm.runningIds(), errors: [] as Array<{ id: string; message: string }> }
+            if (runtimeAction === 'start') {
+              if (farm.runtime(entry.id) === undefined) {
+                await farm.startEntry(entry)
+                change.started.push(entry.id)
+              }
+            } else {
+              await farm.stopEntry(entry.id)
+              change.stopped.push(entry.id)
+            }
+            change.running = farm.runningIds()
+            return { ok: true, info: buildWikisView(), change }
+          }
           const action = applyWikiAction(controlRegistryNow(), body)
           if (action.registry === undefined) return { ok: false, error: action.error ?? '动作被拒绝' }
           const registry = action.registry

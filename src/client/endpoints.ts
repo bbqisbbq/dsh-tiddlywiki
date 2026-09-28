@@ -75,6 +75,35 @@ export function resolveTwUrl(relative: string, absolute?: string): string {
   return new URL(relative, origin).href
 }
 
+/**
+ * Point BOTH proxy bases at one knowledge base (v0.28.0).
+ *
+ * In multi mode the panel must load `/tw/<id>/…`: a wiki's TW frontend builds
+ * every API URL from the base it was served under, and the bare path means "the
+ * default wiki" — so a non-default wiki embedded under it would show one wiki's
+ * UI while reading and writing another's data. Single mode (or no roster) keeps
+ * the bare path, so an existing install is untouched.
+ *
+ * The ABSOLUTE base carries the same suffix: it exists for the desktop app's
+ * `dsh-app:` renderer (see resolveTwUrl), and a per-wiki path is just as
+ * necessary there.
+ */
+export function twProxyFor(
+  mode: string | undefined,
+  wikiId: string | undefined,
+  relative: string,
+  absolute?: string,
+): { relative: string; absolute?: string } {
+  if (mode !== 'multi' || typeof wikiId !== 'string' || wikiId.length === 0) {
+    return { relative, ...(absolute !== undefined ? { absolute } : {}) }
+  }
+  const suffix = `${encodeURIComponent(wikiId)}/`
+  return {
+    relative: `${relative}${suffix}`,
+    ...(absolute !== undefined ? { absolute: `${absolute}${suffix}` } : {}),
+  }
+}
+
 /** The subset of the `/sync` JSON body both client callers report on. */
 export interface SyncResultPayload {
   ok?: boolean
