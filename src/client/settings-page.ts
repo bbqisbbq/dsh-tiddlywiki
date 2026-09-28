@@ -24,6 +24,7 @@
 import * as React from 'react'
 import { toast } from './toast.ts'
 import { invalidateUiConfig } from './ui-config.ts'
+import { ICON_NAMES } from './wiki-icon.ts'
 import {
   ADMIN_CONFIG_ENDPOINT as CONFIG_ENDPOINT,
   ADMIN_INFO_ENDPOINT as INFO_ENDPOINT,
@@ -943,7 +944,27 @@ interface WikiListItemView {
   autostart: boolean
   running: boolean
   status: string
+  /** Per-wiki entry icon (v0.28.4): a curated name or a short emoji. */
+  icon?: string
 }
+
+/**
+ * Icon picker labels (v0.28.4). The NAMES come from `wiki-icon.ts`, so the set
+ * the picker offers is exactly the set the sidebar can render.
+ */
+const ICON_LABELS: Record<string, string> = {
+  book: '📖 书（book）',
+  briefcase: '💼 公文包（briefcase）',
+  home: '🏠 房子（home）',
+  notebook: '📓 笔记本（notebook）',
+  flask: '🧪 实验（flask）',
+  globe: '🌐 地球（globe）',
+  star: '⭐ 星标（star）',
+  archive: '🗄 归档（archive）',
+}
+
+/** A few emoji that read well at sidebar size and are easy to tell apart. */
+const EMOJI_CHOICES = ['📚', '💼', '🏠', '✍️', '🧪', '🌱', '🎯', '🗂️']
 
 /** `GET`/`POST /dsh-tiddlywiki/admin/wikis` payload (v0.28.0). */
 interface WikisView {
@@ -1111,6 +1132,29 @@ function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, ref
         const ok = window.confirm(`把「${wiki.label}」移出清单？\n\n**目录与内容不会被删除**（仍在 ${wiki.path}），只是插件不再管理它。`)
         if (ok) void post({ action: 'remove', id: wiki.id }, '移出中…')
       })
+      // 图标选择（v0.28.4）：下拉里是内置图形 + 一组常用 emoji；选「默认」即清除自定义。
+      // 它和 label 一样属于"库的身份"，所以在列表里改，而不是塞进常规配置区。
+      const iconPicker = make('select', 'dsh-tw-settings-icon-select')
+      iconPicker.setAttribute('aria-label', `「${wiki.label}」的入口图标`)
+      const currentIcon = typeof wiki.icon === 'string' ? wiki.icon : ''
+      const options: Array<[string, string]> = [['', '默认图标']]
+      for (const name of ICON_NAMES) options.push([name, ICON_LABELS[name] ?? name])
+      for (const emoji of EMOJI_CHOICES) options.push([emoji, emoji])
+      // 当前值不在候选里（用户填了自己的 emoji）：保留它，别让下拉把它抹掉。
+      if (currentIcon.length > 0 && !options.some(([v]) => v === currentIcon)) options.push([currentIcon, currentIcon])
+      for (const [value, text] of options) {
+        const opt = document.createElement('option')
+        opt.value = value
+        opt.textContent = text
+        iconPicker.append(opt)
+      }
+      iconPicker.value = currentIcon
+      iconPicker.addEventListener('change', () => {
+        const next = iconPicker.value
+        void post(next.length > 0
+          ? { action: 'update', wiki: { ...wiki, icon: next } }
+          : { action: 'update', wiki: { ...wiki, icon: '' } }, '保存中…')
+      })
       // 「改目录」只在多库模式出现（v0.28.1）：单库模式下这件事由「知识库位置」负责
       // （它写 wiki 之外的指针文件），两处并存会让用户不知道以哪个为准。
       if (view.mode === 'multi') {
@@ -1132,7 +1176,7 @@ function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, ref
         })
         actions.append(move)
       }
-      actions.append(configure, power, makeDefault, visibility, autostart, remove)
+      actions.append(configure, power, makeDefault, visibility, autostart, iconPicker, remove)
       row.append(actions)
       list.append(row)
     }

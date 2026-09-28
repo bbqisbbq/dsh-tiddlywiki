@@ -264,5 +264,31 @@ test('文档：插件说明必须讲清多库与"从旧版本升级"（作者 20
   assert.match(notes, /对 Agent 隐身/, '必须解释 agentVisible 的实际含义')
 })
 
+test('FAB 菜单：切库后选中项必须即时更新（作者 2026-09-28 报障）', () => {
+  const fab = readFileSync(path.join(repoRoot, 'src/client/knowledge-fab.ts'), 'utf8')
+  // 症状：在菜单里选了另一个库，库切了但选中标记还停在旧的。
+  // 根因：选中标记只在菜单**构建时**算了一次，之后从不重画。
+  assert.match(fab, /const paint = \(\): void =>/, '必须有可重复调用的重画函数')
+  assert.match(fab, /subscribeFocusWiki\(/, '必须订阅焦点变化才能即时重画')
+  assert.match(fab, /repaintWikiMenu\?\.\(\)/, '每次打开菜单前也要重画（切库可能发生在菜单关着的时候）')
+  assert.match(fab, /focusOff\?\.\(\)/, 'dispose 必须回收订阅')
+})
+
+test('每库图标：host 校验 + 客户端渲染都不得成为注入点（v0.28.4）', () => {
+  const registry = readFileSync(path.join(repoRoot, 'src/host/wiki-registry.ts'), 'utf8')
+  const icon = readFileSync(path.join(repoRoot, 'src/client/wiki-icon.ts'), 'utf8')
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  // host：名字或短串，超长/控制字符拒绝；空值 = 清除
+  assert.match(registry, /export function normalizeWikiIcon\(/, 'host 必须有校验入口')
+  assert.match(registry, /trimmed\.length > 8/, '必须限制长度（这个值会变成侧边栏文本）')
+  assert.match(registry, /WIKI_ICON_NAMES/, '内置图标名集合必须在 host 侧定义')
+  // 客户端：emoji 走 textContent，绝不 innerHTML —— 值来自用户可编辑的文件
+  assert.match(icon, /el\.textContent = icon\.trim\(\)/, 'emoji 必须用 textContent 渲染（不是 innerHTML）')
+  assert.match(icon, /isIconName\(icon\)[\s\S]{0,80}innerHTML = ICON_SVG/, '只有内置名才允许 innerHTML，且用的是我们自己的 SVG')
+  // 设置页：有下拉选择器；当前值不在候选里要保留
+  assert.match(settings, /dsh-tw-settings-icon-select/, '设置页必须有图标选择器')
+  assert.match(settings, /!options\.some\(\(\[v\]\) => v === currentIcon\)/, '自定义 emoji 不能被下拉抹掉')
+})
+
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)

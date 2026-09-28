@@ -108,6 +108,50 @@ export interface WikiEntry {
   agentVisible: boolean
   /** Start its TW child process at boot (default false; the default wiki is true). */
   autostart: boolean
+  /**
+   * Sidebar/entry icon (v0.28.4). Either a NAME from {@link WIKI_ICON_NAMES}
+   * (a curated set of built-in SVGs) or a short EMOJI literal.
+   *
+   * Why free-form-but-tiny instead of a fixed enum: a curated set covers the
+   * common cases without shipping a picker that needs its own assets, while an
+   * emoji lets someone tell four wikis apart at a glance (📚 / 💼 / 🏠) with
+   * nothing to download or maintain.
+   *
+   * It lives in the control file next to `label` because it is part of a wiki's
+   * IDENTITY — the same reason `label` is here and not in a tiddler. Absent =
+   * the built-in default icon (so upgrades see no change).
+   */
+  icon?: string
+}
+
+/**
+ * Built-in icon names (the picker's curated set). Deliberately small: each is a
+ * hand-written 16×16 stroke SVG inheriting `currentColor`, so it renders in both
+ * DSH themes with no asset pipeline.
+ */
+export const WIKI_ICON_NAMES = ['book', 'briefcase', 'home', 'notebook', 'flask', 'globe', 'star', 'archive'] as const
+
+/**
+ * Normalise an icon value: a known name, or a SHORT emoji-ish string, else
+ * undefined (= use the default).
+ *
+ * The length cap matters: the value can end up as text content in the sidebar,
+ * and an unbounded string would let a control file wreck the layout. Emoji are
+ * 1–2 code points; 8 UTF-16 units fits a ZWJ cluster without being a place to
+ * hide a paragraph.
+ */
+export function normalizeWikiIcon(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return undefined
+  if ((WIKI_ICON_NAMES as readonly string[]).includes(trimmed)) return trimmed
+  if (trimmed.length > 8) return undefined
+  // A control character would be invisible or break the row.
+  for (const ch of trimmed) {
+    const code = ch.codePointAt(0) ?? 0
+    if (code < 0x20 || code === 0x7f) return undefined
+  }
+  return trimmed
 }
 
 /** The whole registry: the mode, a non-empty list, and the default-wiki pointer. */
@@ -268,6 +312,9 @@ export function normalizeEntry(input: unknown): { entry?: WikiEntry; error?: str
       name: normalized.location.name,
       agentVisible: input.agentVisible !== false,
       autostart: input.autostart === true,
+      // 图标可选：只在给了合法值时才带上，这样"没设过"的库在 JSON 里保持干净
+      // （也保证既有清单重新序列化后逐字不变）。
+      ...(normalizeWikiIcon(input.icon) !== undefined ? { icon: normalizeWikiIcon(input.icon) } : {}),
     },
   }
 }

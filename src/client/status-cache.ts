@@ -59,6 +59,8 @@ export interface StatusPayload {
     autostart: boolean
     running: boolean
     path: string
+    /** Per-wiki entry icon (v0.28.4): a curated name or a short emoji. */
+    icon?: string
   }>
   ui?: {
     showQuickNote?: boolean

@@ -23,6 +23,16 @@ const CSS_TEXT = `
   cursor: pointer; text-align: left;
 }
 .dsh-tw-entry:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, inherit); }
+/* 每库自定义图标（v0.28.4）：emoji 走 textContent，尺寸与 SVG 图标对齐。 */
+.dsh-tw-entry-icon.dsh-tw-entry-emoji {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; font-size: 13px; line-height: 1;
+}
+.dsh-tw-settings-icon-select {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: inherit; font: inherit; font-size: 12px;
+  padding: 3px 8px; border-radius: 999px; max-width: 180px;
+}
 .dsh-tw-entry[data-active="true"] { background: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.18)); color: var(--dsw-alias-label-primary, inherit); font-weight: 500; }
 /* 多库（v0.28.2）：每库一个入口行，当前焦点库加一条左侧标线，和「面板正打开哪个库」区分开
    —— 面板是同一个，但焦点库决定它加载谁。 */

@@ -187,12 +187,14 @@ export {
   findEntry,
   findPathConflicts,
   normalizeEntry,
+  normalizeWikiIcon,
   normalizeWikiId,
   readRegistry,
   removeWiki,
   singleEntryRegistry,
   upsertWiki,
   validateRegistry,
+  WIKI_ICON_NAMES,
   writeRegistry,
   type RegistryReadResult,
   type RegistryValidation,
@@ -1133,6 +1135,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
               autostart: entry.autostart,
               running: runtime !== undefined,
               path: entryPath(entry),
+              // 每库图标（v0.28.4）：侧边栏入口与设置页选择器共用这个来源。
+              icon: entry.icon,
             }
           }),
         }

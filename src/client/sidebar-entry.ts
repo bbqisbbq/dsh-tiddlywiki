@@ -13,12 +13,11 @@ import type { PanelState } from './state.ts'
 import { fetchUiConfig, subscribeUiConfig } from './ui-config.ts'
 import { fetchStatus } from './status-cache.ts'
 import { resolveFocusWiki, setFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
+import { applyWikiIcon } from './wiki-icon.ts'
 
 /** Stable data attribute identifying this entry row. */
 export const ENTRY_SELECTOR = '[data-dsh-tw-entry]'
 
-/** Inline icon: a wiki page with a TiddlyWiki-style "T" (nav-icon look). */
-const ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 2.5h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z"/><path d="M6 6h4M6 8.5h2.5"/></svg>'
 
 /** Family entries from sibling plugins, kept in a stable relative order. */
 const FAMILY_SELECTOR = '[data-dsh-tw-entry], [data-dsh-atb-entry], [data-dsh-taskboard-entry], [data-dsh-ssh-entry]'
@@ -59,26 +58,27 @@ function createEntry(
   state: PanelState,
   label: string,
   wikiId?: string,
-): { entry: HTMLButtonElement; labelEl: HTMLSpanElement } {
+  icon?: string,
+): { entry: HTMLButtonElement; labelEl: HTMLSpanElement; iconEl: HTMLSpanElement } {
   const entry = document.createElement('button')
   entry.type = 'button'
   entry.dataset.dshTwEntry = ''
   entry.className = 'dsh-tw-entry'
   if (wikiId !== undefined) entry.dataset.wiki = wikiId
   entry.setAttribute('aria-label', `TiddlyWiki 知识库：${label}`)
-  const icon = document.createElement('span')
-  icon.className = 'dsh-tw-entry-icon'
-  icon.innerHTML = ICON
+  const iconEl = document.createElement('span')
+  iconEl.className = 'dsh-tw-entry-icon'
+  applyWikiIcon(iconEl, icon)
   const labelEl = document.createElement('span')
   labelEl.className = 'dsh-tw-entry-label'
   labelEl.textContent = label
-  entry.append(icon, labelEl)
+  entry.append(iconEl, labelEl)
   entry.addEventListener('click', () => {
     // 多库：先把这个库设为「焦点库」，面板随后加载它自己的 /tw/<id>/。
     if (wikiId !== undefined) setFocusWiki(wikiId)
     state.toggle()
   })
-  return { entry, labelEl }
+  return { entry, labelEl, iconEl }
 }
 
 /** Re-insert the entry before the whole family block (stable ordering). */
@@ -116,9 +116,9 @@ function placeEntry(root: HTMLElement, entry: HTMLButtonElement): boolean {
  */
 export function mountSidebarEntry(state: PanelState): () => void {
   /** 多库：每个**在运行**的库一个入口行，用自己的显示名（作者 2026-09-28 要求）。 */
-  const rows = new Map<string, { entry: HTMLButtonElement; labelEl: HTMLSpanElement }>()
-  const { entry, labelEl } = createEntry(state, 'TiddlyWiki')
-  rows.set('', { entry, labelEl })
+  const rows = new Map<string, { entry: HTMLButtonElement; labelEl: HTMLSpanElement; iconEl: HTMLSpanElement }>()
+  const { entry, labelEl, iconEl } = createEntry(state, 'TiddlyWiki')
+  rows.set('', { entry, labelEl, iconEl })
   let disposed = false
   /**
    * 自定义显示名：/status 返回 ui.sidebarLabel（设置页「侧边栏入口显示名称」）。
@@ -172,10 +172,12 @@ export function mountSidebarEntry(state: PanelState): () => void {
     for (const w of running) {
       let row = rows.get(w.id)
       if (row === undefined) {
-        row = createEntry(state, w.label, w.id)
+        row = createEntry(state, w.label, w.id, w.icon)
         rows.set(w.id, row)
       }
       row.labelEl.textContent = w.label
+      // 图标每次同步（v0.28.4）：在设置页改完图标，10s 内的轮询就会把它换过来。
+      applyWikiIcon(row.iconEl, w.icon)
       row.entry.setAttribute('aria-label', `TiddlyWiki 知识库：${w.label}`)
       // 当前焦点库高亮
       const focused = resolveFocusWiki(running, payload?.defaultId) === w.id

@@ -21,7 +21,7 @@ import type { NoteWidgetHandle } from './note-widget.ts'
 import type { SyncController } from './sync-button.ts'
 import { PANEL_RELOAD_EVENT } from './tw-frame.ts'
 import { ROUTE_PREFIX } from './endpoints.ts'
-import { resolveFocusWiki, setFocusWiki } from './wiki-focus.ts'
+import { resolveFocusWiki, setFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
 
 import { fetchStatus } from './status-cache.ts'
 import { fetchUiConfig } from './ui-config.ts'
@@ -91,6 +91,13 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
   let tip: HTMLDivElement | undefined
   let panelLabel: HTMLSpanElement | undefined
   let menuOpen = false
+  /** 焦点库订阅（多库菜单需要，dispose 时回收）。 */
+  let focusOff: (() => void) | undefined
+  /**
+   * 重画"知识库"分组的选中标记。打开菜单前调用一次 —— 订阅负责切库时即时重画，
+   * 这里负责兜住"订阅建立之前的窗口"与外部改动（v0.28.3）。
+   */
+  let repaintWikiMenu: (() => void) | undefined
   /** Latest TW health snapshot, merged into the hover tip. */
   let twHealth: TwHealth = { state: 'unknown', text: 'TiddlyWiki 服务…', logs: [] }
 
@@ -196,17 +203,33 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       // 多知识库切换（v0.28.0）：只有多于一个库时才长出这一段，单库安装的菜单不变。
       // 点一下 = 把"焦点库"切过去并打开面板——面板会加载那个库自己的 /tw/<id>/。
       if (roster.wikis.length > 1) {
-        const focus = resolveFocusWiki(roster.wikis, roster.defaultId)
         const heading = document.createElement('div')
         heading.className = 'dsh-tw-fab-group'
         heading.textContent = '知识库'
         menu.append(heading)
+        /** 每个库的菜单项，便于焦点变化时就地刷新选中标记。 */
+        const wikiItems = new Map<string, HTMLButtonElement>()
+        /**
+         * 重画选中标记（v0.28.3）。
+         *
+         * 原来的实现只在**菜单构建时**算一次 focus，之后无论怎么切都不再更新 ——
+         * 于是"切了库、选中项还停在上一个"（作者报障）。这里改成从当前焦点重算，
+         * 并在 setFocusWiki 的订阅里重画；菜单关闭时也重画，保证下次打开是对的。
+         */
+        const paint = (): void => {
+          const current = resolveFocusWiki(roster.wikis, roster.defaultId)
+          for (const [id, el] of wikiItems) {
+            const isCurrent = id === current
+            el.dataset.current = isCurrent ? '1' : '0'
+            const wiki = roster.wikis.find((w) => w.id === id)
+            el.textContent = `${isCurrent ? '●' : '○'} ${wiki?.label ?? id}`
+          }
+        }
         for (const wiki of roster.wikis) {
           const item = document.createElement('button')
           item.type = 'button'
           item.className = 'dsh-tw-fab-item'
-          item.dataset.current = wiki.id === focus ? '1' : '0'
-          item.textContent = `${wiki.id === focus ? '●' : '○'} ${wiki.label}`
+          item.dataset.current = '0'
           item.title = `${wiki.path}${wiki.running ? '' : '（未运行，打开会启动）'}`
           item.addEventListener('click', () => {
             closeMenu()
@@ -224,8 +247,14 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
             }
             state.openPanel()
           })
+          wikiItems.set(wiki.id, item)
           menu.append(item)
         }
+        paint()
+        // 焦点变化（可能来自别的入口：侧边栏某一行、快速笔记卡片）也要跟上。
+        focusOff = subscribeFocusWiki(() => { paint() })
+        // 每次打开菜单前重画一次，避免因为订阅时机错过而显示旧值。
+        repaintWikiMenu = paint
       }
 
       panelLabel = document.createElement('span')
@@ -280,6 +309,9 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       if (menuOpen) { closeMenu(); return }
       menuOpen = true
       menu.hidden = false
+      // 每次打开都重画一次选中标记（v0.28.3）：切库可能发生在菜单关着的时候
+      // （侧边栏入口、快速笔记卡片），不重画就会显示上一次的选中项。
+      repaintWikiMenu?.()
       renderDot()
       void refreshTwStatus()
     })
@@ -307,6 +339,8 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
 
   return () => {
     disposed = true
+    focusOff?.()
+    focusOff = undefined
     document.removeEventListener('click', onDocumentClick, true)
     unsubPanel()
     unsubSync()
