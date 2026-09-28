@@ -21,7 +21,7 @@
 import type { IncomingMessage } from 'node:http'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
-import { DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
+import { ConfigStore, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { checkAllSeeds, runSeedById, removeSeedById } from './host/seeds.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
@@ -35,6 +35,7 @@ import {
   expandEnvPath,
   listWikiCandidates,
   locationPath,
+  normalizeLocation,
   readLocationState,
   writeLocationState,
   type WikiLocation,
@@ -43,7 +44,19 @@ import {
 } from './host/wiki-location.ts'
 import { switchWiki, type WikiSwitchResult } from './host/wiki-switch.ts'
 import { WikiInstance } from './host/wiki-instance.ts'
-import { DEFAULT_WIKI_ID } from './host/wiki-registry.ts'
+import { WikiFarm } from './host/wiki-farm.ts'
+import {
+  DEFAULT_WIKI_ID,
+  defaultEntry,
+  defaultRegistryFile,
+  entryPath,
+  readRegistry,
+  singleEntryRegistry,
+  validateRegistry,
+  writeRegistry,
+  type WikiEntry,
+  type WikiRegistry,
+} from './host/wiki-registry.ts'
 import { READY_TIMEOUT_DEFAULT_MS } from './host/ready-policy.ts'
 import { ANON_USERNAME, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
@@ -355,31 +368,30 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     startup: { ...DEFAULTS.startup, ...(rawConfig.startup ?? {}) },
     wechat: { ...DEFAULTS.wechat, ...(rawConfig.wechat ?? {}) },
   }
-  // ── The knowledge base this plugin serves ──────────────────────────────────
-  // v0.28.0 moved "one wiki's runtime" — TW child process + REST client + config
-  // overlay + auto-committer — into host/wiki-instance.ts, so the registry-driven
-  // farm does not need a second implementation of it. M1 still runs exactly ONE
-  // instance, built from the location the plugin has always used: the legacy
-  // pointer file (applied in the startup task below) over the cordis default.
-  /** Pointer file the runtime switch persists (outside every wiki, see wiki-location.ts). */
+  // ── The knowledge-base farm ────────────────────────────────────────────────
+  // v0.28.0 split this into three parts, so each has exactly ONE implementation:
+  //   host/wiki-instance.ts  ONE wiki's runtime (child + REST client + config +
+  //                          committer + fs watcher + its own bootstrap)
+  //   host/wiki-farm.ts      WHICH wikis should be running (the reconcile rules)
+  //   host/wiki-registry.ts  WHERE the mode / list / default come from (wikis.json)
+  // index.ts only wires them together. Everything below resolves through the
+  // farm's DEFAULT runtime, which is why single-wiki behaviour is unchanged.
+  /** Pointer file the LEGACY single-wiki switch persists (wiki-location.ts). */
   const locationStateFile = defaultLocationStateFile()
+  /** The multi-wiki control file: mode + the wiki list + the default id. */
+  const registryFile = defaultRegistryFile()
+  /** The cordis `config:` block, as the base layer of every wiki's config. */
+  const baseShape: PluginConfigShape = { note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge, startup: config.startup, wechat: config.wechat }
+  /** The cordis-level default location (last resort in the registry chain). */
+  const defaultLocation: WikiLocation = { root: config.wikiRoot, name: config.wiki }
   const git = new GitFace()
-  const instance = new WikiInstance({
-    entry: {
-      id: DEFAULT_WIKI_ID,
-      label: config.wiki,
-      root: config.wikiRoot,
-      name: config.wiki,
-      agentVisible: true,
-      autostart: true,
-    },
-    base: config,
-    git,
-    twRoot: resolveTwRoot,
-  })
-  const eff = (): PluginConfigShape => instance.eff()
-  const effectiveWorkspaceMark = (): boolean => instance.workspaceMark()
-  const effectiveBridge = (): BridgeConfig => instance.bridgeConfig()
+  /** Created by the startup task, once the control file has been read. */
+  let farm: WikiFarm<WikiInstance> | undefined
+  /** The runtime legacy/agent traffic falls back to (undefined = nothing up). */
+  const defaultInstance = (): WikiInstance | undefined => farm?.defaultRuntime()
+  const eff = (): PluginConfigShape => defaultInstance()?.eff() ?? baseShape
+  const effectiveWorkspaceMark = (): boolean => defaultInstance()?.workspaceMark() ?? config.note.workspaceMark
+  const effectiveBridge = (): BridgeConfig => defaultInstance()?.bridgeConfig() ?? config.bridge
 
   const disposers: Array<() => void> = []
   const disposeAll = (): void => {
@@ -452,16 +464,15 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     disposePromptSection = undefined
   })
 
-  /** The TW child this plugin serves (one instance in M1; a farm in M1b). */
-  const server = instance.server
-
   /**
    * Readiness window from the EFFECTIVE config (v0.22.5): the settings page
-   * saves `startup.readyTimeoutMs`, and this re-applies it to the running
-   * server — it takes effect on the next start()/restart() without a dsh web
+   * saves `startup.readyTimeoutMs`, and this re-applies it to EVERY running
+   * wiki — it takes effect on the next start()/restart() without a dsh web
    * restart. Values are clamped by host/ready-policy.ts.
    */
-  const applyServerTuning = (): void => instance.applyServerTuning()
+  const applyServerTuning = (): void => {
+    for (const runtime of farm?.allRuntimes() ?? []) runtime.applyServerTuning()
+  }
 
   /**
    * Lazy TW client. host/wiki-instance.ts owns both the port-change invalidation
@@ -470,7 +481,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
    * credentials (`auth.username` puts the child behind `readers`/`writers`, so
    * EVERY request — reads included — needs auth).
    */
-  const client = (): TiddlyWebClient | undefined => instance.client()
+  const client = (): TiddlyWebClient | undefined => defaultInstance()?.client()
 
   // 本地剪藏桥（书签小工具后端）：只监听 127.0.0.1，per-request 读 effective
   // config —— enabled/token/tag 在设置页保存后立即生效；port 只在启动时绑定
@@ -507,8 +518,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // (they hold the OLD folder) and re-arm them for the new one. The teardown is
   // registered exactly ONCE below — a per-switch `disposers.push()` would leak a
   // disposer per switch.
-  const setupCommitter = (): void => { instance.setupExtras() }
-  const teardownCommitter = async (): Promise<void> => { await instance.teardownExtras() }
+  /** Release every running wiki's committer + fs watcher (plugin teardown). */
+  const teardownCommitter = async (): Promise<void> => { for (const runtime of farm?.allRuntimes() ?? []) await runtime.teardownExtras() }
   disposers.push(() => { void teardownCommitter() })
 
   /**
@@ -528,21 +539,22 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
    * field does not delete `origin` (that is a destructive repo change the UI
    * never promised). Both are documented in the settings page + README.
    */
-  const reapplyGitConfig = async (): Promise<void> => { await instance.reapplyGitConfig() }
-
-  /** Git bootstrap for the folder this instance currently serves. */
-  const bootstrapGit = async (): Promise<void> => { await instance.bootstrapGit() }
+  const reapplyGitConfig = async (): Promise<void> => {
+    for (const runtime of farm?.allRuntimes() ?? []) await runtime.reapplyGitConfig()
+  }
 
   // Tools (works even while the wiki is down; wiki() resolves lazily).
   const toolsDeps: ToolsDeps = {
     wiki: client,
     git,
-    wikiPath: () => instance.path,
-    autoCommit: () => instance.touchAutoCommit(),
+    // M1b-2b: the agent tools still target the DEFAULT wiki. M3 makes them
+    // per-session (the session's scope) — that is where `agentVisible` lands.
+    wikiPath: () => defaultInstance()?.path ?? locationPath(defaultLocation),
+    autoCommit: () => defaultInstance()?.touchAutoCommit(),
     // After a pull that changed the working tree, restart TW so the server
     // (and the agent's reads) see the pulled content, not the old snapshot.
     // Routed through the instance so the syncer queue is drained first (rule #1).
-    restartWiki: async () => { await instance.restart() },
+    restartWiki: async () => { await defaultInstance()?.restart() },
     // Workspace (project) marking for agent-created notes (v0.24.0): a tool call
     // carries its session id, and the session header carries the cwd — so the
     // plugin can tag new notes with the project all by itself instead of asking
@@ -568,45 +580,47 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // an orphan process and a leaked listener. Every await below is followed by a
   // `disposed` check, and the task stops the child itself when it notices.
   let disposed = false
-  /**
-   * Core-bootstrap the wiki the instance currently serves: markdown parser
-   * plugin, the core + starter seeds, and the configured UI language. The
-   * implementation lives in host/wiki-instance.ts — the startup path and a
-   * runtime wiki switch must run exactly this, and the two drifting apart is
-   * what v0.22.0 extracted it to prevent.
-   */
-  const bootstrapWiki = async (): Promise<void> => { await instance.bootstrapWiki() }
+
+  /** single 模式的位置：旧指针文件 > cordis 默认（v0.22.0 的优先级，逐字保留）。 */
+  const singleModeLocation = async (): Promise<WikiLocation> => {
+    const state = await readLocationState(locationStateFile)
+    if (state.error !== undefined) console.warn('[dsh-tiddlywiki]', state.error)
+    return state.active ?? defaultLocation
+  }
 
   const startupTask = (async () => {
     try {
-      // Runtime pointer FIRST (v0.22.0): the settings page's「切换」persists the
-      // chosen location in $DSH_HOME/dsh-tiddlywiki/location.json, which must
-      // win over the cordis config default. Applied while the child is still
-      // stopped, so the very first spawn already serves the right folder.
-      const saved = await readLocationState(locationStateFile)
-      if (saved.error !== undefined) console.warn('[dsh-tiddlywiki]', saved.error)
-      if (saved.active !== undefined) {
-        instance.updateEntry({ ...instance.entry, root: saved.active.root, name: saved.active.name })
-        console.info(`[dsh-tiddlywiki] wiki location (pointer file): ${instance.path}`)
-      }
-      await instance.server.start()
-      if (disposed) {
-        await instance.server.stop().catch(() => undefined)
-        return
-      }
-      await instance.config.load(instance.client())
-      // The config tiddler may carry prompt.* overrides: rebuild the already
-      // registered section so a saved preference applies without a restart.
+      // THE CONTROL FILE FIRST (v0.28.0): it carries the mode (single/multi), the
+      // wiki list and the default id, and it must be read before anything starts
+      // — which is exactly why it lives OUTSIDE every wiki (wiki-registry.ts).
+      const read = await readRegistry({ file: registryFile, legacyFile: locationStateFile, fallback: defaultLocation })
+      if (read.error !== undefined) console.warn('[dsh-tiddlywiki]', read.error)
+      for (const warning of read.warnings) console.warn('[dsh-tiddlywiki]', warning)
+      console.info(`[dsh-tiddlywiki] ${read.registry.mode} 模式 · ${read.registry.wikis.length} 个知识库（来源：${read.source}）`)
+      // single 模式 = 今天的行为，逐字保留：位置仍由旧指针文件（其次 cordis 默认）
+      // 决定，registry 此时只记住 `mode` 与候选列表 —— 所以这里合成一份单条清单。
+      const runRegistry = read.registry.mode === 'multi'
+        ? read.registry
+        : singleEntryRegistry(await singleModeLocation(), DEFAULT_WIKI_ID, 'single')
+      farm = new WikiFarm<WikiInstance>(runRegistry, {
+        createRuntime: (entry) => new WikiInstance({ entry, base: config, git, twRoot: resolveTwRoot }),
+        log: (message) => console.warn('[dsh-tiddlywiki]', message),
+      })
+      // Every instance brings ITSELF up (child → its config tiddler → seeds →
+      // git → committer), so this one call replaces the old step-by-step startup.
+      // One wiki failing never stops the others (the farm reports it).
+      const change = await farm.startAll()
+      if (change.started.length > 0) console.info(`[dsh-tiddlywiki] 已启动：${change.started.join(', ')}`)
+      // The prompt section is a plugin-level singleton: rebuild it now that the
+      // default wiki's config tiddler has been loaded.
       applyPrompt()
-      // …and startup.readyTimeoutMs: applies to the next start()/restart().
-      applyServerTuning()
       if (disposed) {
-        await server.stop().catch(() => undefined)
+        await farm.disposeAll()
         return
       }
-      // Clip bridge: bind once on the configured port (works even while
-      // disabled — every request re-checks the effective enabled flag, so the
-      // settings-page toggle applies without a dsh web restart).
+      // Clip bridge: bind once on the DEFAULT wiki's configured port (works even
+      // while disabled — every request re-checks the effective enabled flag, so
+      // the settings-page toggle applies without a dsh web restart).
       try {
         await clipBridge.start(effectiveBridge().port)
         console.info(`[dsh-tiddlywiki] clip bridge listening on 127.0.0.1:${clipBridge.port} (enabled=${effectiveBridge().enabled})`)
@@ -615,65 +629,48 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       }
       if (disposed) {
         try { await clipBridge.stop() } catch { /* already closing */ }
-        await instance.server.stop().catch(() => undefined)
+        await farm.disposeAll()
         return
-      }
-      // Point TW's frontend at the same-origin DSH proxy (remote-access mode):
-      // part of the seed registry (tw-web-host), so it is also covered by the
-      // settings page's 重新初始化. Runs before git bootstrap so the config
-      // tiddler joins the first commit.
-      //
-      // Seeds run after the effective config is loaded: every one-time
-      // "与 dsh 联动需要 wiki 预置" item lives in the SEED_DEFS registry, and the
-      // startup path seeds ONLY the core items (功能必需：发送给 Agent 按钮 +
-      // TW 前端 API 基址 + 原生渲染路由) plus the starter docs — NON-force, so a
-      // same-named tiddler is never overwritten. Optional seeds (首页 / 所有文章 /
-      // 自定义样式 / menubar 顶栏主题自适应 / 剪藏桥说明) are opt-in from the
-      // settings page「初始化」section.
-      // Markdown parser + seeds + UI language: the SAME routine a runtime wiki
-      // switch runs on its new folder (v0.22.0, host/wiki-switch.ts).
-      try {
-        await bootstrapWiki()
-      } catch (err) {
-        console.warn('[dsh-tiddlywiki] seeding wiki:', err)
       }
     } catch (err) {
       console.warn('[dsh-tiddlywiki] startup issue (self-healing is armed):', err)
     }
-    // Git bootstrap + the auto-committer do not depend on the TW child, so run
-    // them even when the wiki failed to start: every write is still versioned
-    // (and a retry/restart later finds a ready repository). Skipped entirely
-    // once disposed — otherwise this would register a watcher/timer (and an
-    // initial commit) after teardown already ran.
-    if (disposed) return
-    try {
-      await bootstrapGit()
-      if (disposed) return
-      setupCommitter()
-    } catch (err) {
-      console.warn('[dsh-tiddlywiki] git bootstrap failed:', err)
-    }
   })()
 
-  // ── Runtime wiki location (v0.22.0) ────────────────────────────────────────
-  // The cordis `config:` block stays the DEFAULT; the settings page can switch
-  // the running plugin to another folder and persists that choice in a pointer
-  // file OUTSIDE every wiki (host/wiki-location.ts explains why). Everything
-  // below reads through the INSTANCE, so a switch is visible to tools, routes
-  // and the git face immediately. (M1b replaces this single pointer with the
-  // registry from host/wiki-registry.ts and turns it into "pick the default".)
-  const defaultLocation: WikiLocation = { root: config.wikiRoot, name: config.wiki }
+  // ── Runtime wiki location (v0.22.0, extended v0.28.0) ──────────────────────
+  // TWO paths, because the two modes genuinely differ:
+  //   single → legacy behaviour, verbatim: a pointer file OUTSIDE every wiki
+  //            records the choice and `switchWiki()` moves the ONE running wiki
+  //            with rollback (stop → repoint → start → bootstrap, and restore the
+  //            old folder on failure). Covered by verify-wiki-switch.mjs.
+  //   multi  → "move the DEFAULT wiki's folder": edit the registry and let the
+  //            farm reconcile (stop → recycle → start). No whole-plugin rollback
+  //            is needed there — the other knowledge bases keep serving.
+  /** The folder the default wiki occupies, running or not. */
+  const defaultPath = (): string => {
+    const running = defaultInstance()
+    if (running !== undefined) return running.path
+    const entry = farm === undefined ? undefined : defaultEntry(farm.registry)
+    return entry === undefined ? locationPath(defaultLocation) : entryPath(entry)
+  }
+  /** The `{root,name}` the default wiki currently occupies (running or not). */
+  const defaultCurrentLocation = (): WikiLocation => {
+    const running = defaultInstance()
+    if (running !== undefined) return running.server.currentLocation
+    const entry = farm === undefined ? undefined : defaultEntry(farm.registry)
+    return entry === undefined ? defaultLocation : { root: entry.root, name: entry.name }
+  }
   /** Source of the CURRENT location, for the settings page. */
   const locationSource = async (): Promise<WikiLocationSource> => {
     const state = await readLocationState(locationStateFile)
-    if (state.active !== undefined && locationPath(state.active) === instance.path) return 'state'
+    if (state.active !== undefined && locationPath(state.active) === defaultPath()) return 'state'
     return typeof rawConfig.wikiRoot === 'string' && rawConfig.wikiRoot.trim().length > 0 ? 'config' : 'default'
   }
   const locationInfo = async (): Promise<WikiLocationInfo> => {
     const state = await readLocationState(locationStateFile)
-    const current = instance.server.currentLocation
+    const current = defaultCurrentLocation()
     return {
-      current: { ...current, path: instance.path, source: await locationSource() },
+      current: { ...current, path: defaultPath(), source: await locationSource() },
       default: { ...defaultLocation, path: locationPath(defaultLocation) },
       stateFile: locationStateFile,
       candidates: await listWikiCandidates(current.root),
@@ -682,39 +679,42 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   }
   /** Single-flight guard: two concurrent switches would fight over the child. */
   let switching = false
+  /** SINGLE mode: the legacy orchestrator, on the farm's default runtime. */
   const runSwitch = async (target: { root?: unknown; name?: unknown }, persist: (t: WikiLocation) => Promise<void>): Promise<WikiSwitchResult> => {
     if (switching) return { ok: false, error: '正在切换知识库，请稍候再试', rolledBack: true }
     // A switch in flight while the plugin is being disposed (hot reload / dsh web
     // shutdown) would re-arm the committer + fs watcher AFTER teardown ran, and
     // could even spawn a fresh TW child after `stop()` (v0.23.5).
     if (disposed) return { ok: false, error: '插件正在卸载，已取消切换', rolledBack: false }
+    const runtime = defaultInstance()
+    if (runtime === undefined) return { ok: false, error: '默认知识库当前没有运行，无法切换位置', rolledBack: false }
     switching = true
     try {
       const result = await switchWiki({
-        currentLocation: () => instance.server.currentLocation,
-        currentPath: () => instance.path,
+        currentLocation: () => runtime.server.currentLocation,
+        currentPath: () => runtime.path,
         // v0.24.1: ironclad rule #1 lists the knowledge-base switch as a path
         // that MUST drain first; writes still in the OLD wiki's syncer queue were
         // otherwise killed with the child. `drainThenStop` is the shared primitive
-        // (now owned by the instance, v0.28.0); the rollback path reuses it, and a
+        // (owned by the instance since v0.28.0); the rollback path reuses it, and a
         // missing client (child already down) is a no-op.
-        stopServer: async () => { await instance.drainStop() },
+        stopServer: async () => { await runtime.drainStop() },
         applyLocation: (nextLocation) => {
           // Repoints the server AND drops the cached REST client (whose 2s list
           // cache belongs to the OLD wiki).
-          instance.updateEntry({ ...instance.entry, root: nextLocation.root, name: nextLocation.name })
+          runtime.updateEntry({ ...runtime.entry, root: nextLocation.root, name: nextLocation.name })
         },
-        startServer: async () => { await instance.server.start() },
-        teardownExtras: () => instance.teardownExtras(),
-        setupExtras: () => { instance.setupExtras() },
+        startServer: async () => { await runtime.server.start() },
+        teardownExtras: () => runtime.teardownExtras(),
+        setupExtras: () => { runtime.setupExtras() },
         reloadConfig: async () => {
-          await instance.config.load(instance.client())
+          await runtime.config.load(runtime.client())
           // The new wiki carries its own config tiddler → its own prompt.*.
           applyPrompt()
         },
         bootstrap: async () => {
-          await bootstrapWiki()
-          await bootstrapGit()
+          await runtime.bootstrapWiki()
+          await runtime.bootstrapGit()
         },
         savePointer: persist,
         log: (message) => console.warn('[dsh-tiddlywiki]', message),
@@ -722,24 +722,69 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // Teardown may have run while the switch was awaiting: the switch itself
       // succeeded, but the extras it re-armed must be released again so we do not
       // leak a committer/watcher past dispose (v0.23.5).
-      if (disposed) await instance.teardownExtras()
+      if (disposed) await runtime.teardownExtras()
+      // The farm must agree with the runtime the orchestrator just moved — its
+      // registry is what a later `apply()` (add/remove an entry) diffs against.
+      if (result.ok && farm !== undefined) {
+        const moved = runtime.entry
+        farm.syncRegistry({ ...farm.registry, wikis: farm.registry.wikis.map((entry) => (entry.id === moved.id ? moved : entry)) })
+      }
       return result
     } finally {
       switching = false
     }
   }
-  /** Switch to another folder and remember the choice. */
-  const switchWikiLocation = (target: { root?: unknown; name?: unknown }): Promise<WikiSwitchResult> =>
-    runSwitch(target, async (t) => { await writeLocationState(t, locationStateFile) })
   /**
-   * 「恢复为配置默认」: drop the pointer and go back to the cordis default. The
-   * pointer must be cleared EVEN when the current folder already IS the default
-   * (otherwise the stale pointer would win again after the next restart).
+   * MULTI mode: move the DEFAULT wiki to another folder. The farm's reconcile
+   * stops the old child, recycles the runtime and starts it on the new folder;
+   * the registry is persisted LAST (a failed write costs restart-survival, not
+   * the running wiki — same trade-off the pointer file already makes).
+   */
+  const repointDefault = async (target: { root?: unknown; name?: unknown }): Promise<WikiSwitchResult> => {
+    if (disposed) return { ok: false, error: '插件正在卸载，已取消切换', rolledBack: false }
+    if (farm === undefined) return { ok: false, error: '插件尚未就绪，请稍后再试', rolledBack: true }
+    if (switching) return { ok: false, error: '正在切换知识库，请稍候再试', rolledBack: true }
+    const normalized = normalizeLocation(target)
+    if (normalized.location === undefined) return { ok: false, error: normalized.error ?? '位置非法', rolledBack: true }
+    const next = normalized.location
+    const current = defaultEntry(farm.registry)
+    if (current === undefined) return { ok: false, error: '清单里没有默认知识库', rolledBack: true }
+    const moved: WikiEntry = { ...current, root: next.root, name: next.name }
+    const nextRegistry: WikiRegistry = { ...farm.registry, wikis: farm.registry.wikis.map((entry) => (entry.id === moved.id ? moved : entry)) }
+    // Re-validate: moving a folder can collide with (or nest inside) another
+    // registered wiki, and those rules are the whole point of the registry.
+    const validated = validateRegistry(nextRegistry)
+    if (validated.registry === undefined) return { ok: false, error: validated.fatal.join('；'), rolledBack: true }
+    switching = true
+    try {
+      await farm.apply(validated.registry)
+      const applied: WikiSwitchResult = { ok: true, location: { root: moved.root, name: moved.name }, path: entryPath(moved) }
+      try {
+        await writeRegistry(validated.registry, registryFile)
+      } catch (err) {
+        return { ...applied, warning: `位置已切换，但清单写入失败（重启 dsh web 后会回到原位置）：${err instanceof Error ? err.message : String(err)}` }
+      }
+      return applied
+    } finally {
+      switching = false
+    }
+  }
+  /** Switch the DEFAULT wiki to another folder and remember the choice. */
+  const switchWikiLocation = (target: { root?: unknown; name?: unknown }): Promise<WikiSwitchResult> => {
+    if (farm?.registry.mode === 'multi') return repointDefault(target)
+    return runSwitch(target, async (t) => { await writeLocationState(t, locationStateFile) })
+  }
+  /**
+   * 「恢复为配置默认」: single mode drops the pointer and goes back to the cordis
+   * default (cleared EVEN when the current folder already IS the default, or the
+   * stale pointer wins again after the next restart); multi mode moves the
+   * default wiki back to the configured location.
    */
   const resetWikiLocation = async (): Promise<WikiSwitchResult> => {
-    if (locationPath(defaultLocation) === instance.path) {
+    if (farm?.registry.mode === 'multi') return repointDefault(defaultLocation)
+    if (locationPath(defaultLocation) === defaultPath()) {
       await clearLocationState(locationStateFile)
-      return { ok: true, location: defaultLocation, path: instance.path }
+      return { ok: true, location: defaultLocation, path: defaultPath() }
     }
     return runSwitch(defaultLocation, async () => { await clearLocationState(locationStateFile) })
   }
@@ -772,20 +817,24 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // host 服务 —— 可选注入（本部署存在），懒解析。
     const getSessionQuery = (): SessionQueryFace | undefined =>
       ctx.get('sessionQuery') as SessionQueryFace | undefined
-    // v0.28.0: every PER-WIKI dep takes the request. M1b-2a still resolves them
-    // all to the single instance — behaviour is unchanged — and M1b-2b only has
-    // to swap the body of `target` for the farm's resolution. Having the request
-    // in the signature NOW is what keeps that later step from having to touch
-    // every call site in routes.ts / admin.ts.
-    const target = (_req: IncomingMessage): WikiInstance => instance
+    // v0.28.0: the request decides WHICH wiki. M1b-2b resolves every request to
+    // the farm's DEFAULT runtime (the wiki this plugin has always served); the
+    // `?wiki=<id>` selector arrives with the per-wiki GUI (M5). Every accessor
+    // falls back to the cordis BASE when nothing is running, so a stopped farm
+    // degrades to "base defaults + 503 on writes" instead of throwing.
+    const target = (_req: IncomingMessage): WikiInstance | undefined => defaultInstance()
+    const fallbackUi = WikiInstance.uiDefaultsFrom(config)
+    const fallbackWechat = normalizeWechatConfig(config.wechat)
+    /** Used only while nothing runs: base defaults, no wiki tiddler to read. */
+    const idleConfig = new ConfigStore(baseShape)
     const disposeRoutes = registerRoutes({ webServer: ws }, {
-      server: (req) => target(req).server,
-      getClient: (req) => target(req).client(),
+      server: (req) => target(req)?.server,
+      getClient: (req) => target(req)?.client(),
       git,
-      autoCommit: (req) => target(req).touchAutoCommit(),
-      noteDefaults: (req) => ({ tag: target(req).noteTag() }),
-      uiDefaults: (req) => target(req).uiDefaults(),
-      getWikiPath: (req) => target(req).path,
+      autoCommit: (req) => target(req)?.touchAutoCommit(),
+      noteDefaults: (req) => ({ tag: target(req)?.noteTag() ?? config.note.tag }),
+      uiDefaults: (req) => target(req)?.uiDefaults() ?? fallbackUi,
+      getWikiPath: (req) => target(req)?.path ?? defaultPath(),
       getSessionController,
       getWorkspaceRegistry,
       getAgentPresets,
@@ -793,25 +842,25 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       getPermissionPresets,
       getSessions,
       getSessionQuery,
-      sendToAgentEnabled: (req) => target(req).sendToAgent().enabled,
-      sendToAgentToken: (req) => target(req).sendToAgent().token,
+      sendToAgentEnabled: (req) => target(req)?.sendToAgent().enabled ?? config.ui.sendToAgent.enabled,
+      sendToAgentToken: (req) => target(req)?.sendToAgent().token ?? (config.ui.sendToAgent.token ?? ''),
       // 公众号发布（v0.23.3，可选功能）：config 每请求重读（开关/adapter/token
       // 保存即生效，且每个知识库各有一份）；就绪探测每次都真跑一次
       // `opencli --version`（几百毫秒），只在按钮预检与每次起任务前发生，
       // 不做缓存以免装完 adapter 还要等 TTL。
-      wechatConfig: (req) => target(req).wechatConfig(),
+      wechatConfig: (req) => target(req)?.wechatConfig() ?? fallbackWechat,
       wechatRunner: () => wechatRunner,
       wechatReady: async (req) => {
-        const cfg = target(req).wechatConfig()
+        const cfg = target(req)?.wechatConfig() ?? fallbackWechat
         return checkWechatReady({ enabled: cfg.enabled, command: cfg.command })
       },
     })
     const adminDeps: AdminDeps = {
-      server: (req) => target(req).server,
-      getClient: (req) => target(req).client(),
-      getWikiPath: (req) => target(req).path,
+      server: (req) => target(req)?.server,
+      getClient: (req) => target(req)?.client(),
+      getWikiPath: (req) => target(req)?.path ?? defaultPath(),
       twRoot: resolveTwRoot,
-      config: (req) => target(req).config,
+      config: (req) => target(req)?.config ?? idleConfig,
       // A settings-page save may change prompt.*: re-register the section (no
       // dsh web restart) and expose the built text for the preview panel.
       // startup.readyTimeoutMs is re-applied here too (next start/restart).
@@ -826,7 +875,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // now); with a draft → the settings form's unsaved values (v0.22.7),
       // through the same builder.
       getPrompt: (draft, req) =>
-        describePrompt(draft ?? (target(req).eff().prompt ?? {}) as PromptConfig, tiddlywikiToolSummary()),
+        describePrompt(draft ?? ((target(req)?.eff() ?? baseShape).prompt ?? {}) as PromptConfig, tiddlywikiToolSummary()),
       // Runtime wiki location (v0.22.0): read the current folder + how it was
       // decided, switch to another one, or drop back to the cordis default.
       wiki: {
@@ -868,9 +917,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       } catch { /* startup issues are already logged */ }
       // Flush a pending auto-commit BEFORE teardown, so a write made within the
       // debounce window is not left uncommitted when dsh web stops (best-effort).
-      try { await instance.flushCommitter() } catch { /* best-effort */ }
+      try { await defaultInstance()?.flushCommitter() } catch { /* best-effort */ }
       disposeAll()
-      await instance.dispose()
+      // Release EVERY knowledge base (stop + committer + watcher). A failure in
+      // one must not leave the others running — the farm already guarantees that.
+      await farm?.disposeAll()
     })()
   }, 'dsh-tiddlywiki: host teardown')
 }

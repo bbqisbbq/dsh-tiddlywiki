@@ -368,7 +368,7 @@ await test('index.ts：runSwitch 必须有 disposed 守卫并在收尾重新 tea
     /if \(disposed\) return \{ ok: false, error: '插件正在卸载，已取消切换'/,
     'runSwitch 必须在开始检查 disposed',
   )
-  assert.match(hostIndex, /if \(disposed\) await instance\.teardownExtras\(\)/, '切换完成时若已 disposed，必须重新释放 extras')
+  assert.match(hostIndex, /if \(disposed\) await \w+\.teardownExtras\(\)/, '切换完成时若已 disposed，必须重新释放 extras')
 })
 
 console.log('')

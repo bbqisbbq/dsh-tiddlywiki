@@ -266,12 +266,18 @@ export class WikiInstance {
     return { enabled: b.enabled === true, port, token, tag }
   }
 
-  /** Effective UI flags for THIS wiki (mirrors effectiveUi() in index.ts). */
-  uiDefaults(): UiDefaultsPublic {
-    const ui = this.eff().ui ?? {}
+  /**
+   * Effective UI flags from a config overlay.
+   *
+   * STATIC on purpose (v0.28.0): the plugin also needs them when NO wiki is
+   * running — a stopped farm must answer the settings page with the cordis base
+   * values instead of inventing them, and duplicating this mapping in index.ts
+   * is exactly the kind of drift this repo keeps paying for.
+   */
+  static uiDefaultsFrom(base: WikiInstanceBase, ui: PluginConfigShape['ui'] = {}): UiDefaultsPublic {
     const palette = typeof ui.darkPalette === 'string' && ui.darkPalette.trim().length > 0 ? ui.darkPalette.trim() : DARK_PALETTE_DEFAULT
-    const label = typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : this.options.base.ui.sidebarLabel
-    const tabLabel = typeof ui.tabLabel === 'string' && ui.tabLabel.trim().length > 0 ? ui.tabLabel.trim() : this.options.base.ui.tabLabel
+    const label = typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : base.ui.sidebarLabel
+    const tabLabel = typeof ui.tabLabel === 'string' && ui.tabLabel.trim().length > 0 ? ui.tabLabel.trim() : base.ui.tabLabel
     const quickNoteMode: 'native' | 'card' = ui.quickNoteMode === 'card' ? 'card' : 'native'
     return {
       showQuickNote: ui.showQuickNote !== false,
@@ -286,6 +292,11 @@ export class WikiInstance {
       showSessionTab: ui.showSessionTab !== false,
       showRightbarTab: ui.showRightbarTab !== false,
     }
+  }
+
+  /** Effective UI flags for THIS wiki. */
+  uiDefaults(): UiDefaultsPublic {
+    return WikiInstance.uiDefaultsFrom(this.options.base, this.eff().ui)
   }
 
   /** Effective 公众号发布 config for THIS wiki (read per request). */
@@ -521,18 +532,29 @@ export class WikiInstance {
    */
   async start(): Promise<void> {
     if (this.disposed) throw new Error(`知识库「${this.entryValue.id}」已卸载，无法启动`)
-    await this.server.start()
-    if (this.disposed) {
-      await this.server.stop().catch(() => undefined)
-      return
+    try {
+      await this.server.start()
+      if (this.disposed) {
+        await this.server.stop().catch(() => undefined)
+        return
+      }
+      await this.config.load(this.client())
+      this.applyServerTuning()
+      await this.bootstrapWiki()
+    } finally {
+      // Git bootstrap + the committer do NOT depend on the TW child: they must
+      // run even when the wiki FAILED to start, so every write is still versioned
+      // and a later retry finds a ready repository (pre-v0.28 behaviour, kept
+      // when the startup path moved in here).
+      if (!this.disposed) {
+        try {
+          await this.bootstrapGit()
+          if (!this.disposed) this.setupExtras()
+        } catch (err) {
+          this.log(`git bootstrap failed: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
     }
-    await this.config.load(this.client())
-    this.applyServerTuning()
-    await this.bootstrapWiki()
-    if (this.disposed) return
-    await this.bootstrapGit()
-    if (this.disposed) return
-    this.setupExtras()
   }
 
   /**

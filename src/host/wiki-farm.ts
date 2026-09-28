@@ -56,9 +56,9 @@ export interface WikiRuntime {
   updateEntry(entry: WikiEntry): void
 }
 
-export interface WikiFarmOptions {
+export interface WikiFarmOptions<T extends WikiRuntime = WikiRuntime> {
   /** Build a runtime for one entry (injected so tests can use fakes). */
-  createRuntime: (entry: WikiEntry) => WikiRuntime
+  createRuntime: (entry: WikiEntry) => T
   log?: (message: string) => void
 }
 
@@ -76,13 +76,18 @@ export interface FarmChange {
   errors: Array<{ id: string; message: string }>
 }
 
-export class WikiFarm {
+/**
+ * `T` is the concrete runtime type: the host instantiates
+ * `WikiFarm<WikiInstance>` so it can reach instance-only members (config store,
+ * bootstrap, committer) without a cast; tests instantiate the default with fakes.
+ */
+export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
   private registryValue: WikiRegistry
-  private readonly runtimes = new Map<string, WikiRuntime>()
+  private readonly runtimes = new Map<string, T>()
   private errors: Array<{ id: string; message: string }> = []
   private readonly log: (message: string) => void
 
-  constructor(registry: WikiRegistry, private readonly options: WikiFarmOptions) {
+  constructor(registry: WikiRegistry, private readonly options: WikiFarmOptions<T>) {
     this.registryValue = registry
     this.log = options.log ?? ((message) => { console.warn('[dsh-tiddlywiki]', message) })
   }
@@ -98,21 +103,39 @@ export class WikiFarm {
   }
 
   /** The runtime for `id`, or undefined when it is not running. */
-  runtime(id: string): WikiRuntime | undefined {
+  runtime(id: string): T | undefined {
     return this.runtimes.get(id)
+  }
+
+  /** Every running runtime, in start order (plugin-wide tuning walks this). */
+  allRuntimes(): T[] {
+    return [...this.runtimes.values()]
   }
 
   /**
    * The runtime legacy/agent traffic falls back to: the registry default when
    * it is running, else the first running one. Undefined = nothing is up.
    */
-  defaultRuntime(): WikiRuntime | undefined {
+  defaultRuntime(): T | undefined {
     const preferred = defaultEntry(this.registryValue)
     if (preferred !== undefined) {
       const match = this.runtimes.get(preferred.id)
       if (match !== undefined) return match
     }
     return this.runtimes.values().next().value
+  }
+
+  /**
+   * Adopt a registry WITHOUT reconciling the running set.
+   *
+   * The single-mode folder switch MUST keep `switchWiki()`'s rollback semantics
+   * (stop → repoint → start → bootstrap, and on failure put the old wiki back),
+   * so it performs the move itself and only needs the farm to agree afterwards.
+   * Going through `apply()` there would reconcile a runtime the caller just
+   * repointed — stopping and rebuilding the very wiki it had just started.
+   */
+  syncRegistry(next: WikiRegistry): void {
+    this.registryValue = next
   }
 
   /** Should this entry be running right now (mode + autostart)? */
@@ -196,7 +219,7 @@ export class WikiFarm {
    */
   async startEntry(entry: WikiEntry): Promise<void> {
     if (this.runtimes.has(entry.id)) return
-    let runtime: WikiRuntime
+    let runtime: T
     try {
       runtime = this.options.createRuntime(entry)
     } catch (err) {

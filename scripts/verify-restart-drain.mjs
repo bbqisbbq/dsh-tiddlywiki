@@ -117,8 +117,8 @@ await test('src/index.ts：知识库切换的 stopServer 必须委托会排干�
   // 断言因此变成「必须委托，且不得直接 server.stop()」——直接调用仍然会丢队列，
   // 而这正是本脚本第 5 行的由来。
   assert.ok(
-    /stopServer: async \(\) => \{[\s\S]{0,200}?await instance\.drainStop\(\)/.test(src),
-    'runSwitch 的 stopServer 必须委托 instance.drainStop()（旧实现直接 server.stop()，队列里的写入随子进程一起没了）',
+    /stopServer: async \(\) => \{[\s\S]{0,200}?await \w+\.drainStop\(\)/.test(src),
+    'runSwitch 的 stopServer 必须委托 <runtime>.drainStop()（旧实现直接 server.stop()，队列里的写入随子进程一起没了）',
   )
   const stopServerAt = src.indexOf('stopServer: async () => {')
   assert.ok(stopServerAt >= 0, '找不到 runSwitch 的 stopServer 定义 —— 断言失效')
