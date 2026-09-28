@@ -809,6 +809,34 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   .dsh-tw-note-card,
   .dsh-tw-fab-menu { animation: none; }
 }
+
+/* ── 设置页分页与作用域条（v0.28.8，反馈 3/4/11）─────────────────────────
+   多库时页面按「总览 / 本库配置 / 全局」分开，并常驻显示正在配置哪个库。
+   单库模式三者都不渲染，所以下面这些类在单库 DOM 里根本不出现。 */
+.dsh-tw-settings-tabs {
+  display: flex; gap: 4px; margin: 0 0 10px; padding: 3px;
+  border-radius: 10px; background: var(--dsw-alias-bg-layer-2, rgba(0,0,0,.04));
+}
+.dsh-tw-settings-tab {
+  flex: 1; border: 0; background: transparent; cursor: pointer; font: inherit;
+  font-size: 12px; padding: 6px 10px; border-radius: 8px;
+  color: var(--dsw-alias-label-secondary, #555);
+}
+.dsh-tw-settings-tab:hover { color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-settings-tab-active {
+  background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #222);
+  font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08);
+}
+/* sticky：列表在页面下方，往回滚时这条必须还在（它就是"我在改哪个库"的答案）。 */
+.dsh-tw-settings-scopebar {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 10px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.dsh-tw-settings-scopebar-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-settings-scopebar-exit { margin-left: auto; }
 `
 
 /**

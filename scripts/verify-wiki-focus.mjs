@@ -427,5 +427,50 @@ test('「侧边栏 TW 入口显示名称」只在单库模式出现（作者 202
   assert.ok(!/rosterMode !== 'single'/.test(settings), '不能用 !== single 判定（未知模式会被误判成多库）')
 })
 
+test('设置页分页：多库时按「总览/本库配置/全局」分开，且能退出配置（v0.28.8，反馈 3/4/11）', () => {
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+
+  // ── 反馈 4：改完配置后既看不到「在改哪个库」也退不出去 ──
+  // 根因两层：作用域只有一行灰字（列表在页面下方，得往回滚）；且 editingWiki 是
+  // 模块级变量，从前**没有任何路径**把它清回默认库 —— 连关掉设置页再打开都还在。
+  assert.match(settings, /function renderScopeBar\(/, '必须有常驻的作用域条')
+  assert.match(settings, /dsh-tw-settings-scopebar/, '作用域条要有自己的类名（sticky 靠 CSS）')
+  assert.match(settings, /'退出配置'/, '必须提供「退出配置」按钮（这是反馈里找不到的出口）')
+  assert.match(settings, /editingWiki = undefined/, '退出配置必须把 editingWiki 清回默认库')
+  // 「配置」按钮不能再是单程票：从前它 disable 成「正在配置」就再也点不回去了。
+  assert.match(settings, /configuring \? '退出配置' : '配置'/, '「配置」必须是个开关（可再次点击退出）')
+  assert.ok(
+    !/configure\.disabled = configuring/.test(settings),
+    '「配置」按钮不得在配置中禁用（禁用 = 没有出口，正是本次反馈）',
+  )
+
+  // ── 反馈 3：按库生效的面板在多库时必须先选库才显示 ──
+  // 受众是 catalog（插件/主题/语言）+ seeds（初始化）两块：它们已经按库作用域
+  // （withWiki 带 ?wiki=），但从前多库下**一直显示**，看着像在改全局。
+  assert.match(settings, /renderPickLibraryHint/, '多库未选库时必须给「先去总览选一个」的提示')
+  assert.match(settings, /const libraryPicked = !multi \|\| editingWiki !== undefined/, '必须按「多库且已选库」判定是否渲染这些面板')
+  const mainAt = settings.indexOf('function renderMain(')
+  // 取到下一个顶层函数声明为止（renderMain 后面是 SettingsSection），而不是靠固定
+  // 字符数截断 —— 函数体会长，切短了会误报「没被包着」。
+  const mainEnd = settings.indexOf('/** React wrapper consumed by the shell', mainAt)
+  const main = settings.slice(mainAt, mainEnd > mainAt ? mainEnd : mainAt + 6000)
+  assert.match(main, /if \(showLibrary && libraryPicked\)\s*\{[\s\S]*?renderCatalogSection/, 'catalog（插件/主题/语言）必须被这个判定包着')
+  assert.match(main, /if \(showLibrary && libraryPicked\)\s*\{[\s\S]*?renderSeedsSection/, 'seeds（初始化）必须被这个判定包着')
+
+  // ── 反馈 11：分类靠 Tab，且单库完全不受影响 ──
+  assert.match(settings, /type SettingsTab = 'overview' \| 'library' \| 'global'/, '三个 Tab 的联合类型必须存在')
+  assert.match(settings, /function renderTabBar\(/, '必须有 Tab 栏渲染函数')
+  // 单库不显示 Tab 栏：`if (mode !== 'multi') return` 是这条的判据（DOM 逐字不变）。
+  const tabFn = settings.slice(settings.indexOf('function renderTabBar('), settings.indexOf('function renderTabBar(') + 600)
+  assert.match(tabFn, /if \(mode !== 'multi'\) return/, '单库模式不得渲染 Tab 栏（保持平铺、DOM 逐字不变）')
+  const scopeFn = settings.slice(settings.indexOf('function renderScopeBar('), settings.indexOf('function renderScopeBar(') + 400)
+  assert.match(scopeFn, /if \(mode !== 'multi'\) return/, '单库模式不得渲染作用域条（没有"作用域"可言）')
+  // 单库时三块都要渲染（showX 两个条件里的 !multi 分支）。
+  assert.match(settings, /const showOverview = !multi \|\| activeTab === 'overview'/, '单库必须始终渲染总览')
+  assert.match(settings, /const showGlobal = !multi \|\| activeTab === 'global'/, '单库必须始终渲染全局配置')
+  // 点「配置」要跳到「本库配置」，否则那次点击看起来没反应。
+  assert.match(settings, /if \(!configuring\) activeTab = 'library'/, '点「配置」应切到「本库配置」页')
+})
+
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)

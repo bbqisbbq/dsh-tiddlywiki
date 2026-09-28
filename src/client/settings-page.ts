@@ -1154,12 +1154,25 @@ function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, ref
       const actions = make('div', 'dsh-tw-settings-row')
       // 「配置」把常规配置区切到这个库（每个库的配置存在它自己的 config tiddler 里，
       // 不说清楚就会出现"改了但不生效"）。
+      //
+      // v0.28.8（反馈 4）：从前这里一旦点过就被 disable 成「正在配置」，且没有任何
+      // 反向操作 —— `editingWiki` 是模块级变量，连关掉设置页再打开都退不出去，作者
+      // 因此找不到出口。现在它是个**开关**：已在配置中就显示「退出配置」并可点击。
       const configuring = editingWiki === wiki.id
-      const configure = make('button', `dsh-tw-settings-btn dsh-tw-settings-chipbtn${configuring ? ' dsh-tw-settings-primary' : ''}`, configuring ? '正在配置' : '配置')
+      const configure = make(
+        'button',
+        `dsh-tw-settings-btn dsh-tw-settings-chipbtn${configuring ? ' dsh-tw-settings-primary' : ''}`,
+        configuring ? '退出配置' : '配置',
+      )
       configure.type = 'button'
-      configure.disabled = configuring
+      configure.title = configuring
+        ? `回到默认知识库的配置（当前正在配置「${wiki.label}」）`
+        : `把配置区切换到「${wiki.label}」（每个库有自己的配置 tiddler）`
       configure.addEventListener('click', () => {
-        editingWiki = wiki.id
+        editingWiki = configuring ? undefined : wiki.id
+        // 选库就切到「本库配置」那一页：用户点「配置」想看的就是按库生效的那几块
+        // （插件/主题/语言/初始化），停在「总览」会让这次点击看起来没反应。
+        if (!configuring) activeTab = 'library'
         void refresh()
       })
       const power = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.running ? '停止' : '启动')
@@ -1675,6 +1688,97 @@ interface CatalogPending {
   themeActive?: string
 }
 
+/**
+ * 设置页的分页（v0.28.8，反馈 11）。
+ *
+ * 为什么要有 Tab：多库之后页面上的东西分成了三类，混在一起平铺就出现了作者报的
+ * 那个问题——「多库时这些配置项应该隐藏，点配置某个库时才展示」以及「不知道在改
+ * 哪个库」。分类本身就是答案：
+ *   · overview：状态 + 知识库列表（唯一的「全局」入口）
+ *   · library ：**被选中那个库**的配置（含插件/主题/语言/初始化），多库时必须先选库
+ *   · global  ：插件级、与具体库无关的开关（git 策略/注入提示词/UI/剪藏桥/公众号）
+ *
+ * 单库模式下不显示 Tab 栏（DOM 与以前逐字相同），直接按 overview+library+global
+ * 的顺序平铺——单库用户不需要为「哪个库」这个概念付任何认知成本。
+ */
+type SettingsTab = 'overview' | 'library' | 'global'
+
+/** 当前 Tab。模块级（与 editingWiki 同级）：切换 Tab 不重建配置表单。 */
+let activeTab: SettingsTab = 'overview'
+
+/** Tab 栏文案。 */
+const TAB_LABELS: Array<{ id: SettingsTab; label: string }> = [
+  { id: 'overview', label: '总览' },
+  { id: 'library', label: '本库配置' },
+  { id: 'global', label: '全局' },
+]
+
+/**
+ * 顶部配置作用域条（v0.28.8，反馈 4）。
+ *
+ * 症状：「多库时点击配置，按钮变为正在配置，改了配置之后，没有保存配置以及退出的
+ * 配置的入口」。原文有两层意思，这里都要解决：
+ *   1. **看得见**在配置哪个库（此前只有一行灰字，且列表在页面下方，得往回滚）；
+ *   2. **退得出去**——`editingWiki` 是模块级变量，以前没有任何路径把它清回默认库，
+ *      连关掉设置页再打开都还在那个库上（作者就是因此找不到出口）。
+ *
+ * 所以这条是 sticky 的，且**只有多库模式**才渲染（单库没有"作用域"可言）。
+ */
+function renderScopeBar(body: HTMLElement, mode: string | undefined, refresh: () => Promise<void>): void {
+  if (mode !== 'multi') return
+  const bar = make('div', 'dsh-tw-settings-scopebar')
+  const label = editingWiki === undefined
+    ? '正在配置：默认知识库'
+    : `正在配置：${editingWiki}`
+  bar.append(make('span', 'dsh-tw-settings-scopebar-label', label))
+  bar.append(make('span', 'dsh-tw-settings-muted', editingWiki === undefined
+    ? '在「总览」里点某个库的「配置」可切到那个库'
+    : '编辑的是该库自己的配置 tiddler；改完记得点下面的「保存配置」'))
+  if (editingWiki !== undefined) {
+    const exit = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn dsh-tw-settings-scopebar-exit', '退出配置')
+    exit.type = 'button'
+    exit.title = '回到默认知识库的配置（不影响已保存的内容）'
+    exit.addEventListener('click', () => {
+      editingWiki = undefined
+      void refresh()
+    })
+    bar.append(exit)
+  }
+  body.append(bar)
+}
+
+/** Tab 栏：只在多库模式下出现（单库平铺，见 SettingsTab 注释）。 */
+function renderTabBar(body: HTMLElement, mode: string | undefined, refresh: () => Promise<void>): void {
+  if (mode !== 'multi') return
+  const bar = make('div', 'dsh-tw-settings-tabs')
+  bar.setAttribute('role', 'tablist')
+  for (const tab of TAB_LABELS) {
+    const active = activeTab === tab.id
+    const btn = make('button', `dsh-tw-settings-tab${active ? ' dsh-tw-settings-tab-active' : ''}`, tab.label)
+    btn.type = 'button'
+    btn.setAttribute('role', 'tab')
+    btn.setAttribute('aria-selected', active ? 'true' : 'false')
+    btn.addEventListener('click', () => {
+      if (activeTab === tab.id) return
+      activeTab = tab.id
+      void refresh()
+    })
+    bar.append(btn)
+  }
+  body.append(bar)
+}
+
+/**
+ * 多库模式下「本库配置」必须有明确的库；没有就提示先选一个（v0.28.8，反馈 3）。
+ *
+ * 这正是需求原文：「下方的插件管理/主题管理/语言管理/初始化等等这些配置项目在多库
+ * 的情况下应该隐藏，点击配置相应的库的时候才展示出来让人配置」。
+ */
+function renderPickLibraryHint(body: HTMLElement): void {
+  body.append(make('div', 'dsh-tw-settings-muted',
+    '插件管理（自带官方插件）/ 主题管理 / 语言管理 / 初始化，都是**按知识库**生效的。请先在「总览」里点某个库的「配置」，这里才会显示它们。'))
+}
+
 function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState, catalogPending: CatalogPending, rosterMode?: string): void {
   body.replaceChildren()
   // Loud, above everything else: an unparseable config tiddler means the config
@@ -1704,16 +1808,31 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
     configState.host = host
     configState.signature = signature
   }
-  // 配置作用域（v0.28.0）：每个库的配置存在它自己的 config tiddler 里，含糊其辞就会
-  // 出现"改了但不生效"——所以这一行必须说清下面的表单在编辑哪个库。
-  body.append(make('div', 'dsh-tw-settings-muted', editingWiki === undefined
-    ? '配置作用域：默认知识库（在「知识库列表」里点某行的「配置」可切到那个库）'
-    : `配置作用域：${editingWiki}（在「知识库列表」里改；编辑的是该库自己的配置 tiddler）`))
-  body.append(configState.host)
-  renderWikiListSection(body, isDisposed, refresh)
-  renderWikiLocationSection(body, isDisposed, refresh)
-  renderCatalogSection(body, state.info, state.catalog, state.runtimePlugins, refresh, catalogPending)
-  renderSeedsSection(body, isDisposed)
+  // Tab 栏 + 作用域条（v0.28.8）：多库时页面按「总览 / 本库配置 / 全局」分开，
+  // 并在最上方 sticky 地说明正在配置哪个库、随时可以退出。单库两者都不渲染，
+  // 于是下面的渲染顺序就是以前那一条平铺（DOM 逐字不变）。
+  renderTabBar(body, rosterMode, refresh)
+  renderScopeBar(body, rosterMode, refresh)
+  const multi = rosterMode === 'multi'
+  // 单库：全部平铺（与以前一致）。多库：按当前 Tab 只渲染对应的一组。
+  const showOverview = !multi || activeTab === 'overview'
+  const showLibrary = !multi || activeTab === 'library'
+  const showGlobal = !multi || activeTab === 'global'
+  // 多库 + 「本库配置」但还没选库：只给一句「先去总览选一个」，不渲染按库生效的面板
+  // （需求 3：多库时这些项目应当隐藏，选中某个库后才出现）。
+  const libraryPicked = !multi || editingWiki !== undefined
+
+  if (showGlobal) body.append(configState.host)
+  if (showOverview) {
+    renderWikiListSection(body, isDisposed, refresh)
+    renderWikiLocationSection(body, isDisposed, refresh)
+  }
+  if (showLibrary && libraryPicked) {
+    renderCatalogSection(body, state.info, state.catalog, state.runtimePlugins, refresh, catalogPending)
+    renderSeedsSection(body, isDisposed)
+  } else if (showLibrary) {
+    renderPickLibraryHint(body)
+  }
 }
 
 /** React wrapper consumed by the shell's settings.section slot. */
