@@ -492,6 +492,22 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-fab-item[data-current="1"] { font-weight: 600; }
 
+/* ── 会话级知识库选择器（v0.28.0，同一个 conversation.input.dock 槽位）──
+   与快速笔记按钮同区、纵向 flex 排列；只在"多于一个可见库"时渲染（组件自己返回
+   null），所以单库安装这一整块都不存在。 */
+.dsh-tw-scope-dock {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 4px 8px 0; box-sizing: border-box; width: 100%; font-size: 12px;
+}
+.dsh-tw-scope-label { opacity: .7; }
+.dsh-tw-scope-select {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: inherit; font: inherit; font-size: 12px;
+  padding: 3px 8px; border-radius: 999px; max-width: 260px;
+}
+.dsh-tw-scope-select:disabled { opacity: .6; }
+.dsh-tw-scope-note { opacity: .75; }
+
 /* ── input-dock quick-note button（聊天输入框上方，conversation.input.dock）──
    该槽位渲染为「输入框上方的全宽条目」纵向 flex 排列（todo/cost-meter/goal/
    queue/git-graph 等插件同区），此按钮以紧凑小胶囊呈现，不与其他条目重叠。

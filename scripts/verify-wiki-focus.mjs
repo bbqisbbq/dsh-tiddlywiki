@@ -106,5 +106,28 @@ test('setFocusWiki：写入即持久化，且只在真的变化时通知', () =>
   assert.equal(notified, 2, '退订后不得再收到通知')
 })
 
+// ── 会话选择器的接线（源码级：组件是 React，零 DOM 环境下只能这样断）──────────
+const { readFileSync } = await import('node:fs')
+const dockSrc = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
+const indexSrc = readFileSync(path.join(repoRoot, 'src/client/index.ts'), 'utf8')
+
+test('会话选择器：只列 agentVisible 的库，且单库时整块不渲染', () => {
+  assert.match(dockSrc, /filter\(\(wiki\) => wiki\.agentVisible\)/, '名册必须先按 agentVisible 过滤（宿主也会拒绝隐身库）')
+  assert.match(dockSrc, /if \(sessionId === undefined \|\| wikis\.length <= 1\) return null/, '单库安装不得出现这个控件')
+})
+
+test('会话选择器：走 /session/wiki，清空选择发 null 而不是空字符串', () => {
+  assert.match(dockSrc, /\/session\/wiki/)
+  assert.match(dockSrc, /wiki: next\.length > 0 \? next : null/, '清除选择必须发 null')
+  // 选中一个没在跑的库会在宿主侧把它起起来，冷启动可能几十秒——预算必须够。
+  assert.match(dockSrc, /AbortSignal\.timeout\(120_000\)/, '启动一个库可能要几十秒，超时不能太短')
+})
+
+test('会话选择器：挂在 conversation.input.dock（scope=session，组件能拿到 sessionId）', () => {
+  assert.match(indexSrc, /id: 'wiki-scope'/)
+  assert.match(indexSrc, /name: 'conversation\.input\.dock'/)
+  assert.match(dockSrc, /interface DockProps \{ sessionId\?: string \}/, '组件的 props 必须含 sessionId（该槽位 scope=session）')
+})
+
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)
