@@ -298,6 +298,18 @@ export interface RouteDeps {
   wechatRunner: () => WechatPublishFace | undefined
   /** Readiness report (opencli + adapter files) for the button's precheck. */
   wechatReady: (req: IncomingMessage) => Promise<WechatReadyView>
+  /**
+   * Per-session knowledge-base scope (v0.28.0): what this conversation works on.
+   * The composer's selector reads and writes it; the agent tools and the
+   * injected prompt are driven by the same value, so what the user picks is what
+   * the model gets.
+   */
+  sessionScope?: {
+    /** Current choice + what it resolves to (and why, when it cannot serve). */
+    get: (sessionId: string) => { scope?: string; resolved?: { id: string; label: string }; reason?: string }
+    /** Point the session at a wiki, or clear the choice with `undefined`. */
+    set: (sessionId: string, wikiId: string | undefined) => Promise<void>
+  }
 }
 
 /**
@@ -740,6 +752,80 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const SUMMARY_REUSE_MS = 3_000
   const summaryInFlight = new Map<string, { at: number; value: Promise<SessionSummaryResult> }>()
+
+  /**
+   * GET /dsh-tiddlywiki/session/wiki?session=<id> — which knowledge base this
+   * conversation works on, plus what it resolves to right now.
+   *
+   * The per-wiki selector in the composer reads this; the agent tools and the
+   * injected prompt are driven by the SAME value, so what the user picks is what
+   * the model gets.
+   */
+  const handleSessionWiki = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectNonRead(req, res)) return
+      if (deps.sessionScope === undefined) {
+        json(res, { ok: false, error: '会话作用域不可用（宿主未接线）' }, 503)
+        return
+      }
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+      const session = (url.searchParams.get('session') ?? '').trim()
+      if (session.length === 0) {
+        json(res, { ok: false, error: 'session is required' }, 400)
+        return
+      }
+      json(res, { ok: true, session, ...deps.sessionScope.get(session) })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+    }
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/session/wiki { session, wiki } — point this conversation
+   * at a knowledge base (`wiki: null`/`''` clears the choice and falls back to
+   * the default).
+   *
+   * A HIDDEN wiki is refused (400): `agentVisible: false` means "the agent never
+   * reaches this one", and a selector that lets a session pick it would quietly
+   * contradict the setting the user just made.
+   */
+  const handleSessionWikiSet = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (deps.sessionScope === undefined) {
+        json(res, { ok: false, error: '会话作用域不可用（宿主未接线）' }, 503)
+        return
+      }
+      let body: { session?: unknown; wiki?: unknown } = {}
+      try {
+        body = JSON.parse(await readBody(req)) as { session?: unknown; wiki?: unknown }
+      } catch {
+        json(res, { ok: false, error: '请求体必须是 JSON' }, 400)
+        return
+      }
+      const session = typeof body.session === 'string' ? body.session.trim() : ''
+      if (session.length === 0) {
+        json(res, { ok: false, error: 'session is required' }, 400)
+        return
+      }
+      const raw = typeof body.wiki === 'string' ? body.wiki.trim() : ''
+      const wikiId = raw.length === 0 ? undefined : raw
+      await deps.sessionScope.set(session, wikiId)
+      json(res, { ok: true, session, ...deps.sessionScope.get(session) })
+    } catch (err) {
+      // A refusal from the host (unknown / hidden wiki, bad session id) is the
+      // caller's problem: 400 + the reason, so the picker can say what happened.
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 400)
+    }
+  }
+
+  /** `/session/wiki` takes both methods on ONE registration (see /admin/wikis). */
+  const handleSessionWikiRoute = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if ((req.method ?? 'GET').toUpperCase() === 'POST') {
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      return handleSessionWikiSet(req, res)
+    }
+    return handleSessionWiki(req, res)
+  }
 
   /**
    * POST /dsh-tiddlywiki/session/summary — 生成当前会话的 wiki 汇总页（「知识库」
@@ -1988,6 +2074,8 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/upload`, handler: guardHandler(handleUpload) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/restart`, handler: guardHandler(handleRestart) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/session/summary`, handler: guardHandler(handleSessionSummary) }),
+    // One path, both methods (the host webserver dispatches by pathname only).
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/session/wiki`, handler: guardHandler(handleSessionWikiRoute) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/sessions`, handler: guardHandler(handleAgentSessions) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/modes`, handler: guardHandler(handleAgentModes) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: guardHandler(handleAgentSend) }),

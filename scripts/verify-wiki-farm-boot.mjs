@@ -20,7 +20,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ConfigStore, GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, applyWikiAction, entryPath, registerAdminRoutes, registerRoutes, resolveTwRoot, targetRuntimeFor, writeRegistry } from '../lib/index.js'
+import { ConfigStore, GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, applyWikiAction, entryPath, registerAdminRoutes, registerRoutes, resolveAgentScope, resolveTwRoot, targetRuntimeFor, writeRegistry } from '../lib/index.js'
 import { createRouteServer } from './lib/tw-harness.mjs'
 
 let failures = 0
@@ -147,13 +147,39 @@ try {
   })
 
   // ── 路由层：把真实路由挂到已启动的农场上（真 HTTP，不是直接调 handler）──────
+  // 注意：`registerRoutes` 一次就把**全部**路由注册齐（含 /session/wiki），所以
+  // deps 必须一次给全 —— 再调一次只会被最先注册的那份挡住（第一版就栽在这里）。
   const registered = []
+  const sessionScopes = {}
+  const sessionScopeFace = {
+    get: (sessionId) => {
+      const resolution = resolveAgentScope(farm, sessionScopes, sessionId)
+      return {
+        ...(sessionScopes[sessionId] !== undefined ? { scope: sessionScopes[sessionId] } : {}),
+        ...(resolution.entry !== undefined ? { resolved: { id: resolution.entry.id, label: resolution.entry.label } } : {}),
+        ...(resolution.reason !== undefined ? { reason: resolution.reason } : {}),
+      }
+    },
+    set: async (sessionId, wikiId) => {
+      if (wikiId !== undefined) {
+        const entry = farm.registry.wikis.find((item) => item.id === wikiId)
+        if (entry === undefined) throw new Error(`知识库「${wikiId}」不在清单里`)
+        if (!entry.agentVisible) throw new Error(`知识库「${entry.label}」对 Agent 隐身，不能作为会话作用域`)
+        // 与 index.ts 相同的要点：工具是同步解析作用域的、自己从不启动任何东西，
+        // 所以"选中"必须顺手把它起起来。
+        if (farm.runtime(entry.id) === undefined) await farm.startEntry(entry)
+      }
+      if (wikiId === undefined) delete sessionScopes[sessionId]
+      else sessionScopes[sessionId] = wikiId
+    },
+  }
   const disposeRoutes = registerRoutes(
     { webServer: { register: (route) => { registered.push(route); return () => {} } } },
     {
       // 与 index.ts 用**同一个** selector 实现（targetRuntimeFor）：测试里再写一份
       // "怎么解析 ?wiki=" 就正好是这份仓库最贵的那种漂移（第一版就是栽在这里）。
       server: (req) => targetRuntimeFor(farm, req)?.server,
+      sessionScope: sessionScopeFace,
       wikiSummaries: () => ({
         mode: farm.registry.mode,
         defaultId: farm.registry.defaultId,
@@ -320,6 +346,50 @@ try {
     assert.equal(farm.runtime('d'), undefined, '删掉的库必须被停掉并释放')
     const onDisk = JSON.parse(await readFile(controlFile, 'utf8'))
     assert.deepEqual(onDisk.wikis.map((w) => w.id), ['a', 'b', 'c'])
+  })
+
+  // ── 会话级作用域（composer 选择器的后端，v0.28.0）────────────────────────────
+  await test('/session/wiki：未选时给出解析结果（正在跑的可见库），且没有 scope', async () => {
+    const payload = await (await fetch(`${baseUrl}/dsh-tiddlywiki/session/wiki?session=s-1`)).json()
+    assert.equal(payload.ok, true)
+    assert.equal(payload.scope, undefined, '没选过就不该有 scope')
+    assert.equal(payload.resolved.id, 'c', '运行集中可见的只有 c（a 没在跑、b 隐身）')
+  })
+
+  await test('/session/wiki：选中一个「可见但没在跑」的库 → 顺手起起来（工具是同步解析的）', async () => {
+    assert.equal(farm.runtime('a'), undefined, '前置：a 当前没在跑')
+    const res = await fetch(`${baseUrl}/dsh-tiddlywiki/session/wiki`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 's-1', wiki: 'a' }),
+    })
+    assert.equal(res.status, 200)
+    const payload = await res.json()
+    assert.equal(payload.scope, 'a')
+    assert.equal(payload.resolved.id, 'a')
+    assert.equal(farm.runtime('a')?.server.status().status, 'running', '选中必须把库起起来')
+    const again = await (await fetch(`${baseUrl}/dsh-tiddlywiki/session/wiki?session=s-1`)).json()
+    assert.equal(again.scope, 'a', 'GET 必须反映刚落定的选择')
+  })
+
+  await test('/session/wiki：隐身库与不存在的库都被拒（400），且不改变现有选择', async () => {
+    for (const wiki of ['b', 'nope']) {
+      const res = await fetch(`${baseUrl}/dsh-tiddlywiki/session/wiki`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ session: 's-1', wiki }),
+      })
+      assert.equal(res.status, 400, `${wiki} 应被拒`)
+      const payload = await res.json()
+      assert.match(payload.error, wiki === 'b' ? /隐身/ : /不在清单里/)
+    }
+    const still = await (await fetch(`${baseUrl}/dsh-tiddlywiki/session/wiki?session=s-1`)).json()
+    assert.equal(still.scope, 'a', '被拒的请求不得改动已有选择')
+
+    const cleared = await (await fetch(`${baseUrl}/dsh-tiddlywiki/session/wiki`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 's-1', wiki: null }),
+    })).json()
+    assert.equal(cleared.ok, true)
+    assert.equal(cleared.scope, undefined, 'wiki=null 必须清除选择')
   })
 
   disposeAdmin()

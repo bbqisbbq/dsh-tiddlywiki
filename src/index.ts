@@ -45,7 +45,7 @@ import {
 import { switchWiki, type WikiSwitchResult } from './host/wiki-switch.ts'
 import { WikiInstance } from './host/wiki-instance.ts'
 import { WikiFarm, resolveAgentScope, targetRuntimeFor } from './host/wiki-farm.ts'
-import { defaultSessionScopeFile, readSessionScopes } from './host/session-scope.ts'
+import { defaultSessionScopeFile, isSafeSessionId, readSessionScopes, setSessionScope } from './host/session-scope.ts'
 import { RepoCommitters } from './host/repo-committers.ts'
 import {
   DEFAULT_WIKI_ID,
@@ -1086,6 +1086,38 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       // Same helper as the agent tool (one implementation, two callers): a pull
       // can change several knowledge bases that share one repository.
       restartAffected: (_req, dir, changedFiles) => restartAffectedWikis(dir, changedFiles),
+      // The composer's per-session selector (v0.28.0). Reading is a Map lookup;
+      // writing persists to session-scope.ts AND starts the wiki on demand — the
+      // tools resolve the scope SYNCHRONOUSLY and never start anything, so the
+      // selection itself has to bring the wiki up, or the very next tool call
+      // would have to refuse.
+      sessionScope: {
+        get: (sessionId: string) => {
+          const resolution = resolveAgentScope(farm, sessionScopes, sessionId)
+          const scopeId = sessionScopes[sessionId]
+          return {
+            ...(scopeId !== undefined ? { scope: scopeId } : {}),
+            ...(resolution.entry !== undefined ? { resolved: { id: resolution.entry.id, label: resolution.entry.label } } : {}),
+            ...(resolution.reason !== undefined ? { reason: resolution.reason } : {}),
+          }
+        },
+        set: async (sessionId: string, wikiId: string | undefined) => {
+          if (!isSafeSessionId(sessionId)) throw new Error('会话 id 非法')
+          if (wikiId !== undefined) {
+            const entry = farm?.registry.wikis.find((item) => item.id === wikiId)
+            if (entry === undefined) throw new Error(`知识库「${wikiId}」不在清单里`)
+            // `agentVisible: false` means "the agent never reaches this one"; a
+            // selector that allowed it would contradict the setting silently.
+            if (!entry.agentVisible) throw new Error(`知识库「${entry.label}」对 Agent 隐身，不能作为会话作用域`)
+            if (farm !== undefined && farm.runtime(entry.id) === undefined) await farm.startEntry(entry)
+          }
+          await setSessionScope(sessionId, wikiId, sessionScopeFile)
+          const next = { ...sessionScopes }
+          if (wikiId === undefined) delete next[sessionId]
+          else next[sessionId] = wikiId
+          sessionScopes = next
+        },
+      },
       getSessionController,
       getWorkspaceRegistry,
       getAgentPresets,
