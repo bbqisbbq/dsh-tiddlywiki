@@ -93,6 +93,18 @@ try {
     assert.match(result.error ?? '', /SKILL\.md/)
   })
 
+  await test('接线：技能安装必须排在 farm.startAll() **之前**', async () => {
+    const index = await readFile(join(repoRoot, 'src', 'index.ts'), 'utf8')
+    const installAt = index.indexOf('await installSplitSkill()')
+    const startAt = index.indexOf('await farm.startAll()')
+    assert.ok(installAt > 0, 'index.ts 必须调用 installSplitSkill（否则技能永远不会被安装）')
+    assert.ok(startAt > 0, '找不到 farm.startAll()')
+    // 真实事故（2026-09-28 作者重启宿主时发现）：安装写在 startAll() 之后，而那个 wiki 很大、
+    // 启动要几十秒 —— 于是"技能装没装"取决于"wiki 起得快不快"。它跟 wiki 毫无关系，必须在
+    // 最前面：wiki 慢、起不来、甚至配置坏了，技能都照装。
+    assert.ok(installAt < startAt, '技能安装必须早于 farm.startAll()，否则 wiki 起不来时技能永远装不上')
+  })
+
   await test('两边不漂移：五个问题在 skill 与 docs/wiki-split.md 里都在', async () => {
     const skill = await readBundledSkillText()
     const doc = await readFile(join(repoRoot, 'docs', 'wiki-split.md'), 'utf8')

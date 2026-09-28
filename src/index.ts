@@ -779,6 +779,27 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
 
   const startupTask = (async () => {
     try {
+      /**
+       * Ship the 「拆分知识库」 skill FIRST (v0.28.0).
+       *
+       * It is deliberately independent of the wiki: it only writes a file into
+       * `$DSH_HOME/skills`, and it must still happen when the wiki is slow to
+       * start, fails to start, or the user is mid-migration with a broken config.
+       * (It used to sit after `farm.startAll()` — which meant a wiki that never
+       * became ready also silently never installed the skill. Found by restarting
+       * a real host, not by a test.)
+       *
+       * A plugin cannot register a skill ROOT, so writing into the user's own root
+       * is the only zero-config path; it only ever touches its own file (the
+       * marker line decides — see host/skill-install.ts).
+       */
+      try {
+        const installed = await installSplitSkill()
+        if (installed.action === 'failed') console.warn('[dsh-tiddlywiki] 拆库 skill 安装失败：', installed.error)
+        else console.info(`[dsh-tiddlywiki] 拆库 skill：${installed.action}（${installed.path}）`)
+      } catch (err) {
+        console.warn('[dsh-tiddlywiki] 拆库 skill 安装异常：', err)
+      }
       // THE CONTROL FILE FIRST (v0.28.0): it carries the mode (single/multi), the
       // wiki list and the default id, and it must be read before anything starts
       // — which is exactly why it lives OUTSIDE every wiki (wiki-registry.ts).
@@ -824,19 +845,6 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       if (disposed) {
         await farm.disposeAll()
         return
-      }
-      // Ship the 「拆分知识库」 skill (v0.28.0). DSH's container for a multi-step
-      // procedure is a skill, and a plugin cannot register a skill ROOT — so it
-      // writes into the user's own root, and only ever touches its own file (the
-      // marker line decides; see host/skill-install.ts).
-      if (!disposed) {
-        try {
-          const installed = await installSplitSkill()
-          if (installed.action === 'failed') console.warn('[dsh-tiddlywiki] 拆库 skill 安装失败：', installed.error)
-          else console.info(`[dsh-tiddlywiki] 拆库 skill：${installed.action}（${installed.path}）`)
-        } catch (err) {
-          console.warn('[dsh-tiddlywiki] 拆库 skill 安装异常：', err)
-        }
       }
       // Clip bridge: bind once on the DEFAULT wiki's configured port (works even
       // while disabled — every request re-checks the effective enabled flag, so

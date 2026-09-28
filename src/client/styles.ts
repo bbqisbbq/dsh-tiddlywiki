@@ -513,6 +513,15 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-scope-select:disabled { opacity: .6; }
 .dsh-tw-scope-note { opacity: .75; }
+/* 快速笔记卡片的目标库选择（v0.28.0，R7）：只在多库时出现。 */
+.dsh-tw-note-wiki { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.dsh-tw-note-wiki-label { opacity: .7; }
+.dsh-tw-note-wiki-select {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: inherit; font: inherit; font-size: 12px;
+  padding: 2px 6px; border-radius: 999px; max-width: 220px;
+}
+.dsh-tw-note-wiki-hint { font-size: 12px; opacity: .75; }
 
 /* ── input-dock quick-note button（聊天输入框上方，conversation.input.dock）──
    该槽位渲染为「输入框上方的全宽条目」纵向 flex 排列（todo/cost-meter/goal/

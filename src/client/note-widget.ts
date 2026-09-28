@@ -29,8 +29,9 @@
 import { toast } from './toast.ts'
 import { openEditorPopup, isEditorPopupOpen, isEditorPopupBlank } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
+import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, TAGS_ENDPOINT, UPLOAD_ENDPOINT, resolveTwUrl, twProxyFor, withWikiQuery } from './endpoints.ts'
 import { fetchStatus } from './status-cache.ts'
-import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, TAGS_ENDPOINT, UPLOAD_ENDPOINT, resolveTwUrl } from './endpoints.ts'
+import { resolveFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
 
 const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
@@ -179,7 +180,7 @@ async function fetchDefaultTag(): Promise<string> {
 }
 
 /** Multi-tag chip editor with autocomplete from the wiki's existing tags. */
-function buildTagEditor(opts: { onChange?: () => void } = {}): {
+function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: string) => string } = {}): {
   el: HTMLDivElement
   /** Commits any pending input first, then returns the chips (user actions). */
   getTags: () => string[]
@@ -247,15 +248,24 @@ function buildTagEditor(opts: { onChange?: () => void } = {}): {
     for (const raw of input.value.split(/\s+/)) addTag(raw)
   }
 
-  // Existing tags, fetched lazily once per widget lifetime.
+  // Existing tags, fetched lazily once per widget lifetime — PER TARGET WIKI
+  // (v0.28.0): the card can be pointed at another knowledge base, and its tag
+  // suggestions must come from the same one the note is written to. The memo is
+  // keyed by the resolved URL, so switching the target re-reads automatically
+  // (no reset call, nothing to forget).
   let knownTags: string[] = []
   let tagsPromise: Promise<string[]> | undefined
+  let tagsPromiseKey: string | undefined
   const ensureTags = (): Promise<string[]> => {
-    tagsPromise ??= fetch(TAGS_ENDPOINT, { signal: AbortSignal.timeout(5_000) })
-      .then((r) => (r.ok ? (r.json() as Promise<{ tags?: string[] }>) : Promise.resolve<{ tags?: string[] }>({})))
-      .then((p) => [...(p.tags ?? [])].sort((a, b) => a.localeCompare(b, 'zh')))
-      .catch(() => [])
-    void tagsPromise.then((list) => { knownTags = list })
+    const url = opts.wikiQuery?.(TAGS_ENDPOINT) ?? TAGS_ENDPOINT
+    if (tagsPromise === undefined || tagsPromiseKey !== url) {
+      tagsPromiseKey = url
+      tagsPromise = fetch(url, { signal: AbortSignal.timeout(5_000) })
+        .then((r) => (r.ok ? (r.json() as Promise<{ tags?: string[] }>) : Promise.resolve<{ tags?: string[] }>({})))
+        .then((p) => [...(p.tags ?? [])].sort((a, b) => a.localeCompare(b, 'zh')))
+        .catch(() => [])
+      void tagsPromise.then((list) => { knownTags = list })
+    }
     return tagsPromise
   }
 
@@ -359,14 +369,17 @@ interface BuiltUi {
 /**
  * Upload one file to the wiki (raw body, name in ?name=), then insert a
  * Markdown image/link line at the caret of the given editor.
+ *
+ * `wikiQuery` scopes the upload to the CARD's target knowledge base (v0.28.0):
+ * an attachment must land in the same wiki as the note that references it.
  */
-async function uploadInto(file: File, editor: MarkdownEditor): Promise<void> {
+async function uploadInto(file: File, editor: MarkdownEditor, wikiQuery: (url: string) => string = (url) => url): Promise<void> {
   if (file.size > MAX_UPLOAD_BYTES) {
     toast(`文件过大（≤ ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`)
     return
   }
   try {
-    const res = await fetch(`${UPLOAD_ENDPOINT}?name=${encodeURIComponent(file.name)}`, {
+    const res = await fetch(wikiQuery(`${UPLOAD_ENDPOINT}?name=${encodeURIComponent(file.name)}`), {
       method: 'POST',
       headers: { 'content-type': file.type || 'application/octet-stream' },
       body: file,
@@ -424,6 +437,28 @@ export function createNoteWidget(): NoteWidgetHandle {
   /** build() 时注册的 pagehide 落盘回调（dispose 需回收）。 */
   let onPageHide: (() => void) | undefined
   let defaultTag = 'inbox'
+  /**
+   * WHICH knowledge base this card works on (v0.28.0, 需求 R7).
+   *
+   * Default = the GUI's focused wiki (你在看哪个库，快速笔记就进哪个库), and the card's
+   * own selector overrides it for as long as the card is open. `undefined` = the
+   * default wiki, i.e. exactly what every call used to do — single-wiki installs
+   * never see a change (and never see the selector).
+   *
+   * EVERY call of the card must be scoped together: 标签建议 / 最近 / 草稿读取 /
+   * 附件上传 / 保存 / 以及随后弹出的编辑器。只改保存那一处就会出现"标签列表来自 A、
+   * 笔记写进 B"，比不做还糟。
+   */
+  let targetWiki: string | undefined
+  /** True once the user picked a wiki in THIS card (stop following the focus). */
+  let targetPicked = false
+  /** The roster's mode, for the per-wiki proxy base of the editor popup. */
+  let rosterMode = 'single'
+  /** The knowledge-base roster (empty in single mode / before /status lands). */
+  let roster: Array<{ id: string; label: string; running: boolean }> = []
+  /** 焦点库订阅（dispose 需回收）。 */
+  let focusOff: (() => void) | undefined
+  const wikiQuery = (url: string): string => withWikiQuery(url, targetWiki)
   let draftTimer: number | undefined
   let recentOpen = false
   /**
@@ -550,7 +585,7 @@ export function createNoteWidget(): NoteWidgetHandle {
    */
   const postEditAndOpen = async (title: string, text: string, tags: string[]): Promise<boolean> => {
     try {
-      const res = await fetch(EDIT_ENDPOINT, {
+      const res = await fetch(wikiQuery(EDIT_ENDPOINT), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ title, tags, text }),
@@ -580,7 +615,10 @@ export function createNoteWidget(): NoteWidgetHandle {
       // LAN, Tailscale, HTTPS) — and, on the DSH desktop app (`dsh-app:`), to
       // the host's loopback HTTP base, without which TW's sync adaptor refuses
       // to load and the native editor would come up read-only.
-      const popupUrl = `${resolveTwUrl(payload.twUrl, payload.twUrlAbsolute)}#${encodeURIComponent(payload.draftTitle)}`
+      // 弹窗编辑器必须落在**同一个**库上（v0.28.0）：写入的是 A、编辑器打开 B（空的）
+      // 是这张卡片最容易出现的"看起来成功了"的失败。
+      const bases = twProxyFor(rosterMode, targetWiki, payload.twUrl, payload.twUrlAbsolute)
+      const popupUrl = `${resolveTwUrl(bases.relative, bases.absolute)}#${encodeURIComponent(payload.draftTitle)}`
       openEditorPopup(popupUrl, payload.title ?? title)
       toast(`已在弹出窗口打开「${payload.title ?? title}」编辑器`)
       return true
@@ -598,7 +636,7 @@ export function createNoteWidget(): NoteWidgetHandle {
   /** Load a tiddler into the editor (recent picker click). */
   const loadNote = async (title: string): Promise<void> => {
     try {
-      const res = await fetch(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`, { signal: AbortSignal.timeout(10_000) })
+      const res = await fetch(wikiQuery(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`), { signal: AbortSignal.timeout(10_000) })
       const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; text?: string; tags?: string[]; notFound?: boolean; error?: string; modified?: string | null; revision?: number | null } | null
       if (!res.ok || payload?.ok !== true || typeof payload.title !== 'string') {
         const reason = payload?.notFound === true ? '不存在' : (payload?.error ?? `HTTP ${res.status}`)
@@ -640,7 +678,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     ui.recentWrap.append(loading)
     void (async () => {
       try {
-        const res = await fetch(`${RECENT_ENDPOINT}?limit=15`, { signal: AbortSignal.timeout(10_000) })
+        const res = await fetch(wikiQuery(`${RECENT_ENDPOINT}?limit=15`), { signal: AbortSignal.timeout(10_000) })
         const payload = (await res.json().catch(() => null)) as { ok?: boolean; items?: unknown[]; error?: string } | null
         if (!recentOpen || ui === undefined) return
         ui.recentWrap.replaceChildren()
@@ -749,6 +787,82 @@ export function createNoteWidget(): NoteWidgetHandle {
     titleInput.setAttribute('aria-label', '笔记标题（默认时间戳）')
     const tagEditor = buildTagEditor({ onChange: scheduleDraft })
     fields.append(titleInput, tagEditor.el)
+
+    // ── 目标知识库（v0.28.0，R7）────────────────────────────────────────────
+    // 只在"多于一个库"时出现（单库安装连这个元素都隐藏）。默认跟随 GUI 焦点库，
+    // 在这里改只影响这张卡片（`targetPicked` 之后不再跟焦点跑）。
+    const wikiField = document.createElement('label')
+    wikiField.className = 'dsh-tw-note-wiki'
+    wikiField.hidden = true
+    const wikiLabel = document.createElement('span')
+    wikiLabel.className = 'dsh-tw-note-wiki-label'
+    wikiLabel.textContent = '写入'
+    const wikiSelect = document.createElement('select')
+    wikiSelect.className = 'dsh-tw-note-wiki-select'
+    wikiSelect.setAttribute('aria-label', '这条笔记写进哪个知识库')
+    wikiField.append(wikiLabel, wikiSelect)
+    const wikiHint = document.createElement('span')
+    wikiHint.className = 'dsh-tw-note-wiki-hint'
+    wikiHint.hidden = true
+    fields.append(wikiField, wikiHint)
+    /**
+     * Flag a target that is not running: `/note` cannot serve it (`deps.client`
+     * is undefined), and the honest answer is to say so BEFORE the user writes a
+     * paragraph and loses it. We deliberately do NOT auto-start here — the
+     * 「知识库」 menu is the place that starts a wiki, and a save route spawning
+     * processes is not something a card should trigger by accident.
+     */
+    const markStopped = (): void => {
+      const wiki = roster.find((item) => item.id === targetWiki)
+      const stopped = wiki !== undefined && !wiki.running
+      wikiHint.hidden = !stopped
+      wikiHint.textContent = stopped ? `${wiki.label} 当前没在运行：先在右下角「知识库」菜单里打开它` : ''
+    }
+    wikiSelect.addEventListener('change', () => {
+      targetPicked = true
+      targetWiki = wikiSelect.value.length > 0 ? wikiSelect.value : undefined
+      markStopped()
+    })
+
+    /**
+     * Read the roster and decide the card's default target (v0.28.0).
+     *
+     * Before this resolves, `targetWiki` is undefined = the plain endpoints, and
+     * with `roster.length <= 1` it STAYS undefined — a single-wiki install keeps
+     * byte-identical behaviour and never sees the selector.
+     */
+    void fetchStatus().then((payload) => {
+      if (disposed) return
+      rosterMode = typeof payload?.mode === 'string' ? payload.mode : 'single'
+      roster = (Array.isArray(payload?.wikis) ? payload.wikis : []).map((item) => ({ id: item.id, label: item.label, running: item.running }))
+      if (roster.length <= 1) return
+      const defaultId = typeof payload?.defaultId === 'string' ? payload.defaultId : undefined
+      const followFocus = (): void => {
+        if (!targetPicked) targetWiki = resolveFocusWiki(roster, defaultId)
+      }
+      followFocus()
+      wikiSelect.replaceChildren(
+        ...roster.map((item) => {
+          const option = document.createElement('option')
+          option.value = item.id
+          option.textContent = item.running ? item.label : `${item.label}（未运行）`
+          return option
+        }),
+      )
+      const fallback = document.createElement('option')
+      fallback.value = ''
+      fallback.textContent = '默认库'
+      wikiSelect.append(fallback)
+      wikiSelect.value = targetWiki ?? ''
+      wikiField.hidden = false
+      markStopped()
+      // 未在本卡片里手动选过时，跟随 GUI 的焦点库（你在看哪个库，笔记就进哪个库）。
+      focusOff = subscribeFocusWiki(() => {
+        followFocus()
+        wikiSelect.value = targetWiki ?? ''
+        markStopped()
+      })
+    })
     titleInput.addEventListener('input', scheduleDraft)
 
     // Mod-Enter save routes through doSave, which is assigned below (the editor
@@ -772,7 +886,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     fileInput.hidden = true
     uploadBtn.addEventListener('click', () => { fileInput.click() })
     fileInput.addEventListener('change', () => {
-      for (const file of Array.from(fileInput.files ?? [])) void uploadInto(file, editor)
+      for (const file of Array.from(fileInput.files ?? [])) void uploadInto(file, editor, wikiQuery)
       fileInput.value = ''
     })
 
@@ -794,7 +908,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       editor.el.classList.remove('dsh-tw-note-drop')
       const files = event.dataTransfer?.files
       if (files === undefined || files.length === 0) return
-      for (const file of Array.from(files)) void uploadInto(file, editor)
+      for (const file of Array.from(files)) void uploadInto(file, editor, wikiQuery)
     })
 
     const foot = document.createElement('div')
@@ -902,7 +1016,7 @@ export function createNoteWidget(): NoteWidgetHandle {
           if (loadedToken.modified !== undefined) body.expectedModified = loadedToken.modified
           if (loadedToken.revision !== undefined) body.expectedRevision = loadedToken.revision
         }
-        const res = await fetch(NOTE_ENDPOINT, {
+        const res = await fetch(wikiQuery(NOTE_ENDPOINT), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body),
@@ -1096,6 +1210,8 @@ export function createNoteWidget(): NoteWidgetHandle {
     },
     dispose() {
       disposed = true
+      focusOff?.()
+      focusOff = undefined
       if (onPageHide !== undefined) {
         window.removeEventListener('pagehide', onPageHide)
         onPageHide = undefined

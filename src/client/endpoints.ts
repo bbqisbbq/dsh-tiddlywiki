@@ -112,6 +112,21 @@ export function twProxyFor(
   }
 }
 
+/**
+ * Append the target knowledge base to a per-wiki CLIENT url (v0.28.0).
+ *
+ * The host resolves `?wiki=<id>` for every non-proxy route (the same
+ * `targetRuntimeFor` the proxy uses), so this is how a surface — the quick-note
+ * card, the editor popup — says WHICH wiki it is talking about.
+ *
+ * `undefined`/empty leaves the url untouched: that means "the default wiki",
+ * which is exactly what every call did before this existed.
+ */
+export function withWikiQuery(url: string, wikiId: string | undefined): string {
+  if (typeof wikiId !== 'string' || wikiId.length === 0) return url
+  return `${url}${url.includes('?') ? '&' : '?'}wiki=${encodeURIComponent(wikiId)}`
+}
+
 /** The subset of the `/sync` JSON body both client callers report on. */
 export interface SyncResultPayload {
   ok?: boolean

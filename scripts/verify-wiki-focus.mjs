@@ -29,7 +29,7 @@ globalThis.window = {
 /** `resolveTwUrl` branches on THIS page's protocol (desktop = dsh-app:). */
 globalThis.location = { protocol: 'http:', origin: 'http://localhost' }
 
-const { twProxyFor, resolveTwUrl } = await import(pathToFileURL(path.join(repoRoot, 'src/client/endpoints.ts')).href)
+const { twProxyFor, resolveTwUrl, withWikiQuery } = await import(pathToFileURL(path.join(repoRoot, 'src/client/endpoints.ts')).href)
 const { getFocusWiki, resolveFocusWiki, setFocusWiki, subscribeFocusWiki } = await import(pathToFileURL(path.join(repoRoot, 'src/client/wiki-focus.ts')).href)
 
 let failures = 0
@@ -154,6 +154,31 @@ test('设置页：配置作用域必须显式（per-wiki 请求都要带 ?wiki=�
   assert.match(settings, /withWiki\(CONFIG_ENDPOINT\)/)
   assert.match(settings, /withWiki\(PROMPT_ENDPOINT\)/)
   assert.match(settings, /配置作用域/, '页面必须说清这一块在编辑哪个库')
+})
+
+test('withWikiQuery：指向某个库时拼 ?wiki=，没有目标时逐字不变', () => {
+  assert.equal(withWikiQuery('/x/note', undefined), '/x/note', '无目标 = 默认库，URL 不许变')
+  assert.equal(withWikiQuery('/x/note', ''), '/x/note')
+  assert.equal(withWikiQuery('/x/note', 'books'), '/x/note?wiki=books')
+  // 已经有 query 的必须用 & 接（上传路由本来就带 ?name=）
+  assert.equal(withWikiQuery('/x/upload?name=a.png', 'books'), '/x/upload?name=a.png&wiki=books')
+  assert.equal(withWikiQuery('/x/note', 'a/b'), '/x/note?wiki=a%2Fb', 'id 必须编码')
+})
+
+test('快速笔记：整张卡片（标签/最近/草稿/附件/保存/弹窗）必须同库', () => {
+  const note = readFileSync(path.join(repoRoot, 'src/client/note-widget.ts'), 'utf8')
+  // 每个 per-wiki 调用都要经 wikiQuery —— 只改保存那一处就会出现"标签来自 A、笔记写进 B"。
+  for (const endpoint of ['NOTE_ENDPOINT', 'EDIT_ENDPOINT', 'UPLOAD_ENDPOINT', 'GET_ENDPOINT', 'RECENT_ENDPOINT']) {
+    assert.match(note, new RegExp(`wikiQuery\\((?:\\\`\\$\\{)?${endpoint}`), `${endpoint} 必须经 wikiQuery 定向`)
+  }
+  // 标签建议走 buildTagEditor 的 wikiQuery 回调（按 URL 记忆，换库自动重读）
+  assert.match(note, /wikiQuery\?\.\(TAGS_ENDPOINT\)/)
+  assert.match(note, /tagsPromiseKey !== url/, '标签列表的记忆必须以 URL 为键，否则换库后还在用旧库的标签')
+  // 弹窗编辑器必须落在同一个库（写入 A、编辑器打开 B 是"看起来成功了"的失败）
+  assert.match(note, /twProxyFor\(rosterMode, targetWiki, payload\.twUrl, payload\.twUrlAbsolute\)/)
+  // 单库安装：名册 ≤1 时连选择器都不显示，targetWiki 保持 undefined
+  assert.match(note, /if \(roster\.length <= 1\) return/)
+  assert.match(note, /targetPicked/, '卡片里显式选过之后不得再被焦点库带走')
 })
 
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)

@@ -122,7 +122,11 @@ await test('客户端接线：frame 与快速笔记弹窗都走 resolveTwUrl', (
   assert.match(frame, /showFrame\(resolveTwUrl\(bases\.relative, bases\.absolute\)\)/)
   assert.match(frame, /import \{ RESTART_ENDPOINT, resolveTwUrl, twProxyFor \} from '\.\/endpoints\.ts'/)
   const note = read('src/client/note-widget.ts')
-  assert.match(note, /resolveTwUrl\(payload\.twUrl, payload\.twUrlAbsolute\)/)
+  // v0.28.0：快速笔记弹窗同样先经 twProxyFor 得到**本卡片目标库**的基址（写入与随后打开的
+  // 编辑器必须落在同一个库，否则是"写进 A、编辑器打开 B（空的）"），再交给 resolveTwUrl
+  // 决定相对还是宿主绝对基址。
+  assert.match(note, /const bases = twProxyFor\(rosterMode, targetWiki, payload\.twUrl, payload\.twUrlAbsolute\)/)
+  assert.match(note, /resolveTwUrl\(bases\.relative, bases\.absolute\)/)
   const cache = read('src/client/status-cache.ts')
   assert.match(cache, /twProxyAbsolute\?: string/)
 })
