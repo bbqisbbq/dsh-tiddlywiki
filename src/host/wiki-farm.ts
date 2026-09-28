@@ -172,9 +172,16 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
     this.registryValue = next
   }
 
-  /** Should this entry be running right now (mode + autostart)? */
+  /** May this entry run AT ALL under the current mode? (removed / mode flip) */
+  private visible(entry: WikiEntry): boolean {
+    if (this.registryValue.mode === 'multi') return true
+    return entry.id === this.registryValue.defaultId
+  }
+
+  /** Should this entry ATOMICALLY come up at boot (mode + autostart)? */
   shouldRun(entry: WikiEntry): boolean {
-    if (this.registryValue.mode === 'single') return entry.id === this.registryValue.defaultId
+    if (!this.visible(entry)) return false
+    if (this.registryValue.mode === 'single') return true
     return entry.autostart === true
   }
 
@@ -184,35 +191,56 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
   }
 
   /**
-   * Start every entry the current mode/autostart asks for.
+   * BOOT: start every entry the mode/autostart asks for.
    *
-   * SEQUENTIAL ON PURPOSE. N TW children booting at once means N cold starts
-   * competing for disk and CPU, and a farm whose logs interleave on failure is
-   * much harder to read. The per-instance failure isolation (see the module
-   * header) is what keeps one bad folder from blocking the rest.
+   * Nothing is running yet, so there is nothing to reconcile — this IS the
+   * "开局全起" rule, literally. `apply()` below is the config-CHANGE path and
+   * deliberately does less.
    */
   async startAll(): Promise<FarmChange> {
-    return this.apply(this.registryValue)
+    const change: FarmChange = { started: [], stopped: [], updated: [], running: [], errors: [] }
+    this.errors = []
+    for (const entry of this.registryValue.wikis) {
+      if (!this.shouldRun(entry)) continue
+      await this.startEntry(entry)
+      change.started.push(entry.id)
+    }
+    change.running = this.runningIds()
+    change.errors = [...this.errors]
+    return change
   }
 
   /**
-   * Reconcile the running set against `next` (the new registry).
+   * Reconcile the running set against `next` — a CONFIG CHANGE (add / edit /
+   * remove an entry, or flip the mode).
    *
-   * Steps, in order (the order IS the safety property):
-   *   1. release everything that must no longer run;
-   *   2. adopt the new list — start new entries, recycle folder changes, refresh
-   *      flags in place.
+   * The rules are deliberately the CONSERVATIVE ones, because a config edit is
+   * not a boot:
+   *
+   *   · an entry that is GONE, or hidden by a mode flip, must stop;
+   *   · an entry that is NEWLY ADDED and should auto-start does start;
+   *   · everything else keeps whatever running state it has —
+   *     turning `autostart` OFF does not kill a wiki the user has open
+   *     (`autostart` means "come up at boot"; the next boot honours the new
+   *     value), and re-saving an unrelated field never resurrects a wiki the
+   *     user stopped by hand;
+   *   · a folder change recycles the runtime (setLocation refuses while running).
+   *
+   * This was found by `scripts/verify-wiki-farm-boot.mjs`: re-asserting the boot
+   * rule on every save meant "I started C by hand, then added a wiki" silently
+   * stopped C. Explicit start/stop stay explicit (`startEntry`/`stopEntry`).
    */
   async apply(next: WikiRegistry): Promise<FarmChange> {
     const change: FarmChange = { started: [], stopped: [], updated: [], running: [], errors: [] }
     this.errors = []
+    const previousIds = new Set(this.registryValue.wikis.map((entry) => entry.id))
     this.registryValue = next
     const byId = new Map(next.wikis.map((entry) => [entry.id, entry]))
 
-    // 1. Release what is gone, no longer autostart, or hidden by a mode flip.
+    // 1. Release what is gone or hidden by the mode.
     for (const id of [...this.runtimes.keys()]) {
       const entry = byId.get(id)
-      if (entry === undefined || !this.shouldRun(entry)) {
+      if (entry === undefined || !this.visible(entry)) {
         await this.stopEntry(id)
         change.stopped.push(id)
       }
@@ -222,7 +250,7 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
     for (const entry of next.wikis) {
       const runtime = this.runtimes.get(entry.id)
       if (runtime === undefined) {
-        if (this.shouldRun(entry)) {
+        if (!previousIds.has(entry.id) && this.shouldRun(entry)) {
           await this.startEntry(entry)
           change.started.push(entry.id)
         }

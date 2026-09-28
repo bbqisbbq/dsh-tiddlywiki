@@ -27,6 +27,7 @@ import {
   RESERVED_WIKI_IDS,
   WIKI_MODES,
   WIKI_REGISTRY_VERSION,
+  applyWikiAction,
   defaultEntry,
   deriveWikiId,
   entryPath,
@@ -221,6 +222,58 @@ await test('保留 id：与 TW 根路径撞名的 id 必须被拒绝（否则 /t
   assert.equal(RESERVED_WIKI_IDS.includes(deriveWikiId('status')), false)
   // 只是前缀相同不算撞名。
   assert.equal(normalizeEntry(entry('status-page', ROOT, 'x')).error, undefined)
+})
+
+await test('applyWikiAction：add 可派生 id、拒绝重复 id / 保留 id / 嵌套目录', () => {
+  const base = singleEntryRegistry({ root: ROOT, name: 'main' })
+  const added = applyWikiAction(base, { action: 'add', wiki: entry('books', ROOT, 'books') })
+  assert.equal(added.registry.wikis.length, 2)
+  assert.equal(added.registry.defaultId, 'main', '加一个库不得改变默认库')
+
+  // 不带 id 时从 label/目录名派生 —— 设置页才能只填"这个文件夹"。
+  const derived = applyWikiAction(base, { action: 'add', wiki: { label: '书籍', root: ROOT, name: 'books2', agentVisible: false, autostart: false } })
+  assert.equal(derived.registry.wikis.length, 2)
+  assert.equal(derived.registry.wikis[1].agentVisible, false)
+
+  assert.match(applyWikiAction(base, { action: 'add', wiki: entry('main', ROOT, 'other') }).error, /已存在/)
+  assert.match(applyWikiAction(base, { action: 'add', wiki: entry('files', ROOT, 'f') }).error, /保留/)
+  // 嵌套：把新库放进已有库的目录里 —— 这正是 registry 存在的理由。
+  const nested = applyWikiAction(base, { action: 'add', wiki: { id: 'inner', root: entryPath(base.wikis[0]), name: 'inner' } })
+  assert.match(nested.error ?? '', /内部/)
+  // 同目录也不行。
+  assert.match(applyWikiAction(base, { action: 'add', wiki: entry('twin', ROOT, 'main') }).error, /同一个目录/)
+})
+
+await test('applyWikiAction：update 必须已存在且带 id；挪目录撞到邻居同样被拒', () => {
+  const base = applyWikiAction(singleEntryRegistry({ root: ROOT, name: 'main' }), { action: 'add', wiki: entry('books', ROOT, 'books') }).registry
+  const renamed = applyWikiAction(base, { action: 'update', wiki: { id: 'books', label: '语料', root: ROOT, name: 'books', agentVisible: false } })
+  assert.equal(findEntry(renamed.registry, 'books').label, '语料')
+  assert.equal(findEntry(renamed.registry, 'books').agentVisible, false)
+  assert.match(applyWikiAction(base, { action: 'update', wiki: entry('nope', ROOT, 'x') }).error, /不在清单里/)
+  assert.match(applyWikiAction(base, { action: 'update', wiki: { label: 'x', root: ROOT, name: 'x' } }).error, /必须带一个合法的 id/)
+  // 把 books 挪进 main 的目录里 → 嵌套，必须拒绝（"改个路径"最容易撞这条）。
+  assert.match(applyWikiAction(base, { action: 'update', wiki: { id: 'books', root: entryPath(base.wikis[0]), name: 'books' } }).error ?? '', /内部/)
+})
+
+await test('applyWikiAction：remove 不许清空；set-default 必须指向存在的库', () => {
+  const two = applyWikiAction(singleEntryRegistry({ root: ROOT, name: 'main' }), { action: 'add', wiki: entry('books', ROOT, 'books') }).registry
+  const removed = applyWikiAction(two, { action: 'remove', id: 'books' })
+  assert.equal(removed.registry.wikis.length, 1)
+  assert.match(applyWikiAction(removed.registry, { action: 'remove', id: 'main' }).error, /至少要保留一个/)
+  assert.match(applyWikiAction(two, { action: 'remove', id: 'nope' }).error, /不在清单里/)
+
+  assert.equal(applyWikiAction(two, { action: 'set-default', id: 'books' }).registry.defaultId, 'books')
+  // 悬空的 default 会被 validateRegistry"治愈"，所以这里必须显式拒绝（说一套做一套最坑）。
+  assert.match(applyWikiAction(two, { action: 'set-default', id: 'gone' }).error, /无法设为默认/)
+})
+
+await test('applyWikiAction：set-mode 只认 single/multi；未知动作要说清可用动作', () => {
+  const base = singleEntryRegistry({ root: ROOT, name: 'main' })
+  assert.equal(applyWikiAction(base, { action: 'set-mode', mode: 'multi' }).registry.mode, 'multi')
+  assert.match(applyWikiAction(base, { action: 'set-mode', mode: 'Multi' }).error, /single 或 multi/)
+  assert.match(applyWikiAction(base, { action: 'destroy' }).error, /未知动作/)
+  assert.match(applyWikiAction(base, { action: 'add' }).error, /wiki 字段/)
+  assert.match(applyWikiAction(base, 'nope').error, /带 action 字段/)
 })
 
 await test('findEntry/defaultEntry/upsertWiki/removeWiki', () => {

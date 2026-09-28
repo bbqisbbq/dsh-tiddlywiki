@@ -22,7 +22,7 @@ import type { IncomingMessage } from 'node:http'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { ConfigStore, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
-import { registerAdminRoutes, resolveTwRoot, type AdminDeps } from './host/admin.ts'
+import { registerAdminRoutes, resolveTwRoot, type AdminDeps, type AdminWikisApplyResult, type AdminWikisView } from './host/admin.ts'
 import { checkAllSeeds, runSeedById, removeSeedById } from './host/seeds.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
@@ -47,6 +47,8 @@ import { WikiInstance } from './host/wiki-instance.ts'
 import { WikiFarm, targetRuntimeFor } from './host/wiki-farm.ts'
 import {
   DEFAULT_WIKI_ID,
+  DEFAULT_WIKI_MODE,
+  applyWikiAction,
   defaultEntry,
   defaultRegistryFile,
   entryPath,
@@ -170,6 +172,7 @@ export {
   RESERVED_WIKI_IDS,
   WIKI_MODES,
   WIKI_REGISTRY_VERSION,
+  applyWikiAction,
   defaultEntry,
   defaultRegistryFile,
   deriveWikiId,
@@ -189,6 +192,7 @@ export {
   type RegistryValidation,
   type WikiEntry,
   type WikiMode,
+  type WikiAction,
   type WikiRegistry,
 } from './host/wiki-registry.ts'
 export { WikiInstance, type WikiInstanceBase, type WikiInstanceOptions } from './host/wiki-instance.ts'
@@ -589,12 +593,30 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     return state.active ?? defaultLocation
   }
 
+  /**
+   * The CONTROL FILE as the settings page edits it — deliberately NOT the
+   * registry the farm reconciles. In single mode they differ: the farm runs a
+   * one-entry registry synthesized from the legacy pointer, while the file may
+   * already list several candidates the user is about to switch to.
+   */
+  let controlRegistry: WikiRegistry | undefined
+  let controlSource: 'file' | 'legacy' | 'default' = 'default'
+  let controlWarnings: string[] = []
+  let controlError: string | undefined
+  /** What the control file says right now (synthesized when it does not exist yet). */
+  const controlRegistryNow = (): WikiRegistry =>
+    controlRegistry ?? singleEntryRegistry(defaultCurrentLocation(), DEFAULT_WIKI_ID, DEFAULT_WIKI_MODE)
+
   const startupTask = (async () => {
     try {
       // THE CONTROL FILE FIRST (v0.28.0): it carries the mode (single/multi), the
       // wiki list and the default id, and it must be read before anything starts
       // — which is exactly why it lives OUTSIDE every wiki (wiki-registry.ts).
       const read = await readRegistry({ file: registryFile, legacyFile: locationStateFile, fallback: defaultLocation })
+      controlRegistry = read.registry
+      controlSource = read.source
+      controlWarnings = read.warnings
+      controlError = read.error
       if (read.error !== undefined) console.warn('[dsh-tiddlywiki]', read.error)
       for (const warning of read.warnings) console.warn('[dsh-tiddlywiki]', warning)
       console.info(`[dsh-tiddlywiki] ${read.registry.mode} 模式 · ${read.registry.wikis.length} 个知识库（来源：${read.source}）`)
@@ -790,6 +812,33 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     return runSwitch(defaultLocation, async () => { await clearLocationState(locationStateFile) })
   }
 
+  /** The control file's view for the settings page (see controlRegistryNow). */
+  const buildWikisView = (): AdminWikisView => {
+    const registry = controlRegistryNow()
+    return {
+      mode: registry.mode,
+      defaultId: registry.defaultId,
+      source: controlSource,
+      registryFile,
+      ...(controlError !== undefined ? { error: controlError } : {}),
+      warnings: controlWarnings,
+      wikis: registry.wikis.map((entry) => {
+        const runtime = farm?.runtime(entry.id)
+        return {
+          id: entry.id,
+          label: entry.label,
+          root: entry.root,
+          name: entry.name,
+          path: entryPath(entry),
+          agentVisible: entry.agentVisible,
+          autostart: entry.autostart,
+          running: runtime !== undefined,
+          status: runtime?.server.status().status ?? 'stopped',
+        }
+      }),
+    }
+  }
+
   // Routes + settings-panel admin surface (lazy webServer).
   ctx.inject(['webServer'], (webCtx: HostCtx) => {
     const ws = (webCtx as unknown as { webServer: WebServerFace }).webServer
@@ -915,6 +964,43 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         info: locationInfo,
         switch: switchWikiLocation,
         reset: resetWikiLocation,
+      },
+      // The knowledge-base LIST (v0.28.0): `info` reports the CONTROL FILE; every
+      // action is validated by the pure `applyWikiAction` and persisted BEFORE
+      // the farm reconciles — the file is the user's intent, and a reconcile
+      // failure is reported per wiki instead of silently discarding the edit.
+      wikis: {
+        info: async (): Promise<AdminWikisView> => buildWikisView(),
+        apply: async (body: unknown): Promise<AdminWikisApplyResult> => {
+          if (disposed) return { ok: false, error: '插件正在卸载，已取消修改' }
+          const action = applyWikiAction(controlRegistryNow(), body)
+          if (action.registry === undefined) return { ok: false, error: action.error ?? '动作被拒绝' }
+          const registry = action.registry
+          try {
+            await writeRegistry(registry, registryFile)
+          } catch (err) {
+            return { ok: false, error: `清单写入失败：${err instanceof Error ? err.message : String(err)}` }
+          }
+          controlRegistry = registry
+          controlSource = 'file'
+          controlWarnings = []
+          controlError = undefined
+          // Reconcile. multi → the farm runs the whole list. single → it must
+          // keep serving the ONE wiki the legacy pointer names, so the
+          // synthesized run-registry is used and the pointer is kept in step
+          // (otherwise a restart in single mode would land somewhere else).
+          const single = defaultEntry(registry)
+          const runRegistry = registry.mode === 'multi'
+            ? registry
+            : singleEntryRegistry(single === undefined ? defaultCurrentLocation() : { root: single.root, name: single.name }, DEFAULT_WIKI_ID, 'single')
+          const change = farm === undefined
+            ? { started: [], stopped: [], updated: [], running: [], errors: [] }
+            : await farm.apply(runRegistry)
+          if (registry.mode === 'single' && single !== undefined) {
+            await writeLocationState({ root: single.root, name: single.name }, locationStateFile).catch(() => undefined)
+          }
+          return { ok: true, info: buildWikisView(), change }
+        },
       },
       seeds: {
         // Tool summaries feed the GENERATED seed content (the doc note's tool

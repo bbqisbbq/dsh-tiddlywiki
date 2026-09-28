@@ -556,6 +556,17 @@ export interface AdminDeps {
     switch: (target: { root?: unknown; name?: unknown }) => Promise<WikiSwitchResult>
     reset: () => Promise<WikiSwitchResult>
   }
+  /**
+   * The knowledge-base LIST (v0.28.0): read it, and change it one action at a
+   * time. `info` reports the CONTROL FILE (what the user edits), which is not
+   * the same thing as what is running — in single mode the farm serves a
+   * one-entry registry synthesized from the legacy pointer, while the file may
+   * already list several candidates.
+   */
+  wikis?: {
+    info: () => Promise<AdminWikisView>
+    apply: (body: unknown) => Promise<AdminWikisApplyResult>
+  }
   /** Seed registry for the settings-page "初始化" section. */
   seeds: {
     /**
@@ -569,6 +580,50 @@ export interface AdminDeps {
     remove: (client: TiddlyWebClient, id: string | undefined) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
   }
 }
+
+/** One knowledge base as the settings page lists it. */
+export interface AdminWikiItem {
+  id: string
+  label: string
+  root: string
+  name: string
+  /** Absolute folder (`root/name`); shown so the user can find it in a file manager. */
+  path: string
+  agentVisible: boolean
+  autostart: boolean
+  running: boolean
+  status: string
+}
+
+/** The control file's view (what the settings page edits). */
+export interface AdminWikisView {
+  mode: string
+  defaultId: string
+  /** Where the list came from: 'file' | 'legacy' (migrated pointer) | 'default'. */
+  source: string
+  /** Path of the control file (so a user can fix it by hand when told to). */
+  registryFile: string
+  /** Set when the control file exists but could not be fully trusted. */
+  error?: string
+  /** Non-fatal problems healed on the way (skipped entry, dangling default). */
+  warnings: string[]
+  wikis: AdminWikiItem[]
+}
+
+/** What one list change actually did (toast text + diagnostics). */
+export interface AdminWikisChange {
+  started: string[]
+  stopped: string[]
+  updated: string[]
+  running: string[]
+  /** Wikis that failed to start/stop; the change itself still stands. */
+  errors: Array<{ id: string; message: string }>
+}
+
+/** Result of a list change: either the new state, or why it was refused. */
+export type AdminWikisApplyResult =
+  | { ok: true; info: AdminWikisView; change: AdminWikisChange }
+  | { ok: false; error: string }
 
 /**
  * Sentinel returned instead of a stored secret (`bridge.token` /
@@ -1123,10 +1178,77 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     }
   }
 
+  /**
+   * GET /dsh-tiddlywiki/admin/wikis — the knowledge-base LIST as the settings
+   * page edits it: the CONTROL FILE's contents (mode / list / default), which is
+   * NOT the same as what is running. Read-only + CSRF-hardened.
+   */
+  const handleWikis = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (rejectNonRead(req, res)) return
+      if (deps.wikis === undefined) {
+        json(res, { ok: false, error: '知识库列表不可用' }, 503)
+        return
+      }
+      json(res, { ok: true, ...(await deps.wikis.info()) })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
+    }
+  }
+
+  /**
+   * POST /dsh-tiddlywiki/admin/wikis { action, … } — add / update / remove /
+   * set-default / set-mode. ONE action per request (see `applyWikiAction`): the
+   * page then cannot post an inconsistent list, and every mutation goes through
+   * the same validation the boot path uses.
+   *
+   * A REFUSED action is a 400 with the reason. A change whose new wiki fails to
+   * START is still 200: the list is saved and the failure is reported in
+   * `change.errors` — refusing the save would silently discard the user's edit
+   * for a problem they can fix by restarting the wiki.
+   */
+  const handleWikisApply = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    try {
+      if (deps.wikis === undefined) {
+        json(res, { ok: false, error: '知识库列表不可用' }, 503)
+        return
+      }
+      let body: unknown
+      try {
+        body = JSON.parse(await readBody(req))
+      } catch {
+        json(res, { ok: false, error: '请求体必须是 JSON' }, 400)
+        return
+      }
+      const result = await deps.wikis.apply(body)
+      if (!result.ok) {
+        json(res, { ok: false, error: result.error }, 400)
+        return
+      }
+      json(res, { ok: true, ...result.info, change: result.change })
+    } catch (err) {
+      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+    }
+  }
+
+  /**
+   * `/admin/wikis` takes BOTH methods on ONE registration: the host webserver
+   * dispatches by pathname only, and registering the same exact path twice would
+   * throw `duplicate exact route`.
+   */
+  const handleWikisRoute = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if ((req.method ?? 'GET').toUpperCase() === 'POST') {
+      if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      return handleWikisApply(req, res)
+    }
+    return handleWikis(req, res)
+  }
+
   // Same rejection safety net as routes.ts (v0.19.3).
   const disposers = [
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/state`, handler: guardHandler(handleState) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/prompt`, handler: guardHandler(handlePrompt) }),
+    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/wikis`, handler: guardHandler(handleWikisRoute) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/wiki/location`, handler: guardHandler(handleWikiLocation) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/wiki/switch`, handler: guardHandler(handleWikiSwitch) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/admin/wiki/reset`, handler: guardHandler(handleWikiReset) }),

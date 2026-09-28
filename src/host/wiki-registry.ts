@@ -412,6 +412,92 @@ export function removeWiki(registry: WikiRegistry, id: unknown): { registry?: Wi
 }
 
 /**
+ * A settings-page action on the wiki list (v0.28.0).
+ *
+ * The shape is deliberately a small discriminated union rather than "POST the
+ * whole registry": the page can then never invent an inconsistent file, and
+ * every mutation goes through the SAME validation the boot path uses.
+ */
+export type WikiAction =
+  | { action: 'add'; wiki: unknown }
+  | { action: 'update'; wiki: unknown }
+  | { action: 'remove'; id: unknown }
+  | { action: 'set-default'; id: unknown }
+  | { action: 'set-mode'; mode: unknown }
+
+/**
+ * Apply ONE action to a registry, purely (v0.28.0).
+ *
+ * Pure on purpose: the side effects (write the file, reconcile the farm) stay in
+ * the host wiring, so the RULES — which id gets derived, what a duplicate means,
+ * what a folder move may collide with — are unit-testable in milliseconds
+ * (`scripts/verify-wiki-registry.mjs`).
+ *
+ * Every action re-runs `validateRegistry()` on the RESULT, because a change can
+ * create exactly the situations the registry exists to refuse: two entries on
+ * one folder, or one entry nested inside another.
+ */
+export function applyWikiAction(registry: WikiRegistry, input: unknown): { registry?: WikiRegistry; error?: string } {
+  if (!isPlainObject(input) || typeof input.action !== 'string') {
+    return { error: '动作必须是一个带 action 字段的对象' }
+  }
+  const action = input.action
+  const finish = (next: WikiRegistry): { registry?: WikiRegistry; error?: string } => {
+    const validated = validateRegistry(next)
+    if (validated.registry === undefined) return { error: validated.fatal.join('；') }
+    return { registry: validated.registry }
+  }
+
+  if (action === 'add') {
+    const raw = isPlainObject(input.wiki) ? input.wiki : undefined
+    if (raw === undefined) return { error: 'add 需要 wiki 字段' }
+    // The id is derived from the label/folder when the caller does not name one,
+    // so the settings page can offer "add this folder" without asking for an id.
+    const explicit = normalizeWikiId(raw.id)
+    const id = explicit ?? deriveWikiId(typeof raw.label === 'string' && raw.label.trim().length > 0 ? raw.label : raw.name, registry.wikis.map((entry) => entry.id))
+    if (findEntry(registry, id) !== undefined) return { error: `知识库「${id}」已存在（改它请用 update）` }
+    const normalized = normalizeEntry({ ...raw, id })
+    if (normalized.entry === undefined) return { error: normalized.error ?? '条目非法' }
+    return finish({ ...registry, wikis: [...registry.wikis, normalized.entry] })
+  }
+
+  if (action === 'update') {
+    const raw = isPlainObject(input.wiki) ? input.wiki : undefined
+    if (raw === undefined) return { error: 'update 需要 wiki 字段' }
+    const id = normalizeWikiId(raw.id)
+    if (id === undefined) return { error: 'update 必须带一个合法的 id' }
+    const existing = findEntry(registry, id)
+    if (existing === undefined) return { error: `知识库「${id}」不在清单里（新增请用 add）` }
+    const normalized = normalizeEntry({ ...raw, id })
+    if (normalized.entry === undefined) return { error: normalized.error ?? '条目非法' }
+    return finish(upsertWiki(registry, normalized.entry))
+  }
+
+  if (action === 'remove') {
+    const removed = removeWiki(registry, input.id)
+    if (removed.registry === undefined) return { error: removed.error ?? '删除失败' }
+    return finish(removed.registry)
+  }
+
+  if (action === 'set-default') {
+    // A DANGLING default would be healed by validateRegistry, so it is checked
+    // here instead: "make this one the default" must fail loudly when it is gone.
+    const target = findEntry(registry, input.id)
+    if (target === undefined) return { error: `知识库「${String(input.id)}」不在清单里，无法设为默认` }
+    return finish({ ...registry, defaultId: target.id })
+  }
+
+  if (action === 'set-mode') {
+    if (input.mode !== 'single' && input.mode !== 'multi') {
+      return { error: `mode 只能是 ${WIKI_MODES.join(' 或 ')}（收到 ${JSON.stringify(input.mode)}）` }
+    }
+    return finish({ ...registry, mode: input.mode })
+  }
+
+  return { error: `未知动作「${action}」（可用：add / update / remove / set-default / set-mode）` }
+}
+
+/**
  * A one-entry registry for a single location (migration / first run).
  *
  * `mode` defaults to `single` — a migrated install must reproduce exactly the

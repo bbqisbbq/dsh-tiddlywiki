@@ -111,17 +111,38 @@ await test('标志变更（label/agentVisible/autostart 不改目录）→ 原�
   assert.equal(farm.runtime('main').entry.label, '新名字')
 })
 
-await test('autostart true→false → 停下来释放（但不该"消失"成无法按需再起）', async () => {
+await test('autostart 关掉**不会**杀掉正在跑的库（autostart 只管「开局」）', async () => {
+  // 这条规则是 verify-wiki-farm-boot 的集成测试逼出来的："我手动起了 C，然后加了个
+  // 库，C 却被停了" —— 配置编辑不是开机，不该顺手关掉用户开着的库。
   const log = []
   const farm = new WikiFarm(registry('multi', [mk('main', 'main', { autostart: true })]), { createRuntime: factory(log) })
   await farm.startAll()
   log.length = 0
   const change = await farm.apply(registry('multi', [mk('main', 'main', { autostart: false })]))
-  assert.deepEqual(change.stopped, ['main'])
-  assert.deepEqual(log, ['stop:main', 'dispose:main'])
-  assert.deepEqual(farm.runningIds(), [])
-  await farm.startEntry(mk('main', 'main', { autostart: false }))
-  assert.deepEqual(farm.runningIds(), ['main'], 'autostart=false 只是"不自动起"，仍可按需起')
+  assert.deepEqual(change.stopped, [], '改配置不该把用户开着的库关掉')
+  assert.deepEqual(change.started, [])
+  assert.deepEqual(change.updated, ['main'])
+  assert.deepEqual(log, ['update:main'], '只允许原地更新')
+  assert.deepEqual(farm.runningIds(), ['main'])
+
+  // 新的值在下一次「开局」生效。
+  const nextLog = []
+  const next = new WikiFarm(registry('multi', [mk('main', 'main', { autostart: false })]), { createRuntime: factory(nextLog) })
+  assert.deepEqual((await next.startAll()).started, [], 'autostart=false 的库开局不起')
+  // 显式启动仍然可以（按需）。
+  await next.startEntry(mk('main', 'main', { autostart: false }))
+  assert.deepEqual(next.runningIds(), ['main'])
+})
+
+await test('模式翻回 single → 非默认库必须停（mode 是硬约束，不是 autostart）', async () => {
+  const log = []
+  const two = [mk('a', 'a', { autostart: true }), mk('b', 'b', { autostart: true })]
+  const farm = new WikiFarm(registry('multi', two, 'a'), { createRuntime: factory(log) })
+  await farm.startAll()
+  assert.deepEqual(farm.runningIds(), ['a', 'b'])
+  const change = await farm.apply(registry('single', two, 'a'))
+  assert.deepEqual(change.stopped, ['b'], 'single 模式只能跑默认库')
+  assert.deepEqual(farm.runningIds(), ['a'])
 })
 
 await test('目录变更 → 必须先停再回收重建（setLocation 拒绝在运行中改指）', async () => {

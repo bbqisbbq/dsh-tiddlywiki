@@ -17,10 +17,10 @@
  * @module dsh-tiddlywiki/scripts/verify-wiki-farm-boot
  */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, entryPath, registerRoutes, resolveTwRoot, targetRuntimeFor } from '../lib/index.js'
+import { ConfigStore, GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, applyWikiAction, entryPath, registerAdminRoutes, registerRoutes, resolveTwRoot, targetRuntimeFor, writeRegistry } from '../lib/index.js'
 import { createRouteServer } from './lib/tw-harness.mjs'
 
 let failures = 0
@@ -232,6 +232,97 @@ try {
     assert.equal(a.path, join(root, 'wikiA'), '停着的库也要带回路径，设置页才能显示它在哪')
   })
 
+  // ── 设置页的「知识库列表」写路径（/admin/wikis）────────────────────────────
+  // 动作规则由纯函数 applyWikiAction 提供（与宿主同一份实现），这里验的是**接线**：
+  // 同一条路径上 GET/POST 的分发、落盘、以及农场是否真的把新库起起来。
+  const controlFile = join(root, 'wikis.json')
+  let control = { ...registry }
+  const idleStore = new ConfigStore({})
+  const wikisFace = {
+    info: async () => ({
+      mode: control.mode,
+      defaultId: control.defaultId,
+      source: 'file',
+      registryFile: controlFile,
+      warnings: [],
+      wikis: control.wikis.map((e) => ({
+        id: e.id, label: e.label, root: e.root, name: e.name, path: entryPath(e),
+        agentVisible: e.agentVisible, autostart: e.autostart,
+        running: farm.runtime(e.id) !== undefined,
+        status: farm.runtime(e.id)?.server.status().status ?? 'stopped',
+      })),
+    }),
+    apply: async (body) => {
+      const action = applyWikiAction(control, body)
+      if (action.registry === undefined) return { ok: false, error: action.error }
+      control = action.registry
+      await writeRegistry(control, controlFile)
+      const change = await farm.apply(control)
+      return { ok: true, info: await wikisFace.info(), change }
+    },
+  }
+  const disposeAdmin = registerAdminRoutes(
+    { webServer: { register: (route) => { registered.push(route); return () => {} } } },
+    {
+      server: (req) => targetRuntimeFor(farm, req)?.server,
+      getClient: (req) => targetRuntimeFor(farm, req)?.client(),
+      getWikiPath: (req) => targetRuntimeFor(farm, req)?.path ?? '',
+      twRoot: resolveTwRoot,
+      config: () => idleStore,
+      wikis: wikisFace,
+      seeds: { checkAll: async () => [], run: async () => [], remove: async () => [] },
+    },
+  )
+
+  await test('/admin/wikis：GET 把控制文件里的清单整份吐出来', async () => {
+    const res = await fetch(`${baseUrl}/dsh-tiddlywiki/admin/wikis`)
+    assert.equal(res.status, 200)
+    const payload = await res.json()
+    assert.equal(payload.mode, 'multi')
+    assert.equal(payload.defaultId, 'a')
+    assert.deepEqual(payload.wikis.map((w) => w.id), ['a', 'b', 'c'])
+  })
+
+  await test('/admin/wikis：非法动作 → 400 + 原因，且不落盘、不起进程', async () => {
+    const res = await fetch(`${baseUrl}/dsh-tiddlywiki/admin/wikis`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'add', wiki: { id: 'b', root, name: 'wikiB2' } }),
+    })
+    assert.equal(res.status, 400)
+    assert.match((await res.json()).error, /已存在/)
+    assert.equal(farm.runtime('b2'), undefined, '被拒的动作不得产生任何进程')
+  })
+
+  await test('/admin/wikis：add 落盘 + 农场真的把新库起起来（autostart）', async () => {
+    const res = await fetch(`${baseUrl}/dsh-tiddlywiki/admin/wikis`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'add', wiki: { id: 'd', label: '丁', root, name: 'wikiD', agentVisible: true, autostart: true } }),
+    })
+    assert.equal(res.status, 200)
+    const payload = await res.json()
+    assert.deepEqual(payload.change.started, ['d'], `新增的自启库必须真的起来：${JSON.stringify(payload.change)}`)
+    assert.equal(farm.runtime('d').server.status().status, 'running')
+    const onDisk = JSON.parse(await readFile(controlFile, 'utf8'))
+    assert.deepEqual(onDisk.wikis.map((w) => w.id), ['a', 'b', 'c', 'd'], '清单必须落盘')
+  })
+
+  await test('/admin/wikis：remove 停掉并释放（文件与运行集一起收敛）', async () => {
+    const res = await fetch(`${baseUrl}/dsh-tiddlywiki/admin/wikis`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action: 'remove', id: 'd' }),
+    })
+    assert.equal(res.status, 200)
+    const payload = await res.json()
+    assert.deepEqual(payload.change.stopped, ['d'])
+    assert.equal(farm.runtime('d'), undefined, '删掉的库必须被停掉并释放')
+    const onDisk = JSON.parse(await readFile(controlFile, 'utf8'))
+    assert.deepEqual(onDisk.wikis.map((w) => w.id), ['a', 'b', 'c'])
+  })
+
+  disposeAdmin()
   disposeRoutes()
   await harness.close()
 } finally {
