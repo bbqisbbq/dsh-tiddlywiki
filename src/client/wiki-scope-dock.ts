@@ -21,6 +21,7 @@
  */
 import * as React from 'react'
 import { fetchStatus } from './status-cache.ts'
+import { alignDockEntry } from './dock-align.ts'
 import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
@@ -39,6 +40,16 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
     const [scope, setScope] = React.useState('')
     const [note, setNote] = React.useState<string | undefined>(undefined)
     const [busy, setBusy] = React.useState(false)
+    const wrapRef = React.useRef<HTMLDivElement | null>(null)
+
+    // 与 composer 输入框右缘对齐（v0.28.2）：dock 槽位渲染成输入框的**兄弟节点**，
+    // 不做这一步这一行就悬在整列最右端（作者报障："没有和输入框对齐"）。测量逻辑
+    // 与快速笔记共用一份 —— client/dock-align.ts。
+    React.useLayoutEffect(() => {
+      const wrap = wrapRef.current
+      if (wrap === null) return
+      return alignDockEntry(wrap)
+    }, [])
 
     React.useEffect(() => {
       if (sessionId === undefined) return
@@ -91,7 +102,7 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
 
     return React.createElement(
       'div',
-      { className: 'dsh-tw-scope-dock' },
+      { ref: wrapRef, className: 'dsh-tw-scope-dock' },
       React.createElement('span', { className: 'dsh-tw-scope-label' }, '知识库'),
       React.createElement(
         'select',

@@ -143,6 +143,50 @@ test('会话选择器：挂在 conversation.input.dock（scope=session，组件�
   assert.match(dockSrc, /interface DockProps \{ sessionId\?: string \}/, '组件的 props 必须含 sessionId（该槽位 scope=session）')
 })
 
+test('快速笔记：单库模式不得露出「写入」选择器（作者 2026-09-28 报障）', () => {
+  const note = readFileSync(path.join(repoRoot, 'src/client/note-widget.ts'), 'utf8')
+  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  // 症状：单库模式下界面出现一个「写入」下拉、点开没有选项。
+  // 根因：`hidden` 属性在 CSS 里只是 display:none，而 .dsh-tw-note-wiki 有显式
+  // display:inline-flex —— **显式 display 会盖掉 hidden**，元素照样渲染。
+  assert.match(styles, /\.dsh-tw-note-wiki\[hidden\]\s*\{\s*display:\s*none/, '必须显式尊重 hidden（否则 display:inline-flex 会盖掉它）')
+  assert.match(styles, /\.dsh-tw-note-wiki-hint\[hidden\]\s*\{\s*display:\s*none/, '提示行同理')
+  // 且 CSS 里那条 [hidden] 必须出现在设 display 的那条**之后**（同优先级靠后者生效）
+  const disp = styles.indexOf('.dsh-tw-note-wiki {')
+  const hid = styles.indexOf('.dsh-tw-note-wiki[hidden]')
+  assert.ok(disp >= 0 && hid > disp, '[hidden] 规则必须写在设 display 的规则之后')
+  // 组件侧兜底：单库时除了 hidden 还要禁用并直接 display:none
+  // （不用跨行大正则——文件里 `if (roster.length <= 1)` 只有这一处）
+  const guardAt = note.indexOf('if (roster.length <= 1)')
+  assert.ok(guardAt > 0, '组件必须有单库分支')
+  const guardBlock = note.slice(guardAt, guardAt + 320)
+  assert.ok(guardBlock.includes("wikiField.style.display = 'none'"), '单库时组件也要直接隐藏（不只靠 hidden 属性）')
+  assert.ok(guardBlock.includes('wikiSelect.disabled = true'), '单库时选择器必须被禁用')
+})
+
+test('dock 条目必须与 composer 输入框对齐（作者 2026-09-28 报障：选择器没对齐）', () => {
+  const align = readFileSync(path.join(repoRoot, 'src/client/dock-align.ts'), 'utf8')
+  const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
+  const scope = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
+  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+
+  // 规则只有一份：dock 槽位是 composer 的**兄弟节点**，必须测出输入框卡片再补 padding。
+  assert.match(align, /export function alignDockEntry\(/, '对齐逻辑必须收在 dock-align.ts 一份')
+  assert.match(align, /paddingRight/, '对齐靠给条目补右内边距')
+  assert.match(align, /ResizeObserver/, '侧栏开合会移动输入框卡片 → 必须观察祖先链重测')
+
+  // 每个 dock 条目都必须用它 —— 这就是这次 bug 的根因：规则只写在 quick-note 里，
+  // 第二个条目（知识库选择器）加进来时没人知道要对齐。
+  assert.match(quick, /alignDockEntry\(/, '快速笔记条目必须用共享对齐')
+  assert.match(scope, /alignDockEntry\(/, '知识库选择器条目必须用共享对齐（本次报障点）')
+  // 两处都必须挂 ref（没有元素可测就没法对齐）
+  assert.match(scope, /ref: wrapRef/, '选择器必须把 ref 挂到自己的根元素上')
+  // 右对齐 + 不重复实现测量（旧代码不该再留在条目里）
+  assert.match(styles, /\.dsh-tw-scope-dock\s*\{[^}]*justify-content:\s*flex-end/, '选择器要右对齐')
+  assert.ok(!/BoundingClientRect/.test(scope), '条目里不得再自带一份测量实现')
+  assert.ok(!/BoundingClientRect/.test(quick), '快速笔记的测量也必须只剩共享那一份')
+})
+
 test('设置页：知识库列表是第一块，且能改模式/启停/默认/可见性/移出', () => {
   const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
   assert.match(settings, /renderWikiListSection\(body, isDisposed, refresh\)/, '设置页必须渲染知识库列表')
@@ -188,8 +232,36 @@ test('快速笔记：整张卡片（标签/最近/草稿/附件/保存/弹窗）
   // 弹窗编辑器必须落在同一个库（写入 A、编辑器打开 B 是"看起来成功了"的失败）
   assert.match(note, /twProxyFor\(rosterMode, targetWiki, payload\.twUrl, payload\.twUrlAbsolute\)/)
   // 单库安装：名册 ≤1 时连选择器都不显示，targetWiki 保持 undefined
-  assert.match(note, /if \(roster\.length <= 1\) return/)
+  assert.match(note, /if \(roster\.length <= 1\)/, '必须有单库分支（不显示选择器、targetWiki 保持 undefined）')
   assert.match(note, /targetPicked/, '卡片里显式选过之后不得再被焦点库带走')
+})
+
+test('侧边栏入口：每个在运行的库一个入口，用自己的显示名（作者 2026-09-28 要求）', () => {
+  const sidebar = readFileSync(path.join(repoRoot, 'src/client/sidebar-entry.ts'), 'utf8')
+  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+
+  // 多库：按名册逐库建行，标签取该库的 display label
+  assert.match(sidebar, /const running = list\.filter\(\(w\) => w\.running\)/, '只列在运行的库（点了就该能打开）')
+  assert.match(sidebar, /row\.labelEl\.textContent = w\.label/, '每行必须用该库自己的显示名')
+  // 点行 = 先切焦点库再开面板（否则点 A 打开 B）
+  assert.match(sidebar, /if \(wikiId !== undefined\) setFocusWiki\(wikiId\)/, '点击入口行必须先切焦点库')
+  // 单库：仍走 ui.sidebarLabel 那一个行，行为逐字不变
+  assert.match(sidebar, /if \(running\.length <= 1\) \{[\s\S]{0,200}entry\.hidden = false/, '单库必须保留原来那一个行')
+  assert.match(sidebar, /entry\.hidden = true/, '多库时默认行让位给每库自己的行')
+  // 焦点库高亮 + 停用的行要清掉
+  assert.match(sidebar, /row\.entry\.dataset\.focus = 'true'/, '当前焦点库要标出来')
+  assert.match(styles, /\.dsh-tw-entry\[data-focus="true"\]/, '焦点库标记要有样式')
+})
+
+test('文档：插件说明必须讲清多库与"从旧版本升级"（作者 2026-09-28 要求）', () => {
+  const notes = readFileSync(path.join(repoRoot, 'src/host/seed-notes.ts'), 'utf8')
+  // 升级用户最大的困惑：装完了不知道有个多库模式、也不知道旧指针文件还在起作用。
+  assert.match(notes, /!! 多知识库（v0\.28\.0 起）/, '插件说明里必须有「多知识库」一节')
+  assert.match(notes, /!! 从旧版本升级上来/, '必须有「从旧版本升级上来」一节')
+  assert.match(notes, /升级后不会自动变成多库/, '必须说明升级后仍是单库、行为不变')
+  assert.match(notes, /wikis\.json/, '必须点出控制文件在哪')
+  assert.match(notes, /location\.json|指针文件/, '必须说清单库模式下旧指针文件不再参与')
+  assert.match(notes, /对 Agent 隐身/, '必须解释 agentVisible 的实际含义')
 })
 
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)

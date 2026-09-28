@@ -17,6 +17,7 @@
 import * as React from 'react'
 import { NOTE_STATE_EVENT, type NoteWidgetHandle } from './note-widget.ts'
 import { fetchUiConfig } from './ui-config.ts'
+import { alignDockEntry } from './dock-align.ts'
 import { isEditorPopupOpen, isEditorPopupBlank, closeEditorPopup } from './editor-popup.ts'
 
 /**
@@ -54,89 +55,13 @@ export function createQuickNoteDock(note: NoteWidgetHandle): () => React.ReactEl
         window.removeEventListener(NOTE_STATE_EVENT, onState)
       }
     }, [])
+    // 与 composer 输入框右缘对齐：测量逻辑已抽到 client/dock-align.ts（v0.28.2），
+    // 因为第二个 dock 条目（会话级知识库选择器）加进来时它没有对齐 —— 规则只写在
+    // 这里，别人看不见。
     React.useLayoutEffect(() => {
       const wrap = wrapRef.current
       if (wrap === null) return
-      /**
-       * Find the composer input CARD: climb from the dock entry until an
-       * ancestor's subtree contains a wide text field (>300px — the composer
-       * input; dock entries' own inputs are small), then take the widest box
-       * between that field and its containing column (the visible card).
-       */
-      const findCard = (): HTMLElement | null => {
-        let input: Element | null = null
-        let column: HTMLElement | null = null
-        let node: HTMLElement | null = wrap
-        while (node !== null && node !== document.documentElement) {
-          node = node.parentElement
-          if (node === null) break
-          for (const el of node.querySelectorAll('textarea, [contenteditable]:not([contenteditable="false"]), [role="textbox"]')) {
-            if (el.getBoundingClientRect().width > 300) { input = el; column = node; break }
-          }
-          if (column !== null) break
-        }
-        if (input === null || column === null) return null
-        const colW = column.getBoundingClientRect().width
-        let cur: HTMLElement | null = input as HTMLElement
-        let card: HTMLElement | null = null
-        let cardW = 0
-        while (cur !== null && cur !== column) {
-          const w = cur.getBoundingClientRect().width
-          if (w > 0 && w < colW - 8 && w >= cardW) { cardW = w; card = cur }
-          cur = cur.parentElement
-        }
-        return card
-      }
-      /** 测量一次对齐；返回 true = 找到了 composer 输入卡片（测量有效）。 */
-      const align = (): boolean => {
-        const wrapRect = wrap.getBoundingClientRect()
-        const card = findCard()
-        const right = card !== null ? card.getBoundingClientRect().right : wrapRect.right
-        const pad = Math.max(0, wrapRect.right - right)
-        if (wrap.style.paddingRight !== `${pad}px`) wrap.style.paddingRight = `${pad}px`
-        return card !== null
-      }
-      align()
-      // 侧边栏开/关会改变对话列宽度 → composer 输入卡片（居中、有 max-width）的
-      // 右缘随之移动。旧实现只观察了 dock 容器，侧边栏变化时它不一定触发 resize，
-      // 导致按钮停在上次的位置、不再对齐。这里观察「从 dock 条目一直到对话根节点
-      // （带 data-phase）的整条祖先链」，任一祖先尺寸变化都会重测对齐。
-      const ro = new ResizeObserver(align)
-      let node: Element | null = wrap
-      while (node !== null && node !== document.documentElement) {
-        ro.observe(node)
-        if (node instanceof HTMLElement && node.hasAttribute('data-phase')) break
-        node = node.parentElement
-      }
-      window.addEventListener('resize', align)
-      document.addEventListener('visibilitychange', align)
-      // 自愈兜底：任何未观测到的布局变化（侧边栏切换、插件重渲染等）也会在
-      // 1.5s 内被纠正；每帧只是几次 getBoundingClientRect 读取，开销可忽略。
-      // 但常驻定时器没有必要：连续 3 次测量成功（找到 composer 输入卡片）即认为
-      // 布局已稳定，清掉 interval；即使一直测不到（异常 shell），也在 20 次后
-      // 强制收手，之后由 ResizeObserver + resize + visibilitychange 覆盖。
-      let guardHits = 0
-      let guardTicks = 0
-      const guard = window.setInterval(() => {
-        guardTicks++
-        if (!align()) {
-          if (guardTicks >= 20) window.clearInterval(guard)
-          return
-        }
-        guardHits++
-        if (guardHits >= 3) window.clearInterval(guard)
-      }, 1500)
-      // The composer card may mount slightly later; re-measure a couple of times.
-      const t1 = window.setTimeout(align, 120)
-      const t2 = window.setTimeout(align, 600)
-      return () => {
-        ro.disconnect()
-        window.removeEventListener('resize', align)
-        document.removeEventListener('visibilitychange', align)
-        window.clearInterval(guard)
-        window.clearTimeout(t1)
-        window.clearTimeout(t2)
-      }
+      return alignDockEntry(wrap)
     }, [])
     const native = mode === 'native'
     const label = native ? '快速笔记' : (open ? '快速笔记（已打开）' : '快速笔记')

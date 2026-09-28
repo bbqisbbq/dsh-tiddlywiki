@@ -24,6 +24,9 @@ const CSS_TEXT = `
 }
 .dsh-tw-entry:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, inherit); }
 .dsh-tw-entry[data-active="true"] { background: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.18)); color: var(--dsw-alias-label-primary, inherit); font-weight: 500; }
+/* 多库（v0.28.2）：每库一个入口行，当前焦点库加一条左侧标线，和「面板正打开哪个库」区分开
+   —— 面板是同一个，但焦点库决定它加载谁。 */
+.dsh-tw-entry[data-focus="true"] { box-shadow: inset 2px 0 0 0 var(--dsw-alias-brand-primary, #3e63dd); }
 .dsh-tw-entry svg { flex: none; }
 .dsh-tw-entry .dsh-tw-entry-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Collapsed rail: the shell narrows the sidebar to a 56px icon rail (dual
@@ -501,8 +504,13 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 /* ── 会话级知识库选择器（v0.28.0，同一个 conversation.input.dock 槽位）──
    与快速笔记按钮同区、纵向 flex 排列；只在"多于一个可见库"时渲染（组件自己返回
    null），所以单库安装这一整块都不存在。 */
+/* ── 会话级知识库选择器（v0.28.0，同一个 conversation.input.dock 槽位）──
+   与快速笔记按钮同区、纵向 flex 排列；只在"多于一个可见库"时渲染（组件自己返回
+   null），所以单库安装这一整块都不存在。
+   justify-content: flex-end 与 JS 测得的 paddingRight 一起把右缘对齐 composer
+   输入框（见 client/dock-align.ts）—— 与 .dsh-tw-dock-note 同一套做法。 */
 .dsh-tw-scope-dock {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap;
   padding: 4px 8px 0; box-sizing: border-box; width: 100%; font-size: 12px;
 }
 .dsh-tw-scope-label { opacity: .7; }
@@ -515,6 +523,11 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-scope-note { opacity: .75; }
 /* 快速笔记卡片的目标库选择（v0.28.0，R7）：只在多库时出现。 */
 .dsh-tw-note-wiki { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+/* ⚠️ hidden 属性在 CSS 里只是 display:none，**任何显式 display 都能盖掉它** ——
+   上面那条 display:inline-flex 就盖掉了，于是单库模式下这个空下拉照样显示出来
+   （作者 2026-09-28 报障："有个写入下拉，但是没有选项"）。显式尊重 hidden，
+   并把这一条写在后面（同优先级靠后者生效）。 */
+.dsh-tw-note-wiki[hidden] { display: none; }
 .dsh-tw-note-wiki-label { opacity: .7; }
 .dsh-tw-note-wiki-select {
   border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
@@ -522,6 +535,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   padding: 2px 6px; border-radius: 999px; max-width: 220px;
 }
 .dsh-tw-note-wiki-hint { font-size: 12px; opacity: .75; }
+.dsh-tw-note-wiki-hint[hidden] { display: none; }
 
 /* ── input-dock quick-note button（聊天输入框上方，conversation.input.dock）──
    该槽位渲染为「输入框上方的全宽条目」纵向 flex 排列（todo/cost-meter/goal/

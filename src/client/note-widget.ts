@@ -835,7 +835,16 @@ export function createNoteWidget(): NoteWidgetHandle {
       if (disposed) return
       rosterMode = typeof payload?.mode === 'string' ? payload.mode : 'single'
       roster = (Array.isArray(payload?.wikis) ? payload.wikis : []).map((item) => ({ id: item.id, label: item.label, running: item.running }))
-      if (roster.length <= 1) return
+      // 单库：连选择器都不该存在。这里**还有一个**兜底 —— 除 `hidden` 外把 select 禁用、
+      // 标签也藏掉，因为"能看见一个没有选项的下拉"比"什么都不显示"糟得多（v0.28.1 修）。
+      if (roster.length <= 1) {
+        wikiField.hidden = true
+        wikiField.style.display = 'none'
+        wikiSelect.disabled = true
+        return
+      }
+      wikiField.style.display = ''
+      wikiSelect.disabled = false
       const defaultId = typeof payload?.defaultId === 'string' ? payload.defaultId : undefined
       const followFocus = (): void => {
         if (!targetPicked) targetWiki = resolveFocusWiki(roster, defaultId)
