@@ -151,8 +151,13 @@ test('空输入与纯文本不炸', () => {
 console.log('接线守门 —— 注入点必须只吃净化后的片段')
 
 test('host 路由调用净化器', () => {
-  const routes = fs.readFileSync(path.join(repoRoot, 'src/host/routes.ts'), 'utf8')
-  assert.ok(/sanitizeTwFragment\(/.test(routes), 'src/host/routes.ts 必须在返回渲染片段前调用 sanitizeTwFragment()')
+  // v0.28.8：`/render`（连同它的净化调用）搬进了 routes-tw-proxy.ts，所以这里读
+  // **两个**文件而不是只读 routes.ts —— 断言的是「宿主侧存在净化调用」这条规则，
+  // 不是「它在哪个文件里」。只钉死一个路径的话，一次纯搬迁就会让这条守门假红。
+  const sources = ['src/host/routes.ts', 'src/host/routes-tw-proxy.ts']
+    .map((file) => fs.readFileSync(path.join(repoRoot, file), 'utf8'))
+    .join('\n')
+  assert.ok(/sanitizeTwFragment\(/.test(sources), '宿主渲染路由必须在返回渲染片段前调用 sanitizeTwFragment()')
 })
 
 test('客户端不再直连未净化的 /tw/render', () => {

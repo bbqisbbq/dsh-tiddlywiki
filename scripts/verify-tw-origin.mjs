@@ -69,11 +69,19 @@ await test('absoluteHostBase：脏/缺失 Host 头一律拒绝（不拼进 URL�
 })
 
 await test('宿主接线：/status 与两个 twUrl 载荷都带上绝对孪生字段', () => {
+  // v0.28.8：`/session/summary` 的 handler 搬进了 routes-session.ts，所以这条断言
+  // 必须跨**两个**文件数「两处 twUrlAbsolute」—— 规则没变（桌面壳需要一个绝对
+  // 基址），变的只是它们所在的文件。钉死单文件会在纯搬迁后假红。
   const routes = read('src/host/routes.ts')
+  const sessionRoutes = read('src/host/routes-session.ts')
+  const all = `${routes}\n${sessionRoutes}`
   assert.match(routes, /twProxyAbsolute: twProxyAbsoluteBase\(req\)/, '/status 必须回 twProxyAbsolute')
-  const twins = routes.match(/twUrlAbsolute: twProxyAbsoluteBase\(req\)/g) ?? []
+  const twins = all.match(/twUrlAbsolute: (?:deps\.)?twProxyAbsoluteBase\(req\)/g) ?? []
   assert.equal(twins.length, 2, `/edit 与 /session/summary 都要回 twUrlAbsolute（实际 ${twins.length} 处）`)
   assert.match(routes, /const twProxyAbsoluteBase = \(req: IncomingMessage\): string \| undefined => absoluteHostBase\(req\.headers\.host, TW_PROXY_PATH\)/)
+  // 搬家后 base 函数经 SessionRouteDeps 注入，所以要确认它真的被传了进去
+  // （注入了却没传 = 汇总回执丢掉绝对地址，桌面壳点开会走错 origin）。
+  assert.match(routes, /twProxyAbsoluteBase,/, 'twProxyAbsoluteBase 必须注入会话路由')
 })
 
 /* ────────────────── 2. 客户端：解析器 ────────────────── */

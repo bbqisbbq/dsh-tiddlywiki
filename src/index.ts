@@ -246,6 +246,9 @@ export type { PluginConfigShape } from './host/config.ts'
 export type { GitStatusView } from './host/git.ts'
 export type { Tiddler } from './host/tw-api.ts'
 export type { WikiServerOptions, WikiStatusView } from './host/wiki.ts'
+// 桌面加固（v0.28.8）：TW 子进程用哪个 node 起。导出是为了能被守门脚本直接断言
+// （打包版 Electron 宿主下 process.execPath 是 Electron 二进制，起不了 TW）。
+export { resolveNodeExecutable } from './host/wiki.ts'
 
 /** Plugin config (design doc §13). Defaults are applied in apply().
  *  Mirrors PluginConfigShape (src/host/config.ts) — the cordis `config:` block;

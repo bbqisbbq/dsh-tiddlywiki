@@ -341,7 +341,10 @@ await test('watchWiki：fs.watch 必须常驻 error 监听（否则一个 EPERM 
 // 清掉 restartTimer、置 stopping），随后 spawn 出来的子进程没人会杀 = 孤儿 TW。
 await test('wiki.ts：spawn 之前必须复查 stopping（否则 stop() 与 start() 竞态会留孤儿进程）', () => {
   const body = bodyOf(wiki, 'private async startOnce(')
-  const iSpawn = body.indexOf('spawn(process.execPath, args')
+  // v0.28.8：可执行文件不再硬编码 process.execPath，而是经 resolveNodeExecutable()
+  // 解析（打包版 Electron 宿主下 execPath 是 Electron 二进制，起不了 TW）。
+  // 这里断言的是"spawn 调用"这一事实，不是它用哪个变量，所以两种写法都接受。
+  const iSpawn = body.search(/spawn\((?:node|process\.execPath), args/)
   const iCheck = body.indexOf('if (this.stopping)')
   assert.ok(iSpawn >= 0, '找不到 spawn 调用')
   assert.ok(iCheck >= 0 && iCheck < iSpawn, 'spawn 之前必须有 if (this.stopping) 复查')

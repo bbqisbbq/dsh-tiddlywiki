@@ -49,23 +49,37 @@
  *
  * @module dsh-tiddlywiki/host/routes
  */
-import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http'
-import { mkdir, writeFile, stat } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join } from 'node:path'
-import { Readable } from 'node:stream'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { basename, extname, join } from 'node:path'
 import type { Tiddler, TiddlyWebClient } from './tw-api.ts'
-import { RenderNotFoundError, formatTiddlerDate, isBinaryType, toIsoDateString } from './tw-api.ts'
+import { formatTiddlerDate, isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { GitConflictStateError, type GitFace, type GitStatusView } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
-import { writeSessionSummary, type SessionQueryFace, type SessionSummaryResult } from './session-summary.ts'
+import type { SessionQueryFace } from './session-summary.ts'
 import { WORKSPACE_TAG_PREFIX } from './workspace.ts'
-import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, absoluteHostBase, MAX_PROXY_BODY_BYTES, MAX_UPLOAD_BYTES } from './http.ts'
-import { sanitizeTwFragment } from './sanitize.ts'
+import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, absoluteHostBase } from './http.ts'
 import { drainThenStop } from './seeds.ts'
 import { snippetOf, formatLocalMinute } from './text-util.ts'
 import { WriteConflictError, assertNoConflict, buildWriteTiddler, flattenTiddlerFields } from './write-policy.ts'
 import { WECHAT_ADAPTERS, type WechatAdapter, type WechatPublishConfig, type WechatPublishJobView, type WechatPublishStartResult, type WechatReadyView } from './wechat-publish.ts'
+import { createSessionRoutes } from './routes-session.ts'
+// Face types the session routes were extracted with: `registerRoutes`'s own
+// deps interface still declares them, so they are re-imported here rather than
+// duplicated (duplicating is how the two would drift apart).
+import type {
+  AgentPresetsFace,
+  PermissionPresetsFace,
+  SessionControllerFace,
+  SessionPersistenceFace,
+  SessionsFace,
+  WorkspaceRegistryFace,
+} from './routes-session.ts'
+// The three TW-facing routes (`/render`, `/api/*`, `/tw/*`) and the
+// blocked-title predicates + header forwarder they share with `/get` live in
+// their own module (v0.28.8) — see that file's header for why.
+import { createTwProxyRoutes, isBlockedProxyTitle } from './routes-tw-proxy.ts'
 
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './session-summary.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './session-summary.ts'
@@ -83,92 +97,20 @@ export interface WebServerFace {
 }
 
 /**
- * Structural face over the DSH `sessionController` service (a subset of
- * dsh-api-session-controller). Only the methods the agent-send routes need are
- * declared; the runtime instance is a real Service, never inspected data.
+ * The DSH-service faces of the session routes. They are DECLARED in
+ * routes-session.ts (v0.28.8) — next to the handlers that are their only
+ * consumers — and re-exported here because this module has always been the
+ * import surface for the plugin wiring (`src/index.ts`) and for the callers of
+ * `SessionQueryFace` / the wiki-side surfaces.
  */
-export interface SessionControllerFace {
-  prompt(
-    request: { requestId: string; sessionId: string; mode: 'queue' | 'steer'; content: Array<{ type: 'text'; text: string }> },
-    signal: AbortSignal,
-  ): Promise<{ accepted: boolean }>
-  list(
-    request: { cursor?: string },
-    signal: AbortSignal,
-  ): Promise<{
-    items: Array<{
-      sessionId: string
-      updatedAt?: number
-      running?: boolean
-      blank?: boolean
-      parentSessionId?: string
-      cwd?: string
-    }>
-  }>
-  create(request: { cwd?: string; workspaceId?: string; agentPreset?: string }): Promise<{ sessionId: string }>
-}
-
-/**
- * Structural face over the DSH `workspaceRegistry` service (a subset of
- * dsh-workspace). Only what the agent-create route needs is declared; the
- * runtime instance is a real Service, never inspected data.
- */
-export interface WorkspaceRegistryFace {
-  /** Resolve or create the workspace owning `path` — idempotent by canonical path. */
-  create(path: string, title?: string): Promise<{ id: string; path: string }>
-}
-
-/**
- * Structural face over the DSH `agentPresets` service (a subset of
- * dsh-agent-presets). It is the deployment's "工作模式" registry — the agent
- * presets a session can be composed from (default / cordis / blade / …). Only
- * `list` + `resolve` (default id) are needed by the agent-modes route.
- */
-export interface AgentPresetsFace {
-  /** Every preset the configured roots currently supply. */
-  list(): Promise<Array<{ id: string; name?: string; description?: string; trust?: string; broken?: string }>>
-  /** Resolve one preset by id (`undefined` = the deployment default). */
-  resolve(id?: string): Promise<{ id: string; name?: string; description?: string }>
-}
-
-/**
- * Structural face over the DSH `sessionPersistence` service. Only the
- * lightweight `list` (metadata headers, no log parse) is needed so the
- * agent-sessions route can attach each session's recorded `agentPreset`.
- */
-export interface SessionPersistenceFace {
-  /** One header per materialized session (carries `agentPreset` when set). */
-  list(signal?: AbortSignal): Promise<Array<{ id: string; agentPreset?: string }>>
-}
-
-/**
- * Structural face over the DSH `permissionPresets` service (a subset of
- * dsh-permission-presets). It owns the deployment's permission presets — each
- * bundles a sandbox mode + approval policy (e.g. `workspace-write` = write
- * inside the workspace with approval, `danger-full-access` = no prompts). The
- * agent-modes route exposes the option list to the TW picker, and agent-create
- * applies the chosen preset to the new session's log via `set`.
- */
-export interface PermissionPresetsFace {
-  /** Every switchable preset name, in declaration order. */
-  readonly names: readonly string[]
-  /** The preset currently selected as the default for new sessions. */
-  readonly defaultPreset: string
-  /** Build the client option ({ value, name, description? }) for one preset. */
-  optionOf(name: string): { value: string; name: string; description?: string }
-  /** Record a preset switch on a live session (durable, log-only user intent). */
-  set(session: unknown, name: string): void
-}
-
-/**
- * Structural face over the DSH `sessions` in-memory store (a subset of
- * dsh-session). Only `get` is needed: after `sessionController.create`
- * resolves, the new session is already materialized here, so agent-create can
- * hand it to `permissionPresets.set`.
- */
-export interface SessionsFace {
-  get(id: string): unknown
-}
+export type {
+  SessionControllerFace,
+  WorkspaceRegistryFace,
+  AgentPresetsFace,
+  SessionPersistenceFace,
+  PermissionPresetsFace,
+  SessionsFace,
+} from './routes-session.ts'
 
 /** Effective UI flags returned by /status (mirror index.ts). */
 export interface UiDefaultsPublic {
@@ -319,26 +261,6 @@ export interface RouteDeps {
 export interface WechatPublishFace {
   start(request: { title: string; adapter?: WechatAdapter; dsn: string }): WechatPublishStartResult
   status(id?: string): WechatPublishJobView | undefined
-}
-
-/** Header names forwarded to the upstream TW service by the proxy routes. */
-const FORWARD_HEADER_NAMES = [
-  'accept', 'accept-encoding', 'content-type', 'cookie', 'authorization',
-  'if-none-match', 'if-modified-since', 'origin', 'referer', 'user-agent',
-] as const
-
-/** Copy a safe, string-valued subset of the request headers upstream. */
-function forwardHeaders(headers: IncomingHttpHeaders): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const name of FORWARD_HEADER_NAMES) {
-    // Index through the string index signature so known header names (typed
-    // `string`) do not hide the `string[]` repeat case via their specific
-    // property declarations.
-    const value: string | string[] | undefined = headers[name as string]
-    if (typeof value === 'string') out[name] = value
-    else if (Array.isArray(value) && value.length > 0) out[name] = value.join(', ')
-  }
-  return out
 }
 
 /**
@@ -642,68 +564,6 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   const endMutation = (): void => { mutationInFlight = undefined }
 
   /**
-   * Titles the browser-facing TW surfaces must never serve (v0.19.3 / v0.20.0).
-   *
-   * `$:/plugins/dsh-tiddlywiki/config` holds the shared tokens and the git
-   * remote (possibly with a PAT); `/tw` and `/api` forward ANY path to the
-   * loopback TW child, whose TiddlyWeb REST answers for `$:/…` titles — a
-   * route-level guard on `/get` was therefore trivially bypassed by
-   * `GET /dsh-tiddlywiki/tw/recipes/default/tiddlers/%24%3A%2Fplugins%2F…`
-   * (verified). The whole plugin namespace is blocked: nothing under it is
-   * needed by the TW frontend, and the host itself talks to TW directly.
-   *
-   * v0.20.0: the SAME predicate now also guards `POST /render`, which had been
-   * left open — TW's `/render` route renders ANY tiddler by title, so
-   * `{"title":"$:/plugins/dsh-tiddlywiki/config"}` returned the raw config
-   * (tokens + PAT in plain text inside `<pre><code>`, where the fragment
-   * sanitizer keeps it). Verified end-to-end against a scratch wiki before the
-   * fix. Every route that turns a caller-supplied title into TW output must use
-   * `isBlockedProxyTitle`.
-   */
-  const BLOCKED_PROXY_TITLE_PREFIXES = ['$:/plugins/dsh-tiddlywiki/']
-
-  /** True when a caller-supplied tiddler title addresses the secret namespace. */
-  const isBlockedProxyTitle = (title: string): boolean =>
-    BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix))
-
-  /**
-   * True when a proxied pathname addresses a blocked (secret-bearing) tiddler.
-   *
-   * Decodes the WHOLE path rather than looking for a literal `/tiddlers/` marker
-   * (v0.23.5). TW core's `get-tiddler-html.js` route is a SINGLE segment
-   * (`path = /^\/([^\/]+)$/`) decoded with `decodeURIComponentSafe`, so
-   * `GET /tw/%24%3A%2Fplugins%2Fdsh-tiddlywiki%2Fconfig` reached the config
-   * tiddler while the old marker check saw no `/tiddlers/` at all (verified
-   * before the fix: 200, 715 bytes of config JSON on both `/tw` and `/api`).
-   * Raw, once- and twice-decoded forms are all checked so double-encoding cannot
-   * slip through either.
-   */
-  const isBlockedProxyPath = (pathname: string): boolean => {
-    let candidate = pathname
-    for (let i = 0; i < 3; i += 1) {
-      if (BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => candidate.includes(prefix))) return true
-      let next = candidate
-      try {
-        next = decodeURIComponent(candidate)
-      } catch { /* malformed encoding: stop decoding and use what we have */ }
-      if (next === candidate) break
-      candidate = next
-    }
-    return BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => candidate.includes(prefix))
-  }
-
-  /**
-   * Does caller-supplied CONTENT reference the protected namespace? (v0.23.5)
-   * TW's `/render` resolves `{{…}}` transclusions server-side, so the `text`
-   * branch was a second way to print the config tiddler: verified before the fix,
-   * `POST /render {"text":"{{$:/plugins/dsh-tiddlywiki/config}}"}` returned 200
-   * with the config JSON inside `<pre><code>` — the fragment sanitizer only strips
-   * tags, it cannot know the text is a secret.
-   */
-  const referencesBlockedTitle = (value: string | undefined): boolean =>
-    value !== undefined && BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => value.includes(prefix))
-
-  /**
    * Absolute twin of `twProxy` for embedders whose own document is not on
    * http(s) — the DSH desktop app's `dsh-app:` renderer (v0.26.7). See
    * `absoluteHostBase()` in http.ts for the full why; clients only consult it
@@ -750,426 +610,40 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * parallel for the same answer. The cache holds the PROMISE (concurrent callers
    * share one run) and a rejection is never kept.
    */
-  const SUMMARY_REUSE_MS = 3_000
-  const summaryInFlight = new Map<string, { at: number; value: Promise<SessionSummaryResult> }>()
-
   /**
-   * GET /dsh-tiddlywiki/session/wiki?session=<id> — which knowledge base this
-   * conversation works on, plus what it resolves to right now.
-   *
-   * The per-wiki selector in the composer reads this; the agent tools and the
-   * injected prompt are driven by the SAME value, so what the user picks is what
-   * the model gets.
+   * The session-scoped routes (per-session knowledge-base scope, the 「知识库」
+   * Tab summary, and the TW-side send-to-agent picker) live in routes-session.ts
+   * (v0.28.8): they are the handlers driven by the DSH *session* services rather
+   * than by a wiki, so they are the one cohesive group that could move without
+   * dragging the wiki-facing routes along with them. The factory closes over the
+   * same locals they used before; only the returned functions change address.
    */
-  const handleSessionWiki = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectNonRead(req, res)) return
-      if (deps.sessionScope === undefined) {
-        json(res, { ok: false, error: '会话作用域不可用（宿主未接线）' }, 503)
-        return
-      }
-      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-      const session = (url.searchParams.get('session') ?? '').trim()
-      if (session.length === 0) {
-        json(res, { ok: false, error: 'session is required' }, 400)
-        return
-      }
-      json(res, { ok: true, session, ...deps.sessionScope.get(session) })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
-
-  /**
-   * POST /dsh-tiddlywiki/session/wiki { session, wiki } — point this conversation
-   * at a knowledge base (`wiki: null`/`''` clears the choice and falls back to
-   * the default).
-   *
-   * A HIDDEN wiki is refused (400): `agentVisible: false` means "the agent never
-   * reaches this one", and a selector that lets a session pick it would quietly
-   * contradict the setting the user just made.
-   */
-  const handleSessionWikiSet = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (deps.sessionScope === undefined) {
-        json(res, { ok: false, error: '会话作用域不可用（宿主未接线）' }, 503)
-        return
-      }
-      let body: { session?: unknown; wiki?: unknown } = {}
-      try {
-        body = JSON.parse(await readBody(req)) as { session?: unknown; wiki?: unknown }
-      } catch {
-        json(res, { ok: false, error: '请求体必须是 JSON' }, 400)
-        return
-      }
-      const session = typeof body.session === 'string' ? body.session.trim() : ''
-      if (session.length === 0) {
-        json(res, { ok: false, error: 'session is required' }, 400)
-        return
-      }
-      const raw = typeof body.wiki === 'string' ? body.wiki.trim() : ''
-      const wikiId = raw.length === 0 ? undefined : raw
-      await deps.sessionScope.set(session, wikiId)
-      json(res, { ok: true, session, ...deps.sessionScope.get(session) })
-    } catch (err) {
-      // A refusal from the host (unknown / hidden wiki, bad session id) is the
-      // caller's problem: 400 + the reason, so the picker can say what happened.
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 400)
-    }
-  }
-
-  /** `/session/wiki` takes both methods on ONE registration (see /admin/wikis). */
-  const handleSessionWikiRoute = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    if ((req.method ?? 'GET').toUpperCase() === 'POST') {
-      if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      return handleSessionWikiSet(req, res)
-    }
-    return handleSessionWiki(req, res)
-  }
-
-  /**
-   * POST /dsh-tiddlywiki/session/summary — 生成当前会话的 wiki 汇总页（「知识库」
-   * Tab 的后端）。body `{ session: <会话ID> }`；后端用 sessionQuery 读本会话（含
-   * 后代 subagent）的完整事件日志，按「产生/读取/检索」收集 tiddlywiki_* 笔记，
-   * 查询每篇当前状态，组装 TW wikitext 写入 `$:/temp/dsh/session-summary/<会话ID>`
-   * （volatile：不落盘、不进 git），返回生成的 tiddler title 供前端 iframe 打开。
-   */
-  const handleSessionSummary = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      let body: { session?: unknown } = {}
-      try {
-        body = JSON.parse(await readBody(req)) as { session?: unknown }
-      } catch {
-        /* malformed body → session check below rejects */
-      }
-      const session = typeof body.session === 'string' && body.session.trim().length > 0 ? body.session.trim() : ''
-      if (session.length === 0) {
-        json(res, { ok: false, error: 'session is required' }, 400)
-        return
-      }
-      // The id becomes part of a tiddler title (`$:/temp/dsh/session-summary/<id>`)
-      // and is echoed into the summary wikitext — keep it to a safe charset
-      // instead of trusting the request body (v0.19.3).
-      if (!/^[A-Za-z0-9._:-]{1,120}$/.test(session)) {
-        json(res, { ok: false, error: 'session id has an unsupported format' }, 400)
-        return
-      }
-      const client = deps.getClient(req)
-      if (client === undefined) {
-        json(res, { ok: false, error: 'wiki service is not running' }, 503)
-        return
-      }
-      const sq = deps.getSessionQuery()
-      if (sq === undefined) {
-        json(res, { ok: false, error: 'session query service unavailable' }, 503)
-        return
-      }
-      const cachedSummary = summaryInFlight.get(session)
-      let pendingSummary: Promise<SessionSummaryResult>
-      if (cachedSummary !== undefined && Date.now() - cachedSummary.at < SUMMARY_REUSE_MS) {
-        pendingSummary = cachedSummary.value
-      } else {
-        pendingSummary = writeSessionSummary(client, sq, session)
-        summaryInFlight.set(session, { at: Date.now(), value: pendingSummary })
-        pendingSummary.catch(() => {
-          if (summaryInFlight.get(session)?.value === pendingSummary) summaryInFlight.delete(session)
-        })
-      }
-      const result = await pendingSummary
-      json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH, twUrlAbsolute: twProxyAbsoluteBase(req) })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
-
-  /**
-   * GET /dsh-tiddlywiki/agent/sessions — visible ordinary sessions for the TW
-   * one-click picker (excludes subagent sessions, activity-descending). Each
-   * item also carries its recorded `agentPreset` (工作模式), when known, so the
-   * picker can badge existing sessions — read from the lightweight persistence
-   * header list, never a full log parse.
-   */
-  const handleAgentSessions = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectNonRead(req, res)) return
-      // Same guard as the sibling /agent/* routes: a deployment that protects
-      // send-to-agent with a token must not leak the session roster to an
-      // unauthenticated caller (v0.19.0 — this route used to be the odd one out).
-      if (!guardSendToAgent(req, res)) return
-      const sc = deps.getSessionController()
-      if (sc === undefined) {
-        json(res, { ok: false, error: 'session service unavailable' }, 503)
-        return
-      }
-      const list = await sc.list({}, AbortSignal.timeout(10_000))
-      // sessionId → agentPreset, from the durable header list (degrade silently).
-      const presetById: Record<string, string> = {}
-      const pers = deps.getSessionPersistence()
-      if (pers !== undefined) {
-        try {
-          const headers = await pers.list(AbortSignal.timeout(5_000))
-          for (const h of headers) {
-            if (typeof h.agentPreset === 'string' && h.agentPreset.length > 0) presetById[h.id] = h.agentPreset
-          }
-        } catch {
-          /* header list unavailable → no mode badges, picker still works */
-        }
-      }
-      const items = (list.items ?? [])
-        .filter((s) => s.parentSessionId === undefined)
-        .map((s) => ({
-          sessionId: s.sessionId,
-          cwd: s.cwd ?? null,
-          running: !!s.running,
-          blank: !!s.blank,
-          updatedAt: s.updatedAt ?? 0,
-          agentPreset: presetById[s.sessionId] ?? null,
-        }))
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-      json(res, { ok: true, items })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
-
-  /**
-   * Shared gate for the TW-side send-to-agent routes: feature switch
-   * (`ui.sendToAgent.enabled`) then, when a shared token is configured, the
-   * `x-send-to-agent-token` header must match. Returns false after writing the
-   * error response — the caller just does `if (!guard(...)) return`.
-   */
-  const guardSendToAgent = (req: IncomingMessage, res: ServerResponse): boolean => {
-    if (!deps.sendToAgentEnabled(req)) {
-      json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
-      return false
-    }
-    const token = deps.sendToAgentToken(req).trim()
-    if (token.length === 0) return true
-    const got = req.headers['x-send-to-agent-token']
-    const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
-    // Constant-time comparison (hash-then-compare): `===` leaks the token's
-    // length and matched-prefix timing to a caller who can probe the route.
-    if (safeTokenEqual(value, token)) return true
-    json(res, { ok: false, error: 'unauthorized' }, 401)
-    return false
-  }
-
-  /**
-   * GET /dsh-tiddlywiki/agent/modes — available "工作模式" (Agent presets) for
-   * the TW picker: id/name/description per preset plus the deployment default.
-   * Guards mirror the other agent routes (feature switch + optional token).
-   */
-  const handleAgentModes = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectNonRead(req, res)) return
-      if (!guardSendToAgent(req, res)) return
-      const ap = deps.getAgentPresets()
-      if (ap === undefined) {
-        json(res, { ok: false, error: 'agent presets service unavailable' }, 503)
-        return
-      }
-      const presets = await ap.list()
-      let defaultId: string | undefined
-      try {
-        defaultId = (await ap.resolve())?.id
-      } catch {
-        defaultId = undefined
-      }
-      // The picker also needs the permission-preset roster (a "权限" selector
-      // for newly created sessions). Best-effort: when the permissionPresets
-      // service is not mounted (older host), `permissions` is null and the
-      // picker simply hides the selector — modes still work.
-      let permissions: { defaultId: string | null; items: Array<{ value: string; name: string; description?: string }> } | null = null
-      const pp = deps.getPermissionPresets()
-      if (pp !== undefined) {
-        try {
-          permissions = {
-            defaultId: pp.defaultPreset ?? null,
-            items: pp.names.map((n) => pp.optionOf(n)),
-          }
-        } catch {
-          permissions = null
-        }
-      }
-      json(res, {
-        ok: true,
-        defaultId: defaultId ?? null,
-        items: presets.map((p) => ({
-          id: p.id,
-          name: p.name ?? p.id,
-          description: p.description ?? '',
-          trust: p.trust ?? 'user',
-          broken: p.broken ?? null,
-          isDefault: p.id === defaultId,
-        })),
-        permissions,
-      })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
-
-  /**
-   * POST /dsh-tiddlywiki/agent/send — deliver a note to one agent session as a
-   * queued user message (sessionController.prompt, the same API the GUI chat
-   * input uses). Guards: feature switch, optional shared token, body shape.
-   */
-  const handleAgentSend = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      if (!guardSendToAgent(req, res)) return
-      const body = JSON.parse(await readBody(req)) as { sessionId?: unknown; text?: unknown }
-      const sessionId = typeof body.sessionId === 'string' && body.sessionId.trim().length > 0 ? body.sessionId.trim() : ''
-      const text = typeof body.text === 'string' && body.text.trim().length > 0 ? body.text.trim() : ''
-      if (sessionId.length === 0 || text.length === 0) {
-        json(res, { ok: false, error: 'sessionId and text are required' }, 400)
-        return
-      }
-      const sc = deps.getSessionController()
-      if (sc === undefined) {
-        json(res, { ok: false, error: 'session service unavailable' }, 503)
-        return
-      }
-      const requestId = `tw-send-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-      const accepted = await sc.prompt(
-        { requestId, sessionId, mode: 'queue', content: [{ type: 'text', text }] },
-        AbortSignal.timeout(20_000),
-      )
-      // A refusal (session gone / busy) must not be reported as success.
-      if (accepted !== undefined && accepted.accepted === false) {
-        json(res, { ok: false, error: '会话未接受该消息（可能已结束或正忙）', requestId, sessionId }, 409)
-        return
-      }
-      json(res, { ok: true, requestId, sessionId })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
-
-  /**
-   * POST /dsh-tiddlywiki/agent/create — create (or adopt) one ordinary session
-   * inside a real DSH workspace resolved from the requested path. The picker
-   * uses it for "new workspace / new session": the directory is materialised so
-   * a brand-new workspace actually exists on disk, the path is resolved to its
-   * (idempotent) Workspace, and the session is created with `workspaceId` so it
-   * lands under that workspace in the sidebar. Creating with bare `cwd` instead
-   * would leave the session in the ungrouped bucket even when its working
-   * directory matches an existing workspace path.
-   *
-   * Optional `mode` names the "工作模式" (an Agent preset id, e.g. from
-   * /agent/modes); it is forwarded to `sessionController.create(agentPreset)`
-   * so the new session launches under that preset. Omitted → deployment default.
-   *
-   * Optional `permission` names a "权限" preset (e.g. from /agent/modes'
-   * `permissions` roster). After the session is created it is applied to the
-   * live session's log via `permissionPresets.set` (durable knob events:
-   * `permission/preset`, `sandbox/mode`, `approval/policy`), overriding the
-   * deployment default pinned at creation. Omitted → keep the default.
-   */
-  const handleAgentCreate = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      if (!guardSendToAgent(req, res)) return
-      const body = JSON.parse(await readBody(req)) as { cwd?: unknown; mode?: unknown; permission?: unknown }
-      const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : ''
-      const mode = typeof body.mode === 'string' && body.mode.trim().length > 0 ? body.mode.trim() : undefined
-      const permission = typeof body.permission === 'string' && body.permission.trim().length > 0 ? body.permission.trim() : undefined
-      // Validate the permission preset BEFORE creating the session (fail fast,
-      // so a bad name never leaves an orphaned session behind).
-      const pp = deps.getPermissionPresets()
-      if (permission !== undefined) {
-        if (pp === undefined) {
-          json(res, { ok: false, error: 'permission selected but the permission-presets service is unavailable' }, 503)
-          return
-        }
-        if (!pp.names.includes(permission)) {
-          json(res, { ok: false, error: `unknown permission preset "${permission}" (available: ${pp.names.join(', ')})` }, 400)
-          return
-        }
-      }
-      const sc = deps.getSessionController()
-      if (sc === undefined) {
-        json(res, { ok: false, error: 'session service unavailable' }, 503)
-        return
-      }
-      // Validate the agent preset (工作模式) BEFORE any side effect (v0.19.3):
-      // the old code created the cwd directory + workspace first, so an unknown
-      // mode left an orphaned directory behind a 500 from `sc.create`.
-      if (mode !== undefined) {
-        const ap = deps.getAgentPresets()
-        if (ap === undefined) {
-          json(res, { ok: false, error: 'agent presets service unavailable' }, 503)
-          return
-        }
-        try {
-          const presets = await ap.list()
-          if (!presets.some((preset) => preset.id === mode)) {
-            json(res, { ok: false, error: `unknown agent preset "${mode}" (available: ${presets.map((preset) => preset.id).join(', ')})` }, 400)
-            return
-          }
-        } catch (err) {
-          json(res, { ok: false, error: `cannot validate agent preset: ${err instanceof Error ? err.message : String(err)}` }, 503)
-          return
-        }
-      }
-      const ws = deps.getWorkspaceRegistry()
-      if (cwd.length > 0) {
-        // Only absolute paths, and never clobber an existing non-directory:
-        // `mkdir -p` on a file path throws ENOTDIR and used to surface as a 500.
-        if (!isAbsolute(cwd)) {
-          json(res, { ok: false, error: 'cwd must be an absolute path' }, 400)
-          return
-        }
-        try {
-          const info = await stat(cwd)
-          if (!info.isDirectory()) {
-            json(res, { ok: false, error: 'cwd exists but is not a directory' }, 400)
-            return
-          }
-        } catch {
-          await mkdir(cwd, { recursive: true })
-        }
-      }
-      let created: { sessionId: string }
-      let workspaceId: string | undefined
-      if (cwd.length > 0 && ws !== undefined) {
-        const workspace = await ws.create(cwd)
-        workspaceId = workspace.id
-        created = await sc.create({ workspaceId, agentPreset: mode })
-      } else {
-        created = await sc.create({ cwd: cwd.length > 0 ? cwd : undefined, agentPreset: mode })
-      }
-      // Apply the chosen permission preset to the just-created live session
-      // (best-effort — the session is already created either way).
-      let permissionApplied = false
-      if (permission !== undefined) {
-        const sessionsSvc = deps.getSessions()
-        if (sessionsSvc !== undefined) {
-          try {
-            const session = sessionsSvc.get(created.sessionId)
-            if (session !== undefined) {
-              pp?.set(session, permission)
-              permissionApplied = true
-            }
-          } catch {
-            /* permission is an optional convenience; never fail the create */
-          }
-        }
-      }
-      json(res, {
-        ok: true,
-        sessionId: created.sessionId,
-        cwd: cwd || null,
-        workspaceId: workspaceId ?? null,
-        mode: mode ?? null,
-        permission: permission ?? null,
-        permissionApplied,
-      })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
+  const {
+    // `handleSessionWiki`/`handleSessionWikiSet` are NOT destructured: only the
+    // combined GET/POST dispatcher (`handleSessionWikiRoute`) is mounted, and it
+    // calls the other two inside the factory. Pulling them out here would be an
+    // unused binding.
+    handleSessionWikiRoute,
+    handleSessionSummary,
+    handleAgentSessions,
+    handleAgentModes,
+    handleAgentSend,
+    handleAgentCreate,
+  } = createSessionRoutes({
+    getClient: deps.getClient,
+    getSessionQuery: deps.getSessionQuery,
+    sessionScope: deps.sessionScope,
+    getSessionController: deps.getSessionController,
+    getWorkspaceRegistry: deps.getWorkspaceRegistry,
+    getAgentPresets: deps.getAgentPresets,
+    getSessionPersistence: deps.getSessionPersistence,
+    getPermissionPresets: deps.getPermissionPresets,
+    getSessions: deps.getSessions,
+    sendToAgentEnabled: deps.sendToAgentEnabled,
+    sendToAgentToken: deps.sendToAgentToken,
+    twProxyPath: TW_PROXY_PATH,
+    twProxyAbsoluteBase,
+  })
 
   const handleNote = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
@@ -1643,242 +1117,16 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     }
   }
 
-  /**
-   * POST /dsh-tiddlywiki/render — the ONLY render endpoint the GUI uses.
-   *
-   * Proxies to TW's own `/render` server route (installed by the `render-route`
-   * seed) and **sanitizes the fragment before it leaves the host**.
-   *
-   * WHY (v0.19.1, security): the reply-stream tool card and the session
-   * 「知识库」 Tab inject that HTML with `dangerouslySetInnerHTML` inside the DSH
-   * page. TW's wikitext/markdown parsers only strip `on*` attributes — measured
-   * against the live `/render`: `<iframe src="javascript:…">`,
-   * `<a href="javascript:…">` and `<form action="javascript:…">` all pass
-   * through, i.e. any note text (agent-written, clipped, imported) could run
-   * script on the DSH origin and call the unauthenticated `/dsh-tiddlywiki/*`
-   * routes. Sanitizing host-side also protects wikis whose ONE-SHOT render
-   * bundle predates this fix (the client can never see raw TW output).
-   */
-  const handleRender = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      const client = deps.getClient(req)
-      if (client === undefined) {
-        json(res, { ok: false, error: 'wiki service is not running' }, 503)
-        return
-      }
-      let body: { title?: unknown; text?: unknown; type?: unknown; contextTitle?: unknown; parseAsInline?: unknown } = {}
-      try {
-        body = JSON.parse(await readBody(req, MAX_PROXY_BODY_BYTES)) as typeof body
-      } catch (err) {
-        // `readBody` rejects with `body too large` when the cap is hit (v0.23.5):
-        // that used to be swallowed by this catch and reported as 400 "invalid
-        // JSON", which hides the real problem. Route it through errorStatus so an
-        // oversize body is 413 like every other route.
-        const status = errorStatus(err)
-        if (status !== 500) {
-          json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, status)
-          return
-        }
-        json(res, { ok: false, error: 'invalid JSON body' }, 400)
-        return
-      }
-      const title = typeof body.title === 'string' ? body.title.trim() : ''
-      const text = typeof body.text === 'string' ? body.text : undefined
-      if (title.length === 0 && text === undefined) {
-        json(res, { ok: false, error: 'body must provide "title" or "text"' }, 400)
-        return
-      }
-      // SECURITY (v0.20.0): TW's /render answers for ANY title, including
-      // `$:/plugins/dsh-tiddlywiki/config` (bridge/send-to-agent tokens + the
-      // git remote, possibly with a PAT). This is the same secret the `/get`,
-      // `/tw` and `/api` guards protect — /render was simply missed. Verified:
-      // before this guard the rendered fragment contained both secrets verbatim.
-      if (isBlockedProxyTitle(title)) {
-        json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
-        return
-      }
-      // The `text` branch transcludes server-side, so it can reach the same
-      // secret without ever mentioning it as `title` (v0.23.5). Check the body
-      // and the parse context too.
-      if (referencesBlockedTitle(text) || referencesBlockedTitle(
-        typeof body.contextTitle === 'string' ? body.contextTitle : undefined,
-      )) {
-        json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
-        return
-      }
-      const request = title.length > 0
-        ? { title }
-        : {
-            text: text as string,
-            ...(typeof body.type === 'string' && body.type.length > 0 ? { type: body.type } : {}),
-            ...(typeof body.contextTitle === 'string' && body.contextTitle.length > 0 ? { contextTitle: body.contextTitle } : {}),
-            ...(body.parseAsInline === true ? { parseAsInline: true } : {}),
-          }
-      const html = await client.render(request)
-      const safe = sanitizeTwFragment(html)
-      res.writeHead(200, {
-        'content-type': 'text/html; charset=utf-8',
-        'cache-control': 'no-store',
-        'content-length': Buffer.byteLength(safe, 'utf8'),
-      })
-      res.end(safe)
-    } catch (err) {
-      // Structural 404 detection (v0.22.8): RenderNotFoundError carries the
-      // flag, so this no longer depends on the error MESSAGE wording.
-      if (err instanceof RenderNotFoundError || (err as { notFound?: unknown } | null)?.notFound === true) {
-        json(res, { ok: false, notFound: true, error: err instanceof Error ? err.message : String(err) }, 404)
-        return
-      }
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 502)
-    }
-  }
-
-  /** Passthrough /dsh-tiddlywiki/api/<rest> → TW root /<rest>. */
-  const handleApiProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    // Explicit method whitelist (v0.19.5): the host webserver dispatches by
-    // pathname only, so without it every method (TRACE, or a typo'd verb) was
-    // forwarded to the TW child. The set is the TiddlyWeb API surface the TW
-    // frontend uses.
-    if (rejectCrossSiteWrite(req, res, ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'])) return
-    // The upstream base comes straight from the child (v0.28.0: per request, so
-    // a named wiki can be proxied); the client is only a liveness proxy.
-    const server = deps.server(req)
-    if (server?.url === undefined) {
-      json(res, { ok: false, error: 'wiki service is not running' }, 503)
-      return
-    }
-    try {
-      const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-      const rest = url.pathname.replace(/^\/dsh-tiddlywiki\/api/, '') || '/'
-      if (isBlockedProxyPath(rest)) {
-        json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
-        return
-      }
-      // Share the /tw proxy's header forwarding so `authorization`/`cookie`
-      // reach the TW child: in locked-down mode (auth.username configured) the
-      // /api passthrough used to 401 on every call because it dropped them.
-      const headers: Record<string, string> = forwardHeaders(req.headers)
-      const method = (req.method ?? 'GET').toUpperCase()
-      // TW's CSRF gate requires X-Requested-With on writes; forward it through.
-      if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
-      const init: RequestInit = { method, headers, signal: AbortSignal.timeout(15_000) }
-      if (method === 'PUT' || method === 'POST') init.body = await readBody(req, MAX_PROXY_BODY_BYTES)
-      const upstream = await fetch(`${server.url}${rest}${url.search}`, init)
-      const data = await upstream.text()
-      res.writeHead(upstream.status, {
-        'content-type': upstream.headers.get('content-type') ?? 'application/json; charset=utf-8',
-        'cache-control': 'no-store',
-      })
-      res.end(data)
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 502)
-    }
-  }
-
-  /**
-   * SAME-ORIGIN proxy /dsh-tiddlywiki/tw/<rest> → TW root /<rest>. Serves the
-   * ENTIRE TW frontend (index HTML, /files/*, the TiddlyWeb API) to the
-   * browser through the DSH origin, so the embedded editor works from any
-   * host/domain the user reaches DSH on (loopback, LAN, Tailscale, domain,
-   * HTTPS). The browser never talks to the loopback TW child directly; DSH
-   * does, on the same machine. Binary responses are buffered losslessly
-   * (arrayBuffer) — unlike the /api JSON proxy, this route must never .text().
-   */
-  const handleTwProxy = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    // Explicit method whitelist (v0.22.8): the host webserver dispatches by
-    // pathname only, so without it TRACE or a typo'd verb was forwarded straight
-    // to the TW child. Same set the sibling /api proxy declares.
-    if (rejectCrossSiteWrite(req, res, ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'])) return
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
-    // PER-WIKI FORM (v0.28.0): `/tw/<id>/<tw-path>`. The first segment is only
-    // consumed when it names a REGISTERED wiki, so TW's own `/tw/status` and
-    // `/tw/files/…` keep meaning "the default wiki's TW path" — that is exactly
-    // what the reserved-id rule guarantees (a wiki id may never equal a TW root
-    // segment; see RESERVED_WIKI_IDS in host/wiki-registry.ts).
-    const afterPrefix = url.pathname.slice(TW_PROXY_PREFIX.length).replace(/^\//, '')
-    const [firstSegment = '', ...tail] = afterPrefix.split('/')
-    const named = deps.wikiIds().includes(firstSegment) ? firstSegment : undefined
-    const rest = named === undefined
-      ? (url.pathname.replace(new RegExp(`^${TW_PROXY_PREFIX}(?=/|$)`), '') || '/')
-      : `/${tail.join('/')}`
-    // The guard runs on BOTH forms: the raw path is what a crafted request
-    // controls, and the stripped `rest` is what actually reaches TW.
-    if (isBlockedProxyPath(url.pathname) || isBlockedProxyPath(rest)) {
-      json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
-      return
-    }
-    // Resolve the child LAST, so a named-but-stopped wiki answers 503 instead of
-    // being proxied to whoever happens to be the default.
-    const server = named === undefined ? deps.server(req) : deps.serverById(named)
-    if (server?.url === undefined) {
-      json(res, { ok: false, error: 'wiki service is not running' }, 503)
-      return
-    }
-    try {
-      const method = (req.method ?? 'GET').toUpperCase()
-      const headers = forwardHeaders(req.headers)
-      // TW's CSRF gate requires X-Requested-With on writes; forward it through.
-      if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
-      // Abort the upstream fetch when the CLIENT goes away: without this the TW
-      // child kept streaming a large attachment into the DSH process until the
-      // 30s timeout fired, long after the browser had cancelled (v0.19.3).
-      const abort = new AbortController()
-      const timeout = AbortSignal.timeout(30_000)
-      const signal = typeof AbortSignal.any === 'function' ? AbortSignal.any([abort.signal, timeout]) : timeout
-      const init: RequestInit = { method, headers, signal }
-      if (method === 'PUT' || method === 'POST') init.body = await readBodyBuffer(req, MAX_UPLOAD_BYTES)
-      // A DELETE with a body would otherwise stay unread on the socket: the
-      // upstream fetch goes out, but this request never drains, so the client
-      // sits on a half-open connection until the 30s timeout (v0.19.5). The TW
-      // frontend does not send DELETE bodies, but the proxy is a generic
-      // passthrough — drain whatever is there.
-      else if (req.readableEnded === false && (req.headers['content-length'] !== undefined || req.headers['transfer-encoding'] !== undefined)) req.resume()
-      const upstream = await fetch(`${server.url}${rest}${url.search}`, init)
-      const responseHeaders: Record<string, string> = {
-        'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
-        'cache-control': upstream.headers.get('cache-control') ?? 'no-store',
-      }
-      for (const name of ['etag', 'last-modified', 'content-disposition', 'accept-ranges']) {
-        const value = upstream.headers.get(name)
-        if (value !== null) responseHeaders[name] = value
-      }
-      // Locked-down mode (auth.username configured) puts the TW frontend behind
-      // HTTP Basic auth: without the challenge header the browser never prompts
-      // and the embedded editor would just show a bare 401.
-      const challenge = upstream.headers.get('www-authenticate')
-      if (challenge !== null) responseHeaders['www-authenticate'] = challenge
-      res.writeHead(upstream.status, responseHeaders)
-      if (upstream.body === null) {
-        res.end()
-        return
-      }
-      // STREAM the body (not `arrayBuffer()`): fetching a large attachment
-      // through /tw/files/… used to buffer the whole file in the DSH process
-      // (v0.19.0). `content-length` is deliberately NOT forwarded — undici
-      // decodes compressed responses, so the upstream length can be stale.
-      const body = Readable.fromWeb(upstream.body as unknown as import('node:stream/web').ReadableStream)
-      await new Promise<void>((resolveP, rejectP) => {
-        body.on('error', rejectP)
-        res.on('error', rejectP)
-        res.on('close', () => {
-          // Client hung up (aborted download / closed tab): stop pulling from the
-          // TW child instead of draining it until the timeout.
-          try { abort.abort() } catch { /* already aborted */ }
-          try { body.destroy() } catch { /* already closed */ }
-          resolveP()
-        })
-        res.on('finish', () => resolveP())
-        body.pipe(res)
-      })
-    } catch (err) {
-      if (res.headersSent) {
-        res.end()
-        return
-      }
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 502)
-    }
-  }
+  // The three TW-facing routes (`/render`, `/api/*`, `/tw/*`) live in
+  // routes-tw-proxy.ts (v0.28.8): they are the only handlers that apply the
+  // blocked-title predicates before anything reaches the loopback TW child, so
+  // they belong next to those predicates rather than in the middle of this file.
+  const { handleRender, handleApiProxy, handleTwProxy } = createTwProxyRoutes({
+    server: deps.server,
+    serverById: deps.serverById,
+    wikiIds: deps.wikiIds,
+    getClient: deps.getClient,
+  })
 
   /**
    * Shared gate for the TW-side 公众号发布 routes (v0.23.3): opt-in feature

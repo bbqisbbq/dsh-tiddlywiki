@@ -19,7 +19,7 @@
  *
  * @module dsh-tiddlywiki/host/wiki
  */
-import { spawn, execFile, type ChildProcessByStdio } from 'node:child_process'
+import { spawn, execFile, execFileSync, type ChildProcessByStdio } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -136,6 +136,54 @@ export interface WikiStatusView {
 function resolveTwEntry(): string {
   const require = createRequire(import.meta.url)
   return require.resolve('tiddlywiki/tiddlywiki.js')
+}
+
+/**
+ * The Node executable used to run the TW child process.
+ *
+ * WHY NOT JUST `process.execPath` (v0.28.8, desktop hardening): under `dsh web`
+ * run by a real Node binary — including the desktop launcher on this machine,
+ * which is a `node.exe …/bin.js web` process plus a browser window — execPath IS
+ * node, so this returns it unchanged and nothing about existing installs moves.
+ *
+ * The case that breaks is a PACKAGED desktop shell that hosts the host half
+ * inside Electron: there `process.execPath` points at the Electron binary, and
+ * spawning `electron <tiddlywiki.js> --listen …` either fails outright or starts
+ * a second app instance instead of a headless wiki server. Node sets
+ * `process.versions.electron` in exactly that situation, so we detect it and fall
+ * back to a `node` resolved from PATH. The probe result is cached because it is
+ * consulted on every start/restart and must not spawn a process each time.
+ *
+ * `DSH_TIDDLYWIKI_NODE` overrides everything: an escape hatch for a shell where
+ * neither execPath nor PATH is right (a bundled runtime at a known location).
+ */
+let resolvedNodeExecutable: string | undefined
+
+export function resolveNodeExecutable(): string {
+  const override = process.env.DSH_TIDDLYWIKI_NODE
+  if (typeof override === 'string' && override.trim().length > 0) return override.trim()
+  if (resolvedNodeExecutable !== undefined) return resolvedNodeExecutable
+  const inElectron = typeof process.versions.electron === 'string' && process.versions.electron.length > 0
+  if (!inElectron) {
+    resolvedNodeExecutable = process.execPath
+    return resolvedNodeExecutable
+  }
+  // Electron: look for a real node on PATH. `where`/`which` rather than a shell
+  // string, so no quoting rules are involved.
+  try {
+    const probe = process.platform === 'win32' ? 'where' : 'which'
+    const out = execFileSync(probe, ['node'], { encoding: 'utf8', windowsHide: true, timeout: 5_000 })
+    const first = out.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0)
+    if (first !== undefined) {
+      resolvedNodeExecutable = first
+      return resolvedNodeExecutable
+    }
+  } catch {
+    /* no node on PATH — fall through to execPath and let the caller report it */
+  }
+  console.warn('[dsh-tiddlywiki] 检测到 Electron 宿主且 PATH 里找不到 node：TW 子进程将尝试用 process.execPath 启动。可用 DSH_TIDDLYWIKI_NODE 指定 node 路径。')
+  resolvedNodeExecutable = process.execPath
+  return resolvedNodeExecutable
 }
 
 export class WikiServer {
@@ -257,9 +305,10 @@ export class WikiServer {
     await mkdir(this.wikiPath, { recursive: true })
     if (existsSync(join(this.wikiPath, 'tiddlywiki.info'))) return
     const tw = resolveTwEntry()
-    this.log(`init: ${process.execPath} ${tw} ${this.wikiPath} --init server`)
+    const node = resolveNodeExecutable()
+    this.log(`init: ${node} ${tw} ${this.wikiPath} --init server`)
     await new Promise<void>((resolveP, rejectP) => {
-      execFile(process.execPath, [tw, this.wikiPath, '--init', 'server'], { timeout: INIT_TIMEOUT_MS, windowsHide: true }, (err) => {
+      execFile(node, [tw, this.wikiPath, '--init', 'server'], { timeout: INIT_TIMEOUT_MS, windowsHide: true }, (err) => {
         if (err) rejectP(err as Error)
         else resolveP()
       })
@@ -376,8 +425,9 @@ export class WikiServer {
       this.log('start aborted: stop() was requested while resolving the port')
       return this.status()
     }
-    this.log(`spawn: ${process.execPath} ${args.map((a) => (/^password=/.test(a) ? 'password=***' : a)).join(' ')}`)
-    const child = spawn(process.execPath, args, { cwd: this.wikiPath, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+    const node = resolveNodeExecutable()
+    this.log(`spawn: ${node} ${args.map((a) => (/^password=/.test(a) ? 'password=***' : a)).join(' ')}`)
+    const child = spawn(node, args, { cwd: this.wikiPath, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
     this.child = child
     child.stdout.on('data', (chunk: Buffer) => this.log(`[out] ${String(chunk).trimEnd()}`))
     child.stderr.on('data', (chunk: Buffer) => this.log(`[err] ${String(chunk).trimEnd()}`))
