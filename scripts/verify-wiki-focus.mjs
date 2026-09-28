@@ -126,6 +126,17 @@ test('会话选择器：走 /session/wiki，清空选择发 null 而不是空字
   assert.match(dockSrc, /AbortSignal\.timeout\(120_000\)/, '启动一个库可能要几十秒，超时不能太短')
 })
 
+test('设置页：多库模式下**不再渲染**「知识库位置」（与列表重复，作者 2026-09-28 反馈）', () => {
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  // 单库模式保留它（那里它写的是 wiki 之外的指针文件，是唯一正确入口）；
+  // 多库模式整块不渲染，目录改动收到「知识库列表」里。
+  assert.match(settings, /function renderWikiLocationSection\(/, '入口函数必须还在（单库模式要用）')
+  assert.match(settings, /if \(view\.mode === 'multi'\) return/, '多库模式必须直接跳过这一块')
+  assert.match(settings, /view\.mode === 'multi'[\s\S]{0,220}const move = make\(/, '多库模式下目录改动必须落在列表那一行的「改目录」上')
+  // 宿主侧接口仍按模式分派（不能因为界面藏了就没人能用）——接口断言在 farm-boot 里。
+  assert.match(settings, /WIKI_SWITCH_ENDPOINT/, '默认库改目录仍走 /admin/wiki/switch')
+})
+
 test('会话选择器：挂在 conversation.input.dock（scope=session，组件能拿到 sessionId）', () => {
   assert.match(indexSrc, /id: 'wiki-scope'/)
   assert.match(indexSrc, /name: 'conversation\.input\.dock'/)

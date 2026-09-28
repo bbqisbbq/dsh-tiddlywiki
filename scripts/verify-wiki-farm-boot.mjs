@@ -320,6 +320,23 @@ try {
       twRoot: resolveTwRoot,
       config: () => idleStore,
       wikis: wikisFace,
+      // 「知识库位置」的宿主面（v0.28.0 起模式感知）：multi 模式 = 改**默认库**的目录并让
+      // farm 收敛；single 模式走指针文件。设置页在多库模式下不再渲染这一块，但接口必须
+      // 仍然按模式正确分派 —— 否则"改默认库目录"这件事就没有任何入口了。
+      location: {
+        info: async () => ({ current: { root, name: 'wikiA', path: entryPath(control.wikis[0]) } }),
+        switch: async (target) => {
+          const current = farm.registry.wikis.find((w) => w.id === farm.registry.defaultId)
+          if (current === undefined) return { ok: false, error: '清单里没有默认知识库', rolledBack: true }
+          const moved = { ...current, root: String(target.root ?? current.root), name: String(target.name ?? current.name) }
+          const next = applyWikiAction(farm.registry, { action: 'update', wiki: moved })
+          if (next.registry === undefined) return { ok: false, error: next.error ?? '位置非法', rolledBack: true }
+          await writeRegistry(next.registry, controlFile)
+          await farm.apply(next.registry)
+          return { ok: true, location: { root: moved.root, name: moved.name }, path: entryPath(moved), rolledBack: false }
+        },
+        reset: async () => ({ ok: true, location: { root, name: 'wikiA' }, path: entryPath(control.wikis[0]), rolledBack: false }),
+      },
       seeds: { checkAll: async () => [], run: async () => [], remove: async () => [] },
     },
   )

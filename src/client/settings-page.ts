@@ -1014,6 +1014,32 @@ function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, ref
     }
   }
 
+  /**
+   * The DEFAULT wiki's folder change goes through `/admin/wiki/switch`, which is
+   * already mode-aware host-side (single → pointer file + restart with rollback;
+   * multi → edit the registry and let the farm reconcile) and refuses a location
+   * that collides with / nests inside another registered wiki.
+   */
+  const postLocation = async (url: string, body: unknown, busyLabel: string): Promise<void> => {
+    status.textContent = busyLabel
+    try {
+      const data = await fetchJson<{ ok?: boolean; error?: string }>(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(180_000),
+      })
+      if (isDisposed()) return
+      if (data.ok !== true) toast(`失败：${data.error ?? '未知错误'}`)
+      await load()
+      await refresh()
+    } catch (err) {
+      if (isDisposed()) return
+      toast(`失败：${err instanceof Error ? err.message : String(err)}`)
+      await load()
+    }
+  }
+
   const render = (view: WikisView): void => {
     status.textContent = view.error !== undefined && view.error.length > 0 ? `⚠️ ${view.error}` : ''
     modeRow.replaceChildren(make('span', 'dsh-tw-settings-label', '运行模式：'))
@@ -1085,6 +1111,27 @@ function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, ref
         const ok = window.confirm(`把「${wiki.label}」移出清单？\n\n**目录与内容不会被删除**（仍在 ${wiki.path}），只是插件不再管理它。`)
         if (ok) void post({ action: 'remove', id: wiki.id }, '移出中…')
       })
+      // 「改目录」只在多库模式出现（v0.28.1）：单库模式下这件事由「知识库位置」负责
+      // （它写 wiki 之外的指针文件），两处并存会让用户不知道以哪个为准。
+      if (view.mode === 'multi') {
+        const move = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '改目录')
+        move.type = 'button'
+        move.addEventListener('click', () => {
+          const root = window.prompt(`把「${wiki.label}」的根目录换成？\n\n当前：${wiki.root}`, wiki.root)
+          if (root === null) return
+          if (root.trim().length === 0) {
+            toast('根目录不能为空')
+            return
+          }
+          const name = window.prompt(`文件夹名（当前：${wiki.name}；填 . 表示直接用上面这个根目录）`, wiki.name)
+          if (name === null) return
+          const target = { root: root.trim(), name: name.trim().length > 0 ? name.trim() : wiki.name }
+          void (isDefault
+            ? postLocation(WIKI_SWITCH_ENDPOINT, target, '搬动中（会停/起这个库）…')
+            : post({ action: 'update', wiki: { ...wiki, ...target } }, '保存中…'))
+        })
+        actions.append(move)
+      }
       actions.append(configure, power, makeDefault, visibility, autostart, remove)
       row.append(actions)
       list.append(row)
@@ -1139,7 +1186,34 @@ function withWiki(url: string): string {
   return editingWiki === undefined ? url : `${url}?wiki=${encodeURIComponent(editingWiki)}`
 }
 
+/**
+ * 「知识库位置」只在**单库模式**下渲染（v0.28.1）。
+ *
+ * 为什么按模式二选一，而不是两处并存：这一块的语义是「把唯一的那个库换到别处」——
+ * 它写的是 wiki 之外的指针文件 `location.json`，措辞也是单库时代的（"切换到这个位置" /
+ * "恢复为配置默认"）。多库模式下每个库的目录属于「知识库列表」里那一行（`改目录`），
+ * 两处都能改同一件事 = 重复，而且这一块读起来像旧时代残留（作者 2026-09-28 反馈）。
+ *
+ * 宿主侧**没有**冲突：`/admin/wiki/switch` 早就按模式分派（single → 指针文件 + 带回滚的
+ * 重启；multi → 改清单 + 让 farm 收敛）。所以这里只是把**界面**收敃到一处，不动接口。
+ *
+ * 读不到模式时按单库渲染（保守：宁可多显示一个"确实能用"的区块，也不要什么都不给）。
+ */
 function renderWikiLocationSection(body: HTMLElement, isDisposed: () => boolean, refresh: () => Promise<void>): void {
+  void (async () => {
+    try {
+      const view = await fetchJson<WikisView>(WIKI_LIST_ENDPOINT)
+      if (isDisposed()) return
+      if (view.mode === 'multi') return
+    } catch {
+      /* 读不到模式：按单库渲染 */
+    }
+    if (isDisposed()) return
+    renderWikiLocationSectionBody(body, isDisposed, refresh)
+  })()
+}
+
+function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => boolean, refresh: () => Promise<void>): void {
   const section = make('section', 'dsh-tw-settings-section')
   section.append(make('h3', 'dsh-tw-settings-h', '知识库位置（可切换）'))
   const status = make('div', 'dsh-tw-settings-muted', '读取中…')
