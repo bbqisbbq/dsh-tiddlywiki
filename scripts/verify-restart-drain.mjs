@@ -91,9 +91,9 @@ await test('drainThenStop：排干的 await 必须出现在 stop 的 await 之�
 
 // ── 2. 源码级：每个 restart 调用点都必须在 drainThenStop 里 ──────────────────
 for (const rel of ['src/host/routes.ts', 'src/host/admin.ts']) {
-  await test(`${rel}：每个 deps.server.restart() 都必须经由 drainThenStop`, () => {
+  await test(`${rel}：每个 deps.server(req)?.restart() 都必须经由 drainThenStop`, () => {
     const src = sourceWithoutComments(rel)
-    const restarts = count(src, 'deps.server.restart()')
+    const restarts = count(src, 'deps.server(req)?.restart()')
     const drains = count(src, 'drainThenStop(')
     assert.ok(restarts > 0, `${rel} 里没有 restart 调用点？守门断言已失效，请检查`)
     assert.equal(
@@ -101,10 +101,12 @@ for (const rel of ['src/host/routes.ts', 'src/host/admin.ts']) {
       true,
       `${rel}: ${restarts} 处 restart，但只有 ${drains} 处 drainThenStop —— 裸 restart 会静默丢掉队列里的写入`,
     )
-    // 更强的形状断言：restart 必须作为 drainThenStop 的参数出现
+    // 更强的形状断言：restart 必须作为 drainThenStop 的 stop 回调出现。
+    // v0.28.0：per-wiki deps 改成按请求解析（`deps.server(req)`，可能为 undefined），
+    // 所以回调整体包了一层 async/await。
     assert.ok(
-      /drainThenStop\(\{[\s\S]{0,400}?stop: \(\) => deps\.server\.restart\(\)/.test(src),
-      `${rel}: restart 必须作为 drainThenStop({ stop: () => deps.server.restart() }) 的参数`,
+      /drainThenStop\(\{[\s\S]{0,400}?stop: async \(\) => \{ await deps\.server\(req\)\?\.restart\(\) \}/.test(src),
+      `${rel}: restart 必须作为 drainThenStop({ stop: async () => { await deps.server(req)?.restart() } }) 的参数`,
     )
   })
 }

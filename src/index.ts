@@ -18,8 +18,9 @@
  *
  * @module dsh-tiddlywiki
  */
+import type { IncomingMessage } from 'node:http'
 import { AutoCommitter, GitFace } from './host/git.ts'
-import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type UiDefaultsPublic, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
+import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
 import { DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, resolveTwRoot, type AdminDeps } from './host/admin.ts'
 import { checkAllSeeds, runSeedById, removeSeedById } from './host/seeds.ts'
@@ -27,7 +28,7 @@ import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.t
 import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownload } from './host/clip-bridge.ts'
 import { WechatPublishRunner, checkWechatReady, normalizeWechatConfig } from './host/wechat-publish.ts'
 import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps } from './host/tools.ts'
-import { describePrompt, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig, type PromptPreviewConfig } from './host/prompt.ts'
+import { describePrompt, PROMPT_SECTION_NAME, PROMPT_SECTION_ORDER, type PromptConfig } from './host/prompt.ts'
 import {
   clearLocationState,
   defaultLocationStateFile,
@@ -377,10 +378,8 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     twRoot: resolveTwRoot,
   })
   const eff = (): PluginConfigShape => instance.eff()
-  const effectiveNoteTag = (): string => instance.noteTag()
   const effectiveWorkspaceMark = (): boolean => instance.workspaceMark()
   const effectiveBridge = (): BridgeConfig => instance.bridgeConfig()
-  const effectiveUi = (): UiDefaultsPublic => instance.uiDefaults()
 
   const disposers: Array<() => void> = []
   const disposeAll = (): void => {
@@ -773,14 +772,20 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // host 服务 —— 可选注入（本部署存在），懒解析。
     const getSessionQuery = (): SessionQueryFace | undefined =>
       ctx.get('sessionQuery') as SessionQueryFace | undefined
+    // v0.28.0: every PER-WIKI dep takes the request. M1b-2a still resolves them
+    // all to the single instance — behaviour is unchanged — and M1b-2b only has
+    // to swap the body of `target` for the farm's resolution. Having the request
+    // in the signature NOW is what keeps that later step from having to touch
+    // every call site in routes.ts / admin.ts.
+    const target = (_req: IncomingMessage): WikiInstance => instance
     const disposeRoutes = registerRoutes({ webServer: ws }, {
-      server,
-      getClient: client,
+      server: (req) => target(req).server,
+      getClient: (req) => target(req).client(),
       git,
-      autoCommit: () => instance.touchAutoCommit(),
-      noteDefaults: () => ({ tag: effectiveNoteTag() }),
-      uiDefaults: () => effectiveUi(),
-      getWikiPath: () => instance.path,
+      autoCommit: (req) => target(req).touchAutoCommit(),
+      noteDefaults: (req) => ({ tag: target(req).noteTag() }),
+      uiDefaults: (req) => target(req).uiDefaults(),
+      getWikiPath: (req) => target(req).path,
       getSessionController,
       getWorkspaceRegistry,
       getAgentPresets,
@@ -788,27 +793,25 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       getPermissionPresets,
       getSessions,
       getSessionQuery,
-      sendToAgentEnabled: () => eff().ui?.sendToAgent?.enabled !== false,
-      sendToAgentToken: () => {
-        const token = eff().ui?.sendToAgent?.token
-        return typeof token === 'string' ? token : ''
-      },
+      sendToAgentEnabled: (req) => target(req).sendToAgent().enabled,
+      sendToAgentToken: (req) => target(req).sendToAgent().token,
       // 公众号发布（v0.23.3，可选功能）：config 每请求重读（开关/adapter/token
-      // 保存即生效）；就绪探测每次都真跑一次 `opencli --version`（几百毫秒），
-      // 只在按钮预检与每次起任务前发生，不做缓存以免装完 adapter 还要等 TTL。
-      wechatConfig: () => effectiveWechat(),
+      // 保存即生效，且每个知识库各有一份）；就绪探测每次都真跑一次
+      // `opencli --version`（几百毫秒），只在按钮预检与每次起任务前发生，
+      // 不做缓存以免装完 adapter 还要等 TTL。
+      wechatConfig: (req) => target(req).wechatConfig(),
       wechatRunner: () => wechatRunner,
-      wechatReady: () => checkWechatReady({
-        enabled: effectiveWechat().enabled,
-        command: effectiveWechat().command,
-      }),
+      wechatReady: async (req) => {
+        const cfg = target(req).wechatConfig()
+        return checkWechatReady({ enabled: cfg.enabled, command: cfg.command })
+      },
     })
     const adminDeps: AdminDeps = {
-      server,
-      getClient: client,
-      getWikiPath: () => instance.path,
+      server: (req) => target(req).server,
+      getClient: (req) => target(req).client(),
+      getWikiPath: (req) => target(req).path,
       twRoot: resolveTwRoot,
-      config: instance.config,
+      config: (req) => target(req).config,
       // A settings-page save may change prompt.*: re-register the section (no
       // dsh web restart) and expose the built text for the preview panel.
       // startup.readyTimeoutMs is re-applied here too (next start/restart).
@@ -819,10 +822,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         // reapplyGitConfig: enabled/debounceMs/remote used to need a dsh web restart.
         void reapplyGitConfig()
       },
-      // No draft → the SAVED config (what is injected right now); with a draft →
-      // the settings form's unsaved values (v0.22.7), through the same builder.
-      getPrompt: (draft?: PromptPreviewConfig) =>
-        describePrompt(draft ?? (eff().prompt ?? {}) as PromptConfig, tiddlywikiToolSummary()),
+      // No draft → the SAVED config of the TARGETED wiki (what is injected right
+      // now); with a draft → the settings form's unsaved values (v0.22.7),
+      // through the same builder.
+      getPrompt: (draft, req) =>
+        describePrompt(draft ?? (target(req).eff().prompt ?? {}) as PromptConfig, tiddlywikiToolSummary()),
       // Runtime wiki location (v0.22.0): read the current folder + how it was
       // decided, switch to another one, or drop back to the cordis default.
       wiki: {

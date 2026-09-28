@@ -65,19 +65,21 @@ registerTiddlywikiTools(
   { wiki: () => clientRef, git: {}, wikiPath: () => join(root, 'main'), autoCommit: () => {} },
 )
 let configChanged = 0
+/** v0.28.0: the admin deps expose the config store PER REQUEST (`config: (req) => …`). */
+const configStore = new ConfigStore({})
 const deps = {
-  server,
+  server: () => server,
   getClient: () => clientRef,
   getWikiPath: () => join(root, 'main'),
   twRoot: () => root,
-  config: new ConfigStore({}),
+  config: () => configStore,
   // v0.21.0: the settings page save must notify the plugin so it can
   // re-register its prompt section without a dsh web restart.
   onConfigChanged: () => { configChanged += 1 },
   getPrompt: (draft) => {
     // v0.22.7: no draft = the SAVED effective config; a draft = the settings
     // form's unsaved values (whitelisted by the route, exactly like index.ts).
-    const cfg = draft === undefined ? (deps.config.get().prompt ?? {}) : normalizePromptPreview(draft)
+    const cfg = draft === undefined ? (configStore.get().prompt ?? {}) : normalizePromptPreview(draft)
     return describePrompt(cfg, tiddlywikiToolSummary())
   },
   seeds: {

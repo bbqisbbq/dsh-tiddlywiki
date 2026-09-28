@@ -193,14 +193,36 @@ export interface UiDefaultsPublic {
   showRightbarTab: boolean
 }
 
+/**
+ * Everything the routes need from the plugin.
+ *
+ * v0.28.0: every PER-WIKI accessor takes the request, because the plugin no
+ * longer serves exactly one knowledge base. In single-wiki mode they all
+ * resolve to the same instance, so the call sites read exactly as before; in
+ * multi-wiki mode they resolve the wiki THIS request targets (`?wiki=<id>`, or
+ * the session's scope — see host/wiki-farm.ts).
+ *
+ * ⚠️ `server` returns `undefined` when the targeted wiki is not running. The
+ * routes then answer 503 — the same answer the previous
+ * `getClient() === undefined` guard already produced.
+ *
+ * The DSH *session* services below stay request-independent on purpose: they
+ * belong to the host, not to a wiki.
+ */
 export interface RouteDeps {
-  server: WikiServer
-  getClient: () => TiddlyWebClient | undefined
+  /** The TW child serving the wiki this request targets (undefined = not up). */
+  server: (req: IncomingMessage) => WikiServer | undefined
+  /** Lazily resolved REST client for the same wiki. */
+  getClient: (req: IncomingMessage) => TiddlyWebClient | undefined
   git: GitFace
-  autoCommit: () => void
-  noteDefaults: () => { tag: string }
-  uiDefaults: () => UiDefaultsPublic
-  getWikiPath: () => string
+  /** Debounced auto-commit touch for the targeted wiki. */
+  autoCommit: (req: IncomingMessage) => void
+  /** Default note tag of the targeted wiki. */
+  noteDefaults: (req: IncomingMessage) => { tag: string }
+  /** Effective UI flags of the targeted wiki. */
+  uiDefaults: (req: IncomingMessage) => UiDefaultsPublic
+  /** Absolute folder of the targeted wiki. */
+  getWikiPath: (req: IncomingMessage) => string
   /** Optional DSH sessionController service (agent-send routes only); resolved
    *  lazily per request because it may register after webServer appears. */
   getSessionController: () => SessionControllerFace | undefined
@@ -224,20 +246,21 @@ export interface RouteDeps {
    *  session's complete event log + descendant tree to decide which wiki notes
    *  belong to this conversation. Resolved lazily like the other services. */
   getSessionQuery: () => SessionQueryFace | undefined
-  /** Whether the one-click send-to-agent feature is enabled (config switch). */
-  sendToAgentEnabled: () => boolean
+  /** Whether the one-click send-to-agent feature is enabled for that wiki. */
+  sendToAgentEnabled: (req: IncomingMessage) => boolean
   /** Optional shared token that must match `x-send-to-agent-token` when set. */
-  sendToAgentToken: () => string
+  sendToAgentToken: (req: IncomingMessage) => string
   /**
-   * Effective `wechat.*` config (v0.23.3): the opt-in 公众号发布 feature's
-   * switch, CLI override, optional token and default adapter. Read per request
-   * so a settings-page save applies without a dsh web restart.
+   * Effective `wechat.*` config (v0.23.3) OF THE TARGETED WIKI: the opt-in
+   * 公众号发布 feature's switch, CLI override, optional token and default
+   * adapter. Read per request so a settings-page save applies without a dsh web
+   * restart.
    */
-  wechatConfig: () => WechatPublishConfig
-  /** The publish runner, or undefined when the host has not wired one. */
+  wechatConfig: (req: IncomingMessage) => WechatPublishConfig
+  /** The publish runner (plugin-wide: one opencli child at a time). */
   wechatRunner: () => WechatPublishFace | undefined
   /** Readiness report (opencli + adapter files) for the button's precheck. */
-  wechatReady: () => Promise<WechatReadyView>
+  wechatReady: (req: IncomingMessage) => Promise<WechatReadyView>
 }
 
 /**
@@ -531,16 +554,19 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * invalidates it so a sync/upload is reflected immediately.
    */
   const GIT_STATUS_TTL_MS = 2_000
-  /** Cached git-status PROMISE (not value): a burst of concurrent /status polls
-   *  then shares ONE probe instead of each spawning up to five git processes
-   *  (v0.19.0 — value-caching still let every concurrent miss run its own). */
-  let gitStatusCache: { at: number; value: Promise<GitStatusViewPublic | null> } | undefined
+  /** Cached git-status PROMISE **per wiki** (not value): a burst of concurrent
+   *  /status polls then shares ONE probe instead of each spawning up to five git
+   *  processes (v0.19.0 — value-caching still let every concurrent miss run its
+   *  own). The key is the wiki folder: with several knowledge bases a
+   *  single-slot cache would hand wiki A the answer probed for wiki B (v0.28.0). */
+  let gitStatusCache: { key: string; at: number; value: Promise<GitStatusViewPublic | null> } | undefined
   const invalidateGitStatus = (): void => { gitStatusCache = undefined }
-  const cachedGitStatus = (): Promise<GitStatusViewPublic | null> => {
-    if (gitStatusCache !== undefined && Date.now() - gitStatusCache.at < GIT_STATUS_TTL_MS) return gitStatusCache.value
+  const cachedGitStatus = (req: IncomingMessage): Promise<GitStatusViewPublic | null> => {
+    const key = deps.getWikiPath(req)
+    if (gitStatusCache !== undefined && gitStatusCache.key === key && Date.now() - gitStatusCache.at < GIT_STATUS_TTL_MS) return gitStatusCache.value
     const pending = (async (): Promise<GitStatusViewPublic | null> => {
       try {
-        const view = await deps.git.status(deps.getWikiPath())
+        const view = await deps.git.status(key)
         // The remote URL can carry a PAT (`https://user:token@…`) and /status is
         // unauthenticated — never hand the credential to the browser.
         return { ...view, remote: redactRemoteUrl(typeof view.remote === 'string' ? view.remote : '') }
@@ -548,7 +574,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         return null
       }
     })()
-    gitStatusCache = { at: Date.now(), value: pending }
+    gitStatusCache = { key, at: Date.now(), value: pending }
     return pending
   }
 
@@ -639,8 +665,8 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
 
   const handleStatus = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
-    const view = deps.server.status()
-    const gitSummary = await cachedGitStatus()
+    const view = deps.server(req)?.status() ?? { status: 'stopped' as const, wikiPath: deps.getWikiPath(req), logs: [] }
+    const gitSummary = await cachedGitStatus(req)
     json(res, {
       ok: true,
       ...view,
@@ -653,8 +679,8 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       // twProxyAbsoluteBase(). Absent when the Host header is unusable.
       twProxyAbsolute: twProxyAbsoluteBase(req),
       git: gitSummary,
-      note: { tag: deps.noteDefaults().tag },
-      ui: deps.uiDefaults(),
+      note: { tag: deps.noteDefaults(req).tag },
+      ui: deps.uiDefaults(req),
     })
   }
 
@@ -698,7 +724,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'session id has an unsupported format' }, 400)
         return
       }
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
@@ -783,11 +809,11 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * error response — the caller just does `if (!guard(...)) return`.
    */
   const guardSendToAgent = (req: IncomingMessage, res: ServerResponse): boolean => {
-    if (!deps.sendToAgentEnabled()) {
+    if (!deps.sendToAgentEnabled(req)) {
       json(res, { ok: false, error: 'send-to-agent is disabled' }, 403)
       return false
     }
-    const token = deps.sendToAgentToken().trim()
+    const token = deps.sendToAgentToken(req).trim()
     if (token.length === 0) return true
     const got = req.headers['x-send-to-agent-token']
     const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
@@ -1023,7 +1049,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: 'text is required' }, 400)
         return
       }
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
@@ -1046,11 +1072,11 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const { tiddler } = buildWriteTiddler(title, text, {
         existing,
         tags,
-        defaultTags: [deps.noteDefaults().tag],
+        defaultTags: [deps.noteDefaults(req).tag],
         agentTag: false,
       })
       await client.put(tiddler)
-      deps.autoCommit()
+      deps.autoCommit(req)
       invalidateGitStatus()
       const finalTags = tiddler.tags ?? []
       json(res, { ok: true, title, tag: finalTags.join(' '), tags: finalTags, text, type: typeof tiddler.type === 'string' ? tiddler.type : NOTE_TYPE })
@@ -1067,7 +1093,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown; expectedModified?: unknown; expectedRevision?: unknown; force?: unknown }
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
@@ -1079,10 +1105,10 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       const text = typeof body.text === 'string' ? body.text : ''
       const result = await openInTwEditor(client, title, text, resolveTags(body), {
-        defaultTags: [deps.noteDefaults().tag],
+        defaultTags: [deps.noteDefaults(req).tag],
         ...conflictTokens(body),
       })
-      deps.autoCommit()
+      deps.autoCommit(req)
       invalidateGitStatus()
       json(res, { ok: true, ...result, twUrl: TW_PROXY_PATH, twUrlAbsolute: twProxyAbsoluteBase(req) })
     } catch (err) {
@@ -1105,7 +1131,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    *  order, plus `total`/`truncated` so a capped caller can say "N of M". */
   const handleTags = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
-    const client = deps.getClient()
+    const client = deps.getClient(req)
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
@@ -1134,7 +1160,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   /** Recent non-system tiddlers for the quick-note "最近" picker (newest first). */
   const handleRecent = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
-    const client = deps.getClient()
+    const client = deps.getClient(req)
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
@@ -1167,7 +1193,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   /** Full tiddler for the quick-note "最近" picker (load into the editor). */
   const handleGet = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
-    const client = deps.getClient()
+    const client = deps.getClient(req)
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
@@ -1228,7 +1254,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const handleSearch = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
-    const client = deps.getClient()
+    const client = deps.getClient(req)
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
@@ -1302,15 +1328,15 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         // This route used to SIGKILL the child directly, so clicking「重启 TW」
         // within ~1s of any write silently lost that write.
         drained = await drainThenStop({
-          client: deps.getClient(),
-          tiddlersDir: join(deps.getWikiPath(), 'tiddlers'),
-          stop: () => deps.server.restart(),
+          client: deps.getClient(req),
+          tiddlersDir: join(deps.getWikiPath(req), 'tiddlers'),
+          stop: async () => { await deps.server(req)?.restart() },
           log: (message) => console.warn('[dsh-tiddlywiki]', message),
         })
       } finally {
         endMutation()
       }
-      json(res, { ok: true, status: deps.server.status().status, drained })
+      json(res, { ok: true, status: deps.server(req)?.status().status, drained })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
@@ -1329,7 +1355,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       return
     }
     invalidateGitStatus()
-    const dir = deps.getWikiPath()
+    const dir = deps.getWikiPath(req)
     const status = async (): Promise<GitStatusViewPublic | null> => {
       try { return await deps.git.status(dir) } catch { return null }
     }
@@ -1357,9 +1383,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           // v0.24.1: the drain lives inside `drainThenStop` (ironclad rule #1 is
           // one primitive, not a per-route habit).
           const drained = await drainThenStop({
-            client: deps.getClient(),
+            client: deps.getClient(req),
             tiddlersDir: join(dir, 'tiddlers'),
-            stop: () => deps.server.restart(),
+            stop: async () => { await deps.server(req)?.restart() },
             log: (message) => console.warn('[dsh-tiddlywiki]', message),
           })
           if (!drained) console.warn('[dsh-tiddlywiki] sync: syncer queue may not be drained before restart')
@@ -1441,7 +1467,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: `不允许上传可执行/可脚本化的文件类型：${extension}` }, 400)
         return
       }
-      const filesDir = join(deps.getWikiPath(), 'files')
+      const filesDir = join(deps.getWikiPath(req), 'files')
       await mkdir(filesDir, { recursive: true })
       // Collision avoidance with an ATOMIC create (v0.19.3): the old code did
       // `access(candidate)` then `writeFile(candidate)`, so (a) any access error
@@ -1468,7 +1494,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, { ok: false, error: '同名文件过多，请换一个文件名' }, 409)
         return
       }
-      deps.autoCommit()
+      deps.autoCommit(req)
       invalidateGitStatus()
       json(res, {
         ok: true,
@@ -1507,7 +1533,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   const handleRender = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
@@ -1586,7 +1612,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     // forwarded to the TW child. The set is the TiddlyWeb API surface the TW
     // frontend uses.
     if (rejectCrossSiteWrite(req, res, ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'])) return
-    const client = deps.getClient()
+    const client = deps.getClient(req)
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
@@ -1607,7 +1633,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
       const init: RequestInit = { method, headers, signal: AbortSignal.timeout(15_000) }
       if (method === 'PUT' || method === 'POST') init.body = await readBody(req, MAX_PROXY_BODY_BYTES)
-      const upstream = await fetch(`${deps.server.url}${rest}${url.search}`, init)
+      const upstream = await fetch(`${deps.server(req)?.url}${rest}${url.search}`, init)
       const data = await upstream.text()
       res.writeHead(upstream.status, {
         'content-type': upstream.headers.get('content-type') ?? 'application/json; charset=utf-8',
@@ -1633,7 +1659,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     // pathname only, so without it TRACE or a typo'd verb was forwarded straight
     // to the TW child. Same set the sibling /api proxy declares.
     if (rejectCrossSiteWrite(req, res, ['GET', 'HEAD', 'POST', 'PUT', 'DELETE', 'OPTIONS'])) return
-    const client = deps.getClient()
+    const client = deps.getClient(req)
     if (client === undefined) {
       json(res, { ok: false, error: 'wiki service is not running' }, 503)
       return
@@ -1663,7 +1689,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       // frontend does not send DELETE bodies, but the proxy is a generic
       // passthrough — drain whatever is there.
       else if (req.readableEnded === false && (req.headers['content-length'] !== undefined || req.headers['transfer-encoding'] !== undefined)) req.resume()
-      const upstream = await fetch(`${deps.server.url}${rest}${url.search}`, init)
+      const upstream = await fetch(`${deps.server(req)?.url}${rest}${url.search}`, init)
       const responseHeaders: Record<string, string> = {
         'content-type': upstream.headers.get('content-type') ?? 'application/octet-stream',
         'cache-control': upstream.headers.get('cache-control') ?? 'no-store',
@@ -1717,7 +1743,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * deployment answers 403 instead of starting browser automation.
    */
   const guardWechat = (req: IncomingMessage, res: ServerResponse): boolean => {
-    const config = deps.wechatConfig()
+    const config = deps.wechatConfig(req)
     if (!config.enabled) {
       json(res, { ok: false, error: 'wechat publishing is disabled' }, 403)
       return false
@@ -1741,7 +1767,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     try {
       if (rejectNonRead(req, res)) return
       if (!guardWechat(req, res)) return
-      const ready = await deps.wechatReady()
+      const ready = await deps.wechatReady(req)
       json(res, {
         ok: true,
         enabled: ready.enabled,
@@ -1761,7 +1787,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * overrides it for exotic setups.
    */
   const wechatDsn = (req: IncomingMessage): string => {
-    const configured = deps.wechatConfig().dsn
+    const configured = deps.wechatConfig(req).dsn
     if (configured.length > 0) return configured
     const port = req.socket.localPort
     return port === undefined ? '' : `http://127.0.0.1:${port}${ROUTE_PREFIX}`
@@ -1812,7 +1838,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       // Fail fast on a title that does not exist: the adapter would otherwise
       // spend ~10s booting the browser only to 404 in /render.
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client !== undefined) {
         const tiddler = await client.get(title)
         if (tiddler === undefined) {
@@ -1820,8 +1846,8 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           return
         }
       }
-      const adapter = (requested ?? deps.wechatConfig().adapter) as WechatAdapter
-      const ready = await deps.wechatReady()
+      const adapter = (requested ?? deps.wechatConfig(req).adapter) as WechatAdapter
+      const ready = await deps.wechatReady(req)
       const adapterReady = adapter === 'publish-note-imgs' ? ready.adapters.publishNoteImgs : ready.adapters.publishNote
       if (!ready.opencli.ok || !adapterReady) {
         // `stale` (v0.23.4) = installed but outdated adapter files: the common

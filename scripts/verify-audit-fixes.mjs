@@ -435,7 +435,7 @@ try {
     for (let i = 0; i < TOTAL; i++) titles.push(i < TOTAL - 80 ? `SumReal-${String(i).padStart(3, '0')}` : `SumGone-${String(i).padStart(3, '0')}`)
     const { routes, face } = fakeWebServer()
     registerRoutes({ webServer: face }, {
-      server,
+      server: () => server,
       getClient: () => api,
       git,
       autoCommit: () => {},
@@ -508,7 +508,7 @@ try {
     }
     const { routes, face } = fakeWebServer()
     registerRoutes({ webServer: face }, {
-      server,
+      server: () => server,
       getClient: () => spy,
       git,
       autoCommit: () => {},
@@ -553,7 +553,7 @@ try {
     }
     const { routes, face } = fakeWebServer()
     registerRoutes({ webServer: face }, {
-      server,
+      server: () => server,
       getClient: () => spy,
       git,
       autoCommit: () => {},

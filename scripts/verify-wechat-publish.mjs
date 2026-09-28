@@ -409,7 +409,7 @@ await test('路由：未启用 403 / 方法校验 405 / 同源 403 / token 401 /
   let config = { enabled: false, command: stub, token: '', adapter: 'publish-note', dsn: '' }
   const runner = makeRunner()
   const dispose = registerRoutes({ webServer }, {
-    server: {},
+    server: () => ({}),
     getClient: () => ({ get: async (title) => (title === 'known' ? { title, text: 'x' } : undefined) }),
     git: {},
     autoCommit: () => {},
@@ -532,7 +532,7 @@ await test('index.ts / admin.ts：runner 接线、teardown 释放、wechat.token
   const idx = fs.readFileSync(path.join(repoRoot, 'src', 'index.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.ok(idx.includes('new WechatPublishRunner('), 'index.ts 必须创建 runner')
   assert.ok(idx.includes('disposers.push(() => wechatRunner.dispose())'), 'runner 必须随插件销毁（否则留下孤儿浏览器标签）')
-  assert.ok(idx.includes('wechatReady: () => checkWechatReady('), 'wechatReady 必须接到就绪探测')
+  assert.ok(/wechatReady: async \(req\) => \{[\s\S]{0,200}?checkWechatReady\(/.test(idx), 'wechatReady 必须接到就绪探测（v0.28.0：按请求解析，读目标库的 wechat.*）')
   const admin = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'admin.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.ok(admin.includes('token: maskToken(wechat.token)'), '/admin/state 必须把 wechat.token 打码（新增密钥字段的既有约定）')
   assert.ok(admin.includes('if (copy.wechat !== undefined) copy.wechat = cleanToken(copy.wechat)'), '回存的 ******** 必须被丢弃，不能覆盖真 token')

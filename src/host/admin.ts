@@ -510,11 +510,19 @@ export async function ensureLanguage(wikiPath: string, twRoot: string, lang: str
 }
 
 export interface AdminDeps {
-  server: WikiServer
-  getClient: () => TiddlyWebClient | undefined
-  getWikiPath: () => string
+  /** The TW child serving the wiki this request targets (undefined = not up). */
+  server: (req: IncomingMessage) => WikiServer | undefined
+  getClient: (req: IncomingMessage) => TiddlyWebClient | undefined
+  getWikiPath: (req: IncomingMessage) => string
   twRoot: () => string
-  config: ConfigStore
+  /**
+   * The config overlay OF THE TARGETED WIKI (v0.28.0: per request).
+   *
+   * Every knowledge base keeps its own `$:/plugins/dsh-tiddlywiki/config`
+   * tiddler — that IS what "each wiki has independent settings" means in
+   * practice, so the settings-page routes must say WHICH wiki they configure.
+   */
+  config: (req: IncomingMessage) => ConfigStore
   /**
    * Called after a successful settings-page save (v0.21.0). The plugin rebuilds
    * its system-prompt section here, so a prompt.* edit applies to the running
@@ -527,7 +535,17 @@ export interface AdminDeps {
    * effective config; called with a draft (v0.22.7) → those unsaved values.
    * Read-only and side-effect free; absent in headless contexts.
    */
-  getPrompt?: (draft?: PromptPreviewConfig) => { enabled: boolean; mode: string; text: string }
+  /**
+   * The system-prompt text that WOULD be injected for a configuration, for the
+   * settings page preview (v0.21.0). Called with no draft → the SAVED effective
+   * config OF THE TARGETED WIKI; called with a draft (v0.22.7) → those unsaved
+   * values. Takes the request since v0.28.0: every knowledge base carries its
+   * own `prompt.*` in its own config tiddler, so "the saved config" is
+   * meaningless without saying WHICH wiki.
+   *
+   * Read-only and side-effect free; absent in headless contexts.
+   */
+  getPrompt?: (draft: PromptPreviewConfig | undefined, req: IncomingMessage) => { enabled: boolean; mode: string; text: string }
   /**
    * Runtime wiki location (v0.22.0): where the wiki folder is, how that was
    * decided, and the two operations the settings page can perform. Absent in
@@ -663,7 +681,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
   const handleState = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectNonRead(req, res)) return
-      const wikiPath = deps.getWikiPath()
+      const wikiPath = deps.getWikiPath(req)
       const [info, catalog] = await Promise.all([readWikiInfo(wikiPath), bundledCatalog(deps.twRoot())])
       let git: unknown = null
       try {
@@ -672,12 +690,12 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       } catch {
         git = null
       }
-      const view = deps.server.status()
+      const view = deps.server(req)?.status() ?? { status: 'stopped' as const, wikiPath, logs: [] }
       // Which theme the runtime actually shows (v0.22.3): the settings page used
       // to derive it from the LAST entry of info.themes, so a non-last active
       // theme displayed the wrong radio — and re-applying it (even without
       // touching the radios) rewrote `$:/theme` to that wrong pick.
-      const themeActive = await readActiveThemeName(deps.getClient())
+      const themeActive = await readActiveThemeName(deps.getClient(req))
       // Runtime plugin truth (v0.26.0): wiki-installed plugin tiddlers + the
       // disabled markers, so 插件管理 rows can be labelled honestly. `null`
       // (scan failed) is passed through — the client hides the section rather
@@ -690,11 +708,11 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [], themeActive },
         catalog,
         runtimePlugins,
-        config: maskConfigSecrets(deps.config.get()),
+        config: maskConfigSecrets(deps.config(req).get()),
         // Why the overrides above are NOT in effect (v0.23.4): a stored config
         // that does not parse keeps being ignored silently otherwise, and the
         // page would show the (masked) defaults as if the user had chosen them.
-        configError: deps.config.parseError() ?? null,
+        configError: deps.config(req).parseError() ?? null,
         git,
       })
     } catch (err) {
@@ -706,7 +724,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as { plugins?: unknown; themes?: unknown; themeActive?: unknown; languages?: unknown }
-      const wikiPath = deps.getWikiPath()
+      const wikiPath = deps.getWikiPath(req)
       // A read failure must NEVER be turned into "the wiki has no plugins":
       // saving would then rewrite the file without them. Fail with 500 and
       // leave the file untouched.
@@ -795,15 +813,15 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         // This path predates the "restarting over unflushed writes loses them"
         // insight that the seed path below already documents (rule #1).
         await drainThenStop({
-          client: deps.getClient(),
-          tiddlersDir: join(deps.getWikiPath(), 'tiddlers'),
-          stop: () => deps.server.restart(),
+          client: deps.getClient(req),
+          tiddlersDir: join(deps.getWikiPath(req), 'tiddlers'),
+          stop: async () => { await deps.server(req)?.restart() },
           log: (message) => console.warn('[dsh-tiddlywiki]', message),
         })
       }
       // Activate the chosen theme tiddler (mirrors TW's own Control Panel).
       if (Array.isArray(body.themes) && activatedTheme !== undefined) {
-        const client = deps.getClient()
+        const client = deps.getClient(req)
         if (client !== undefined) {
           await client
             .put({ title: '$:/theme', text: `$:/themes/${activatedTheme}`, type: 'text/vnd.tiddlywiki', tags: [] })
@@ -814,7 +832,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       // enabled language, or en-GB when none is enabled. Only when the request
       // actually carried a languages array (plugins/themes restarts skip this).
       if (Array.isArray(body.languages)) {
-        const client = deps.getClient()
+        const client = deps.getClient(req)
         if (client !== undefined) {
           const langs = info.languages ?? []
           const active = langs.length > 0 ? `$:/languages/${langs[0]}` : '$:/languages/en-GB'
@@ -829,8 +847,8 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
           // the active language, so a later dsh-web restart doesn't re-enable
           // a language the user just disabled here.
           const hint = langs.length > 0 ? langs[0] : ''
-          if ((deps.config.get().uiLanguage ?? '') !== hint) {
-            await deps.config.set(client, { uiLanguage: hint }).catch(() => undefined)
+          if ((deps.config(req).get().uiLanguage ?? '') !== hint) {
+            await deps.config(req).set(client, { uiLanguage: hint }).catch(() => undefined)
           }
         }
       }
@@ -844,7 +862,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as unknown
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
@@ -856,11 +874,11 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       const patch = normalizeConfigPatch(body)
       // Never persist the masked placeholders the page read back from /state
       // (v0.19.3): saving an untouched form must not clobber a real token.
-      await deps.config.set(client, stripMaskedSecrets(patch as Record<string, unknown>, deps.config.get()) as PluginConfigShape)
+      await deps.config(req).set(client, stripMaskedSecrets(patch as Record<string, unknown>, deps.config(req).get()) as PluginConfigShape)
       // prompt.* may have changed: let the plugin re-register its prompt
       // section now (a no-op when the built text is unchanged).
       deps.onConfigChanged?.()
-      json(res, { ok: true, config: maskConfigSecrets(deps.config.get()) })
+      json(res, { ok: true, config: maskConfigSecrets(deps.config(req).get()) })
     } catch (err) {
       // A malformed patch is the caller's problem (400): the page can then show
       // exactly which field was wrong instead of a generic 500.
@@ -888,12 +906,12 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       // v0.24.1: drain the syncer queue first (ironclad rule #1) — this route
       // used to kill the child with writes still queued, losing them silently.
       const drained = await drainThenStop({
-        client: deps.getClient(),
-        tiddlersDir: join(deps.getWikiPath(), 'tiddlers'),
-        stop: () => deps.server.restart(),
+        client: deps.getClient(req),
+        tiddlersDir: join(deps.getWikiPath(req), 'tiddlers'),
+        stop: async () => { await deps.server(req)?.restart() },
         log: (message) => console.warn('[dsh-tiddlywiki]', message),
       })
-      json(res, { ok: true, status: deps.server.status().status, drained })
+      json(res, { ok: true, status: deps.server(req)?.status().status, drained })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -907,7 +925,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
   const handleSeeds = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectNonRead(req, res)) return
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
@@ -930,7 +948,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       const body = JSON.parse(await readBody(req)) as { id?: unknown; force?: unknown }
       const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
       const force = body.force === true
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
@@ -948,7 +966,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       let restartError: string | undefined
       if (needsRestartAfterSeeds(results)) {
         try {
-          const flushed = await waitForFileWrite(join(deps.getWikiPath(), 'tiddlers', RENDER_PLUGIN_FILE), 8_000, 150, seedStartedAt)
+          const flushed = await waitForFileWrite(join(deps.getWikiPath(req), 'tiddlers', RENDER_PLUGIN_FILE), 8_000, 150, seedStartedAt)
           if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
           // Drain the rest of the syncer queue too: force-all writes every seed,
           // and a restart that boots from a stale snapshot silently loses the
@@ -956,8 +974,8 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
           // v0.24.1: the drain+restart pair is now the shared primitive.
           const drained = await drainThenStop({
             client,
-            tiddlersDir: join(deps.getWikiPath(), 'tiddlers'),
-            stop: () => deps.server.restart(),
+            tiddlersDir: join(deps.getWikiPath(req), 'tiddlers'),
+            stop: async () => { await deps.server(req)?.restart() },
             log: (message) => console.warn('[dsh-tiddlywiki]', message),
           })
           if (!drained) console.warn('[dsh-tiddlywiki] seed writes may not have been flushed before restart')
@@ -985,7 +1003,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
       const body = JSON.parse(await readBody(req)) as { id?: unknown }
       const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
-      const client = deps.getClient()
+      const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: 'wiki service is not running' }, 503)
         return
@@ -1027,7 +1045,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
             return
           }
         }
-        const prompt = deps.getPrompt?.(normalizePromptPreview(body))
+        const prompt = deps.getPrompt?.(normalizePromptPreview(body), req)
         if (prompt === undefined) {
           json(res, { ok: false, error: 'prompt preview is not available' }, 503)
           return
@@ -1036,7 +1054,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         return
       }
       if (rejectNonRead(req, res)) return
-      const prompt = deps.getPrompt?.()
+      const prompt = deps.getPrompt?.(undefined, req)
       if (prompt === undefined) {
         json(res, { ok: false, error: 'prompt preview is not available' }, 503)
         return
@@ -1081,7 +1099,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       }
       const body = JSON.parse(await readBody(req)) as { root?: unknown; name?: unknown }
       const result = await deps.wiki.switch({ root: body.root, name: body.name })
-      json(res, result.ok ? { ...result, status: deps.server.status().status } : result, result.ok ? 200 : 400)
+      json(res, result.ok ? { ...result, status: deps.server(req)?.status().status } : result, result.ok ? 200 : 400)
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
@@ -1099,7 +1117,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         return
       }
       const result = await deps.wiki.reset()
-      json(res, result.ok ? { ...result, status: deps.server.status().status } : result, result.ok ? 200 : 400)
+      json(res, result.ok ? { ...result, status: deps.server(req)?.status().status } : result, result.ok ? 200 : 400)
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }

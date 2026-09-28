@@ -125,7 +125,7 @@ try {
     disposeRoutes = registerRoutes(
       { webServer: { register: (route) => { registered.push(route); return () => {} } } },
       {
-        server,
+        server: () => server,
         getClient: () => new TiddlyWebClient(view.url, { username: USER, password: PASS }),
         git: new GitFace(),
         autoCommit: () => {},

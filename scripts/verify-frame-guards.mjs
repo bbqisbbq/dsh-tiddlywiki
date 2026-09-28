@@ -235,7 +235,7 @@ await test('readActiveThemeName：缺失 / 空文本 / 读失败 → undefined�
 
 await test('/admin/state 回传 info.themeActive', () => {
   const state = bodyOf(admin, 'const handleState = ')
-  assert.match(state, /readActiveThemeName\(deps\.getClient\(\)\)/, '/admin/state 必须读真实活动主题')
+  assert.match(state, /readActiveThemeName\(deps\.getClient\(req\)\)/, '/admin/state 必须读真实活动主题')
   assert.match(state, /themeActive\b/, 'info 里必须带上 themeActive')
 })
 

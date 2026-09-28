@@ -376,7 +376,7 @@ await test('接线：/sync 与 agent 工具把冲突转成结构化失败，而�
 
 await test('接线：/admin/state 暴露 configError，/admin/config 把它映射成 409', () => {
   const admin = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'admin.ts'), 'utf8').replace(/\r\n/g, '\n')
-  assert.ok(admin.includes('configError: deps.config.parseError() ?? null'), '/admin/state 必须暴露解析失败原因')
+  assert.ok(admin.includes('configError: deps.config(req).parseError() ?? null'), '/admin/state 必须暴露解析失败原因')
   assert.ok(admin.includes('err instanceof ConfigUnreadableError'), '/admin/config 必须特判该错误')
   assert.ok(/ConfigUnreadableError\)\s*\{\s*json\(res, \{ ok: false, error: err\.message \}, 409\)/.test(admin), '拒绝保存应是 409 + 可执行文案')
 })
