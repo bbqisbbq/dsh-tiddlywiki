@@ -20,7 +20,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, registerRoutes, resolveTwRoot, targetRuntimeFor } from '../lib/index.js'
+import { GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, entryPath, registerRoutes, resolveTwRoot, targetRuntimeFor } from '../lib/index.js'
 import { createRouteServer } from './lib/tw-harness.mjs'
 
 let failures = 0
@@ -154,6 +154,19 @@ try {
       // 与 index.ts 用**同一个** selector 实现（targetRuntimeFor）：测试里再写一份
       // "怎么解析 ?wiki=" 就正好是这份仓库最贵的那种漂移（第一版就是栽在这里）。
       server: (req) => targetRuntimeFor(farm, req)?.server,
+      wikiSummaries: () => ({
+        mode: farm.registry.mode,
+        defaultId: farm.registry.defaultId,
+        items: farm.registry.wikis.map((entry) => {
+          const runtime = farm.runtime(entry.id)
+          return {
+            id: entry.id, label: entry.label,
+            status: runtime?.server.status().status ?? 'stopped',
+            agentVisible: entry.agentVisible, autostart: entry.autostart,
+            running: runtime !== undefined, path: entryPath(entry),
+          }
+        }),
+      }),
       serverById: (id) => farm.runtime(id)?.server,
       wikiIds: () => farm.registry.wikis.map((e) => e.id),
       getClient: (req) => targetRuntimeFor(farm, req)?.client(),
@@ -203,6 +216,20 @@ try {
     assert.equal(payload.wikiPath, farm.runtime('c').path, '?wiki=c 必须把请求指向 C')
     const fallback = await (await fetch(`${baseUrl}/dsh-tiddlywiki/status?wiki=nope`)).json()
     assert.equal(fallback.wikiPath, farm.runtime('b').path, '未知 id 必须回落默认库，而不是 404')
+  })
+
+  await test('/status 回传知识库名册（GUI 选择器与设置页靠它）', async () => {
+    const payload = await (await fetch(`${baseUrl}/dsh-tiddlywiki/status`)).json()
+    assert.equal(payload.mode, 'multi')
+    assert.equal(payload.defaultId, 'a')
+    assert.deepEqual(payload.wikis.map((w) => w.id), ['a', 'b', 'c'])
+    const b = payload.wikis.find((w) => w.id === 'b')
+    assert.equal(b.running, true)
+    assert.equal(b.status, 'running')
+    assert.equal(b.agentVisible, false, '乙库对 agent 隐身这条必须传到前端')
+    const a = payload.wikis.find((w) => w.id === 'a')
+    assert.equal(a.running, false, '已停的库必须如实报告 running=false（而不是消失）')
+    assert.equal(a.path, join(root, 'wikiA'), '停着的库也要带回路径，设置页才能显示它在哪')
   })
 
   disposeRoutes()

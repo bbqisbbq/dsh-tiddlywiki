@@ -128,6 +128,7 @@ try {
         server: () => server,
         serverById: () => server,
         wikiIds: () => [],
+        wikiSummaries: () => ({ mode: 'single', defaultId: 'main', items: [] }),
         getClient: () => new TiddlyWebClient(view.url, { username: USER, password: PASS }),
         git: new GitFace(),
         autoCommit: () => {},

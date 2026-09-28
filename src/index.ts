@@ -836,6 +836,28 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const idleConfig = new ConfigStore(baseShape)
     const disposeRoutes = registerRoutes({ webServer: ws }, {
       server: (req) => target(req)?.server,
+      // The roster the GUI selector + the settings page read. It reports what
+      // the FARM serves right now (in single mode that is the one synthesized
+      // entry); the control file's full candidate list is the admin route's job.
+      wikiSummaries: (req) => {
+        const registry = farm?.registry
+        return {
+          mode: registry?.mode ?? 'single',
+          defaultId: registry?.defaultId ?? DEFAULT_WIKI_ID,
+          items: (registry?.wikis ?? []).map((entry) => {
+            const runtime = farm?.runtime(entry.id)
+            return {
+              id: entry.id,
+              label: entry.label,
+              status: runtime?.server.status().status ?? 'stopped',
+              agentVisible: entry.agentVisible,
+              autostart: entry.autostart,
+              running: runtime !== undefined,
+              path: entryPath(entry),
+            }
+          }),
+        }
+      },
       // The `/tw/<id>/…` form: the proxy resolves the child by NAME (it cannot
       // use `target()`, whose `?wiki=` would be lost inside the iframe).
       serverById: (id) => farm?.runtime(id)?.server,

@@ -193,6 +193,30 @@ export interface UiDefaultsPublic {
   showRightbarTab: boolean
 }
 
+/** One knowledge base as the GUI sees it (list/selector payload). */
+export interface WikiSummaryPublic {
+  id: string
+  label: string
+  /** Health of this wiki's TW child ('running' | 'starting' | 'stopped' | 'failed'). */
+  status: string
+  /** May the AGENT reach it at all (hidden ones are absent from every prompt). */
+  agentVisible: boolean
+  /** Comes up at boot (multi mode); others start on demand. */
+  autostart: boolean
+  /** A TW child is currently serving it. */
+  running: boolean
+  path: string
+}
+
+/** The whole farm as the GUI sees it. */
+export interface WikiFarmPublic {
+  /** 'single' = one wiki (legacy behaviour); 'multi' = the farm. */
+  mode: string
+  /** Id a session without an explicit scope falls back to. */
+  defaultId: string
+  items: WikiSummaryPublic[]
+}
+
 /**
  * Everything the routes need from the plugin.
  *
@@ -210,6 +234,8 @@ export interface UiDefaultsPublic {
  * belong to the host, not to a wiki.
  */
 export interface RouteDeps {
+  /** The whole farm's list/mode/default (the GUI's per-wiki selector). */
+  wikiSummaries: (req: IncomingMessage) => WikiFarmPublic
   /** The TW child serving the wiki this request targets (undefined = not up). */
   server: (req: IncomingMessage) => WikiServer | undefined
   /** Lazily resolved REST client for the same wiki. */
@@ -685,6 +711,14 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       git: gitSummary,
       note: { tag: deps.noteDefaults(req).tag },
       ui: deps.uiDefaults(req),
+      // The knowledge-base roster (v0.28.0): the GUI's per-wiki selector and the
+      // settings page read it from here. Deliberately WITHOUT per-wiki git
+      // status — that would spawn up to five git processes per wiki on every
+      // 30s poll; `/status?wiki=<id>` carries git for the one you are looking at.
+      ...(() => {
+        const farm = deps.wikiSummaries(req)
+        return { mode: farm.mode, defaultId: farm.defaultId, wikis: farm.items }
+      })(),
     })
   }
 
