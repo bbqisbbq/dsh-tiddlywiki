@@ -47,6 +47,7 @@ import { WikiInstance } from './host/wiki-instance.ts'
 import { WikiFarm, resolveAgentScope, targetRuntimeFor } from './host/wiki-farm.ts'
 import { defaultSessionScopeFile, isSafeSessionId, readSessionScopes, setSessionScope } from './host/session-scope.ts'
 import { RepoCommitters } from './host/repo-committers.ts'
+import { isInsidePath, pathComparisonKey } from './host/path-key.ts'
 import {
   DEFAULT_WIKI_ID,
   DEFAULT_WIKI_MODE,
@@ -422,10 +423,28 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
    */
   const repos = new RepoCommitters({
     git,
-    // Read the EFFECTIVE settings each time a committer is (re)built, so a
-    // settings-page save still applies without a dsh web restart.
-    settings: () => {
-      const g = eff().git ?? {}
+    /**
+     * Per REPOSITORY (v0.28.0): several knowledge bases may share one repository,
+     * so the setting is resolved from the first wiki INSIDE that repository (in
+     * list order — deterministic), falling back to the default wiki and then to
+     * the cordis base.
+     *
+     * Wikis in one repository disagreeing about `git.*` is almost always a
+     * mistake (a repository has ONE remote, ONE branch, ONE index), so it is
+     * called out rather than silently resolved.
+     */
+    settings: (repoRoot) => {
+      const members = (farm?.registry.wikis ?? []).filter((entry) => entryIsInRepo(entry, repoRoot))
+      const chosen = members[0]
+      const runtimeConfig = (entry: WikiEntry | undefined): PluginConfigShape | undefined =>
+        entry === undefined ? undefined : farm?.runtime(entry.id)?.eff()
+      const g = (runtimeConfig(chosen) ?? eff()).git ?? {}
+      if (members.length > 1) {
+        const fingerprints = new Set(members.map((entry) => JSON.stringify(runtimeConfig(entry)?.git ?? {})))
+        if (fingerprints.size > 1) {
+          console.warn(`[dsh-tiddlywiki] 知识库 ${members.map((entry) => entry.id).join('、')} 共用同一个仓库（${repoRoot}），但各自配了不同的 git.* —— 一个仓库只有一份 git 设置，本次以「${chosen?.id ?? '默认库'}」为准`)
+        }
+      }
       return {
         autoCommit: g.autoCommit ?? config.git.autoCommit,
         debounceMs: g.debounceMs ?? config.git.debounceMs,
@@ -676,6 +695,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
    * host cannot disagree about it — see that function for why it matters.
    */
   const proxyBaseForEntry = (entry: WikiEntry): string => proxyBaseFor((farm?.registry.mode ?? 'single'), entry.id)
+
+  /** Does this wiki live inside that repository (or is it the repository root)? */
+  const entryIsInRepo = (entry: WikiEntry, repoRoot: string): boolean => {
+    const path = entryPath(entry)
+    return pathComparisonKey(path) === pathComparisonKey(repoRoot) || isInsidePath(repoRoot, path)
+  }
 
   // Tools (works even while the wiki is down; the scope resolves lazily).
   const toolsDeps: ToolsDeps = {

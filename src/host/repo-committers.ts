@@ -34,8 +34,15 @@ export interface RepoCommitSettings {
 
 export interface RepoCommittersOptions {
   git: GitFace
-  /** Read the CURRENT effective git settings. */
-  settings: () => RepoCommitSettings
+  /**
+   * The CURRENT effective settings FOR ONE REPOSITORY (v0.28.0).
+   *
+   * Per repository, not per wiki: several knowledge bases may share one
+   * repository, and their `git.*` would otherwise be read from whichever wiki
+   * happens to be the default — so the books repository could be auto-committed
+   * with the notes wiki's debounce (or not at all).
+   */
+  settings: (repoRoot: string) => RepoCommitSettings
   /** Commit message factory. */
   message: () => string
   log?: (message: string) => void
@@ -116,7 +123,7 @@ export class RepoCommitters {
   }
 
   private create(repoRoot: string): AutoCommitter {
-    const settings = this.options.settings()
+    const settings = this.options.settings(repoRoot)
     return new AutoCommitter({
       git: this.options.git,
       // The COMMIT runs at the repository root, never in a wiki subfolder.

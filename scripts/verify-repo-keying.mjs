@@ -164,6 +164,23 @@ try {
     rc.dispose()
   })
 
+  await test('RepoCommitters：git 设置按**仓库**被问（不是按知识库）', async () => {
+    // 共享一个仓库的两个库若各读各的 git.*，"书籍库"就可能用上"工作库"的自启与防抖设置。
+    const asked = []
+    const rc = new RepoCommitters({
+      git: repo,
+      settings: (root) => { asked.push(root); return { autoCommit: false, debounceMs: 60_000 } },
+      message: () => 'x',
+      log: () => {},
+    })
+    await rc.touch(work)
+    await rc.touch(personal)
+    assert.deepEqual(asked, [resolve(shared)], '同一个仓库只问一次，问的是仓库根')
+    await rc.touch(books)
+    assert.deepEqual(asked, [resolve(shared), resolve(books)], '独立仓库各自被问一次')
+    rc.dispose()
+  })
+
   await test('RepoCommitters：独立仓库互不牵连（书籍库的提交里不得有别的库）', async () => {
     const rc = new RepoCommitters({ git: repo, settings: () => settings, message: () => 'books commit', log: () => {} })
     await writeFile(join(books, 'corpus.txt'), 'c\n', 'utf8')
