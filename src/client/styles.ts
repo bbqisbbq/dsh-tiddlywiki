@@ -514,14 +514,15 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 /* ── 会话级知识库选择器（v0.28.0，同一个 conversation.input.dock 槽位）──
    与快速笔记按钮同区、纵向 flex 排列；只在"多于一个可见库"时渲染（组件自己返回
    null），所以单库安装这一整块都不存在。 */
-/* ── 会话级知识库选择器（v0.28.0，同一个 conversation.input.dock 槽位）──
-   与快速笔记按钮同区、纵向 flex 排列；只在"多于一个可见库"时渲染（组件自己返回
-   null），所以单库安装这一整块都不存在。
-   justify-content: flex-end 与 JS 测得的 paddingRight 一起把右缘对齐 composer
-   输入框（见 client/dock-align.ts）—— 与 .dsh-tw-dock-note 同一套做法。 */
+/* ── 会话级知识库选择器（v0.28.0；v0.28.7 起并入快速笔记那一行）──
+   它现在渲染在 .dsh-tw-dock-note **里面**、按钮的前面，所以：
+   - 不再 width:100%（那是"独占一整行"的写法，会把按钮挤下去）；
+   - 不再自己做 padding/justify —— 右对齐与"与 composer 输入框对齐"由父级
+     统一负责（见 client/dock-align.ts），一行只测量一次、天然同一基线。
+   只在"多于一个可见库"时渲染（组件自己返回 null），单库安装这一块 DOM 不存在。 */
 .dsh-tw-scope-dock {
-  display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap;
-  padding: 4px 8px 0; box-sizing: border-box; width: 100%; font-size: 12px;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px;
 }
 .dsh-tw-scope-label { opacity: .7; }
 .dsh-tw-scope-select {

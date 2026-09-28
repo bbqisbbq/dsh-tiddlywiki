@@ -59,7 +59,7 @@
 ### 🧑‍💻 界面操作
 
 - **📤 发送给 Agent**：TW 工具栏按钮（首次启动自动写入 wiki，ONE-SHOT）。弹层可选**附加说明**（位于消息末尾）、**工作模式**（Agent 预设）、**权限**（权限预设），按工作区分组选会话或新建。消息自带待办说明。
-- **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`，保存后即时生效，v0.22.8）。
+- **🧭 中央列编辑器**：侧边栏「TiddlyWiki」开关（显示名可改 `ui.sidebarLabel`，保存后即时生效，v0.22.8）。**多库模式下没有这个配置项**（v0.28.7）：侧边栏变成每个知识库各占一行、各用自己在「知识库列表」里配的**显示名**，统一名称已无意义，所以设置页只在单库模式渲染该字段。
 - **🗂️ 右侧边栏 Tab**（v0.16.21）：DSH 新右侧栏展开后，首页会出现「**TiddlyWiki 知识库**」入口盒，点击即在右侧栏以 tab 形式打开完整 TW 编辑器——**与聊天并排**，适合边聊边查/边记。由 `ui.showRightbarTab` 控制（默认开）；老版本 DSH（无右侧栏）自动跳过。
 - **🧩 Better Sidebar 共存**：装了 [dsh-better-sidebar](https://github.com/omdsh-dev/DSH-better-sidebar) 时，插件只做 UI 共存（中央 TW 面板的 z-index 自动压在其侧边栏展开/收起按钮之下，按钮始终可点）。**v0.17.0 起不再向 dsh-better-sidebar 注册「TiddlyWiki 知识库」tab**（旧版可用 `ui.showBetterSidebarTab` 关闭）——该 tab 的 kind 会与其它注册方冲突报 `tab kind "dsh-tiddlywiki" is already registered`。右侧边栏入口请用上面的 **右侧边栏 Tab**（DSH 原生 rightbar）。
 - **📝 快速笔记**：输入框上方快捷按钮（`ui.showQuickNoteDock`）或 FAB；`ui.quickNoteMode` 选打开方式——**native**（默认，直达 TW 原生编辑页，草稿自动续写）或 **card**（CodeMirror 6 Markdown 高亮、文件上传、多选 tag、草稿自动保存、「🕘 最近」载入、Ctrl+Enter 保存）。**v0.22.6**：原生编辑弹窗里用 TW 的「🗑 删除」把笔记删掉后不会再变成打不开的白板——再点一次「快速笔记」就会重新载入编辑器；card 模式底部操作条改成「按钮文字永不折行、放不下时整组换行」，窄卡片里不再把「✏️ 在 TW 中编辑」压成两行。
@@ -212,7 +212,7 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       showQuickNote: true              # FAB 里显示快速笔记入口
       showQuickNoteDock: true          # 输入框上方快捷按钮
       quickNoteMode: "native"          # native=TW 原生编辑页 / card=Markdown 卡片
-      sidebarLabel: "TiddlyWiki"       # 侧边栏入口显示名
+      sidebarLabel: "TiddlyWiki"       # 侧边栏入口显示名（仅单库模式；多库下每库各用自己 wikis.json 的 label）
       showPanelStatus: true
       showSyncButton: true
       followDshTheme: true             # 跟随 DSH 深浅主题

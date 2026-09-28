@@ -137,10 +137,21 @@ test('设置页：多库模式下**不再渲染**「知识库位置」（与列�
   assert.match(settings, /WIKI_SWITCH_ENDPOINT/, '默认库改目录仍走 /admin/wiki/switch')
 })
 
-test('会话选择器：挂在 conversation.input.dock（scope=session，组件能拿到 sessionId）', () => {
-  assert.match(indexSrc, /id: 'wiki-scope'/)
-  assert.match(indexSrc, /name: 'conversation\.input\.dock'/)
-  assert.match(dockSrc, /interface DockProps \{ sessionId\?: string \}/, '组件的 props 必须含 sessionId（该槽位 scope=session）')
+test('会话选择器：与快速笔记**同一行**（v0.28.7 合并；作者报障"没和对话框对齐"）', () => {
+  // 演进：v0.28.0 起选择器是**独立的** conversation.input.dock 条目（id: wiki-scope）。
+  // 但该槽位是竖向 flex 列，**每个条目独占一整行** —— 两个条目永远是上下两行，
+  // 无论怎么调 padding 都不可能"并排"。所以 v0.28.7 把选择器改成由 quick-note 条目
+  // 通过 `scope` 参数渲染在自己那一行里（按钮前面）。
+  // 判据（新）：注册表里**只能有一个** input.dock 条目，且选择器由它带出来。
+  const dockRegs = indexSrc.match(/name: 'conversation\.input\.dock'/g) ?? []
+  assert.equal(dockRegs.length, 1, `input.dock 只能注册一个条目（实际 ${dockRegs.length}）——多条目=多行，永远对不齐`)
+  assert.ok(!/id: 'wiki-scope'/.test(indexSrc), '选择器不该再单独注册成 dock 条目（那正是对不齐的根因）')
+  assert.match(indexSrc, /createQuickNoteDock\(widget, createWikiScopeDock\(\)\)/, '选择器必须作为 scope 传进快速笔记条目')
+  // 组件仍要能拿到 sessionId：scope=session 的 props 是发给**条目组件**的，靠 scope 透传。
+  assert.match(dockSrc, /interface DockProps \{ sessionId\?: string \}/, '选择器组件的 props 必须含 sessionId（该槽位 scope=session）')
+  const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
+  assert.match(quick, /scope\?: \(props: \{ sessionId\?: string \}\)/, '快速笔记条目必须接受 scope（同一行渲染）')
+  assert.match(quick, /sessionId: props\.sessionId/, '条目必须把 sessionId 透传给 scope（否则选择器拿不到会话）')
 })
 
 test('快速笔记：单库模式不得露出「写入」选择器（作者 2026-09-28 报障）', () => {
@@ -160,7 +171,7 @@ test('快速笔记：单库模式不得露出「写入」选择器（作者 2026
   assert.ok(guardBlock.includes('wikiSelect.disabled = true'), '单库时选择器必须被禁用')
 })
 
-test('dock 条目必须与 composer 输入框对齐（作者 2026-09-28 报障：选择器没对齐）', () => {
+test('dock 条目必须与 composer 输入框对齐，且选择器与按钮**并排**（作者 2026-09-28 报障）', () => {
   const align = readFileSync(path.join(repoRoot, 'src/client/dock-align.ts'), 'utf8')
   const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
   const scope = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
@@ -171,14 +182,20 @@ test('dock 条目必须与 composer 输入框对齐（作者 2026-09-28 报障�
   assert.match(align, /paddingRight/, '对齐靠给条目补右内边距')
   assert.match(align, /ResizeObserver/, '侧栏开合会移动输入框卡片 → 必须观察祖先链重测')
 
-  // 每个 dock 条目都必须用它 —— 这就是这次 bug 的根因：规则只写在 quick-note 里，
-  // 第二个条目（知识库选择器）加进来时没人知道要对齐。
+  // 对齐只由**那个唯一的行**负责（v0.28.7：选择器已并入这一行，不再自己对齐，
+  // 否则同一行会被测两次、右内边距翻倍）。
   assert.match(quick, /alignDockEntry\(/, '快速笔记条目必须用共享对齐')
-  assert.match(scope, /alignDockEntry\(/, '知识库选择器条目必须用共享对齐（本次报障点）')
+  assert.ok(!/alignDockEntry\(/.test(scope), '选择器并入同一行后不该再自己测一次（会与整行重复补 padding）')
+  assert.match(quick, /const wrap = wrapRef\.current[\s\S]{0,80}return alignDockEntry\(wrap\)/, '对齐必须挂在这一行的根元素上')
   // 两处都必须挂 ref（没有元素可测就没法对齐）
   assert.match(scope, /ref: wrapRef/, '选择器必须把 ref 挂到自己的根元素上')
-  // 右对齐 + 不重复实现测量（旧代码不该再留在条目里）
-  assert.match(styles, /\.dsh-tw-scope-dock\s*\{[^}]*justify-content:\s*flex-end/, '选择器要右对齐')
+  // 选择器在**同一行内**：inline-flex（占满宽就又把按钮挤到下一行了）+ 该行仍是右对齐。
+  assert.match(styles, /\.dsh-tw-scope-dock\s*\{[^}]*display:\s*inline-flex/, '选择器必须是 inline-flex（并排，不能整行宽）')
+  assert.match(styles, /\.dsh-tw-dock-note\s*\{[^}]*justify-content:\s*flex-end/, '该行必须右对齐到输入框边缘')
+  // 顺序要求（作者原话"并排放在快速笔记的前面或者后面"）：选择器渲染在按钮**之前**。
+  const scopeRenderAt = quick.indexOf('scope?.(')
+  const btnRenderAt = quick.indexOf("className: open ? 'dsh-tw-dock-note-btn")
+  assert.ok(scopeRenderAt > 0 && btnRenderAt > scopeRenderAt, '选择器必须在按钮之前渲染（同一行、并排）')
   assert.ok(!/BoundingClientRect/.test(scope), '条目里不得再自带一份测量实现')
   assert.ok(!/BoundingClientRect/.test(quick), '快速笔记的测量也必须只剩共享那一份')
 })
@@ -332,6 +349,43 @@ test('侧边栏入口：只有当前焦点那一行高亮（作者 2026-09-28 �
   assert.match(block, /const id = el\.dataset\.wiki/, '高亮必须按该行的 wiki id 判定')
   assert.match(block, /mine/, '必须区分"这一行是不是当前焦点库"')
   assert.match(sidebar, /subscribeFocusWiki\(syncActive\)/, '焦点变化后高亮要重算')
+})
+
+test('「侧边栏 TW 入口显示名称」只在单库模式出现（作者 2026-09-28 报障：多库时不该有这个配置）', () => {
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  // 事实依据：多库时侧边栏每个库各占一行、各用自己 wikis.json 的 label，ui.sidebarLabel
+  // 只喂单库那一行（sidebar-entry.ts 的 applyLabel，多库时 entry.hidden = true）。
+  // 所以多库下露出这个字段 = 一个改了不生效的假配置项。
+  const at = settings.indexOf("'ui.sidebarLabel'")
+  assert.ok(at > 0, '找不到 ui.sidebarLabel 字段')
+  const block = settings.slice(Math.max(0, at - 900), at + 200)
+  // 必须在多库分支里被跳过：判据是这段代码里出现了 multi 判定。
+  assert.match(block, /rosterMode === 'multi'/, '文本字段必须按模式分支渲染')
+  // 精确取 `if (rosterMode === 'multi') { … }` 的花括号体：multi 分支内**不得**出现
+  // textField 调用（出现即说明字段又被无条件渲染回去了）。
+  const open = settings.indexOf('if (rosterMode === \'multi\') {', at - 900)
+  assert.ok(open > 0, '找不到 rosterMode === multi 的分支')
+  const bodyStart = settings.indexOf('{', open) + 1
+  let depth = 1, i = bodyStart
+  while (i < settings.length && depth > 0) {
+    const c = settings[i]
+    if (c === '{') depth += 1
+    else if (c === '}') depth -= 1
+    i += 1
+  }
+  const multiBranch = settings.slice(bodyStart, i - 1)
+  assert.ok(!/textField\(/.test(multiBranch), 'multi 分支里不得渲染该文本字段（那样多库仍会看到假配置项）')
+  assert.match(multiBranch, /知识库列表/, 'multi 分支要说明去哪儿改显示名，而不是留空')
+  // else 分支必须真的渲染字段（别把两边都写成跳过）
+  const afterBranch = settings.slice(i, i + 400)
+  assert.match(afterBranch, /textField\('ui\.sidebarLabel'/, '单库分支必须仍然渲染该字段')
+  // 反向：探模式失败时必须回落成**单库**（`'multi'` 才是显式多库），否则探测一超时
+  // 单库用户就找不到设置项。
+  assert.match(settings, /let rosterMode: string \| undefined/, '模式变量必须允许 undefined（= 未知）')
+  const probe = settings.slice(settings.indexOf('const modePromise'), settings.indexOf('const state = await fetchJson<AdminState>'))
+  assert.match(probe, /\.catch\(\(\) => \{ rosterMode = undefined \}\)/, '探测失败必须回落 undefined（按单库），不能按多库')
+  // 反向：如果谁把判定改成 `!== 'single'`，未知模式就会被当成多库藏掉字段 —— 抓这个。
+  assert.ok(!/rosterMode !== 'single'/.test(settings), '不能用 !== single 判定（未知模式会被误判成多库）')
 })
 
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)

@@ -107,18 +107,11 @@ export function apply(ctx: ClientContextFace): void {
     // queue/git-graph 等插件内容都渲染在这里、按纵向 flex 排列，天然不重叠。
     // 由 ui.showQuickNoteDock 配置控制（默认开）。
     //
-    // 同一槽位还挂「会话级知识库选择器」（v0.28.0，需求：会话栏上面动态选 wiki）：
-    // 它**不需要**开关——组件自己在"可见库 ≤ 1"时返回 null，所以单库安装看不到任何
-    // 东西，而多库安装一装上就能选。order 比快速笔记小，排在它前面。
-    safeMount('wiki scope dock', () => {
-      const removeDock = ctx.slots?.inject('conversation.input.dock', () =>
-        ctx.slots?.register(
-          { name: 'conversation.input.dock', id: 'wiki-scope', order: 4, label: '知识库作用域' },
-          createWikiScopeDock(),
-        ),
-      )
-      if (removeDock !== undefined) disposers.push(removeDock)
-    })
+    // 「会话级知识库选择器」（v0.28.0，需求：会话栏上面动态选 wiki）**不再单独占一个
+    // 槽位条目**（v0.28.7）：dock 是纵向 flex 列，一个条目 = 一整行，所以两个条目
+    // 各自量宽度、永远对不齐（作者连报两次）。现在它作为 `scope` 渲染在快速笔记按钮
+    // 同一行的前面，只有一个条目、一次测量。组件自己在"可见库 ≤ 1"时返回 null，
+    // 所以单库安装这一块 DOM 与以前逐字相同。
     if (ctx.slots !== undefined) {
       void fetchUiConfig().then((cfg) => {
         if (clientDisposed) return
@@ -128,7 +121,7 @@ export function apply(ctx: ClientContextFace): void {
             const removeDock = ctx.slots?.inject('conversation.input.dock', () =>
               ctx.slots?.register(
                 { name: 'conversation.input.dock', id: 'quick-note', order: 8, label: '快速笔记' },
-                createQuickNoteDock(widget),
+                createQuickNoteDock(widget, createWikiScopeDock()),
               ),
             )
             if (removeDock !== undefined) disposers.push(removeDock)

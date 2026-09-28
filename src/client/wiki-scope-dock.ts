@@ -21,7 +21,6 @@
  */
 import * as React from 'react'
 import { fetchStatus } from './status-cache.ts'
-import { alignDockEntry } from './dock-align.ts'
 import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
@@ -30,8 +29,14 @@ interface WikiOption { id: string; label: string; running: boolean }
 interface DockProps { sessionId?: string }
 
 /**
- * The dock entry. Returning `null` is a supported way to occupy the slot and
- * show nothing — which is what a single-wiki install gets.
+ * 会话级知识库选择器（v0.28.0）。
+ *
+ * 它**不是**一个独立的 dock 条目，而是渲染在快速笔记那一行**里面**的元素
+ * （v0.28.7）：dock 是纵向 flex 列，一个条目 = 一整行，两个条目各自量宽度就永远
+ * 对不齐。所以这里返回的是"一行里的一个内联块"，宽度由内容决定，不占满整行。
+ *
+ * 返回 `null` 表示"这一行不需要它"——单库安装（可见库 ≤1）时正是如此，DOM 与
+ * 加这个功能之前逐字相同。
  */
 export function createWikiScopeDock(): (props: DockProps) => React.ReactElement | null {
   return function WikiScopeDock(props: DockProps) {
@@ -42,14 +47,11 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
     const [busy, setBusy] = React.useState(false)
     const wrapRef = React.useRef<HTMLDivElement | null>(null)
 
-    // 与 composer 输入框右缘对齐（v0.28.2）：dock 槽位渲染成输入框的**兄弟节点**，
-    // 不做这一步这一行就悬在整列最右端（作者报障："没有和输入框对齐"）。测量逻辑
-    // 与快速笔记共用一份 —— client/dock-align.ts。
-    React.useLayoutEffect(() => {
-      const wrap = wrapRef.current
-      if (wrap === null) return
-      return alignDockEntry(wrap)
-    }, [])
+    // 注意（v0.28.7）：这里**不再**自己调 alignDockEntry。选择器已经从独立 dock 条目
+    // 改成渲染在快速笔记那一行**里面**的元素，而那一行整行负责与输入框右缘对齐
+    // （quick-note-dock.ts 的 wrapRef）。如果这里再量一次、再补一次右内边距，就是
+    // 同一个右缘被补两遍 —— 选择器会被推进去一大截，正是"没和对话框对齐"的复现。
+    // 保留 wrapRef 是为了给根元素一个稳定引用做测量/调试锚点，不参与对齐计算。
 
     React.useEffect(() => {
       if (sessionId === undefined) return

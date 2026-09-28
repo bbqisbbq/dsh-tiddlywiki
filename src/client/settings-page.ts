@@ -186,18 +186,37 @@ function mountSettingsPage(container: HTMLElement): () => void {
   const catalogPending: CatalogPending = {}
   /** 首屏是否已成功渲染过内容：决定占位提示与失败时能不能清 body。 */
   let rendered = false
+  /**
+   * 当前是单库还是多库（v0.28.7）。
+   *
+   * 为什么要在比 `/status` 更早的地方拿到它：有些配置项**只在单库模式下有意义**
+   * （「侧边栏 TW 入口显示名称」是最典型的一个——多库时侧边栏是每个库各占一行、
+   * 各用自己 `wikis.json` 里的 label，这个字段改不动任何东西）。`renderConfigSection`
+   * 是同步的、按顺序 append 字段，没法在中间 await，所以这里先把模式探好，
+   * 再交给它决定要不要渲染那个字段。
+   *
+   * `undefined` = 还没探测 / 探测失败 —— 按**单库**处理（保守：宁可多显示一个
+   * "确实存在且能用"的字段，也不要因为一次请求失败把它藏了，否则单库用户会
+   * 莫名其妙找不到设置项）。多库时才显式 'multi'。
+   */
+  let rosterMode: string | undefined
 
   const refresh = async (): Promise<void> => {
     // 首屏先给占位（v0.24.x）：以前 await 期间什么都不画，整块白屏看起来像插件坏了。
     if (!rendered) body.replaceChildren(make('div', 'dsh-tw-settings-muted', '加载中…'))
     try {
+      // 与 /status 并行探模式：失败/超时不阻塞配置页渲染（回落成单库的保守视图）。
+      const modePromise = fetchJson<WikisView>(WIKI_LIST_ENDPOINT)
+        .then((v) => { rosterMode = typeof v?.mode === 'string' ? v.mode : undefined })
+        .catch(() => { rosterMode = undefined })
       const state = await fetchJson<AdminState>(withWiki(STATE_ENDPOINT))
+      await modePromise
       if (disposed) return
       rendered = true
       loadError.hidden = true
       loadError.replaceChildren()
       renderStatus(statusRow, state, refresh)
-      renderMain(body, state, refresh, () => disposed, configState, catalogPending)
+      renderMain(body, state, refresh, () => disposed, configState, catalogPending, rosterMode)
     } catch (err) {
       if (disposed) return
       // 不再 body.replaceChildren() / statusRow.replaceChildren()：那会把已经渲染出来的
@@ -288,7 +307,7 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
 }
 
 /** Config section: fields bound to effective config, changed-only save. */
-function renderConfigSection(body: HTMLElement, config: Record<string, unknown>, refresh: () => Promise<void>, configState: ConfigRenderState): void {
+function renderConfigSection(body: HTMLElement, config: Record<string, unknown>, refresh: () => Promise<void>, configState: ConfigRenderState, rosterMode?: string): void {
   const section = make('section', 'dsh-tw-settings-section')
   section.append(make('h3', 'dsh-tw-settings-h', '常规配置'))
   const note = (config.note ?? {}) as Record<string, unknown>
@@ -448,7 +467,15 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
     { value: 'native', label: '原生编辑器：直接弹出 TW 原生编辑页（新建/恢复草稿）' },
     { value: 'card', label: 'Markdown 卡片：弹出现有快速笔记卡片（CodeMirror 编辑器）' },
   ])
-  textField('ui.sidebarLabel', '侧边栏 TW 入口显示名称', typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : 'TiddlyWiki')
+  // 「侧边栏 TW 入口显示名称」只在**单库**模式有意义（v0.28.7）。多库时侧边栏是每个库
+  // 各占一行、各用自己 `wikis.json` 里的 label，这个字段改不动任何东西——留着只会让人
+  // 「改了没生效」。所以多库时**不渲染这个字段**（连字段带保存都不参与），只留一行说明
+  // 该去哪儿改。判定用的模式来自 mountSettingsPage 的探测（读不到按单库，见那里的注释）。
+  if (rosterMode === 'multi') {
+    section.append(make('div', 'dsh-tw-settings-muted', '侧边栏入口：多库模式下每个知识库各占一行、各用自己的「显示名」（在「知识库列表」里改），不再是统一的一个名称，所以这里没有对应配置项。'))
+  } else {
+    textField('ui.sidebarLabel', '侧边栏 TW 入口显示名称', typeof ui.sidebarLabel === 'string' && ui.sidebarLabel.trim().length > 0 ? ui.sidebarLabel.trim() : 'TiddlyWiki')
+  }
   checkField('ui.showPanelStatus', '显示「知识库」按钮里的 TW 面板/重载入口与状态行', ui.showPanelStatus !== false)
   checkField('ui.showSyncButton', '显示「知识库」按钮里的「同步」入口与 git 状态点', ui.showSyncButton !== false)
   checkField('ui.followDshTheme', '嵌入式 TW 跟随 DSH 深浅主题（暗色时自动切深色 palette，不写回 wiki）', ui.followDshTheme !== false)
@@ -1619,7 +1646,7 @@ interface CatalogPending {
   themeActive?: string
 }
 
-function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState, catalogPending: CatalogPending): void {
+function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState, catalogPending: CatalogPending, rosterMode?: string): void {
   body.replaceChildren()
   // Loud, above everything else: an unparseable config tiddler means the config
   // block below shows DEFAULTS that are not actually in effect, and saving is
@@ -1644,7 +1671,7 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
   }
   if (configState.host === undefined || (serverChanged && !dirty)) {
     const host = make('div', 'dsh-tw-settings-confighost')
-    renderConfigSection(host, state.config ?? {}, refresh, configState)
+    renderConfigSection(host, state.config ?? {}, refresh, configState, rosterMode)
     configState.host = host
     configState.signature = signature
   }
