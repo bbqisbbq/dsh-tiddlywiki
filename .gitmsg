@@ -1,0 +1,12 @@
+release: v0.28.8 — 多库第五批反馈（12 条）+ 拆大文件
+
+文档与版本收尾：
+- package.json / package-lock.json → 0.28.8（官方源重生成，npm ci --dry-run 通过）
+- README「版本记录」顶部 + docs/CHANGELOG.md 顶部各加一条 v0.28.8
+- docs/usage.md：bridge.wiki / 设置页分页 / 新会话选择器 / 每库一个图标 /
+  桌面版 node / 多库下提示词按会话求值
+- docs/features.md：补 4 条能力（官方图标、设置页分页、新会话选择器、桌面版）
+- AGENTS.md §2：版本号、工具集（模块族）、配置项（bridge.wiki）、客户端 Slot
+  （新增 selector.context）、新增「模块拆分」一行（readFamily 约定）
+
+lib/ 已重建（client.bundle.js 701305 字节 / 684.9 KB）。
