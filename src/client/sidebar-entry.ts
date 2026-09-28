@@ -266,14 +266,29 @@ export function mountSidebarEntry(state: PanelState): () => void {
   // placed 成功后由 tryPlace 立即 clearInterval（见上）；仅在 root 重建时重启。
   startRetry()
 
+  /**
+   * Highlight the row whose knowledge base the panel is actually showing.
+   *
+   * NOT all rows (v0.28.6 fix): the panel is shared, but it can only display ONE
+   * wiki — the focused one. Highlighting every row made it look like all three
+   * were open (作者报障). The row the user clicked becomes the focus, and that is
+   * the row that lights up.
+   */
   const syncActive = (): void => {
-    // 面板是共享的：所有行一起高亮/取消，用户看到的"打开中"状态才一致。
+    const focus = resolveFocusWiki(
+      activeRows().map((el) => ({ id: el.dataset.wiki ?? '' })).filter((w) => w.id.length > 0),
+      undefined,
+    )
     for (const el of activeRows()) {
-      if (state.isOpen()) el.dataset.active = 'true'
+      const id = el.dataset.wiki
+      // 单库默认行没有 data-wiki：它就是唯一那个库，面板开着时它就该亮。
+      const mine = id === undefined ? activeRows().length === 1 : id === focus
+      if (state.isOpen() && mine) el.dataset.active = 'true'
       else delete el.dataset.active
     }
   }
   const unsubscribe = state.subscribe(syncActive)
+  const unsubscribeRowFocus = subscribeFocusWiki(syncActive)
   syncActive()
   tryPlace()
 
@@ -286,6 +301,7 @@ export function mountSidebarEntry(state: PanelState): () => void {
     unsubscribe()
     unsubscribeLabel()
     unsubscribeFocus()
+    unsubscribeRowFocus()
     for (const row of rows.values()) row.entry.remove()
     rows.clear()
   }

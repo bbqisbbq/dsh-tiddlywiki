@@ -724,7 +724,7 @@ function renderCatalogSection(
     applyPlugins.disabled = true
     void (async () => {
       try {
-        await fetchJson(INFO_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plugins: [...desiredPlugins()] }) })
+        await fetchJson(withWiki(INFO_ENDPOINT), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plugins: [...desiredPlugins()] }) })
         // 应用成功才清 pending：之后重新跟随服务器（TW 重启后 info 会给出真实集合）。
         pending.plugins = undefined
         toast('插件已应用，TW 已重启')
@@ -855,7 +855,7 @@ function renderCatalogSection(
     applyThemes.disabled = true
     void (async () => {
       try {
-        await fetchJson(INFO_ENDPOINT, {
+        await fetchJson(withWiki(INFO_ENDPOINT), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ themes: [...desiredThemes()], themeActive: activeThemeName() }),
@@ -909,7 +909,7 @@ function renderCatalogSection(
     applyLangs.disabled = true
     void (async () => {
       try {
-        await fetchJson(INFO_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ languages: [...desiredLanguages()] }) })
+        await fetchJson(withWiki(INFO_ENDPOINT), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ languages: [...desiredLanguages()] }) })
         pending.languages = undefined
         toast('语言已应用，TW 已重启')
         void refresh()
@@ -1405,7 +1405,7 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
     // 按钮回调的 await 之后调用，晚到的响应不得再 wrap.replaceChildren()。
     if (isDisposed()) return
     try {
-      const data = await fetchJson<{ ok?: boolean; items?: SeedItem[]; error?: string }>(SEEDS_ENDPOINT)
+      const data = await fetchJson<{ ok?: boolean; items?: SeedItem[]; error?: string }>(withWiki(SEEDS_ENDPOINT))
       if (isDisposed()) return
       if (data.ok !== true || !Array.isArray(data.items)) throw new Error(data.error ?? '获取失败')
       wrap.replaceChildren()
@@ -1453,7 +1453,7 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
           btn.textContent = '执行中…'
           void (async () => {
             try {
-              const res = await fetch(SEEDS_RUN_ENDPOINT, {
+              const res = await fetch(withWiki(SEEDS_RUN_ENDPOINT), {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ id: item.id, force: true }),
@@ -1489,7 +1489,7 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
             rm.textContent = '移除中…'
             void (async () => {
               try {
-                const res = await fetch(SEEDS_REMOVE_ENDPOINT, {
+                const res = await fetch(withWiki(SEEDS_REMOVE_ENDPOINT), {
                   method: 'POST',
                   headers: { 'content-type': 'application/json' },
                   body: JSON.stringify({ id: item.id }),
@@ -1529,7 +1529,7 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
     runAll.textContent = '执行中…'
     void (async () => {
       try {
-        const res = await fetch(SEEDS_RUN_ENDPOINT, {
+        const res = await fetch(withWiki(SEEDS_RUN_ENDPOINT), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ force: true }),
@@ -1557,7 +1557,7 @@ function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void 
     removeAll.textContent = '移除中…'
     void (async () => {
       try {
-        const res = await fetch(SEEDS_REMOVE_ENDPOINT, {
+        const res = await fetch(withWiki(SEEDS_REMOVE_ENDPOINT), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({}),

@@ -302,5 +302,37 @@ test('hidden 必须真的隐藏：全局兜底一条，不许再逐元素补（�
   assert.match(sidebar, /entry\.hidden = true/, '多库模式下默认行必须隐藏（否则侧边栏多一个没有库名的 TiddlyWiki）')
 })
 
+test('设置页每个 per-wiki 面板都必须带作用域（作者 2026-09-28 报障：混在一起管理）', () => {
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  // 症状：多库下「插件管理 / 主题管理 / 语言包 / 初始化」看起来是混在一起管理的。
+  // 根因：这些面板各自打一个 admin 端点，但**只有部分调用带了 ?wiki=** —— 没带的
+  // 永远落在默认库上，于是"切了库，面板内容却没变"。宿主侧一直是 per-request 的
+  // （deps.server(req)/config(req)/getClient(req)），缺的只是客户端这一半。
+  for (const ep of ['STATE_ENDPOINT', 'CONFIG_ENDPOINT', 'PROMPT_ENDPOINT', 'INFO_ENDPOINT', 'SEEDS_ENDPOINT', 'SEEDS_RUN_ENDPOINT', 'SEEDS_REMOVE_ENDPOINT']) {
+    assert.ok(
+      settings.includes(`withWiki(${ep})`),
+      `${ep} 必须经 withWiki 带上 ?wiki=<编辑中的库>（否则该面板永远作用于默认库）`,
+    )
+  }
+  // withWiki 本身：单库（editingWiki===undefined）时不得改动 URL —— 现有用户逐字不变
+  assert.match(settings, /editingWiki === undefined \? url : `\$\{url\}\?wiki=/, 'withWiki 在未选库时必须原样返回')
+})
+
+test('侧边栏入口：只有当前焦点那一行高亮（作者 2026-09-28 报障：点一个三个都选中）', () => {
+  const sidebar = readFileSync(path.join(repoRoot, 'src/client/sidebar-entry.ts'), 'utf8')
+  const at = sidebar.indexOf('const syncActive = ')
+  assert.ok(at > 0, '找不到 syncActive')
+  const block = sidebar.slice(at, at + 900)
+  // 面板虽然共享，但一次只显示一个库 —— 高亮全部行会让用户以为三个都打开了。
+  // 判据：高亮语句必须**被 `mine` 条件包着**；无条件写 dataset.active 就是那个 bug。
+  const activeWrites = block.match(/el\.dataset\.active = 'true'/g) ?? []
+  assert.ok(activeWrites.length === 1, `高亮语句应恰好一条（实际 ${activeWrites.length}）`)
+  assert.ok(/if \(state\.isOpen\(\) && mine\)\s*el\.dataset\.active = 'true'/.test(block),
+    '高亮必须同时满足"面板开着"与"这一行是当前焦点库"（无条件高亮正是本次 bug）')
+  assert.match(block, /const id = el\.dataset\.wiki/, '高亮必须按该行的 wiki id 判定')
+  assert.match(block, /mine/, '必须区分"这一行是不是当前焦点库"')
+  assert.match(sidebar, /subscribeFocusWiki\(syncActive\)/, '焦点变化后高亮要重算')
+})
+
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)
