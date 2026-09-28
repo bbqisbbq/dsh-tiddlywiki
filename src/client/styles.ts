@@ -635,6 +635,14 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #222);
 }
+/* 知识库徽标（v0.28.8）：会话明确选了某个库时才渲染。刻意比工具名徽标**弱**
+   （描边 + 次要色），它是上下文说明而不是动作；库名可能较长，所以限宽省略。 */
+.dsh-tw-toolcard-wiki {
+  flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  color: var(--dsw-alias-label-secondary, #555);
+}
 .dsh-tw-toolcard-open {
   flex: none; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
   background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #222);

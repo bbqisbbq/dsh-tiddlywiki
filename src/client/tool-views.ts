@@ -26,10 +26,13 @@
  */
 import * as React from 'react'
 import { openTiddler } from './panel.ts'
-import { GET_ENDPOINT, RECENT_ENDPOINT, SEARCH_ENDPOINT, TAGS_ENDPOINT, TW_PROXY_BASE } from './endpoints.ts'
+import { GET_ENDPOINT, RECENT_ENDPOINT, SEARCH_ENDPOINT, TAGS_ENDPOINT, TW_PROXY_BASE, twProxyFor, withWikiQuery } from './endpoints.ts'
 // The render call lives in ONE place (render-fetch.ts): the tool card and the
 // session「知识库」tab used to carry byte-near-identical copies of it (v0.22.8).
 import { fetchRenderFragment } from './render-fetch.ts'
+// Per-session knowledge base (v0.28.8): every fetch/link below must name it, or
+// a multi-wiki install renders another wiki's identically-titled tiddler.
+import { resolveSessionWikiId } from './wiki-scope.ts'
 
 /** Chinese label for each tool (card badge). */
 const TOOL_LABELS: Record<string, string> = {
@@ -74,12 +77,38 @@ interface ContentBlockLike {
   text?: unknown
 }
 
+/**
+ * Recognise a TW proxy pathname and report the wiki it targets (v0.28.8).
+ *
+ * `undefined` = the bare `/dsh-tiddlywiki/tw/` (the default-wiki alias, which is
+ * what agents' `[标题](/dsh-tiddlywiki/tw/#标题)` links use). A string = the id in
+ * `/dsh-tiddlywiki/tw/<id>/`. `null` = not a TW proxy path at all.
+ */
+function matchTwProxyPath(pathname: string): string | undefined | null {
+  if (pathname === TW_PROXY_BASE) return undefined
+  if (!pathname.startsWith(TW_PROXY_BASE)) return null
+  const rest = pathname.slice(TW_PROXY_BASE.length)
+  // `/tw/<id>/` — the id is a single path segment (the host validates its
+  // charset), so anything with another slash is not a wiki route.
+  if (!rest.endsWith('/')) return null
+  const id = rest.slice(0, -1)
+  if (id.length === 0 || id.includes('/')) return null
+  try {
+    return decodeURIComponent(id)
+  } catch {
+    return id
+  }
+}
+
 /** Owner props the shell passes to a keyed tool view (verified via Inspect).
- *  Only `block` + `toolName` are read; the shell passes more (callId, cwd,
- *  home, openFile, inspect) but nothing here uses them. */
+ *  `block` + `toolName` drive the card; `sessionId` (v0.28.8) is what lets the
+ *  card ask for the RIGHT knowledge base — the slot is session-scoped and the
+ *  shell passes the session it is rendering for. */
 interface ToolCallOwnerProps {
   toolName: string
   block: RunningCallLike | SettledLike
+  /** The session this card belongs to (absent on shells that do not pass it). */
+  sessionId?: string
 }
 
 function isSettled(block: RunningCallLike | SettledLike): block is SettledLike {
@@ -144,8 +173,8 @@ async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
   }
 }
 
-async function fetchRender(title: string): Promise<string | null> {
-  return fetchRenderFragment(title, 10_000)
+async function fetchRender(title: string, wikiId?: string): Promise<string | null> {
+  return fetchRenderFragment(title, 10_000, wikiId)
 }
 
 /** Lightweight async-state hook for one loader keyed by `deps`. */
@@ -172,14 +201,15 @@ function useAsync<T>(factory: () => Promise<T | null>, deps: readonly unknown[])
 }
 
 /** Open a tiddler in the center TW panel (shared by rows + 「在 TW 打开」). */
-function openTw(title: string): (event: React.MouseEvent) => void {
+function openTw(title: string, wikiId?: string): (event: React.MouseEvent) => void {
   return (event) => {
     // 列表行是 <a href=tw/#标题>：带修饰键 / 非左键的点击保留浏览器默认语义
     // （新标签页、新窗口、复制链接），只有普通左键点击才改走中央 TW 面板。
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
     event.preventDefault()
     event.stopPropagation()
-    openTiddler(title)
+    // wikiId 透传（v0.28.8）：多库时把面板焦点切到该库，否则会打开默认库。
+    openTiddler(title, wikiId)
   }
 }
 
@@ -195,10 +225,17 @@ function ToolCardShell(props: {
   children?: React.ReactNode
 }): React.ReactElement {
   const label = TOOL_LABELS[props.toolName] ?? props.toolName
+  const wikiId = useScopedWikiId()
   const head = React.createElement(
     'div',
     { className: 'dsh-tw-toolcard-head' },
     React.createElement('span', { className: 'dsh-tw-toolcard-badge' }, label),
+    // 知识库徽标（v0.28.8）：只有会话明确选了某个库时才显示。多库下「这张卡来自
+    // 哪个库」是必须可见的信息 —— 模型文本里有【知识库：X】、卡片却什么都不说，
+    // 用户无法判断两者是否一致。单库/默认库时整块不渲染，DOM 与以前相同。
+    wikiId !== undefined
+      ? React.createElement('span', { className: 'dsh-tw-toolcard-wiki', title: `本会话作用域：${wikiId}` }, wikiId)
+      : null,
     props.title !== undefined && props.title.length > 0
       ? React.createElement('span', { className: 'dsh-tw-toolcard-title', title: props.title }, props.title)
       : null,
@@ -245,22 +282,36 @@ const BODY_CACHE_TTL_MS = 5 * 60_000
 const BODY_CACHE_MAX = 50
 const bodyCache = new Map<string, CachedTiddlerBody>()
 
-function readBodyCache(title: string): CachedTiddlerBody | undefined {
-  const hit = bodyCache.get(title)
+/**
+ * Cache key for one tiddler body (v0.28.8).
+ *
+ * The knowledge base is PART of the identity: two wikis routinely hold an entry
+ * with the same title (「index」, 「笔记」…), and keying on the title alone made
+ * whichever one was read first serve the other's body for five minutes. `\u0000`
+ * cannot appear in either component, so the join is unambiguous.
+ */
+function bodyCacheKey(wikiId: string | undefined, title: string): string {
+  return `${wikiId ?? ''}\u0000${title}`
+}
+
+function readBodyCache(wikiId: string | undefined, title: string): CachedTiddlerBody | undefined {
+  const key = bodyCacheKey(wikiId, title)
+  const hit = bodyCache.get(key)
   if (hit === undefined) return undefined
   if (Date.now() - hit.at > BODY_CACHE_TTL_MS) {
-    bodyCache.delete(title)
+    bodyCache.delete(key)
     return undefined
   }
   // LRU：命中即把条目移到末尾（Map 保持插入序）。
-  bodyCache.delete(title)
-  bodyCache.set(title, hit)
+  bodyCache.delete(key)
+  bodyCache.set(key, hit)
   return hit
 }
 
-function writeBodyCache(title: string, value: { get: Record<string, unknown> | null; html: string | null }): void {
-  bodyCache.delete(title)
-  bodyCache.set(title, { at: Date.now(), ...value })
+function writeBodyCache(wikiId: string | undefined, title: string, value: { get: Record<string, unknown> | null; html: string | null }): void {
+  const key = bodyCacheKey(wikiId, title)
+  bodyCache.delete(key)
+  bodyCache.set(key, { at: Date.now(), ...value })
   while (bodyCache.size > BODY_CACHE_MAX) {
     const oldest = bodyCache.keys().next().value
     if (oldest === undefined) break
@@ -275,8 +326,13 @@ function writeBodyCache(title: string, value: { get: Record<string, unknown> | n
  * ——渲染期间改模块级 Map 在 React 并发渲染/StrictMode 下是不纯的（渲染可能被
  * 丢弃或重放），副作用属于 effect 阶段。语义不变：写入类卡片总是重新拉取。
  */
-function invalidateBodyCache(title: string): void {
-  if (title.length > 0) bodyCache.delete(title)
+function invalidateBodyCache(title: string, wikiId?: string): void {
+  if (title.length === 0) return
+  // Invalidate BOTH the scoped and the unscoped key: a write card knows its
+  // session's wiki, but an earlier render may have cached the same title under
+  // the default-wiki key (before the scope resolved).
+  bodyCache.delete(bodyCacheKey(wikiId, title))
+  bodyCache.delete(bodyCacheKey(undefined, title))
 }
 
 /**
@@ -284,28 +340,34 @@ function invalidateBodyCache(title: string): void {
  * 渲染期不得有副作用：React 并发渲染/StrictMode 下渲染可能被丢弃或重放，
  * 模块级 Map 的删除必须放进 effect（v0.19.1）。
  */
-function useInvalidateBodies(titles: readonly string[]): void {
+function useInvalidateBodies(titles: readonly string[], wikiId?: string): void {
   const key = titles.join('\u0000')
   React.useEffect(() => {
-    for (const title of key.split('\u0000')) invalidateBodyCache(title)
-  }, [key])
+    for (const title of key.split('\u0000')) invalidateBodyCache(title, wikiId)
+  }, [key, wikiId])
 }
 
 function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: string; fresh?: boolean }): React.ReactElement {
   const { title, fresh } = props
+  const wikiId = useScopedWikiId()
   const both = useAsync(
     async () => {
       // 写入类卡片的 loader 先失效缓存（effect 阶段执行），保证看到最新正文。
-      if (fresh === true) invalidateBodyCache(title)
-      const cached = readBodyCache(title)
+      if (fresh === true) invalidateBodyCache(title, wikiId)
+      const cached = readBodyCache(wikiId, title)
       if (cached !== undefined) return { get: cached.get, html: cached.html }
-      const [get, html] = await Promise.all([fetchJson(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`), fetchRender(title)])
+      const [get, html] = await Promise.all([
+        fetchJson(withWikiQuery(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`, wikiId)),
+        fetchRender(title, wikiId),
+      ])
       // 只缓存「渲染成功」的结果：服务不可用 / 条目不存在 / 渲染降级这类瞬时或
       // 失败态不缓存，重新挂载时照常重试（否则一次抖动会被缓存 5 分钟）。
-      if (typeof html === 'string' && html.length > 0) writeBodyCache(title, { get, html })
+      if (typeof html === 'string' && html.length > 0) writeBodyCache(wikiId, title, { get, html })
       return { get, html }
     },
-    [title, fresh],
+    // wikiId 必须在依赖里：scope 解析完成（undefined → 某个库）后要重新取数，
+    // 否则卡片会一直显示「默认库」那份内容（v0.28.8）。
+    [title, fresh, wikiId],
   )
   const { loading, data } = both
   const get = data?.get ?? null
@@ -338,7 +400,7 @@ function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: str
       title,
       subtitle: props.subtitle,
       tags,
-      onOpen: openTw(title),
+      onOpen: openTw(title, wikiId),
       foot: modified !== undefined ? `修改于 ${modified}` : undefined,
     },
     body,
@@ -355,6 +417,7 @@ function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: str
  *  model-visible tool result (see tools.ts' render contract) carried more than
  *  the card did. It is rendered as a second line and only when non-empty. */
 function HitRow(props: { title: string; tags?: readonly string[]; modified?: string | null; snippet?: string }): React.ReactElement {
+  const wikiId = useScopedWikiId()
   const meta = React.createElement(
     'span',
     { className: 'dsh-tw-toolcard-row-head' },
@@ -371,8 +434,9 @@ function HitRow(props: { title: string; tags?: readonly string[]; modified?: str
     'a',
     {
       className: 'dsh-tw-toolcard-row',
-      href: `${TW_PROXY_BASE}#${encodeURIComponent(props.title)}`,
-      onClick: openTw(props.title),
+      // 多库下裸 TW_PROXY_BASE 是「默认库」的别名，点开就会打开错库（v0.28.8）。
+      href: `${twProxyFor(wikiId === undefined ? undefined : 'multi', wikiId, TW_PROXY_BASE).relative}#${encodeURIComponent(props.title)}`,
+      onClick: openTw(props.title, wikiId),
       title: snippet === null ? props.title : `${props.title}\n${snippet}`,
     },
     meta,
@@ -442,7 +506,9 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown>; te
   const workspace = receiptWorkspace(props.text)
   if (workspace !== null) params.set('workspace', workspace)
   const paramsKey = params.toString()
-  const data = useAsync(() => fetchJson(`${SEARCH_ENDPOINT}?${paramsKey}`), [paramsKey])
+  const wikiId = useScopedWikiId()
+  // wikiId 要进依赖：scope 解析完成后再取一次，而不是把默认库的结果留在屏上。
+  const data = useAsync(() => fetchJson(withWikiQuery(`${SEARCH_ENDPOINT}?${paramsKey}`, wikiId)), [paramsKey, wikiId])
   const payload = data.data
   const items = Array.isArray(payload?.items) ? (payload.items as Record<string, unknown>[]) : []
   const rows = items.map((item) => ({
@@ -476,13 +542,14 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown>; te
  * the card offers the title + 「在 TW 打开」 instead.
  */
 function AttachCard(props: { toolName: string; title: string }): React.ReactElement {
+  const wikiId = useScopedWikiId()
   const body = props.title.length > 0
     ? React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, '附件已保存进 wiki（二进制条目，卡片不内联渲染）。')
     : React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, '附件已保存。')
   return React.createElement(ToolCardShell, {
     toolName: props.toolName,
     title: props.title.length > 0 ? props.title : undefined,
-    ...(props.title.length > 0 ? { onOpen: openTw(props.title) } : {}),
+    ...(props.title.length > 0 ? { onOpen: openTw(props.title, wikiId) } : {}),
   }, body)
 }
 
@@ -491,7 +558,8 @@ function RecentCard(props: { toolName: string; args: Record<string, unknown> }):
   if (typeof props.args.limit === 'number') params.set('limit', String(props.args.limit))
   if (typeof props.args.since === 'string' && props.args.since.length > 0) params.set('since', props.args.since)
   const paramsKey = params.toString()
-  const data = useAsync(() => fetchJson(`${RECENT_ENDPOINT}?${paramsKey}`), [paramsKey])
+  const wikiId = useScopedWikiId()
+  const data = useAsync(() => fetchJson(withWikiQuery(`${RECENT_ENDPOINT}?${paramsKey}`, wikiId)), [paramsKey, wikiId])
   const payload = data.data
   const items = Array.isArray(payload?.items) ? (payload.items as Record<string, unknown>[]) : []
   const rows = items.map((item) => ({
@@ -534,7 +602,11 @@ function BatchCard(props: { toolName: string; args: Record<string, unknown> }): 
 const TAGS_CARD_LIMIT = 60
 
 function TagsCard(props: { toolName: string }): React.ReactElement {
-  const data = useAsync(() => fetchJson(`${TAGS_ENDPOINT}?limit=${TAGS_CARD_LIMIT}&sort=count`), [])
+  const wikiId = useScopedWikiId()
+  const data = useAsync(
+    () => fetchJson(withWikiQuery(`${TAGS_ENDPOINT}?limit=${TAGS_CARD_LIMIT}&sort=count`, wikiId)),
+    [wikiId],
+  )
   const payload = data.data
   const items = Array.isArray(payload?.items) ? (payload.items as Record<string, unknown>[]) : []
   const chips = items.map((item) => ({
@@ -605,9 +677,60 @@ function headerTitle(toolName: string, args: Record<string, unknown>): string {
   }
 }
 
+/**
+ * The knowledge base the CURRENT session is scoped to (v0.28.8, feedback 10).
+ *
+ * Provided once at the top of the card tree and read by every fetch/link below,
+ * so no card can accidentally ask the host for the DEFAULT wiki while the model
+ * is talking about another one. `undefined` = default wiki = exactly what every
+ * request did before this existed.
+ */
+const WikiScopeContext = React.createContext<string | undefined>(undefined)
+
+/** The scoped wiki id, or undefined for the default wiki. */
+function useScopedWikiId(): string | undefined {
+  return React.useContext(WikiScopeContext)
+}
+
+/**
+ * Read the session's wiki scope once and provide it to the subtree.
+ *
+ * `sessionId` comes from the tool-call owner props (the shell passes it on the
+ * session-scoped `tool.call.toolview` slot). While the read is in flight the
+ * value is `undefined`, i.e. the card renders against the default wiki and then
+ * re-renders against the right one — a brief mismatch, never a wrong write, and
+ * the card's own data loader keeps its `wikiId` in its dependency list so the
+ * fetch is redone rather than cached under the wrong key.
+ */
+function useScopeProviderValue(sessionId: string | undefined): string | undefined {
+  const [wikiId, setWikiId] = React.useState<string | undefined>(undefined)
+  React.useEffect(() => {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      setWikiId(undefined)
+      return
+    }
+    let alive = true
+    void resolveSessionWikiId(sessionId).then((id) => {
+      if (alive) setWikiId(id)
+    })
+    return () => { alive = false }
+  }, [sessionId])
+  return wikiId
+}
+
 /** The one component registered under every `tiddlywiki_*` toolview key.
  *  Module-private (v0.22.8): only `registerToolViews()` below registers it. */
 function TiddlywikiToolView(props: ToolCallOwnerProps): React.ReactNode {
+  const wikiId = useScopeProviderValue(props.sessionId)
+  return React.createElement(
+    WikiScopeContext.Provider,
+    { value: wikiId },
+    React.createElement(TiddlywikiToolViewBody, props),
+  )
+}
+
+/** The card body; runs INSIDE WikiScopeContext so `useScopedWikiId()` works. */
+function TiddlywikiToolViewBody(props: ToolCallOwnerProps): React.ReactNode {
   const block = props.block
   const toolName = props.toolName
   const settled = isSettled(block)
@@ -754,12 +877,23 @@ export function installWikiLinkInterceptor(): () => void {
     if (anchor === null) return
     const href = anchor.getAttribute('href') ?? ''
     // Resolve relative AND absolute hrefs against the current origin, then only
-    // take same-origin links to the TW proxy index whose hash carries a title.
+    // take same-origin links to the TW proxy whose hash carries a title.
+    //
+    // Two path shapes must match (v0.28.8): the bare `/dsh-tiddlywiki/tw/`
+    // (single-wiki installs and the default-wiki alias, what agents emit) AND
+    // the per-wiki `/dsh-tiddlywiki/tw/<id>/` our multi-wiki cards now link to.
+    // Matching only the bare form would send a multi-wiki click to DSH's
+    // external-link handler — i.e. a new browser tab instead of the TW panel.
     let title: string | null = null
+    let wikiId: string | undefined
     try {
       const url = new URL(href, window.location.origin)
-      if (url.origin === window.location.origin && url.pathname === TW_PROXY_BASE && url.hash.length > 1) {
-        title = url.hash.substring(1)
+      if (url.origin === window.location.origin && url.hash.length > 1) {
+        const parsed = matchTwProxyPath(url.pathname)
+        if (parsed !== null) {
+          title = url.hash.substring(1)
+          wikiId = parsed
+        }
       }
     } catch {
       /* not a parseable URL — leave for the browser's default handling */
@@ -772,7 +906,7 @@ export function installWikiLinkInterceptor(): () => void {
     } catch {
       /* keep the raw hash when decoding fails */
     }
-    openTiddler(title)
+    openTiddler(title, wikiId)
   }
   document.addEventListener('click', onDocumentClick, true)
   return () => document.removeEventListener('click', onDocumentClick, true)

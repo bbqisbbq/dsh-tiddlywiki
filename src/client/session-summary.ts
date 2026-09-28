@@ -38,10 +38,13 @@
  * @module dsh-tiddlywiki/client/session-summary
  */
 import * as React from 'react'
-import { GET_ENDPOINT, SESSION_SUMMARY_ENDPOINT as SUMMARY_ENDPOINT } from './endpoints.ts'
+import { GET_ENDPOINT, SESSION_SUMMARY_ENDPOINT as SUMMARY_ENDPOINT, withWikiQuery } from './endpoints.ts'
 // The render call lives in ONE place (render-fetch.ts) — this module and
 // tool-views.ts used to carry near-identical copies (v0.22.8).
 import { fetchRenderFragment } from './render-fetch.ts'
+// 本会话作用域的知识库（v0.28.8）：汇总必须落在同一个库，否则标题条目在库里、
+// 渲染却去默认库找 → 一直「条目不存在」（见 wiki-scope.ts）。
+import { resolveSessionWikiId } from './wiki-scope.ts'
 import { getTabLabel, setTabLabel } from './tw-frame.ts'
 
 /** conversation.view 槽位注册 id（模块私有，v0.22.8：只有本文件的 mount 用）。 */
@@ -81,9 +84,9 @@ interface SessionSummaryViewProps {
  * `notFound` interpretation used to be written out a second time in the
  * interval, and the two disagreed on what a transport error means.
  */
-async function tiddlerExists(title: string): Promise<'yes' | 'no' | 'unknown'> {
+async function tiddlerExists(title: string, wikiId?: string): Promise<'yes' | 'no' | 'unknown'> {
   try {
-    const res = await fetch(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`, { signal: AbortSignal.timeout(8_000) })
+    const res = await fetch(withWikiQuery(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`, wikiId), { signal: AbortSignal.timeout(8_000) })
     if (res.status === 404) return 'no'
     // 非 2xx（500/503…）不是「条目还在」的证据：拿不到确定答案就报未知，别猜。
     if (!res.ok) return 'unknown'
@@ -104,6 +107,20 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
   const [error, setError] = React.useState('')
   /** 降级提示（探测状态未知 / 后台刷新失败）：不清掉已渲染的旧内容，只加一行说明。 */
   const [probeUnknown, setProbeUnknown] = React.useState(false)
+  /**
+   * 本会话作用域的知识库（v0.28.8）。`undefined` = 默认库，此时下面每一处请求
+   * 都与加这个功能之前逐字相同（`withWikiQuery` 对空值不改 URL）。
+   *
+   * 为什么必须有：汇总条目由 host 写进**该库**，渲染/探测若不带 `?wiki=` 就会去
+   * 默认库找同一个标题 —— 表现为一直「条目不存在」并反复重建。
+   */
+  const [wikiId, setWikiId] = React.useState<string | undefined>(undefined)
+  /**
+   * 自愈 tick 是长驻闭包，读不到最新 state；用 ref 让它探测的是**当前**库
+   * （否则切库后自愈会一直去旧库找汇总条目，误判成「条目被清」并反复重建）。
+   */
+  const wikiIdRef = React.useRef<string | undefined>(undefined)
+  wikiIdRef.current = wikiId
   const genRef = React.useRef(0)
   /**
    * 卸载守卫（v0.22.3）：genRef 只能识别「被更新的一次 generate 取代」，覆盖不到
@@ -158,7 +175,12 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
       return
     }
     try {
-      const res = await fetch(SUMMARY_ENDPOINT, {
+      // 汇总也按库作用域（v0.28.8）：host 的 /session/summary 会读该库自己的
+      // 笔记集合，不传就会拿默认库的数据生成一份"看起来对、其实来自别的库"的汇总。
+      const scoped = await resolveSessionWikiId(sessionId)
+      if (!mountedRef.current || gen !== genRef.current) return
+      setWikiId(scoped)
+      const res = await fetch(withWikiQuery(SUMMARY_ENDPOINT, scoped), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ session: sessionId }),
@@ -177,12 +199,12 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
       setSummaryTitle(data.title)
       // 原生渲染：wikitext → HTML 片段（块解析，标题/表格/列表/引用齐全，
       // 链接已重写为 /dsh-tiddlywiki/tw/#标题，点击由全局拦截器接管）。
-      const fragment = await fetchRenderFragment(data.title)
+      const fragment = await fetchRenderFragment(data.title, 15_000, scoped)
       if (!mountedRef.current || gen !== genRef.current) return
       if (fragment === null) {
         // 区分「条目被清（TW 重启把 $:/temp 冲掉了）」与「渲染服务不可用」：
         // 前者自动重建（受 MAX_MISSES 约束，有界），后者直接报错交还手动重试。
-        const exists = await tiddlerExists(data.title)
+        const exists = await tiddlerExists(data.title, scoped)
         if (!mountedRef.current || gen !== genRef.current) return
         if (exists === 'no') {
           failuresRef.current++
@@ -252,7 +274,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         if (typeof document !== 'undefined' && document.hidden) return
         // Reuse the shared interpretation rather than a second copy of the
         // 404/`notFound` logic (v0.22.8) — three-valued since v0.24.x.
-        const serverHas = await tiddlerExists(summaryTitle)
+        const serverHas = await tiddlerExists(summaryTitle, wikiIdRef.current)
         if (!alive) return
         if (serverHas === 'unknown') {
           // 探测失败：不计失败（TW 重启期间会被瞬间烧完额度），也不清零（不能把

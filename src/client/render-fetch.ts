@@ -21,12 +21,19 @@
  *
  * @module dsh-tiddlywiki/client/render-fetch
  */
-import { RENDER_ENDPOINT } from './endpoints.ts'
+import { RENDER_ENDPOINT, withWikiQuery } from './endpoints.ts'
 
-/** Render one tiddler by title through the host's sanitizing render route. */
-export async function fetchRenderFragment(title: string, timeoutMs = 15_000): Promise<string | null> {
+/**
+ * Render one tiddler by title through the host's sanitizing render route.
+ *
+ * `wikiId` (v0.28.8) targets a specific knowledge base. Omit it for the default
+ * wiki — and note that omitting it is NOT the same as "whatever the user is
+ * looking at": the host falls back to the farm default, so a multi-wiki caller
+ * that forgets this renders ANOTHER wiki's identically-titled tiddler.
+ */
+export async function fetchRenderFragment(title: string, timeoutMs = 15_000, wikiId?: string): Promise<string | null> {
   try {
-    const res = await fetch(RENDER_ENDPOINT, {
+    const res = await fetch(withWikiQuery(RENDER_ENDPOINT, wikiId), {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-requested-with': 'TiddlyWiki' },
       body: JSON.stringify({ title }),

@@ -86,11 +86,20 @@ const PANEL_SKIN: TwFrameSkin = {
  */
 const OPEN_TIDDLER_EVENT = 'dsh-tw-open-tiddler'
 
-/** Ask the mounted panel to open `title` in the TW native page. */
-export function openTiddler(title: string): void {
+/**
+ * Ask the mounted panel to open `title` in the TW native page.
+ *
+ * `wikiId` (v0.28.8) names the knowledge base the link belongs to. In multi
+ * mode the panel must load `/tw/<id>/` and focus that wiki — without it the
+ * panel would show the default wiki while the card came from another one. Omit
+ * for the default wiki (single-wiki installs: every call, as before).
+ */
+export function openTiddler(title: string, wikiId?: string): void {
   if (typeof document === 'undefined') return
   if (typeof title !== 'string' || title.length === 0) return
-  document.dispatchEvent(new CustomEvent(OPEN_TIDDLER_EVENT, { detail: { title } }))
+  document.dispatchEvent(new CustomEvent(OPEN_TIDDLER_EVENT, {
+    detail: typeof wikiId === 'string' && wikiId.length > 0 ? { title, wikiId } : { title },
+  }))
 }
 
 /**

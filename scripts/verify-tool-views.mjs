@@ -95,8 +95,32 @@ test('wiki 链接拦截器同时匹配相对与绝对同源 /dsh-tiddlywiki/tw/#
   // 不是 TW 面板。修复必须用 new URL(...) 归一化后再判同源 + 代理 pathname。
   assert.ok(/new URL\(href, window\.location\.origin\)/.test(viewsSrc), '拦截器必须用 new URL(href, location.origin) 解析相对与绝对 href')
   assert.ok(/url\.origin === window\.location\.origin/.test(viewsSrc), '拦截器必须校验同源（跨源外链放行给 DSH）')
-  assert.ok(/url\.pathname === TW_PROXY_BASE/.test(viewsSrc), '拦截器必须校验 pathname 命中 TW 代理基址（/dsh-tiddlywiki/tw/）')
+  // v0.28.8：pathname 判定抽成 matchTwProxyPath —— 它必须同时认
+  //   裸 `/dsh-tiddlywiki/tw/`（默认库别名，agent 链接用的形态）
+  //   和 `/dsh-tiddlywiki/tw/<id>/`（多库卡片链接的形态）
+  // 只认裸路径的话，多库下点卡片行会落入 DSH 外链处理（新标签页）。
+  assert.ok(/matchTwProxyPath\(url\.pathname\)/.test(viewsSrc), '拦截器必须走 matchTwProxyPath 判定 pathname（同时支持裸路径与 /tw/<id>/）')
+  assert.ok(/function matchTwProxyPath\(/.test(viewsSrc), 'matchTwProxyPath 必须存在')
+  assert.ok(/pathname === TW_PROXY_BASE/.test(viewsSrc), 'matchTwProxyPath 必须认裸 TW 代理基址')
   assert.ok(!/^\/dsh-tiddlywiki\\\/tw\\\/#/.test(viewsSrc.replace(/\n/g, ' ')) || !/new RegExp\(`\^\$\{TW_PROXY_BASE/.test(viewsSrc), '旧的「仅相对路径」正则拦截器已移除')
+})
+
+test('多库：卡片取数/链接/缓存都必须带上会话作用域的知识库（v0.28.8，反馈 10）', () => {
+  // 症状：会话 scope 是库 B 时，模型文本说「【知识库：B】」而卡片渲染的是库 A 的
+  // 同名条目 —— 卡片侧完全没有「库」这个概念，取数一律落到宿主的默认库回落。
+  assert.ok(/WikiScopeContext/.test(viewsSrc), '卡片树必须有知识库作用域 context')
+  assert.ok(/resolveSessionWikiId/.test(viewsSrc), '作用域必须来自 /session/wiki（wiki-scope.ts）')
+  assert.ok(/withWikiQuery\(/.test(viewsSrc), '所有卡片取数必须经 withWikiQuery 带上 ?wiki=')
+  assert.ok(/twProxyFor\(/.test(viewsSrc), '行链接必须经 twProxyFor 指向 /tw/<id>/（裸路径是默认库别名）')
+  // bodyCache 的键必须含库：两个库有同名条目时，旧实现（只按 title）会互相串味。
+  assert.ok(/function bodyCacheKey\(wikiId/.test(viewsSrc), 'bodyCache 键必须含 wikiId')
+  assert.ok(/dsh-tw-toolcard-wiki/.test(viewsSrc), '卡片头必须显示知识库徽标')
+  // 两条取数路径都要能用上作用域。
+  assert.ok(/fetchRender\(title, wikiId\)/.test(viewsSrc), '卡片正文渲染必须带 wikiId')
+  const summarySrc = read('src/client/session-summary.ts')
+  assert.ok(/withWikiQuery\(SUMMARY_ENDPOINT, scoped\)/.test(summarySrc), '会话汇总生成必须带 ?wiki=')
+  assert.ok(/fetchRenderFragment\(data\.title, 15_000, scoped\)/.test(summarySrc), '会话汇总渲染必须带 wikiId')
+  assert.ok(/tiddlerExists\([^)]*wikiId/.test(summarySrc) || /tiddlerExists\(data\.title, scoped\)/.test(summarySrc), '会话汇总的条目探测必须带 wikiId（否则自愈会一直误判「条目不存在」）')
 })
 
 console.log(failures === 0 ? '\nTOOL VIEWS OK' : `\nTOOL VIEWS FAILED (${failures})`)

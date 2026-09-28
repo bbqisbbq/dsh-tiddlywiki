@@ -22,6 +22,8 @@
 import * as React from 'react'
 import { fetchStatus } from './status-cache.ts'
 import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
+// 切库后要立刻失效其它界面的作用域缓存（v0.28.8，见 wiki-scope.ts）。
+import { invalidateSessionWikiId } from './wiki-scope.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
 
@@ -143,6 +145,9 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
           }
           setScope(typeof payload.scope === 'string' ? payload.scope : next)
           setNote(typeof payload.reason === 'string' ? payload.reason : undefined)
+          // 立即让工具卡/会话汇总重新解析作用域（v0.28.8）：它们按会话缓存 wiki id，
+          // 不失效的话切库后已显示的卡片仍带着旧库的 ?wiki= 与库徽标。
+          invalidateSessionWikiId(sessionId)
         } catch (err) {
           setNote(err instanceof Error ? err.message : String(err))
         } finally {
