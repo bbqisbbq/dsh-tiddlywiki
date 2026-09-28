@@ -837,6 +837,66 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-settings-scopebar-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
 .dsh-tw-settings-scopebar-exit { margin-left: auto; }
+
+/* ── 每库图标：按钮 + 弹出式分页网格（v0.28.8，反馈 1/2）──────────────────
+   ⚠️ 这一段的缺席曾是真实缺陷（见下）：选择器的 DOM 与守门都到位了，唯独 CSS
+   没写 —— 于是弹层以「无样式块」的形式挂在 document.body 底部，视觉上等于
+   "点了没反应"。修复时连同守门一起补：verify-wiki-focus 现在断言本节存在，
+   而不只是断言 TS 里出现过那几个类名字符串（那正是当初漏掉的原因）。
+
+   弹层 append 到 document.body（不受祖先 overflow 裁剪），所以定位必须用
+   position:fixed —— 相对 body 的 absolute 会被页面滚动带走。 */
+.dsh-tw-settings-iconbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.dsh-tw-settings-iconbtn-face {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex: 0 0 auto;
+}
+.dsh-tw-settings-iconbtn-face > svg { width: 16px; height: 16px; display: block; }
+.dsh-tw-settings-iconbtn-label { font-size: 12px; }
+.dsh-tw-iconpicker {
+  position: fixed; z-index: 60;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(70vh, 420px); overflow: auto;
+  padding: 10px; border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-primary, #222);
+  box-shadow: 0 8px 28px rgba(0,0,0,.22);
+}
+.dsh-tw-iconpicker-grid {
+  display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px;
+}
+.dsh-tw-iconpicker-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 6px 2px; border-radius: 8px; cursor: pointer; font: inherit;
+  border: 1px solid transparent; background: transparent; color: inherit;
+  min-width: 0;
+}
+.dsh-tw-iconpicker-cell:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12));
+}
+.dsh-tw-iconpicker-cell[data-current='true'] {
+  border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.3));
+  background: var(--dsw-alias-bg-layer-2, rgba(0,0,0,.06));
+}
+.dsh-tw-iconpicker-face {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px;
+}
+.dsh-tw-iconpicker-face > svg { width: 20px; height: 20px; display: block; }
+/* 名称是第二信息：长了就省略，绝不让它把格子撑开（8 列必须对齐）。 */
+.dsh-tw-iconpicker-name {
+  font-size: 10px; line-height: 1.2; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--dsw-alias-label-secondary, #666);
+}
+.dsh-tw-iconpicker-pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.12));
+}
 `
 
 /**

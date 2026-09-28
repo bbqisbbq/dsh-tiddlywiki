@@ -335,6 +335,49 @@ test('每库图标：host 校验 + 客户端渲染都不得成为注入点（v0.
   assert.match(settings, /!choices\.some\(\(c\) => c\.value === current\)/, '自定义 emoji 不能被候选列表抹掉')
 })
 
+test('图标弹层必须有 CSS —— 只有 DOM 没有样式，视觉上就是「点了没反应」（v0.28.8 回归）', () => {
+  // ── 这条守门的由来（真实缺陷，2026-09-28）────────────────────────────────
+  // 上面那条断言只检查「TS 源码里出现过 dsh-tw-iconpicker 这个字符串」——
+  // 而弹层的 class 名当然会出现在 TS 里（它是 make() 的参数）。于是：
+  // 组件 (markup) 写了、接线写了、守门也绿了，**唯独 styles.ts 里一条 CSS 都没有**。
+  // 弹层仍然会被 append 到 document.body，但它是个无宽高约束的裸块，
+  // 用户看到的就是「点击图标没有正常弹出」。
+  //
+  // 教训：断言「某个类名存在」不等于断言「这个组件可用」。渲染型组件的守门
+  // 至少要跨两个文件——一个说"我生成了这个 DOM"，一个说"这个 DOM 有样式"。
+  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const pickerPath = path.join(repoRoot, 'src/client/settings-icon-picker.ts')
+  const picker = readFileSync(pickerPath, 'utf8')
+
+  // 弹层本体、网格、格子、分页器：四个都必须真有规则（少一个就退回裸块）。
+  for (const cls of ['dsh-tw-iconpicker', 'dsh-tw-iconpicker-grid', 'dsh-tw-iconpicker-cell', 'dsh-tw-iconpicker-pager']) {
+    assert.ok(
+      styles.includes(`.${cls} {`) || styles.includes(`.${cls}{`) || styles.includes(`.${cls},`),
+      `styles.ts 里没有 .${cls} 的规则 —— 弹层会以无样式块出现（"点了没反应"）`,
+    )
+  }
+  // 弹层挂在 document.body 上，所以定位必须是 fixed：absolute 会被页面滚动带走。
+  const block = styles.slice(styles.indexOf('.dsh-tw-iconpicker {'))
+  assert.match(block.slice(0, 240), /position:\s*fixed/, '弹层 append 到 body，必须 position:fixed')
+  assert.match(block.slice(0, 240), /z-index:\s*\d+/, '弹层必须在自己那层之上（否则被设置页内容盖住）')
+
+  // 反向：picker 里 make() 出来的每个 dsh-tw-* 类都要在 styles.ts 里有下落。
+  // 这是防「下次再加一个子元素、又忘了写 CSS」的通用网。
+  const emitted = [...picker.matchAll(/make\('[a-z]+',\s*'([^']+)'/g)]
+    .flatMap((m) => m[1].split(/\s+/))
+    .filter((c) => c.startsWith('dsh-tw-'))
+  const unique = [...new Set(emitted)]
+  assert.ok(unique.length >= 6, `从 picker 里解析出的类名太少（${unique.length}）—— 解析方式可能失效了，请同步本脚本`)
+  for (const cls of unique) {
+    assert.ok(
+      styles.includes(`.${cls} `) || styles.includes(`.${cls}{`) || styles.includes(`.${cls} {`)
+        || styles.includes(`.${cls},`) || styles.includes(`.${cls}:`) || styles.includes(`.${cls}[`)
+        || styles.includes(`.${cls}.`) || styles.includes(`.${cls} >`),
+      `picker 生成的 .${cls} 在 styles.ts 里找不到规则（漏写 CSS）`,
+    )
+  }
+})
+
 test('图标集：host 名单与客户端可渲染集合必须完全一致，且真的用上官方 DSH 图标（v0.28.8，反馈 1）', () => {
   // 需求原文：「配置界面里面给每个 wiki 设置图标时能否使用 dsh 系统中的图标系统…
   // 一个弹出框可以弹出展示系统中所有的图标，太多的话可以考虑分页展示」。
