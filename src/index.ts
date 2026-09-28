@@ -153,6 +153,29 @@ export {
 } from './host/wiki-location.ts'
 export { switchWiki, type WikiSwitchResult, type WikiSwitchDeps } from './host/wiki-switch.ts'
 export {
+  DEFAULT_WIKI_ID,
+  WIKI_REGISTRY_VERSION,
+  defaultEntry,
+  defaultRegistryFile,
+  deriveWikiId,
+  entryLocation,
+  entryPath,
+  findEntry,
+  findPathConflicts,
+  normalizeEntry,
+  normalizeWikiId,
+  readRegistry,
+  removeWiki,
+  singleEntryRegistry,
+  upsertWiki,
+  validateRegistry,
+  writeRegistry,
+  type RegistryReadResult,
+  type RegistryValidation,
+  type WikiEntry,
+  type WikiRegistry,
+} from './host/wiki-registry.ts'
+export {
   READY_TIMEOUT_DEFAULT_MS,
   READY_TIMEOUT_MAX_MS,
   READY_TIMEOUT_MIN_MS,
