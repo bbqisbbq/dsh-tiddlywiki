@@ -357,9 +357,27 @@ test('图标弹层必须有 CSS —— 只有 DOM 没有样式，视觉上就是
     )
   }
   // 弹层挂在 document.body 上，所以定位必须是 fixed：absolute 会被页面滚动带走。
-  const block = styles.slice(styles.indexOf('.dsh-tw-iconpicker {'))
-  assert.match(block.slice(0, 240), /position:\s*fixed/, '弹层 append 到 body，必须 position:fixed')
-  assert.match(block.slice(0, 240), /z-index:\s*\d+/, '弹层必须在自己那层之上（否则被设置页内容盖住）')
+  // ⚠️ 取「规则体」而不是「往后切 N 字符」：规则里可能带注释，而注释里会提到
+  // 别的 z-index（本规则就解释了 DSH Modal 的 1000），按字符切会解析到注释里的数字。
+  const ruleStart = styles.indexOf('.dsh-tw-iconpicker {')
+  const ruleEnd = styles.indexOf('}', ruleStart)
+  assert.ok(ruleEnd > ruleStart, '找不到 .dsh-tw-iconpicker 的规则体 —— 请同步本脚本')
+  const rule = styles.slice(ruleStart, ruleEnd)
+  // 注释剥掉再解析，避免注释里的数字被当成声明值。
+  const declares = rule.replace(/\/\*[\s\S]*?\*\//g, '')
+  assert.match(declares, /position:\s*fixed/, '弹层 append 到 body，必须 position:fixed')
+  // ── 层级必须真的高过设置弹窗（v0.28.9 真机报障：弹层在设置弹窗「后面」）──
+  // 设置页是 DSH 的 Modal，渲染进 portal 且根层 `position:fixed; z-index:1000`
+  //（dsh-client-ui-primitives/Modal.module.css）。z-index 只在同一个层叠上下文里
+  // 比较，所以"写个 60"看着有值、实际整层被 Modal 盖住。
+  // 1100 是 DSH 给「锚点在对话框内部的浮层」定的值（Menu.module.css 的 .portal）。
+  const zMatch = /z-index:\s*(\d+)/.exec(declares)
+  assert.ok(zMatch !== null, '弹层必须有 z-index（缺了会被设置页内容盖住）')
+  const z = Number(zMatch[1])
+  assert.ok(
+    z >= 1100,
+    `图标弹层的 z-index 是 ${z}，不高于 DSH 设置弹窗的 1000 —— 弹层会出现在设置弹窗「后面」（v0.28.9 真机报障，请用 ≥1100）`,
+  )
 
   // 反向：picker 里 make() 出来的每个 dsh-tw-* 类都要在 styles.ts 里有下落。
   // 这是防「下次再加一个子元素、又忘了写 CSS」的通用网。
@@ -376,6 +394,47 @@ test('图标弹层必须有 CSS —— 只有 DOM 没有样式，视觉上就是
       `picker 生成的 .${cls} 在 styles.ts 里找不到规则（漏写 CSS）`,
     )
   }
+})
+
+test('styles.ts 的 CSS_TEXT 必须是一整块、且正文里没有反引号 / ${（本仓库踩过两次）', () => {
+  // 为什么值得一条守门：styles.ts 把整份 CSS 放在一个 JS 模板串里，所以
+  // CSS 注释里写一个反引号（哪怕只是想给标识符加点行内代码样式）就会让模板串
+  // 提前结束、文件后半段变成 JS 源码 → rolldown 报 PARSE_ERROR、typecheck 报
+  // TS1005，而 lib/ 此时已被 clean-lib 删掉（构建到一半失败）。
+  // 本仓库历史上踩过两次（v0.25.0 注释里引了 .dsh-tw-settings 类名；v0.28.9
+  // 我在解释 z-index 层级时又写了一次）。typecheck 当然能抓到，但那是"构建已经
+  // 开始"之后；这条守门让它在 verify:unit 阶段、以一句人能看懂的话报出来。
+  //
+  // ⚠️ 判据必须是「模板串有没有被提前截断」，**不是**「第一个闭引号之前有没有反引号」。
+  // 第一版就是这么写的，结果是**结构上不可能抓到目标 bug**：一旦注释里多了一个
+  // 反引号，那个反引号本身就变成了 close 的位置，body 在它之前就结束了 ——
+  // 于是「body 里没有反引号」永远成立，注入反引号反而让断言更容易通过。
+  //（这类"用出错的输入去验证出错的解析器"的假绿，是本仓库最该警惕的一种守门。）
+  const raw = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const start = raw.indexOf('const CSS_TEXT')
+  assert.ok(start > 0, 'styles.ts 里找不到 CSS_TEXT —— 请同步本脚本')
+  const open = raw.indexOf('`', start)
+  assert.ok(open > start, 'CSS_TEXT 的模板串开引号找不到 —— 请同步本脚本')
+  const close = raw.indexOf('`', open + 1)
+  assert.ok(close > open, 'CSS_TEXT 的模板串闭引号找不到 —— 模板串已经断了')
+  const body = raw.slice(open + 1, close)
+
+  // ① 正文必须真的是一整块 CSS：以 CSS 注释开头、以 } 结尾（模板串被提前截断时
+  //    这里必然不成立，因为截断点在文件中部、后面还跟着 JS 源码）。
+  assert.match(body.trimStart().slice(0, 4), /\/\*/, 'CSS_TEXT 开头不像 CSS 注释 —— 模板串可能被提前截断')
+  assert.match(body.trimEnd().slice(-1), /\}/, 'CSS_TEXT 结尾不是 } —— 模板串可能被提前截断（多半是正文里混进了反引号）')
+
+  // ② 闭引号之后紧跟的必须是模块的后续代码，而不是散落的 CSS。
+  //    提前截断的签名：闭引号后面很快又出现一段含 `{` 的"裸 CSS"，或 TS1005 那种
+  //    形状（`:` / `;` 落在字符串外）。
+  const after = raw.slice(close + 1)
+  assert.ok(
+    /^\s*(\n|\/\*\*|import |export |const |type |interface )/.test(after),
+    'CSS_TEXT 闭引号之后不是正常的模块代码 —— 模板串很可能被正文里的反引号提前截断了',
+  )
+
+  // ③ 最直接的一条：整个文件里，CSS 正文不该出现 ${（会被当插值）。
+  assert.ok(!body.includes('${'), 'CSS_TEXT 正文里有 ${ —— 会被当成插值，请改写措辞（如 $ + {）')
 })
 
 test('图标集：host 名单与客户端可渲染集合必须完全一致，且真的用上官方 DSH 图标（v0.28.8，反馈 1）', () => {
