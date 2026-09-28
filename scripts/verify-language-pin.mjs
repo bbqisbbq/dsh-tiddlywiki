@@ -85,7 +85,7 @@ await test('读失败 → 照写并报警（铁律第三条：绝不把读失败
   assert.ok(/read|reading/i.test(logs[0]), `日志要说清是「读」失败：${logs[0]}`)
 })
 
-await test('源码级：不允许再出现裸 PUT $:/language（两处调用点都必须走原语）', () => {
+await test('源码级：不允许再出现裸 PUT $:/language（每个调用点都必须走原语）', () => {
   const strip = (rel) =>
     readFileSync(join(repoRoot, rel), 'utf8')
       .split('\n')
@@ -94,7 +94,10 @@ await test('源码级：不允许再出现裸 PUT $:/language（两处调用点�
         return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')
       })
       .join('\n')
-  for (const rel of ['src/index.ts', 'src/host/admin.ts']) {
+  // v0.28.0: the startup call site moved into host/wiki-instance.ts along with
+  // the rest of "one wiki's runtime"; index.ts is still scanned so a new bare
+  // PUT there cannot slip in either.
+  for (const rel of ['src/index.ts', 'src/host/wiki-instance.ts', 'src/host/admin.ts']) {
     let src = strip(rel)
     if (rel === 'src/host/admin.ts') {
       // The primitive itself legitimately PUTs once — cut its body out before
@@ -108,10 +111,11 @@ await test('源码级：不允许再出现裸 PUT $:/language（两处调用点�
     const bare = src.match(/\.put\(\{\s*title:\s*'\$:\/language'/g)
     assert.equal(bare, null, `${rel} 仍有无条件 PUT $:/language（除原语自身外一处都不许有）：${bare && bare.join(' / ')}`)
   }
-  // 正向：两处都必须经 pinLanguageTiddler（含各自 desired 的两种取值形态）
-  const index = strip('src/index.ts')
+  // 正向：两处都必须经 pinLanguageTiddler（含各自 desired 的两种取值形态）。
+  // v0.28.0：启动路径随 per-wiki 运行时搬进了 host/wiki-instance.ts。
+  const instanceSrc = strip('src/host/wiki-instance.ts')
   const admin = strip('src/host/admin.ts')
-  assert.ok(/pinLanguageTiddler\(langClient,\s*`\$:\/languages\/\$\{code\}`/.test(index), 'src/index.ts 的启动路径必须经 pinLanguageTiddler')
+  assert.ok(/pinLanguageTiddler\(langClient,\s*`\$:\/languages\/\$\{code\}`/.test(instanceSrc), 'src/host/wiki-instance.ts 的启动路径必须经 pinLanguageTiddler')
   assert.ok(/pinLanguageTiddler\(client,\s*active/.test(admin), 'admin.ts 的 languages 路径必须经 pinLanguageTiddler')
 })
 

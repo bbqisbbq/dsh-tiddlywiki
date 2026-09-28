@@ -57,6 +57,7 @@ const rightbar = read('src/client/rightbar-tab.ts')
 const editorPopup = read('src/client/editor-popup.ts')
 const quickNoteDock = read('src/client/quick-note-dock.ts')
 const hostIndex = read('src/index.ts')
+const wikiInstance = read('src/host/wiki-instance.ts')
 const wiki = read('src/host/wiki.ts')
 const wikiSwitch = read('src/host/wiki-switch.ts')
 
@@ -329,7 +330,9 @@ console.log('v0.23.5 —— 生命周期 / 进程守卫（源码级：这些坑�
 // 监听器时把 'error' 抛成未捕获异常，而宿主没有 uncaughtException 处理器 →
 // 整个 dsh web 进程退出（Windows EPERM / Linux ENOSPC 都能触发）。
 await test('watchWiki：fs.watch 必须常驻 error 监听（否则一个 EPERM 杀死 dsh web）', () => {
-  const body = bodyOf(hostIndex, 'function watchWiki(')
+  // v0.28.0: watchWiki moved into host/wiki-instance.ts with the rest of "one
+  // wiki's runtime" (N wikis ⇒ N watchers, so the EPERM/ENOSPC hazard grew).
+  const body = bodyOf(wikiInstance, 'function watchWiki(')
   assert.match(body, /watcher\.on\('error'/, "watcher 必须挂 'error' 监听（try/catch 只能接住同步创建失败）")
   assert.match(body, /watcher\.close\(\)/, 'disposer 必须关掉 watcher')
 })
@@ -365,7 +368,7 @@ await test('index.ts：runSwitch 必须有 disposed 守卫并在收尾重新 tea
     /if \(disposed\) return \{ ok: false, error: '插件正在卸载，已取消切换'/,
     'runSwitch 必须在开始检查 disposed',
   )
-  assert.match(hostIndex, /if \(disposed\) teardownCommitter\(\)/, '切换完成时若已 disposed，必须重新释放 extras')
+  assert.match(hostIndex, /if \(disposed\) await instance\.teardownExtras\(\)/, '切换完成时若已 disposed，必须重新释放 extras')
 })
 
 console.log('')

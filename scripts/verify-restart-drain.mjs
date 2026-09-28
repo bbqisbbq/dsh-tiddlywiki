@@ -13,6 +13,9 @@
  *   2. **源码级断言**（本脚本）：routes.ts / admin.ts 里每个
  *      `deps.server.restart()` 都必须包在 `drainThenStop(` 里，且
  *      `drainThenStop` 自身必须「先 await 排干、后 await stop」（顺序断言）；
+ *      v0.28.0 起 per-wiki 的启停搬进了 `src/host/wiki-instance.ts`，所以断言
+ *      跟着搬家：实例的 `drainStop()`/`restart()` 必须走 `drainThenStop`，而
+ *      `src/index.ts` 的「知识库切换」只能**委托**它、不得直接 `server.stop()`；
  *   3. **行为断言**：用桩 client 真跑 `drainThenStop()`，断言
  *      「stop 发生在排干之后」、「client 缺失时是安全 no-op」、
  *      「排干失败也必须继续 stop（best-effort，不能把用户锁死在起不来的 TW 上）」。
@@ -106,15 +109,37 @@ for (const rel of ['src/host/routes.ts', 'src/host/admin.ts']) {
   })
 }
 
-await test('src/index.ts：知识库切换的 stopServer 必须先排干（铁律第一条点名了它）', () => {
+await test('src/index.ts：知识库切换的 stopServer 必须委托会排干的 drainStop（铁律第一条点名了它）', () => {
   const src = sourceWithoutComments('src/index.ts')
+  // v0.28.0：排干搬进了 host/wiki-instance.ts，切换点改为委托 `instance.drainStop()`。
+  // 断言因此变成「必须委托，且不得直接 server.stop()」——直接调用仍然会丢队列，
+  // 而这正是本脚本第 5 行的由来。
   assert.ok(
-    /stopServer: async \(\) => \{[\s\S]{0,400}?drainThenStop\(\{[\s\S]{0,400}?stop: \(\) => server\.stop\(\)/.test(src),
-    'runSwitch 的 stopServer 必须包在 drainThenStop 里（旧实现直接 server.stop()，队列里的写入随子进程一起没了）',
+    /stopServer: async \(\) => \{[\s\S]{0,200}?await instance\.drainStop\(\)/.test(src),
+    'runSwitch 的 stopServer 必须委托 instance.drainStop()（旧实现直接 server.stop()，队列里的写入随子进程一起没了）',
   )
-  // 启动自举路径：排干必须真的存在，且在它自己的 restart 之前
+  const stopServerAt = src.indexOf('stopServer: async () => {')
+  assert.ok(stopServerAt >= 0, '找不到 runSwitch 的 stopServer 定义 —— 断言失效')
+  const stopServerBody = src.slice(stopServerAt, src.indexOf('\n      },', stopServerAt))
+  assert.ok(
+    !/server\.stop\(\)/.test(stopServerBody),
+    'stopServer 里不得直接 server.stop()：必须走会先排干的 instance.drainStop()',
+  )
+})
+
+await test('src/host/wiki-instance.ts：drainStop / restart 必须经由 drainThenStop', () => {
+  const src = sourceWithoutComments('src/host/wiki-instance.ts')
+  assert.ok(
+    /async drainStop\(\): Promise<boolean> \{[\s\S]{0,400}?drainThenStop\(\{[\s\S]{0,400}?stop: \(\) => this\.server\.stop\(\)/.test(src),
+    'drainStop 必须把 this.server.stop() 交给 drainThenStop（否则队列里的写入随子进程消失）',
+  )
+  assert.ok(
+    /async restart\(\): Promise<boolean> \{[\s\S]{0,400}?drainThenStop\(\{[\s\S]{0,400}?stop: \(\) => this\.server\.restart\(\)/.test(src),
+    'restart 必须把 this.server.restart() 交给 drainThenStop',
+  )
+  // 启动自举路径：排干必须真的存在，且在它自己的 restart 之前。
   const flushAt = src.indexOf('flushPendingWrites(seedClient')
-  const restartAt = src.indexOf('if (!disposed) await server.restart()')
+  const restartAt = src.indexOf('if (!this.disposed) await this.server.restart()')
   assert.ok(flushAt >= 0, '启动自举路径必须调用 flushPendingWrites(seedClient, …)')
   assert.ok(restartAt >= 0, '启动自举路径找不到 server.restart()（断言失效）')
   assert.ok(flushAt < restartAt, '自举路径的排干必须出现在 restart 之前')

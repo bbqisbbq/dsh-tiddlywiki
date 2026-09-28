@@ -170,16 +170,21 @@ await test('wiki.ts：走 awaitReady + 归一化 + 迟到就绪探测，且无 2
   assert.ok(!/Date\.now\(\) \+ READY_TIMEOUT_MS/.test(wiki), '旧的单次 deadline 循环必须已被 awaitReady 取代')
 })
 
-await test('配置链路：config.ts / index.ts / settings-page.ts 三处都在', () => {
+await test('配置链路：config.ts / index.ts / wiki-instance.ts / settings-page.ts 四处都在', () => {
   const config = read('src/host/config.ts')
   const index = read('src/index.ts')
+  const instance = read('src/host/wiki-instance.ts')
   const client = read('src/client/settings-page.ts')
   assert.ok(/startup\?:\s*\{\s*readyTimeoutMs\?: number\s*\}/.test(config), 'PluginConfigShape 必须声明 startup.readyTimeoutMs')
   assert.ok(/startup\?:\s*\{\s*readyTimeoutMs\?: number\s*\}/.test(index), 'TiddlywikiConfig 必须声明 startup.readyTimeoutMs')
   assert.ok(/startup:\s*\{\s*readyTimeoutMs: READY_TIMEOUT_DEFAULT_MS\s*\}/.test(index), 'DEFAULTS 必须带默认值')
-  assert.ok(/readyTimeoutMs: config\.startup\.readyTimeoutMs/.test(index), 'WikiServer 必须接到该配置')
+  // v0.28.0: the WikiServer construction moved into host/wiki-instance.ts, so
+  // asserting only on index.ts would let "someone dropped the wiring" pass. Both
+  // hops of the chain are asserted.
+  assert.ok(/base:\s*config,/.test(index), 'index.ts 必须把 cordis 基座配置交给实例（base: config）')
+  assert.ok(/readyTimeoutMs:\s*options\.base\.startup\.readyTimeoutMs/.test(instance), 'WikiServer 必须接到该配置（wiki-instance.ts）')
   assert.ok(/applyServerTuning\(\)/.test(index), '启动与设置页保存后必须重新应用（applyServerTuning）')
-  assert.ok(/server\.setReadyTimeout\(eff\(\)\.startup\?\.readyTimeoutMs\)/.test(index), 'applyServerTuning 必须读 effective config')
+  assert.ok(/this\.server\.setReadyTimeout\(this\.eff\(\)\.startup\?\.readyTimeoutMs\)/.test(instance), 'applyServerTuning 必须读 effective config（wiki-instance.ts）')
   assert.ok(/startup\.readyTimeoutMs/.test(client), '设置页必须提供该字段（否则只能手改 cordis 配置）')
 })
 
