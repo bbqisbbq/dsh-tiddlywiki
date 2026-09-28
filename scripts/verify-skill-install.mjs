@@ -17,6 +17,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 import {
   SKILL_FILE_NAME,
   SPLIT_SKILL_DIR,
@@ -94,7 +95,7 @@ try {
   })
 
   await test('接线：技能安装必须排在 farm.startAll() **之前**', async () => {
-    const index = await readFile(join(repoRoot, 'src', 'index.ts'), 'utf8')
+    const index = readFamily(repoRoot, 'src/index')
     const installAt = index.indexOf('await installSplitSkill()')
     const startAt = index.indexOf('await farm.startAll()')
     assert.ok(installAt > 0, 'index.ts 必须调用 installSplitSkill（否则技能永远不会被安装）')

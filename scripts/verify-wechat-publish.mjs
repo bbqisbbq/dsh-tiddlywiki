@@ -29,6 +29,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { createRouteServer } from './lib/tw-harness.mjs'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 import {
   WechatPublishRunner,
   buildPublishInvocation,
@@ -532,11 +533,11 @@ await test('源码：真 adapter 与宿主版本常量都带那两个符号（�
 })
 
 await test('index.ts / admin.ts：runner 接线、teardown 释放、wechat.token 打码', () => {
-  const idx = fs.readFileSync(path.join(repoRoot, 'src', 'index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const idx = readFamily(repoRoot, 'src/index')
   assert.ok(idx.includes('new WechatPublishRunner('), 'index.ts 必须创建 runner')
   assert.ok(idx.includes('disposers.push(() => wechatRunner.dispose())'), 'runner 必须随插件销毁（否则留下孤儿浏览器标签）')
   assert.ok(/wechatReady: async \(req\) => \{[\s\S]{0,200}?checkWechatReady\(/.test(idx), 'wechatReady 必须接到就绪探测（v0.28.0：按请求解析，读目标库的 wechat.*）')
-  const admin = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'admin.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const admin = readFamily(repoRoot, 'src/host/admin')
   assert.ok(admin.includes('token: maskToken(wechat.token)'), '/admin/state 必须把 wechat.token 打码（新增密钥字段的既有约定）')
   assert.ok(admin.includes('if (copy.wechat !== undefined) copy.wechat = cleanToken(copy.wechat)'), '回存的 ******** 必须被丢弃，不能覆盖真 token')
 })

@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -128,7 +129,7 @@ test('会话选择器：走 /session/wiki，清空选择发 null 而不是空字
 })
 
 test('设置页：多库模式下**不再渲染**「知识库位置」（与列表重复，作者 2026-09-28 反馈）', () => {
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  const settings = readFamily(repoRoot, 'src/client/settings-page')
   // 单库模式保留它（那里它写的是 wiki 之外的指针文件，是唯一正确入口）；
   // 多库模式整块不渲染，目录改动收到「知识库列表」里。
   assert.match(settings, /function renderWikiLocationSection\(/, '入口函数必须还在（单库模式要用）')
@@ -180,7 +181,7 @@ test('新会话（空白会话）的知识库选择器：走 selector.context，
 })
 
 test('快速笔记：单库模式不得露出「写入」选择器（作者 2026-09-28 报障）', () => {
-  const note = readFileSync(path.join(repoRoot, 'src/client/note-widget.ts'), 'utf8')
+  const note = readFamily(repoRoot, 'src/client/note-widget')
   const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
   // 症状：单库模式下界面出现一个「写入」下拉、点开没有选项。
   // 根因：`hidden` 属性在 CSS 里只是 display:none，而 .dsh-tw-note-wiki 有显式
@@ -226,7 +227,7 @@ test('dock 条目必须与 composer 输入框对齐，且选择器与按钮**并
 })
 
 test('设置页：知识库列表是第一块，且能改模式/启停/默认/可见性/移出', () => {
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  const settings = readFamily(repoRoot, 'src/client/settings-page')
   assert.match(settings, /renderWikiListSection\(body, isDisposed, refresh\)/, '设置页必须渲染知识库列表')
   // 列表必须排在位置区**之前**：多库的其余一切都要先有第二个库才能用。
   const listAt = settings.indexOf('renderWikiListSection(body, isDisposed, refresh)')
@@ -240,7 +241,7 @@ test('设置页：知识库列表是第一块，且能改模式/启停/默认/�
 })
 
 test('设置页：配置作用域必须显式（per-wiki 请求都要带 ?wiki=）', () => {
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  const settings = readFamily(repoRoot, 'src/client/settings-page')
   // 每个库的配置存在它自己的 config tiddler 里：三处 per-wiki 管理请求都必须带作用域，
   // 否则给"书籍库"配 git.remote 会静默改到默认库上——存了、但永不生效。
   assert.match(settings, /withWiki\(STATE_ENDPOINT\)/)
@@ -259,7 +260,7 @@ test('withWikiQuery：指向某个库时拼 ?wiki=，没有目标时逐字不变
 })
 
 test('快速笔记：整张卡片（标签/最近/草稿/附件/保存/弹窗）必须同库', () => {
-  const note = readFileSync(path.join(repoRoot, 'src/client/note-widget.ts'), 'utf8')
+  const note = readFamily(repoRoot, 'src/client/note-widget')
   // 每个 per-wiki 调用都要经 wikiQuery —— 只改保存那一处就会出现"标签来自 A、笔记写进 B"。
   for (const endpoint of ['NOTE_ENDPOINT', 'EDIT_ENDPOINT', 'UPLOAD_ENDPOINT', 'GET_ENDPOINT', 'RECENT_ENDPOINT']) {
     assert.match(note, new RegExp(`wikiQuery\\((?:\\\`\\$\\{)?${endpoint}`), `${endpoint} 必须经 wikiQuery 定向`)
@@ -320,7 +321,7 @@ test('每库图标：host 校验 + 客户端渲染都不得成为注入点（v0.
   const pickerPath = path.join(repoRoot, 'src/client/settings-icon-picker.ts')
   const settings = fs.existsSync(pickerPath)
     ? readFileSync(pickerPath, 'utf8')
-    : readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+    : readFamily(repoRoot, 'src/client/settings-page')
   // host：名字或短串，超长/控制字符拒绝；空值 = 清除
   assert.match(registry, /export function normalizeWikiIcon\(/, 'host 必须有校验入口')
   assert.match(registry, /trimmed\.length > 8/, '必须限制长度（这个值会变成侧边栏文本）')
@@ -342,7 +343,7 @@ test('图标集：host 名单与客户端可渲染集合必须完全一致，且
   const icon = readFileSync(path.join(repoRoot, 'src/client/wiki-icon.ts'), 'utf8')
   // 选择器模块（v0.28.8 从 settings-page.ts 拆出）：断言要跟着走，否则读一个
   // 不再含选择器的文件会「断言全过」——正是这条守门要防的静默失效。
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-icon-picker.ts'), 'utf8')
+  const settings = readFamily(repoRoot, 'src/client/settings-icon-picker')
 
   // host 是权威名单（值会存进 wikis.json）。
   const namesBlock = registry.slice(registry.indexOf('export const WIKI_ICON_NAMES = ['))
@@ -385,7 +386,7 @@ test('每库图标：/admin/wikis 的 GET 必须回传 icon（v0.28.8 修「选�
   //
   // 这条守门必须是**源码级**的：registry 那层的往返测试全绿也照样漏（icon 本来就
   // 能从文件读回，问题只在 HTTP 视图这一层丢了字段）。
-  const index = readFileSync(path.join(repoRoot, 'src/index.ts'), 'utf8')
+  const index = readFamily(repoRoot, 'src/index')
   const view = index.slice(index.indexOf('const buildWikisView'), index.indexOf('const buildWikisView') + 1600)
   assert.ok(view.length > 200, '找不到 buildWikisView（函数被改名了？请同步这条守门）')
   assert.match(view, /icon: entry\.icon/, 'buildWikisView 必须输出 icon —— 少这一个字段，设置页的图标选择器就永远存不进去')
@@ -408,7 +409,7 @@ test('hidden 必须真的隐藏：全局兜底一条，不许再逐元素补（�
 })
 
 test('设置页每个 per-wiki 面板都必须带作用域（作者 2026-09-28 报障：混在一起管理）', () => {
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  const settings = readFamily(repoRoot, 'src/client/settings-page')
   // 症状：多库下「插件管理 / 主题管理 / 语言包 / 初始化」看起来是混在一起管理的。
   // 根因：这些面板各自打一个 admin 端点，但**只有部分调用带了 ?wiki=** —— 没带的
   // 永远落在默认库上，于是"切了库，面板内容却没变"。宿主侧一直是 per-request 的
@@ -440,7 +441,7 @@ test('侧边栏入口：只有当前焦点那一行高亮（作者 2026-09-28 �
 })
 
 test('「侧边栏 TW 入口显示名称」只在单库模式出现（作者 2026-09-28 报障：多库时不该有这个配置）', () => {
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  const settings = readFamily(repoRoot, 'src/client/settings-page')
   // 事实依据：多库时侧边栏每个库各占一行、各用自己 wikis.json 的 label，ui.sidebarLabel
   // 只喂单库那一行（sidebar-entry.ts 的 applyLabel，多库时 entry.hidden = true）。
   // 所以多库下露出这个字段 = 一个改了不生效的假配置项。
@@ -477,7 +478,7 @@ test('「侧边栏 TW 入口显示名称」只在单库模式出现（作者 202
 })
 
 test('设置页分页：多库时按「总览/本库配置/全局」分开，且能退出配置（v0.28.8，反馈 3/4/11）', () => {
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  const settings = readFamily(repoRoot, 'src/client/settings-page')
 
   // ── 反馈 4：改完配置后既看不到「在改哪个库」也退不出去 ──
   // 根因两层：作用域只有一行灰字（列表在页面下方，得往回滚）；且 editingWiki 是

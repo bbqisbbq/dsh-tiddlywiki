@@ -24,9 +24,10 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const read = (rel) => fs.readFileSync(path.join(root, rel), 'utf8')
+const read = (rel) => readFamily(root, rel.replace(/\.ts$/, ''))
 
 const toolsSrc = read('src/host/tools.ts')
 const viewsSrc = read('src/client/tool-views.ts')

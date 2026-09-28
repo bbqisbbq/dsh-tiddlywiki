@@ -22,6 +22,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { pinLanguageTiddler } from '../lib/index.js'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
 let failures = 0
 async function test(name, fn) {
@@ -87,7 +88,7 @@ await test('读失败 → 照写并报警（铁律第三条：绝不把读失败
 
 await test('源码级：不允许再出现裸 PUT $:/language（每个调用点都必须走原语）', () => {
   const strip = (rel) =>
-    readFileSync(join(repoRoot, rel), 'utf8')
+    readFamily(repoRoot, rel.replace(/\.ts$/, ''))
       .split('\n')
       .filter((line) => {
         const t = line.trim()

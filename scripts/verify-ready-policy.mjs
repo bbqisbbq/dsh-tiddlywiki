@@ -26,9 +26,10 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const read = (rel) => readFileSync(path.join(repoRoot, rel), 'utf8')
+const read = (rel) => readFamily(repoRoot, rel.replace(/\.ts$/, ''))
 
 const policy = await import(pathToFileURL(path.join(repoRoot, 'src/host/ready-policy.ts')).href)
 const {

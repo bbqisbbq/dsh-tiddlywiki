@@ -20,6 +20,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import { scanWikiRuntimePlugins, bundledCatalog, resolveTwRoot } from '../src/host/admin.ts'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..')
@@ -93,8 +94,8 @@ await test('tiddlers 目录不存在 → null（读失败 ≠ 没有插件）', 
 
 console.log('接线 —— host 回传 + 客户端如实渲染')
 
-const adminSrc = await readFile(join(repoRoot, 'src/host/admin.ts'), 'utf8')
-const pageSrc = await readFile(join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+const adminSrc = await readFamily(repoRoot, 'src/host/admin')
+const pageSrc = await readFamily(repoRoot, 'src/client/settings-page')
 
 await test('/admin/state 回传 runtimePlugins（由 scanWikiRuntimePlugins 得出）', () => {
   assert.match(adminSrc, /const runtimePlugins = await scanWikiRuntimePlugins\(wikiPath\)/, 'handleState 必须调用扫描')

@@ -31,6 +31,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 import {
   AutoCommitter,
   ConfigStore,
@@ -368,27 +369,27 @@ await test('接线：/sync 与 agent 工具把冲突转成结构化失败，而�
   const routes = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'routes.ts'), 'utf8').replace(/\r\n/g, '\n')
   assert.ok(routes.includes('if (err instanceof GitConflictStateError)'), '/sync 必须接住 GitConflictStateError')
   assert.ok(routes.includes('conflictFiles: err.files'), '/sync 的 409 要带出冲突文件')
-  const tools = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'tools.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const tools = readFamily(repoRoot, 'src/host/tools')
   const hits = tools.split('if (err instanceof GitConflictStateError)').length - 1
   assert.ok(hits >= 2, `git_sync 与 git_resolve 都要接住（实际 ${hits} 处）`)
   assert.ok(tools.includes('conflictFiles: err.files'), 'git_sync 失败回执要带 conflictFiles')
 })
 
 await test('接线：/admin/state 暴露 configError，/admin/config 把它映射成 409', () => {
-  const admin = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'admin.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const admin = readFamily(repoRoot, 'src/host/admin')
   assert.ok(admin.includes('configError: deps.config(req).parseError() ?? null'), '/admin/state 必须暴露解析失败原因')
   assert.ok(admin.includes('err instanceof ConfigUnreadableError'), '/admin/config 必须特判该错误')
   assert.ok(/ConfigUnreadableError\)\s*\{\s*json\(res, \{ ok: false, error: err\.message \}, 409\)/.test(admin), '拒绝保存应是 409 + 可执行文案')
 })
 
 await test('接线：设置页横幅渲染 configError（用户必须看得见）', () => {
-  const page = fs.readFileSync(path.join(repoRoot, 'src', 'client', 'settings-page.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const page = readFamily(repoRoot, 'src/client/settings-page')
   assert.ok(page.includes('configError?: string | null'), 'AdminState 要有 configError')
   assert.ok(page.includes('⚠️ 配置未生效'), '要渲染可见横幅')
 })
 
 await test('接线：客户端 status 行显示未解决冲突', () => {
-  const page = fs.readFileSync(path.join(repoRoot, 'src', 'client', 'settings-page.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const page = readFamily(repoRoot, 'src/client/settings-page')
   assert.ok(page.includes('冲突未解决'), '状态行要提示冲突已阻止提交')
 })
 

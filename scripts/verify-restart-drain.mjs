@@ -29,6 +29,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { drainThenStop } from '../lib/index.js'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
 /**
  * 探测 tiddler 落盘后的文件名片段（见 seeds.ts 的 `FLUSH_PROBE_FILE_HINT`）。
@@ -57,7 +58,7 @@ const repoRoot = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)
  * comment that explains why it must not be there).
  */
 function sourceWithoutComments(rel) {
-  return readFileSync(join(repoRoot, rel), 'utf8')
+  return readFamily(repoRoot, rel.replace(/\.ts$/, ''))
     .split('\n')
     .filter((line) => {
       const t = line.trim()

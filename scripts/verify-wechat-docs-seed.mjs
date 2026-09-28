@@ -23,6 +23,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const docText = fs.readFileSync(path.join(repoRoot, 'docs', 'wechat-publish-setup.md'), 'utf8').replace(/\r\n/g, '\n')
@@ -79,7 +80,7 @@ await test('seed 注册表：wechat-setup 已登记，与 publish-spec 同 gate 
 })
 
 await test('src/index.ts 再导出 seed 模块（守门脚本与 selftest 从 lib/index.js 取常量）', () => {
-  const idx = fs.readFileSync(path.join(repoRoot, 'src', 'index.ts'), 'utf8').replace(/\r\n/g, '\n')
+  const idx = readFamily(repoRoot, 'src/index')
   assert.ok(
     idx.includes("from './host/seed-wechat-docs.ts'"),
     'src/index.ts 必须再导出 seed-wechat-docs 的常量（verify 里 lib/index.js 才拿得到）',

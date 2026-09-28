@@ -31,6 +31,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -45,7 +46,10 @@ async function test(name, fn) {
   }
 }
 
+/** Exact-file read (this guard also reads plain `.mjs` scripts and pins two specific modules). */
 const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8')
+/** Module-family read: `<relBase>` + `<relBase>-*` — a pure split must not turn these red. */
+const readSrc = (relBase) => readFamily(repoRoot, relBase)
 const mod = async (rel) => import(pathToFileURL(path.join(repoRoot, rel)).href)
 
 /* ────────────────── 1. 宿主侧：绝对基址推导 ────────────────── */
@@ -123,26 +127,26 @@ await test('resolveTwUrl：非 http(s) 文档（桌面版 dsh-app:）改用宿�
 })
 
 await test('客户端接线：frame 与快速笔记弹窗都走 resolveTwUrl', () => {
-  const frame = read('src/client/tw-frame.ts')
+  const frame = readSrc('src/client/tw-frame')
   // v0.28.0：先经 twProxyFor(mode, wikiId, …) 得到**本库**的基址（相对与绝对都带 id），
   // 再交给 resolveTwUrl 决定用相对还是宿主的绝对基址。两步都不能少：
   assert.match(frame, /const bases = twProxyFor\(payload\.mode, hooks\.wikiId\?\.\(\), payload\.twProxy, payload\.twProxyAbsolute\)/)
   assert.match(frame, /showFrame\(resolveTwUrl\(bases\.relative, bases\.absolute\)\)/)
   assert.match(frame, /import \{ RESTART_ENDPOINT, resolveTwUrl, twProxyFor \} from '\.\/endpoints\.ts'/)
-  const note = read('src/client/note-widget.ts')
+  const note = readSrc('src/client/note-widget')
   // v0.28.0：快速笔记弹窗同样先经 twProxyFor 得到**本卡片目标库**的基址（写入与随后打开的
   // 编辑器必须落在同一个库，否则是"写进 A、编辑器打开 B（空的）"），再交给 resolveTwUrl
   // 决定相对还是宿主绝对基址。
   assert.match(note, /const bases = twProxyFor\(rosterMode, targetWiki, payload\.twUrl, payload\.twUrlAbsolute\)/)
   assert.match(note, /resolveTwUrl\(bases\.relative, bases\.absolute\)/)
-  const cache = read('src/client/status-cache.ts')
+  const cache = readSrc('src/client/status-cache')
   assert.match(cache, /twProxyAbsolute\?: string/)
 })
 
 /* ────────────────── 3. 跨源 frame 的 hash 导航 ────────────────── */
 
 await test('applyPendingHash：跨源读 $tw 必须被 try/catch 包住并兜底整页加载', () => {
-  const source = read('src/client/tw-frame.ts')
+  const source = readSrc('src/client/tw-frame')
   const start = source.indexOf('const tryOnce = (attempt: number): void => {')
   assert.ok(start > 0, '找不到 tryOnce')
   const body = source.slice(start, source.indexOf('tryOnce(0)', start))

@@ -31,6 +31,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 import { readActiveThemeName } from '../lib/index.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -41,8 +42,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
  * explanatory comments would report a fix as a failure.
  */
 const read = (rel) =>
-  fs
-    .readFileSync(path.join(repoRoot, rel), 'utf8')
+  readFamily(repoRoot, rel.replace(/\.ts$/, ''))
     .split('\n')
     .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
     .join('\n')
