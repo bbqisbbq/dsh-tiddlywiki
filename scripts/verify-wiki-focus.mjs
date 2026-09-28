@@ -149,12 +149,8 @@ test('快速笔记：单库模式不得露出「写入」选择器（作者 2026
   // 症状：单库模式下界面出现一个「写入」下拉、点开没有选项。
   // 根因：`hidden` 属性在 CSS 里只是 display:none，而 .dsh-tw-note-wiki 有显式
   // display:inline-flex —— **显式 display 会盖掉 hidden**，元素照样渲染。
-  assert.match(styles, /\.dsh-tw-note-wiki\[hidden\]\s*\{\s*display:\s*none/, '必须显式尊重 hidden（否则 display:inline-flex 会盖掉它）')
-  assert.match(styles, /\.dsh-tw-note-wiki-hint\[hidden\]\s*\{\s*display:\s*none/, '提示行同理')
-  // 且 CSS 里那条 [hidden] 必须出现在设 display 的那条**之后**（同优先级靠后者生效）
-  const disp = styles.indexOf('.dsh-tw-note-wiki {')
-  const hid = styles.indexOf('.dsh-tw-note-wiki[hidden]')
-  assert.ok(disp >= 0 && hid > disp, '[hidden] 规则必须写在设 display 的规则之后')
+  // 修法已升级为**一条全局兜底**（v0.28.5）：见下面那条「hidden 必须真的隐藏」。
+  // 这里只保留「组件侧也要兜一层」这一半（不依赖 CSS 是否正确加载）。
   // 组件侧兜底：单库时除了 hidden 还要禁用并直接 display:none
   // （不用跨行大正则——文件里 `if (roster.length <= 1)` 只有这一处）
   const guardAt = note.indexOf('if (roster.length <= 1)')
@@ -288,6 +284,22 @@ test('每库图标：host 校验 + 客户端渲染都不得成为注入点（v0.
   // 设置页：有下拉选择器；当前值不在候选里要保留
   assert.match(settings, /dsh-tw-settings-icon-select/, '设置页必须有图标选择器')
   assert.match(settings, /!options\.some\(\(\[v\]\) => v === currentIcon\)/, '自定义 emoji 不能被下拉抹掉')
+})
+
+test('hidden 必须真的隐藏：全局兜底一条，不许再逐元素补（踩过 12 次）', () => {
+  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const sidebar = readFileSync(path.join(repoRoot, 'src/client/sidebar-entry.ts'), 'utf8')
+  // 根因：hidden 属性在 CSS 里只是 display:none，任何显式 display 都能盖掉它。
+  // 本仓库为此在不同元素上各补过一条规则（面板 iframe/错误块、快速笔记、FAB 菜单与
+  // 提示、右侧栏、目标库下拉、草稿栏、最近列表…），结果侧边栏入口又栽了一次：
+  // 多库模式下默认那行 hidde=true 却照样渲染（作者 2026-09-28 报障）。
+  // 必须是一条**独立的元素选择器**（行首直接就是 [hidden]），不是又挂在某个类后面
+  assert.match(styles, /(?:^|\n)\s*\[hidden\]\s*\{\s*display:\s*none\s*!important/, '必须有一条全局 [hidden] 兜底（带 !important，否则盖不过组件的 display）')
+  // 逐元素版本应当在全局规则之后被清掉，避免下次又有人去补第 13 条
+  const perElement = (styles.match(/\.dsh-tw-[a-z-]+\[hidden\]/g) ?? [])
+  assert.equal(perElement.length, 0, `不该再有逐元素 [hidden] 规则（发现 ${perElement.join(', ')}）—— 全局那条已经覆盖`)
+  // 多库时默认行必须靠 hidden 让位
+  assert.match(sidebar, /entry\.hidden = true/, '多库模式下默认行必须隐藏（否则侧边栏多一个没有库名的 TiddlyWiki）')
 })
 
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)

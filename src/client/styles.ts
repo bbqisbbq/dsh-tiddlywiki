@@ -15,6 +15,13 @@ const STYLE_ID = 'dsh-tiddlywiki-styles'
 
 const CSS_TEXT = `
 /* ── sidebar entry ───────────────────────────────────────────── */
+/* ⚠️ hidden 属性在 CSS 里只是 display:none，**任何显式 display 都能盖掉它**。
+   这条全局兜底（v0.28.5）盖住全表里所有自带 display 的组件。已经踩过 12 次：
+   面板 iframe、错误块、快速笔记、FAB 菜单/提示、右侧栏、目标库下拉、草稿栏、
+   最近列表 —— 每次都是"某个元素 hidden 了却还显示"，然后为它单独补一条规则。
+   多库模式下默认那一行「TiddlyWiki」也是靠 hidden 让位给每库入口行的，没有这条
+   它照样渲染（作者 2026-09-28 报障）。一条全局规则替掉那 12 条逐元素规则。 */
+[hidden] { display: none !important; }
 .dsh-tw-entry {
   display: flex; align-items: center; gap: 8px; position: relative;
   width: calc(100% - 8px); margin: 2px 4px; padding: 6px 10px;
@@ -69,9 +76,6 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 /* The iframe background follows the DSH theme so a blank/preload frame never
    flashes pure white in dark mode (TW paints its own palette once loaded). */
 .dsh-tw-panel-frame { flex: 1; min-height: 0; border: 0; width: 100%; display: block; background: var(--dsw-alias-bg-layer-1, #fff); }
-/* [hidden] must beat the author display rules above (UA hidden is overridden). */
-.dsh-tw-panel-frame[hidden],
-.dsh-tw-panel-error[hidden] { display: none !important; }
 
 .dsh-tw-panel-error {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -98,8 +102,6 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   flex: 1; min-height: 0; border: 0; width: 100%; display: block;
   background: var(--dsw-alias-bg-layer-1, #fff);
 }
-.dsh-tw-rightbar-frame[hidden],
-.dsh-tw-rightbar-error[hidden] { display: none !important; }
 .dsh-tw-rightbar-error {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 10px; color: var(--dsw-alias-label-secondary, #666); font-size: 13px; text-align: center; padding: 20px;
@@ -122,9 +124,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
   font-family: inherit;
 }
-/* The wrapper's display:flex would beat the UA [hidden]{display:none} rule,
-   so the card's show/hide (root.hidden) needs an explicit rule. */
-.dsh-tw-note[hidden] { display: none; }
+
 .dsh-tw-note-card {
   width: 340px; max-width: calc(100vw - 40px);
   background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
@@ -135,7 +135,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   animation: dsh-tw-note-in 180ms ease;
 }
-.dsh-tw-note-card[hidden] { display: none; }
+
 @keyframes dsh-tw-note-in {
   from { opacity: 0; transform: translateY(8px) scale(.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
@@ -460,7 +460,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   animation: dsh-tw-note-in 160ms ease;
 }
-.dsh-tw-fab-menu[hidden] { display: none; }
+
 .dsh-tw-fab-status {
   display: flex; align-items: center; gap: 7px;
   padding: 6px 9px; font-size: 12px; color: var(--dsw-alias-label-secondary, #666);
@@ -482,7 +482,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   font-size: 11px; line-height: 1.6; white-space: pre-line; word-break: break-word;
   text-align: left;
 }
-.dsh-tw-fab-tip[hidden] { display: none; }
+
 .dsh-tw-fab-tip::after {
   content: ''; position: absolute; right: 16px; bottom: -5px;
   width: 10px; height: 10px; transform: rotate(45deg);
@@ -537,7 +537,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
    上面那条 display:inline-flex 就盖掉了，于是单库模式下这个空下拉照样显示出来
    （作者 2026-09-28 报障："有个写入下拉，但是没有选项"）。显式尊重 hidden，
    并把这一条写在后面（同优先级靠后者生效）。 */
-.dsh-tw-note-wiki[hidden] { display: none; }
+
 .dsh-tw-note-wiki-label { opacity: .7; }
 .dsh-tw-note-wiki-select {
   border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
@@ -545,7 +545,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   padding: 2px 6px; border-radius: 999px; max-width: 220px;
 }
 .dsh-tw-note-wiki-hint { font-size: 12px; opacity: .75; }
-.dsh-tw-note-wiki-hint[hidden] { display: none; }
+
 
 /* ── input-dock quick-note button（聊天输入框上方，conversation.input.dock）──
    该槽位渲染为「输入框上方的全宽条目」纵向 flex 排列（todo/cost-meter/goal/
@@ -579,7 +579,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   background: color-mix(in srgb, var(--dsw-alias-state-warning-primary, #d9822b) 12%, transparent);
   color: var(--dsw-alias-label-primary, #222);
 }
-.dsh-tw-note-draft[hidden] { display: none; }
+
 .dsh-tw-note-draft-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-tw-note-draft-discard {
   border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
@@ -598,7 +598,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   box-shadow: var(--dsw-shadow-lv3, 0 8px 30px rgba(0,0,0,.22));
   font-size: 13px;
 }
-.dsh-tw-note-recent[hidden] { display: none; }
+
 .dsh-tw-note-recent-item {
   display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
   padding: 6px 8px; border-radius: 7px; cursor: pointer;
