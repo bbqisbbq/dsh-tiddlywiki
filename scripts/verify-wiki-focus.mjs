@@ -315,7 +315,12 @@ test('FAB 菜单：切库后选中项必须即时更新（作者 2026-09-28 报�
 test('每库图标：host 校验 + 客户端渲染都不得成为注入点（v0.28.4）', () => {
   const registry = readFileSync(path.join(repoRoot, 'src/host/wiki-registry.ts'), 'utf8')
   const icon = readFileSync(path.join(repoRoot, 'src/client/wiki-icon.ts'), 'utf8')
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  // 选择器自 v0.28.8 起独立成模块（settings-page.ts 已够大）；读取时做兜底，
+  // 免得将来再搬家时这条守门默默读空文件、断言全过。
+  const pickerPath = path.join(repoRoot, 'src/client/settings-icon-picker.ts')
+  const settings = fs.existsSync(pickerPath)
+    ? readFileSync(pickerPath, 'utf8')
+    : readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
   // host：名字或短串，超长/控制字符拒绝；空值 = 清除
   assert.match(registry, /export function normalizeWikiIcon\(/, 'host 必须有校验入口')
   assert.match(registry, /trimmed\.length > 8/, '必须限制长度（这个值会变成侧边栏文本）')
@@ -335,7 +340,9 @@ test('图标集：host 名单与客户端可渲染集合必须完全一致，且
   const registry = readFileSync(path.join(repoRoot, 'src/host/wiki-registry.ts'), 'utf8')
   const generated = readFileSync(path.join(repoRoot, 'src/client/wiki-icon.generated.ts'), 'utf8')
   const icon = readFileSync(path.join(repoRoot, 'src/client/wiki-icon.ts'), 'utf8')
-  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  // 选择器模块（v0.28.8 从 settings-page.ts 拆出）：断言要跟着走，否则读一个
+  // 不再含选择器的文件会「断言全过」——正是这条守门要防的静默失效。
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-icon-picker.ts'), 'utf8')
 
   // host 是权威名单（值会存进 wikis.json）。
   const namesBlock = registry.slice(registry.indexOf('export const WIKI_ICON_NAMES = ['))
