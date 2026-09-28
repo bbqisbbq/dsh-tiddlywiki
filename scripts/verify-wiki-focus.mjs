@@ -146,5 +146,15 @@ test('设置页：知识库列表是第一块，且能改模式/启停/默认/�
   assert.match(settings, /\*\*目录与内容不会被删除\*\*/, '移出列表必须说清"不删目录"（否则没人敢点）')
 })
 
+test('设置页：配置作用域必须显式（per-wiki 请求都要带 ?wiki=）', () => {
+  const settings = readFileSync(path.join(repoRoot, 'src/client/settings-page.ts'), 'utf8')
+  // 每个库的配置存在它自己的 config tiddler 里：三处 per-wiki 管理请求都必须带作用域，
+  // 否则给"书籍库"配 git.remote 会静默改到默认库上——存了、但永不生效。
+  assert.match(settings, /withWiki\(STATE_ENDPOINT\)/)
+  assert.match(settings, /withWiki\(CONFIG_ENDPOINT\)/)
+  assert.match(settings, /withWiki\(PROMPT_ENDPOINT\)/)
+  assert.match(settings, /配置作用域/, '页面必须说清这一块在编辑哪个库')
+})
+
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)

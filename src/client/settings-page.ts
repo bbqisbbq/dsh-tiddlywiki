@@ -190,7 +190,7 @@ function mountSettingsPage(container: HTMLElement): () => void {
     // 首屏先给占位（v0.24.x）：以前 await 期间什么都不画，整块白屏看起来像插件坏了。
     if (!rendered) body.replaceChildren(make('div', 'dsh-tw-settings-muted', '加载中…'))
     try {
-      const state = await fetchJson<AdminState>(STATE_ENDPOINT)
+      const state = await fetchJson<AdminState>(withWiki(STATE_ENDPOINT))
       if (disposed) return
       rendered = true
       loadError.hidden = true
@@ -521,7 +521,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
         // Send the DRAFT (v0.22.7): the host builds the text from these values
         // without saving them, so the preview follows the dropdown immediately
         // instead of showing the still-saved mode until 保存配置 is clicked.
-        const data = await fetchJson<{ ok?: boolean; draft?: boolean; enabled?: boolean; mode?: string; length?: number; text?: string; error?: string }>(PROMPT_ENDPOINT, {
+        const data = await fetchJson<{ ok?: boolean; draft?: boolean; enabled?: boolean; mode?: string; length?: number; text?: string; error?: string }>(withWiki(PROMPT_ENDPOINT), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -605,7 +605,7 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
         return
       }
       try {
-        await fetchJson(CONFIG_ENDPOINT, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+        await fetchJson(withWiki(CONFIG_ENDPOINT), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
         // ui.* 已落盘：清掉客户端缓存，下一次读取立即拿到新值（否则最长 15s 才生效）。
         invalidateUiConfig()
         configState.saveError = undefined
@@ -1049,6 +1049,16 @@ function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, ref
       ].join(' · ')))
 
       const actions = make('div', 'dsh-tw-settings-row')
+      // 「配置」把常规配置区切到这个库（每个库的配置存在它自己的 config tiddler 里，
+      // 不说清楚就会出现"改了但不生效"）。
+      const configuring = editingWiki === wiki.id
+      const configure = make('button', `dsh-tw-settings-btn dsh-tw-settings-chipbtn${configuring ? ' dsh-tw-settings-primary' : ''}`, configuring ? '正在配置' : '配置')
+      configure.type = 'button'
+      configure.disabled = configuring
+      configure.addEventListener('click', () => {
+        editingWiki = wiki.id
+        void refresh()
+      })
       const power = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.running ? '停止' : '启动')
       power.type = 'button'
       power.addEventListener('click', () => {
@@ -1075,7 +1085,7 @@ function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, ref
         const ok = window.confirm(`把「${wiki.label}」移出清单？\n\n**目录与内容不会被删除**（仍在 ${wiki.path}），只是插件不再管理它。`)
         if (ok) void post({ action: 'remove', id: wiki.id }, '移出中…')
       })
-      actions.append(power, makeDefault, visibility, autostart, remove)
+      actions.append(configure, power, makeDefault, visibility, autostart, remove)
       row.append(actions)
       list.append(row)
     }
@@ -1108,6 +1118,25 @@ function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, ref
     }
   }
   void load()
+}
+
+/**
+ * WHICH knowledge base the config block is editing (v0.28.0).
+ *
+ * Every per-wiki setting lives in that wiki's OWN
+ * `$:/plugins/dsh-tiddlywiki/config` tiddler, so `/admin/state`, `/admin/config`
+ * and `/admin/prompt` must be told which one. Without this, configuring the books
+ * wiki would silently edit the DEFAULT wiki — a user would set `git.remote`, see
+ * it saved, and never learn why pushes still went to the other repository.
+ *
+ * `undefined` = the default wiki, which is exactly what every route did before
+ * this existed (and what a single-wiki install always gets).
+ */
+let editingWiki: string | undefined
+
+/** Append the editing scope to a per-wiki admin URL. */
+function withWiki(url: string): string {
+  return editingWiki === undefined ? url : `${url}?wiki=${encodeURIComponent(editingWiki)}`
 }
 
 function renderWikiLocationSection(body: HTMLElement, isDisposed: () => boolean, refresh: () => Promise<void>): void {
@@ -1501,6 +1530,11 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
     configState.host = host
     configState.signature = signature
   }
+  // 配置作用域（v0.28.0）：每个库的配置存在它自己的 config tiddler 里，含糊其辞就会
+  // 出现"改了但不生效"——所以这一行必须说清下面的表单在编辑哪个库。
+  body.append(make('div', 'dsh-tw-settings-muted', editingWiki === undefined
+    ? '配置作用域：默认知识库（在「知识库列表」里点某行的「配置」可切到那个库）'
+    : `配置作用域：${editingWiki}（在「知识库列表」里改；编辑的是该库自己的配置 tiddler）`))
   body.append(configState.host)
   renderWikiListSection(body, isDisposed, refresh)
   renderWikiLocationSection(body, isDisposed, refresh)
