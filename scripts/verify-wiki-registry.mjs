@@ -111,6 +111,55 @@ await test('normalizeEntry：默认值 / label 派生 / 位置与 id 校验', ()
   assert.ok(normalizeEntry(null).error)
 })
 
+await test('normalizeEntry：icon 只收「内置名或短 emoji」，其余（含超长/控制字符）一律丢弃', () => {
+  // 内置名原样保留。
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: 'book' })).entry.icon, 'book')
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: '  flask  ' })).entry.icon, 'flask')
+  // 短 emoji 放行（emoji 是 1–2 个 code point）——这是「四个库一眼分辨」的用法。
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: '📚' })).entry.icon, '📚')
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: '💼' })).entry.icon, '💼')
+
+  // 未设 = 键**不存在**（不是 icon: undefined）：既有清单重序列化后逐字不变。
+  const none = normalizeEntry(entry('a', ROOT, 'a'))
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: '' })).entry.icon, undefined)
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: '   ' })).entry.icon, undefined)
+  assert.equal(Object.prototype.hasOwnProperty.call(none.entry, 'icon'), false, '没设过 icon 时不该写出该键')
+
+  // 超长（可能藏一整段文字）与控制字符会被拒绝——icon 最终会进侧边栏文本节点。
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: 'x'.repeat(9) })).entry.icon, undefined)
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: 'bad\nline' })).entry.icon, undefined)
+  assert.equal(normalizeEntry(entry('a', ROOT, 'a', { icon: 42 })).entry.icon, undefined)
+})
+
+await test('第三项真 bug 回归：icon 必须能在 save→read 往返中存活（v0.28.8）', async () => {
+  // 症状：设置页选完图标立刻变回默认。根因不在 registry，而在 `/admin/wikis`
+  // 的 GET 输出漏了 icon —— 客户端发的是 `{ ...wiki, icon: next }`，`wiki` 正是
+  // 那份输出的条目；icon 缺失 ⇒ 每次改任何字段都把 icon 一并抹掉。
+  // 本脚本管 registry 这一段：写入后必须能原样读回来（若这里坏了，UI 再怎么修都没用）。
+  const file = join(scratch, 'registry-icon.json')
+  // 走真实链路：normalizeEntry 校验 → upsertWiki → writeRegistry → readRegistry。
+  // id 必须与 singleEntryRegistry 造出来的那个一致（它是 DEFAULT_WIKI_ID），
+  // 否则 upsertWiki 会**追加**第二条、两条指向同目录 → validateRegistry 判冲突，
+  // 测出来的就是「冲突」而不是 icon 往返。
+  const normalized = normalizeEntry(entry(DEFAULT_WIKI_ID, ROOT, 'a', { icon: 'star' }))
+  assert.equal(normalized.error, undefined)
+  assert.equal(normalized.entry.icon, 'star')
+  const seeded = upsertWiki(singleEntryRegistry({ root: ROOT, name: 'a' }), normalized.entry)
+  assert.equal(seeded.wikis.length, 1, '同 id 必须是替换而不是追加')
+  assert.equal(validateRegistry(seeded).fatal?.length ?? 0, 0, `清单必须合法：${JSON.stringify(validateRegistry(seeded).fatal)}`)
+  await writeRegistry(seeded, file)
+  const back = await readRegistry({ file, legacyFile: join(scratch, 'absent-location.json'), fallback: { root: ROOT, name: 'a' } })
+  assert.equal(back.source, 'file')
+  assert.equal(findEntry(back.registry, DEFAULT_WIKI_ID)?.icon, 'star', 'icon 必须能从控制文件读回')
+
+  // 改其它字段时，若把整条目读回来再写（客户端就是这么做的），icon 不该丢。
+  const applied = applyWikiAction(back.registry, { action: 'update', wiki: { ...findEntry(back.registry, DEFAULT_WIKI_ID), agentVisible: false } })
+  assert.equal(applied.error, undefined)
+  assert.equal(findEntry(applied.registry, DEFAULT_WIKI_ID)?.icon, 'star', '改可见性不该顺手抹掉 icon')
+  assert.equal(findEntry(applied.registry, DEFAULT_WIKI_ID)?.agentVisible, false)
+  await rm(file, { force: true })
+})
+
 await test('findPathConflicts：同目录拒绝、嵌套（两向）拒绝、兄弟放行、大小写视为同目录', () => {
   assert.deepEqual(findPathConflicts([entry('a', ROOT, 'one'), entry('b', ROOT, 'two')]), [])
 

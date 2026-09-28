@@ -54,6 +54,13 @@ export interface BridgeConfig {
   token: string
   /** 剪藏笔记默认 tag。 */
   tag: string
+  /**
+   * 剪藏写进哪个知识库（id，v0.28.8）。空串 = 默认库。
+   *
+   * 桥只在这里**声明**这个字段；解析成实际实例是宿主的事（剪藏桥自建
+   * loopback 服务，走不到 `?wiki=` 那套解析）。
+   */
+  wiki?: string
 }
 
 /** A downloaded image (raw bytes + declared content-type, nullable). */
@@ -72,6 +79,15 @@ export interface ClipBridgeDeps {
   exists(title: string): Promise<boolean>
   /** Download an image's bytes (server-side fetch; throws on failure). */
   download(url: string, referer: string): Promise<ClipImageDownload>
+  /**
+   * The wiki id this clip is being written to (v0.28.8), or undefined when the
+   * caller does not implement per-wiki targeting.
+   *
+   * Reported back in the `/clip` response so the bookmarklet can tell the user
+   * ("已存到 books") — with several knowledge bases a silent success is
+   * indistinguishable from "it went to the wrong one".
+   */
+  targetWiki?(): string | undefined
   /** Optional logger (console.info prefixed by the caller). */
   log?(message: string): void
 }
@@ -814,6 +830,13 @@ export class ClipBridge {
       this.respond(res, { ok: false, error: 'TiddlyWiki 服务暂不可用，剪藏未写入' }, 503)
       return
     }
-    this.respond(res, { ok: true, title: resolvedTitle, url, tag: cfg.tag, source: sourceName, images: imageResults })
+    // `wiki` (v0.28.8) tells a multi-wiki user WHICH knowledge base took the
+    // clip; omitted when the caller has no per-wiki targeting, so a single-wiki
+    // install's response is byte-identical to before.
+    const wikiId = this.deps.targetWiki?.()
+    this.respond(res, {
+      ok: true, title: resolvedTitle, url, tag: cfg.tag, source: sourceName, images: imageResults,
+      ...(typeof wikiId === 'string' && wikiId.length > 0 ? { wiki: wikiId } : {}),
+    })
   }
 }

@@ -307,7 +307,7 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
 }
 
 /** Config section: fields bound to effective config, changed-only save. */
-function renderConfigSection(body: HTMLElement, config: Record<string, unknown>, refresh: () => Promise<void>, configState: ConfigRenderState, rosterMode?: string): void {
+function renderConfigSection(body: HTMLElement, config: Record<string, unknown>, refresh: () => Promise<void>, configState: ConfigRenderState, rosterMode?: string, isDisposed: () => boolean = () => false): void {
   const section = make('section', 'dsh-tw-settings-section')
   section.append(make('h3', 'dsh-tw-settings-h', '常规配置'))
   const note = (config.note ?? {}) as Record<string, unknown>
@@ -583,6 +583,35 @@ function renderConfigSection(body: HTMLElement, config: Record<string, unknown>,
   numField('bridge.port', '剪藏桥端口（整数 1–65535；改端口需重启 dsh web 生效）', typeof bridge.port === 'number' && bridge.port > 0 ? bridge.port : 8618, { min: 1, max: 65_535, step: 1, integer: true })
   tokenField('bridge.token', '剪藏桥 token（非空时校验书签的 x-clip-token 头；强烈建议设置。已设置时显示为 ********，原样保存=不改，清空=删除）', typeof bridge.token === 'string' ? bridge.token : '')
   textField('bridge.tag', '剪藏笔记默认 tag', typeof bridge.tag === 'string' && bridge.tag.trim().length > 0 ? bridge.tag.trim() : 'clip')
+  // 剪藏目标库（v0.28.8）：剪藏桥自建 loopback 服务，请求走不到宿主的 `?wiki=` 解析，
+  // 所以多库下**必须**在这里显式选一次，否则永远剪进默认库。选项要等 /admin/wikis
+  // 回来才知道，所以先渲染一个只有「默认库」的 select，拿到列表后再补全；用户已选的值
+  // 若不在列表里（库被移出清单）也保留一行，免得下拉把它静默抹掉。
+  const clipWiki = selectField('bridge.wiki', '剪藏写入的知识库（默认库=不指定；多库时可指定某个库）', typeof bridge.wiki === 'string' ? bridge.wiki.trim() : '', [{ value: '', label: '默认库' }])
+  void (async () => {
+    try {
+      const view = await fetchJson<WikisView>(WIKI_LIST_ENDPOINT)
+      if (isDisposed()) return
+      const items = Array.isArray(view.wikis) ? view.wikis : []
+      const current = clipWiki.value
+      for (const wiki of items) {
+        const option = document.createElement('option')
+        option.value = wiki.id
+        option.textContent = `${wiki.label}（${wiki.id}）${wiki.running ? '' : ' · 未运行'}`
+        clipWiki.append(option)
+      }
+      // 当前值不在清单里（已移出）：补一行，避免下拉静默把它抹成默认库。
+      if (current.length > 0 && !items.some((wiki) => wiki.id === current)) {
+        const option = document.createElement('option')
+        option.value = current
+        option.textContent = `${current}（不在清单里，保存后回落默认库）`
+        clipWiki.append(option)
+      }
+      clipWiki.value = current
+    } catch {
+      /* 读不到清单：只有「默认库」一项，单库安装本来就是这种形态 */
+    }
+  })()
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
   // 注意：uiLanguage 目前只影响 TW 侧语言，客户端插件文案（FAB/快速笔记/侧边栏/本页）
   // 暂为中文，尚无 i18n 分支。
@@ -1671,7 +1700,7 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
   }
   if (configState.host === undefined || (serverChanged && !dirty)) {
     const host = make('div', 'dsh-tw-settings-confighost')
-    renderConfigSection(host, state.config ?? {}, refresh, configState, rosterMode)
+    renderConfigSection(host, state.config ?? {}, refresh, configState, rosterMode, isDisposed)
     configState.host = host
     configState.signature = signature
   }

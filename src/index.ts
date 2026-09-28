@@ -307,7 +307,7 @@ interface ResolvedConfig {
   port: number
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string; workspaceMark: boolean }
-  bridge: { enabled: boolean; port: number; token: string; tag: string }
+  bridge: { enabled: boolean; port: number; token: string; tag: string; wiki: string }
   ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
   startup: { readyTimeoutMs: number }
   /**
@@ -339,7 +339,7 @@ const DEFAULTS: ResolvedConfig = {
   port: 0,
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox', workspaceMark: true },
-  bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip' },
+  bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip', wiki: '' },
   ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
   startup: { readyTimeoutMs: READY_TIMEOUT_DEFAULT_MS },
   // 可选功能默认关闭（v0.23.0）：需额外安装 opencli + 浏览器扩展才可用。
@@ -614,13 +614,64 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   }
 
   /**
-   * Lazy TW client. host/wiki-instance.ts owns both the port-change invalidation
-   * (a crash before readiness makes the child re-probe a free port, so a cached
-   * client must not stay pinned to a dead one) and the preemptive Basic
-   * credentials (`auth.username` puts the child behind `readers`/`writers`, so
-   * EVERY request — reads included — needs auth).
+   * Warn about a clip falling back to the default wiki, at most once per
+   * DISTINCT configured id (so a stale `bridge.wiki` costs one log line, not one
+   * per clip, while switching the setting and back still explains itself again).
    */
-  const client = (): TiddlyWebClient | undefined => defaultInstance()?.client()
+  const clipFallbackWarned = new Set<string>()
+  const warnClipFallbackOnce = (wanted: string): void => {
+    if (clipFallbackWarned.has(wanted)) return
+    clipFallbackWarned.add(wanted)
+    console.warn(`[dsh-tiddlywiki] clip bridge: 配置的 bridge.wiki「${wanted}」当前不在运行（或已移出清单），剪藏回落到默认库（设置页可改）`)
+  }
+
+  /**
+   * Which wiki does a CLIP land in? (v0.28.8)
+   *
+   * The clip bridge runs its OWN loopback HTTP server (clip-bridge.ts), so its
+   * requests never reach the host webServer's `?wiki=` resolver
+   * (`targetRuntimeFor`). Before this existed the write path called `client()`,
+   * which is hard-wired to the DEFAULT runtime — meaning a multi-wiki install
+   * could only ever clip into the default wiki, with no way to say otherwise.
+   *
+   * Resolution order:
+   *   1. `bridge.wiki` (config) when it names a wiki that EXISTS in the
+   *      registry — running or not (a stopped one is a legitimate target: the
+   *      bookmarklet must not have to care which wikis happen to be up);
+   *   2. otherwise the farm's default runtime.
+   *
+   * Deliberately NOT an error when the id is unknown: this is a preference read
+   * per request, and the bookmarklet is fire-and-forget. Falling back to the
+   * default keeps clipping working, and the response reports which wiki was
+   * actually used (see `write`/`exists` below).
+   */
+  const clipTarget = (): { runtime: WikiInstance; id: string } | undefined => {
+    const configured = effectiveBridge()?.wiki
+    const wanted = typeof configured === 'string' ? configured.trim() : ''
+    if (wanted.length > 0) {
+      const entry = farm?.registry.wikis.find((item) => item.id === wanted)
+      if (entry !== undefined) {
+        const runtime = farm?.runtime(entry.id)
+        if (runtime !== undefined) return { runtime, id: entry.id }
+      }
+      // Configured but not running (or since removed): say so, then fall back.
+      // A silent fallback is how a user ends up with clips in the wrong wiki.
+      // Throttled: this runs per clip and a stale setting would otherwise write
+      // the same line to the log on every save a user makes.
+      warnClipFallbackOnce(wanted)
+    }
+    const fallback = defaultInstance()
+    if (fallback === undefined) return undefined
+    return { runtime: fallback, id: fallback.entry.id }
+  }
+
+  /** The clip target's TiddlyWeb client, plus the id to report back. */
+  const clipClient = (): { client: TiddlyWebClient; wikiId: string } | undefined => {
+    const target = clipTarget()
+    if (target === undefined) return undefined
+    const c = target.runtime.client()
+    return c === undefined ? undefined : { client: c, wikiId: target.id }
+  }
 
   // 本地剪藏桥（书签小工具后端）：只监听 127.0.0.1，per-request 读 effective
   // config —— enabled/token/tag 在设置页保存后立即生效；port 只在启动时绑定
@@ -628,16 +679,22 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   // 通道（D1），不存在第二条写路径。
   const clipBridge = new ClipBridge({
     getConfig: effectiveBridge,
+    // v0.28.8: every clip operation resolves its target wiki per request
+    // (`bridge.wiki`, else the default) — see clipClient(). The clipboard bridge
+    // cannot use the host's `?wiki=` path, so this is the only place the choice
+    // can be made.
     write: async (tiddler) => {
-      const c = client()
-      if (c === undefined) throw new Error('wiki not ready')
-      await c.put(tiddler)
+      const target = clipClient()
+      if (target === undefined) throw new Error('wiki not ready')
+      await target.client.put(tiddler)
     },
     exists: async (title) => {
-      const c = client()
-      if (c === undefined) throw new Error('wiki not ready')
-      return (await c.get(title)) !== undefined
+      const target = clipClient()
+      if (target === undefined) throw new Error('wiki not ready')
+      return (await target.client.get(title)) !== undefined
     },
+    /** Which wiki the CURRENT clip is writing to (reported back to the caller). */
+    targetWiki: () => clipTarget()?.id,
     // Server-side image download: no browser CORS; a browser-ish UA + the clip
     // source page as Referer get past most hotlink-protected CDNs. The whole
     // SSRF posture (public http(s) only, per-hop validation with the resolved
@@ -1041,6 +1098,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
           autostart: entry.autostart,
           running: runtime !== undefined,
           status: runtime?.server.status().status ?? 'stopped',
+          // 每库图标（v0.28.8）：设置页的图标选择器发的是 `{ ...wiki, icon }` ——
+          // 这里的 `wiki` 就是本函数的输出。漏掉这个字段时 `wiki.icon` 恒为
+          // undefined，于是「选完图标、服务端回包一渲染就变回默认」（v0.28.4
+          // 引入该选择器时只把 icon 加进了 `/status` 的 wikiSummaries，见下面
+          // 1123 行那处，漏了这一处）。
+          ...(entry.icon !== undefined ? { icon: entry.icon } : {}),
         }
       }),
     }

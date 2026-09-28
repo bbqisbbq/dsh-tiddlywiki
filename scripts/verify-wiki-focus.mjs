@@ -145,13 +145,37 @@ test('会话选择器：与快速笔记**同一行**（v0.28.7 合并；作者�
   // 判据（新）：注册表里**只能有一个** input.dock 条目，且选择器由它带出来。
   const dockRegs = indexSrc.match(/name: 'conversation\.input\.dock'/g) ?? []
   assert.equal(dockRegs.length, 1, `input.dock 只能注册一个条目（实际 ${dockRegs.length}）——多条目=多行，永远对不齐`)
-  assert.ok(!/id: 'wiki-scope'/.test(indexSrc), '选择器不该再单独注册成 dock 条目（那正是对不齐的根因）')
   assert.match(indexSrc, /createQuickNoteDock\(widget, createWikiScopeDock\(\)\)/, '选择器必须作为 scope 传进快速笔记条目')
   // 组件仍要能拿到 sessionId：scope=session 的 props 是发给**条目组件**的，靠 scope 透传。
-  assert.match(dockSrc, /interface DockProps \{ sessionId\?: string \}/, '选择器组件的 props 必须含 sessionId（该槽位 scope=session）')
+  // （v0.28.8 起 DockProps 多了可选的 useSessions 用来识别空白会话，所以这里只断言
+  //  sessionId 这个字段存在，不再钉死整个 interface 的字面写法。）
+  assert.match(dockSrc, /sessionId\?: string/, '选择器组件的 props 必须含 sessionId（该槽位 scope=session）')
   const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
   assert.match(quick, /scope\?: \(props: \{ sessionId\?: string \}\)/, '快速笔记条目必须接受 scope（同一行渲染）')
   assert.match(quick, /sessionId: props\.sessionId/, '条目必须把 sessionId 透传给 scope（否则选择器拿不到会话）')
+})
+
+test('新会话（空白会话）的知识库选择器：走 selector.context，且不与 dock 重复（v0.28.8，需求 9）', () => {
+  // 需求原文：「新会话时像 dsh-client-ui-git-graph 这个插件在模式选择后面增加个知识库选择」。
+  // 参考实现用的是 `conversation.input.selector.context`（模式/预设选择器旁边那一格），
+  // 并且**声明感知 + 超时回落**——因为不是每个 shell 都声明这个洞，裸 register 会抛。
+  const seat = readFileSync(path.join(repoRoot, 'src/client/scope-seat.ts'), 'utf8')
+  const indexSrc = readFileSync(path.join(repoRoot, 'src/client/index.ts'), 'utf8')
+  const dockSrc = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
+
+  assert.match(seat, /conversation\.input\.selector\.context/, '必须优先用 selector.context —— 那才是「模式选择后面」')
+  assert.match(seat, /conversation\.input\.dock/, '本机 shell 未声明 selector.context 时必须能回落到 dock')
+  // 两个座位都必须经 inject（声明感知）；裸 register 到未声明的槽位会抛。
+  assert.match(seat, /slots\.inject\(SELECTOR_CONTEXT_SLOT/, 'selector.context 必须经 inject 注册（声明感知）')
+  assert.match(seat, /slots\.inject\(INPUT_DOCK_SLOT/, 'dock 回落同样必须经 inject')
+  assert.match(indexSrc, /mountScopeSeat\(/, 'index.ts 必须真的挂上这个座位')
+  // 「回落时不许重复渲染」：dock 里已经有 quick-note 行带的选择器，所以这条挂载
+  // 必须是 blankOnly —— 否则同一个选择器会在 dock 里出现两次。
+  assert.match(indexSrc, /createWikiScopeDock\(\{ blankOnly: true \}\)/, '回落挂载必须是 blankOnly，避免与 quick-note 行里的选择器重复')
+  assert.match(dockSrc, /blankOnly/, '选择器组件必须支持 blankOnly')
+  // 空白会话判定：从 session store 读 blank，且拿不到时保守当作「非空白」。
+  assert.match(dockSrc, /useSessions/, '必须能从 session store 读 blank 标记')
+  assert.match(dockSrc, /isBlankSession/, '空白会话判定必须收敛到一个函数里')
 })
 
 test('快速笔记：单库模式不得露出「写入」选择器（作者 2026-09-28 报障）', () => {
@@ -301,6 +325,21 @@ test('每库图标：host 校验 + 客户端渲染都不得成为注入点（v0.
   // 设置页：有下拉选择器；当前值不在候选里要保留
   assert.match(settings, /dsh-tw-settings-icon-select/, '设置页必须有图标选择器')
   assert.match(settings, /!options\.some\(\(\[v\]\) => v === currentIcon\)/, '自定义 emoji 不能被下拉抹掉')
+})
+
+test('每库图标：/admin/wikis 的 GET 必须回传 icon（v0.28.8 修「选完立刻变回默认」）', () => {
+  // 症状（作者 2026-09-28 报障）：设置页选好图标、服务端也保存了，但界面立刻变回默认。
+  // 根因：设置页发的是 `{ action:'update', wiki:{ ...wiki, icon: next } }`，那份 `wiki`
+  // 来自 `buildWikisView()`（GET /admin/wikis 的输出）；该函数当初**没有输出 icon**
+  // （只有 /status 的 wikiSummaries 有）。于是 `wiki.icon` 恒为 undefined，
+  // `normalizeEntry` 见 undefined 就不写该键 → 存成"没设过"，UI 自然回到默认。
+  //
+  // 这条守门必须是**源码级**的：registry 那层的往返测试全绿也照样漏（icon 本来就
+  // 能从文件读回，问题只在 HTTP 视图这一层丢了字段）。
+  const index = readFileSync(path.join(repoRoot, 'src/index.ts'), 'utf8')
+  const view = index.slice(index.indexOf('const buildWikisView'), index.indexOf('const buildWikisView') + 1600)
+  assert.ok(view.length > 200, '找不到 buildWikisView（函数被改名了？请同步这条守门）')
+  assert.match(view, /icon: entry\.icon/, 'buildWikisView 必须输出 icon —— 少这一个字段，设置页的图标选择器就永远存不进去')
 })
 
 test('hidden 必须真的隐藏：全局兜底一条，不许再逐元素补（踩过 12 次）', () => {

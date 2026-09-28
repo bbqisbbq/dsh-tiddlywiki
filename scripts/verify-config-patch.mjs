@@ -56,7 +56,7 @@ test('类型错误拒绝并点名字段（不得穿透到 setTimeout / 模板）
 test('合法值原样通过（含字符串型 token / 未知扩展键）', () => {
   const patch = normalizeConfigPatch({
     note: { tag: 'inbox', workspaceMark: false },
-    bridge: { enabled: true, port: 8618, token: 'secret' },
+    bridge: { enabled: true, port: 8618, token: 'secret', wiki: 'books' },
     ui: { sendToAgent: { enabled: false, token: 't' } },
     wechat: { enabled: true, adapter: 'publish-note-imgs' },
     futureThing: { anything: 1 },
@@ -64,9 +64,20 @@ test('合法值原样通过（含字符串型 token / 未知扩展键）', () =>
   assert.equal(patch.note.tag, 'inbox')
   assert.equal(patch.note.workspaceMark, false)
   assert.equal(patch.bridge.token, 'secret')
+  // bridge.wiki（v0.28.8）：剪藏目标库。漏进 STRING_CONFIG_PATHS 的后果是
+  // patch 里的字符串被当未知键透传（看着能存），但类型不被约束；
+  // 这条断言保证它确实在**已知字符串路径**里被校验。
+  assert.equal(patch.bridge.wiki, 'books', 'bridge.wiki 必须原样通过（它是已知字符串字段）')
   assert.equal(patch.ui.sendToAgent.token, 't')
   assert.equal(patch.wechat.adapter, 'publish-note-imgs')
   assert.deepEqual(patch.futureThing, { anything: 1 }, '未知键（未来字段）必须透传')
+})
+
+test('bridge.wiki 是受校验的字符串字段（非字符串必须被拒）', () => {
+  assert.throws(() => normalizeConfigPatch({ bridge: { wiki: 5 } }), /bridge\.wiki/, '数字 wiki id 必须被拒')
+  assert.throws(() => normalizeConfigPatch({ bridge: { wiki: ['books'] } }), /bridge\.wiki/, '数组 wiki id 必须被拒')
+  // 空串是合法值 = 「不指定，用默认库」。
+  assert.equal(normalizeConfigPatch({ bridge: { wiki: '' } }).bridge.wiki, '')
 })
 
 test('危险键拒绝（原型污染 / 合并歧义）', () => {

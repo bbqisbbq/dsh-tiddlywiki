@@ -35,8 +35,16 @@ export interface PluginConfigShape {
    * 书签 POST 的 {title,url,text} 并写入 wiki。`enabled` 保存后立即生效
    * （每个请求实时判定）；`token` 非空时校验 `x-clip-token` 头；`tag` 为
    * 剪藏笔记默认 tag；`port` 改动需重启 dsh web（监听只在启动时绑定一次）。
+   *
+   * `wiki`（v0.28.8）：剪藏写进**哪个**知识库 —— 知识库 id，缺省/未知值 =
+   * 默认库。为什么需要一个显式字段：剪藏桥自建 loopback HTTP 服务
+   * （clip-bridge.ts），它的请求**走不到**宿主那套 `?wiki=` 解析
+   * （`targetRuntimeFor`），所以多库下以前**永远写默认库**、而且无法表达
+   * 「我要剪到 books」。取值在每次剪藏时解析（`farm.runtime(id)`），
+   * 所以保存后立即生效、也允许指向一个当时没在跑的库（按需启动由选中它
+   * 的那条路径负责；这里解析不到就回落到默认库，不报错）。
    */
-  bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
+  bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string; wiki?: string }
   note?: {
     tag?: string
     /**
@@ -237,7 +245,7 @@ const BOOLEAN_CONFIG_PATHS = new Set<string>([
 
 /** Known STRING paths (kept permissive about the VALUE; only the type is enforced). */
 const STRING_CONFIG_PATHS = new Set<string>([
-  'auth.password', 'auth.username', 'bridge.tag', 'bridge.token', 'git.branch', 'git.remote',
+  'auth.password', 'auth.username', 'bridge.tag', 'bridge.token', 'bridge.wiki', 'git.branch', 'git.remote',
   'note.tag', 'prompt.extra', 'prompt.mode', 'prompt.override', 'ui.darkPalette',
   'ui.quickNoteMode', 'ui.sendToAgent.endpoint', 'ui.sendToAgent.token', 'ui.sidebarLabel',
   'ui.tabLabel', 'uiLanguage', 'wechat.adapter', 'wechat.command', 'wechat.dsn', 'wechat.token',

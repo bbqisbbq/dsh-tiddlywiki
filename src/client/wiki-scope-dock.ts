@@ -26,7 +26,50 @@ import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
 interface WikiOption { id: string; label: string; running: boolean }
 
 /** Props the shell passes to a `conversation.input.dock` entry (scope: session). */
-interface DockProps { sessionId?: string }
+interface DockProps {
+  sessionId?: string
+  /**
+   * Session store reader, provided by the shell on session-scoped slots
+   * (v0.28.8). Used to tell a BLANK (new) session from an active one; optional
+   * because not every shell version supplies it.
+   */
+  useSessions?: (selector: (state: unknown) => unknown) => unknown
+}
+
+/** How the chip behaves in each seat (see scope-seat.ts). */
+export interface WikiScopeDockOptions {
+  /**
+   * Render ONLY for a blank (new) session.
+   *
+   * Set when mounting into a seat that is not exclusive to blank sessions —
+   * notably the dock FALLBACK: the dock already carries the selector inside the
+   * quick-note row (v0.28.7), so an unconditional second mount would show the
+   * same control twice. When the real selector-context seat exists, blank
+   * sessions are the only thing it renders for anyway.
+   */
+  blankOnly?: boolean
+}
+
+/**
+ * Read the session store's `blank` flag, tolerating every shape we might be
+ * handed: an absent reader, an absent session, or a store that does not track
+ * blankness. Unknown ⇒ `false`, i.e. "treat as active" — the conservative
+ * choice, because rendering a blank-only chip in an active session is exactly
+ * the duplication this option exists to prevent.
+ */
+function isBlankSession(props: DockProps): boolean {
+  const sessionId = props.sessionId
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return false
+  if (typeof props.useSessions !== 'function') return false
+  try {
+    return props.useSessions((state) => {
+      const byId = (state as { byId?: Record<string, { blank?: unknown }> } | undefined)?.byId
+      return byId?.[sessionId]?.blank === true
+    }) === true
+  } catch {
+    return false
+  }
+}
 
 /**
  * 会话级知识库选择器（v0.28.0）。
@@ -38,9 +81,12 @@ interface DockProps { sessionId?: string }
  * 返回 `null` 表示"这一行不需要它"——单库安装（可见库 ≤1）时正是如此，DOM 与
  * 加这个功能之前逐字相同。
  */
-export function createWikiScopeDock(): (props: DockProps) => React.ReactElement | null {
+export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props: DockProps) => React.ReactElement | null {
+  const blankOnly = options.blankOnly === true
   return function WikiScopeDock(props: DockProps) {
     const sessionId = typeof props.sessionId === 'string' && props.sessionId.length > 0 ? props.sessionId : undefined
+    // Hooks must run unconditionally — read blankness before any early return.
+    const blank = isBlankSession(props)
     const [wikis, setWikis] = React.useState<WikiOption[]>([])
     const [scope, setScope] = React.useState('')
     const [note, setNote] = React.useState<string | undefined>(undefined)
@@ -73,6 +119,9 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
     }, [sessionId])
 
     if (sessionId === undefined || wikis.length <= 1) return null
+    // blankOnly（v0.28.8）：这一挂载点只在「新会话」阶段显示，避免与会话内
+    // quick-note 行里的同一个选择器重复出现（见 WikiScopeDockOptions 的说明）。
+    if (blankOnly && !blank) return null
 
     const apply = (next: string): void => {
       setBusy(true)

@@ -225,6 +225,43 @@ await test('extra tags merge with the clip tag', async () => {
   assert.deepEqual(store.get('带标签').tags, ['clip', '调研', 'web'])
 })
 
+await test('POST /clip 回执带上目标库 id（v0.28.8，「剪到哪个库」必须可见）', async () => {
+  // 多库下「写成功了」与「写进了你以为的那个库」是两回事，回执必须能区分。
+  // deps 不实现 targetWiki 时（单库/旧调用方）该字段必须**整个不出现**，
+  // 否则单库安装的响应体就变了。
+  const { bridge: b } = makeDeps({ targetWiki: () => 'books' })
+  await b.start(0)
+  try {
+    const res = await request(`http://127.0.0.1:${b.port}/clip`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: '目标库回执', url: 'https://example.com/t', text: '' }),
+    })
+    assert.equal(res.status, 200)
+    assert.equal(res.body.wiki, 'books', '回执必须说明写进了哪个库')
+  } finally {
+    b.stop()
+  }
+
+  // 默认 deps（没有 targetWiki）：字段不该出现。
+  const plain = await clip('无目标库回执', 'https://example.com/u', '')
+  assert.equal(plain.body.ok, true)
+  assert.equal(Object.prototype.hasOwnProperty.call(plain.body, 'wiki'), false, '没有 per-wiki 目标时不得凭空多出 wiki 字段')
+  // 返回空串同样视为「不指定」，不写该字段。
+  const { bridge: empty } = makeDeps({ targetWiki: () => '' })
+  await empty.start(0)
+  try {
+    const res = await request(`http://127.0.0.1:${empty.port}/clip`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: '空目标库', url: 'https://example.com/v', text: '' }),
+    })
+    assert.equal(Object.prototype.hasOwnProperty.call(res.body, 'wiki'), false, '空串 = 不指定，不该写出 wiki 字段')
+  } finally {
+    empty.stop()
+  }
+})
+
 await test('OPTIONS preflight → 204 + CORS/PNA headers', async () => {
   const r = await request(`${base}/clip`, { method: 'OPTIONS' })
   assert.equal(r.status, 204)
