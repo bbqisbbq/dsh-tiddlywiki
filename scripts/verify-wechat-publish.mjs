@@ -521,8 +521,11 @@ await test('路由：未启用 403 / 方法校验 405 / 同源 403 / token 401 /
 })
 
 // ── 5. 源码级接线断言（防「路由改了但没注册 / 没打码」）─────────────────
-await test('routes.ts：三条路由都过 guardHandler，写路由声明 POST，读路由声明非读', () => {
-  const src = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'routes.ts'), 'utf8').replace(/\r\n/g, '\n')
+await test('routes 模块族：三条路由都过 guardHandler，写路由声明 POST，读路由声明非读', () => {
+  // v0.30.9：公众号发布那三条路由搬进了 `routes-wechat.ts`（纯搬迁）。断言的是
+  // 「路由注册处满足这些规则」，不是「它在哪个文件里」——所以按**模块族**读，
+  // 否则每次搬迁这条守门都会假红（v0.28.8 / v0.30.8 已经各踩过一次）。
+  const src = readFamily(repoRoot, 'src/host/routes').replace(/\r\n/g, '\n')
   for (const p of ['/wechat/ready', '/wechat/publish', '/wechat/publish/status']) {
     assert.ok(src.includes(`\${ROUTE_PREFIX}${p}\`, handler: guardHandler(`), `${p} 必须经 guardHandler 注册`)
   }

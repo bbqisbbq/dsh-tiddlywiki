@@ -51,20 +51,21 @@
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { mkdir, writeFile } from 'node:fs/promises'
-import { basename, extname, join } from 'node:path'
+import { extname, join } from 'node:path'
 import type { Tiddler, TiddlyWebClient } from './tw-api.ts'
-import { formatTiddlerDate, isBinaryType, toIsoDateString } from './tw-api.ts'
+import { isBinaryType, toIsoDateString } from './tw-api.ts'
 import type { WikiServer } from './wiki.ts'
 import { GitConflictStateError, type GitFace, type GitStatusView } from './git.ts'
 import { PATH_PREFIX, TW_PROXY_PREFIX, TW_PROXY_PATH } from './wiki.ts'
 import type { SessionQueryFace } from './session-summary.ts'
 import { WORKSPACE_TAG_PREFIX } from './workspace.ts'
-import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, safeTokenEqual, absoluteHostBase } from './http.ts'
+import { readBody, readBodyBuffer, json, guardHandler, errorStatus, rejectCrossSiteWrite, rejectNonRead, absoluteHostBase } from './http.ts'
 import { drainThenStop } from './seeds.ts'
-import { snippetOf, formatLocalMinute } from './text-util.ts'
+import { snippetOf } from './text-util.ts'
 import { WriteConflictError, assertNoConflict, buildWriteTiddler, flattenTiddlerFields } from './write-policy.ts'
-import { WECHAT_ADAPTERS, type WechatAdapter, type WechatPublishConfig, type WechatPublishJobView, type WechatPublishStartResult, type WechatReadyView } from './wechat-publish.ts'
+import type { WechatAdapter, WechatPublishConfig, WechatPublishJobView, WechatPublishStartResult, WechatReadyView } from './wechat-publish.ts'
 import { createSessionRoutes } from './routes-session.ts'
+import { createWechatRoutes } from './routes-wechat.ts'
 // Face types the session routes were extracted with: `registerRoutes`'s own
 // deps interface still declares them, so they are re-imported here rather than
 // duplicated (duplicating is how the two would drift apart).
@@ -86,10 +87,6 @@ export type { SessionQueryFace, SessionSummaryResult } from './session-summary.t
 
 export const ROUTE_PREFIX = PATH_PREFIX
 
-/** Tiddler type for quick-notes: Markdown, so the uploaded images/links and
- *  any Markdown in the note actually render in TW (a type-less tiddler is
- *  treated as plain wiki text and shows raw `![..]`/`[..]` instead). */
-const NOTE_TYPE = 'text/markdown'
 
 /** Structural webserver face (a subset of dsh-host-webserver). */
 export interface WebServerFace {
@@ -294,251 +291,27 @@ export interface WechatPublishFace {
  * Documents/images/archives stay allowed; only the executable-by-browser set is
  * refused (v0.19.0).
  */
-const DANGEROUS_UPLOAD_EXTENSIONS = new Set([
-  '.html', '.htm', '.xhtml', '.shtml', '.hta', '.svg', '.xml', '.xsl', '.xslt',
-  '.js', '.mjs', '.cjs', '.swf', '.htc',
-])
+// v0.30.9：这十来个**纯 helper**（上传名净化 / 脱敏 / limit 夹取 / 时间戳 / 标签与并发
+// 令牌解析）以及 `openInTwEditor` 搬进了 `routes-helpers.ts`（纯搬迁，函数体一字未改）。
+// 下面是**原样 re-export**：`admin-secrets.ts` 从本文件 import `redactRemoteUrl`、
+// `index.ts` 从本文件 re-export `openInTwEditor`、selftest 与
+// `scripts/verify-audit-fixes.mjs` 直接用它们 —— 既有 import 路径一个都不用改。
+import {
+  NOTE_TYPE,
+  DANGEROUS_UPLOAD_EXTENSIONS,
+  MAX_TAGS_LIMIT,
+  conflictTokens,
+  openInTwEditor,
+  readLimit,
+  readOptionalLimit,
+  redactLogLines,
+  redactRemoteUrl,
+  resolveTags,
+  sanitizeUploadName,
+  timestampTitle,
+} from './routes-helpers.ts'
 
-/** Windows device names: `NUL.txt` cannot be created and makes the route 500. */
-const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
-
-/**
- * Sanitize an uploaded filename into a safe bare name (no path separators,
- * no `..`, no control characters). Returns '' when nothing usable remains.
- */
-function sanitizeUploadName(input: unknown): string {
-  if (typeof input !== 'string') return ''
-  let name = basename(input.trim().replace(/[\\/]+/g, '/'))
-    .replace(/[\u0000-\u001f\u007f]/g, '')
-    .replace(/[<>:"|?*]/g, '_')
-    .replace(/^\.+/, '')
-    .trim()
-  if (name.length === 0 || name === '.' || name === '..') return ''
-  // Windows stores a trailing dot/space verbatim but never strips it, and
-  // `extname('evil.html.')` is just `.` — so the extension denylist was
-  // bypassable with `evil.html.` (v0.19.3). Canonicalize before the check.
-  name = name.replace(/[. ]+$/, '')
-  if (name.length === 0) return ''
-  // `CON`, `NUL`, `COM1…` are not creatable on Windows — prefix instead of 500.
-  if (WINDOWS_RESERVED_NAMES.test(name)) name = `_${name}`
-  if (name.length > 160) name = name.slice(0, 160)
-  return name
-}
-
-/**
- * Strip credentials embedded in a git remote URL (`https://user:token@host/x`)
- * before it reaches an unauthenticated HTTP response (v0.19.0). The token in a
- * remote URL is a real secret and `/status` is reachable without credentials.
- */
-export function redactRemoteUrl(remote: string): string {
-  return remote.replace(/\/\/[^/@\s]+@/g, '//***@')
-}
-
-/**
- * Redact secrets that can appear in the TW child's captured stdout/stderr log
- * (the spawn line carries `password=…`). Belt-and-braces on top of the
- * redaction in wiki.ts, because `/status` is unauthenticated.
- */
-export function redactLogLines(logs: readonly string[]): string[] {
-  return logs.map((line) => line
-    .replace(/(password=)\S+/gi, '$1***')
-    .replace(/(authorization:\s*basic\s+)[A-Za-z0-9+/=]+/gi, '$1***'))
-}
-
-/** Max `limit` accepted by the list routes (bounded payloads, v0.19.4). */const MAX_LIST_LIMIT = 200
-
-/** Max `limit` accepted by `/tags` — the tag list is a small wrapper around one
- *  full listing, so a larger cap is fine while still bounding the payload. */
-const MAX_TAGS_LIMIT = 500
-
-/** Clamp a `limit` query param. `fallback` covers absent/unparsable values. */
-function readLimit(url: URL, fallback: number, max = MAX_LIST_LIMIT): number {
-  const raw = url.searchParams.get('limit')
-  // An EMPTY value (`?limit=`) means "not specified", not 0 (v0.23.5):
-  // `Number('' ?? fallback)` is 0, which clamped up to 1 — `/recent?limit=`
-  // returned a single tiddler instead of the default 15. `readOptionalLimit`
-  // already treated empty as absent; the two now agree.
-  if (raw === null || raw.trim().length === 0) return fallback
-  const parsed = Number(raw)
-  return Number.isFinite(parsed) ? Math.max(1, Math.min(Math.floor(parsed), max)) : fallback
-}
-
-/** Optional `limit` query param: `undefined` when absent/unparsable (= no cap). */
-function readOptionalLimit(url: URL, max: number): number | undefined {
-  const raw = url.searchParams.get('limit')
-  if (raw === null || raw.trim().length === 0) return undefined
-  const parsed = Number(raw)
-  if (!Number.isFinite(parsed)) return undefined
-  return Math.max(1, Math.min(Math.floor(parsed), max))
-}
-
-/** Default note title: `YYYY-MM-DD HH:mm` (design doc D6). Shared formatter —
- *  session-summary.ts used to carry a second, byte-identical copy (v0.22.8). */
-function timestampTitle(date = new Date()): string {
-  return formatLocalMinute(date)
-}
-
-/**
- * Open a tiddler in TW's NATIVE editor: save the tiddler (when text is
- * non-empty) as Markdown, reuse or create a DRAFT tiddler carrying
- * `draft.of`/`draft.title` (TW's story view renders drafts with the
- * EditTemplate — list.js: `isDraft && editTemplate`), and return the draft
- * title so the client can navigate the panel iframe to `#<draftTitle>`.
- * The draft carries the same `text/markdown` type as the note so saving it in
- * TW keeps Markdown (a draft without a matching type would overwrite the
- * note's type back to plain wiki text).
- */
-export async function openInTwEditor(
-  client: TiddlyWebClient,
-  title: string,
-  text: string,
-  tags: string[] | undefined,
-  options: { defaultTags?: string[]; expectedModified?: string; expectedRevision?: string | number; force?: boolean } = {},
-): Promise<{ title: string; draftTitle: string }> {
-  // One read drives everything: the write base (tags/custom fields/type), the
-  // conflict check, and — when the body carried no text — the draft content.
-  const existing = await client.get(title)
-  assertNoConflict(title, existing, options)
-  if (text.trim().length > 0) {
-    // PRESERVE, do not blind-replace (v0.19.1): the old code PUT
-    // `{title, text, tags, type}` with no read, wiping the note's custom fields
-    // and (because `tags` defaulted to the note tag) its tags too.
-    const { tiddler } = buildWriteTiddler(title, text, {
-      existing,
-      tags,
-      defaultTags: options.defaultTags,
-      agentTag: false,
-    })
-    await client.put(tiddler)
-  }
-  // Draft content: the provided text, else the existing tiddler's content.
-  const draftText = text.trim().length > 0 ? text : (existing?.text ?? '')
-  // Draft TYPE (v0.19.5): must match the note's real content type. Hardcoding
-  // `text/markdown` meant that editing a wikitext note through the quick-note
-  // surface downgraded it — TW's save copies the draft's fields back onto the
-  // original, so `fields.type` flipped to markdown and the body started
-  // rendering as source (`!` headings, `<$list>`, `[[links]]` all broke).
-  const draftType = typeof existing?.type === 'string' && existing.type.length > 0 ? existing.type : NOTE_TYPE
-  // Draft lookup. The canonical TW name is probed with a single GET first — the
-  // old code always pulled the ENTIRE listing (megabytes on a big wiki) just to
-  // find a draft; the listing stays as the fallback for a differently-named one.
-  //
-  // NEVER CLOBBER AN EXISTING DRAFT (v0.20.0): the v0.19.5 refactor inverted
-  // this branch — when the canonical `Draft of "X"` already existed it wrote
-  // straight into it, destroying whatever the user had typed in TW's editor,
-  // and when it found a differently-named draft it discarded that title and
-  // minted a fresh timestamped one (leaving an orphan). The pre-refactor code
-  // was `free ? canonical : canonical+timestamp`; that is restored below, plus
-  // reuse of any existing draft title found in the fallback listing.
-  const canonical = `Draft of "${title}"`
-  let draftTitle: string | undefined
-  /** true = the draft tiddler already existed and owns unsaved user content. */
-  let draftExists = false
-  let canonicalFree: boolean | undefined
-  try {
-    canonicalFree = (await client.get(canonical)) === undefined
-  } catch {
-    canonicalFree = undefined
-  }
-  if (canonicalFree === true) {
-    // Free canonical name → use it, so TW's own "save draft" bookkeeping lines up.
-    draftTitle = canonical
-  } else {
-    // Canonical draft exists (or the probe failed): reuse an existing draft of
-    // this note when there is one, otherwise take a timestamped name so the
-    // existing draft is preserved.
-    try {
-      const items = await client.list(undefined, false)
-      for (const item of items) {
-        if (item['draft.of'] === title && typeof item.title === 'string') {
-          draftTitle = item.title
-          draftExists = true
-          break
-        }
-      }
-    } catch {
-      /* fall back to a fresh draft */
-    }
-    if (draftTitle === undefined) draftTitle = `${canonical} ${Date.now()}`
-  }
-  // WRITE THE BODY ONLY WHEN IT IS OURS TO WRITE (v0.22.8).
-  //
-  // The v0.20.0 fix stopped the code from minting a fresh draft title over an
-  // existing one — but it still PUT `draftText` into whatever draft it had just
-  // REUSED, and that is the destructive half. `draftText` is the caller's text
-  // or the note's SAVED body, while a reused draft holds whatever the user has
-  // typed into TW's native editor and not yet saved; overwriting it silently
-  // discards that. Reachable without any exotic setup: open 快速笔记 (a
-  // minute-precision title), type, close the popup, reopen within the same
-  // minute — same title, empty caller text, and the draft is blanked.
-  //
-  // So: a draft we are CREATING is ours to fill; a draft we are REUSING is only
-  // overwritten when the caller explicitly supplied text (the quick-note card's
-  // content is the source of truth then, and it was just saved to the note
-  // above). With no text, the existing draft is left exactly as the user left it.
-  //
-  // Draft TIMESTAMPS (v0.22.10): TW's save rebuilds the note as
-  // `new $tw.Tiddler(getCreationFields(), draft, {title}, getModificationFields())`
-  // — the DRAFT's fields win over the freshly generated creation fields, so
-  // whatever `created` the draft carries becomes the note's `created` after the
-  // user saves. A draft without it therefore resets the note's creation instant
-  // to "now"; carrying the note's own `created` keeps it. This mirrors TW's own
-  // draft seeding (`handleNewTiddlerEvent` merges `getCreationFields()`,
-  // `existingTiddler`, then `getModificationFields()`), so the draft ends up with
-  // the NOTE's created and a fresh modified.
-  if (!draftExists || text.trim().length > 0) {
-    const draftCreated = typeof existing?.created === 'string' && existing.created.trim().length > 0
-      ? existing.created
-      : undefined
-    await client.put({
-      title: draftTitle,
-      text: draftText,
-      'draft.of': title,
-      'draft.title': title,
-      type: draftType,
-      ...(draftCreated !== undefined ? { created: draftCreated } : {}),
-      // Written "now" — the draft IS new content. `put()` would otherwise fall
-      // back to copying `created`, labelling a just-written draft with the note's age.
-      modified: formatTiddlerDate(new Date()),
-    })
-  }
-  return { title, draftTitle }
-}
-
-/**
- * Resolve note tags from the request body: `tags` array wins, then the legacy
- * single `tag` string. Returns **undefined** when the body asks for nothing —
- * the caller (`buildWriteTiddler`) then preserves the existing note's tags
- * (v0.19.1 data safety) or falls back to the configured default for new notes.
- * The old version always returned `[defaultTag]`, so re-saving an existing note
- * under its own title silently replaced its tags with the default.
- */
-function resolveTags(body: { tag?: unknown; tags?: unknown }): string[] | undefined {
-  if (Array.isArray(body.tags)) {
-    const tags = body.tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim())
-    if (tags.length > 0) return tags
-  }
-  if (typeof body.tag === 'string' && body.tag.trim().length > 0) {
-    return body.tag.trim().split(/\s+/).filter(Boolean)
-  }
-  return undefined
-}
-
-/** Body fields accepted by the note routes for optimistic concurrency. */
-function conflictTokens(body: { expectedModified?: unknown; expectedRevision?: unknown; force?: unknown }): {
-  expectedModified?: string
-  expectedRevision?: string | number
-  force?: boolean
-} {
-  return {
-    ...(typeof body.expectedModified === 'string' && body.expectedModified.length > 0 ? { expectedModified: body.expectedModified } : {}),
-    ...(typeof body.expectedRevision === 'string' || typeof body.expectedRevision === 'number'
-      ? { expectedRevision: body.expectedRevision }
-      : {}),
-    ...(body.force === true ? { force: true } : {}),
-  }
-}
-
+export { openInTwEditor, redactLogLines, redactRemoteUrl } from './routes-helpers.ts'
 export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDeps): () => void {
   /**
    * `/status` is polled by the GUI (30s), every mounted TW frame and the FAB,
@@ -1192,194 +965,15 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * `guardSendToAgent` — the feature is off by default, so an unconfigured
    * deployment answers 403 instead of starting browser automation.
    */
-  const guardWechat = (req: IncomingMessage, res: ServerResponse): boolean => {
-    const config = deps.wechatConfig(req)
-    if (!config.enabled) {
-      json(res, { ok: false, error: 'wechat publishing is disabled' }, 403)
-      return false
-    }
-    const token = config.token.trim()
-    if (token.length === 0) return true
-    const got = req.headers['x-wechat-publish-token']
-    const value = typeof got === 'string' ? got : Array.isArray(got) ? got[0] ?? '' : ''
-    if (safeTokenEqual(value, token)) return true
-    json(res, { ok: false, error: 'unauthorized' }, 401)
-    return false
-  }
-
-  /**
-   * GET /dsh-tiddlywiki/wechat/ready — precheck for the TW toolbar button:
-   * is opencli on PATH and are the adapter files installed? 200 whenever the
-   * feature is on; the caller reads `opencli.ok` / `adapters.*` (an installation
-   * problem is NOT an HTTP error — the button shows it as an actionable notice).
-   */
-  const handleWechatReady = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectNonRead(req, res)) return
-      if (!guardWechat(req, res)) return
-      const ready = await deps.wechatReady(req)
-      json(res, {
-        ok: true,
-        enabled: ready.enabled,
-        command: ready.command,
-        opencli: ready.opencli,
-        adapters: ready.adapters,
-      })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
-
-  /**
-   * The loopback DSN the adapter calls back into (`fetch /render`): the DSH web
-   * port this very request arrived on, so opencli (a local process) reaches the
-   * same server regardless of which hostname the browser used. `wechat.dsn`
-   * overrides it for exotic setups.
-   */
-  const wechatDsn = (req: IncomingMessage): string => {
-    const configured = deps.wechatConfig(req).dsn
-    if (configured.length > 0) return configured
-    const port = req.socket.localPort
-    return port === undefined ? '' : `http://127.0.0.1:${port}${ROUTE_PREFIX}`
-  }
-
-  /**
-   * POST /dsh-tiddlywiki/wechat/publish — start ONE publish job.
-   *
-   * Body `{title, adapter?}`. The heavy work happens in the runner (spawned
-   * opencli), so this returns a job id immediately; the TW overlay then polls
-   * `/wechat/publish/status`. A second concurrent call gets 409: two opencli
-   * runs would fight over the same browser tab.
-   */
-  const handleWechatPublish = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      if (!guardWechat(req, res)) return
-      // v0.29.0: the publish chain cannot express WHICH knowledge base it means.
-      //
-      // The adapter is a separate local process handed ONE base URL (`--dsn`)
-      // and it appends `/render` and `/get?title=…` to it — so a wiki id can
-      // only travel in that PATH, never as `?wiki=`. In a multi-wiki install the
-      // job would pass its own existence check against wiki B and then
-      // render/publish the DEFAULT wiki's same-titled note: wrong content, on a
-      // public platform, with nothing in the receipt saying so. Refuse loudly
-      // instead. (Single-wiki installs — the overwhelming majority, and the
-      // only configuration this feature was verified in — behave identically to
-      // before.) The proper fix is a wiki-scoped alias prefix (`/w/<id>/render`)
-      // that the DSN can point at; tracked as a follow-up, not done here.
-      if (deps.wikiSummaries(req).mode !== 'single') {
-        json(res, {
-          ok: false,
-          error: '多知识库模式下暂不支持从 TW 面板发布到公众号：发布链路回连宿主的地址无法指定库，会读到默认库的同名笔记。请在「设置 → 知识库 → 运行模式」切为单库后发布，或改用命令行 opencli 并显式传 --dsn。',
-        }, 400)
-        return
-      }
-      let body: { title?: unknown; adapter?: unknown } = {}
-      try {
-        body = JSON.parse(await readBody(req)) as { title?: unknown; adapter?: unknown }
-      } catch {
-        /* malformed body → the title check below answers */
-      }
-      const title = typeof body.title === 'string' ? body.title.trim() : ''
-      if (title.length === 0) {
-        json(res, { ok: false, error: 'title is required' }, 400)
-        return
-      }
-      if (title.length > 300) {
-        json(res, { ok: false, error: 'title is too long' }, 400)
-        return
-      }
-      // The title becomes a TW `/render` lookup and a text file name we generate;
-      // the secret namespace must never be publishable (same predicate as /render).
-      if (isBlockedProxyTitle(title)) {
-        json(res, { ok: false, error: 'unsupported title' }, 400)
-        return
-      }
-      const requested = body.adapter === undefined ? undefined : String(body.adapter)
-      if (requested !== undefined && !(WECHAT_ADAPTERS as readonly string[]).includes(requested)) {
-        json(res, { ok: false, error: `unsupported adapter: ${requested}` }, 400)
-        return
-      }
-      const runner = deps.wechatRunner()
-      if (runner === undefined) {
-        json(res, { ok: false, error: 'publish runner unavailable' }, 503)
-        return
-      }
-      // Fail fast on a title that does not exist: the adapter would otherwise
-      // spend ~10s booting the browser only to 404 in /render.
-      const client = deps.getClient(req)
-      if (client !== undefined) {
-        const tiddler = await client.get(title)
-        if (tiddler === undefined) {
-          json(res, { ok: false, error: `wiki 里找不到笔记「${title}」` }, 400)
-          return
-        }
-      }
-      const adapter = (requested ?? deps.wechatConfig(req).adapter) as WechatAdapter
-      const ready = await deps.wechatReady(req)
-      const adapterReady = adapter === 'publish-note-imgs' ? ready.adapters.publishNoteImgs : ready.adapters.publishNote
-      if (!ready.opencli.ok || !adapterReady) {
-        // `stale` (v0.23.4) = installed but outdated adapter files: the common
-        // case is an old copy without `--title-file`, which would otherwise fail
-        // deep inside opencli with a confusing "required argument missing".
-        const stale = ready.adapters.stale ?? []
-        const staleNote = stale.length > 0
-          ? `adapter 版本过旧（缺 --title-file）：${stale.join('、')}`
-          : null
-        json(res, {
-          ok: false,
-          error: !ready.opencli.ok
-            ? `找不到 opencli（wechat.command=${ready.command}）：请先 npm install -g @jackwener/opencli`
-            : (staleNote ?? `opencli 里还没有 weixin adapter（缺 ${ready.adapters.missing.join('、') || adapter}）`)
-              + '：请运行 node tools/wechat/install-wechat-adapters.mjs',
-          ready,
-        }, 503)
-        return
-      }
-      const result = runner.start({ title, adapter, dsn: wechatDsn(req) })
-      if (!result.ok) {
-        if (result.busy) {
-          json(res, { ok: false, error: 'a publish job is already running', jobId: result.job.id }, 409)
-          return
-        }
-        json(res, { ok: false, error: result.error }, 400)
-        return
-      }
-      json(res, { ok: true, jobId: result.job.id, title: result.job.title, adapter: result.job.adapter })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
-
-  /**
-   * GET /dsh-tiddlywiki/wechat/publish/status — poll one job (`?id=`), or the
-   * current/newest one when the id is omitted (the overlay loses its id when the
-   * page reloads mid-publish). `job: null` = nothing has run yet.
-   */
-  const handleWechatPublishStatus = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    try {
-      if (rejectNonRead(req, res)) return
-      if (!guardWechat(req, res)) return
-      const runner = deps.wechatRunner()
-      if (runner === undefined) {
-        json(res, { ok: false, error: 'publish runner unavailable' }, 503)
-        return
-      }
-      const id = (new URL(req.url ?? '/', 'http://x').searchParams.get('id') ?? '').trim()
-      const job = runner.status(id.length > 0 ? id : undefined)
-      if (job === undefined) {
-        if (id.length > 0) {
-          json(res, { ok: false, error: 'unknown job' }, 404)
-          return
-        }
-        json(res, { ok: true, job: null })
-        return
-      }
-      json(res, { ok: true, job })
-    } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
-    }
-  }
+  // v0.30.9：公众号发布那三条路由（+ guardWechat/wechatDsn）搬进 routes-wechat.ts。
+  // 只把它真正用到的 deps 成员传进去 —— 依赖面写在那个文件里，改动可审。
+  const { handleWechatReady, handleWechatPublish, handleWechatPublishStatus } = createWechatRoutes({
+    getClient: deps.getClient,
+    wechatConfig: deps.wechatConfig,
+    wechatReady: deps.wechatReady,
+    wechatRunner: deps.wechatRunner,
+    wikiSummaries: deps.wikiSummaries,
+  })
 
   // Every handler goes through guardHandler (v0.19.3): a rejection — including a
   // synchronous throw before the handler's own try, e.g. `new URL(req.url)` —
