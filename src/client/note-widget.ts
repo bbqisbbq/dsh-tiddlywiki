@@ -46,6 +46,10 @@
  *                           「✏️ 在 TW 中编辑」/ Ctrl+Enter (POST /edit). It OWNS the
  *                           in-flight `saving` flag (v0.30.45); `postEditAndOpen`
  *                           stays in the card because openNative() shares it.
+ *   - note-widget-upload-ui.ts the upload WIRING (v0.30.46): 「上传」 button +
+ *                           hidden input + drop-onto-the-editor. Its own
+ *                           `dragDepth` travels with it; it asks the card for
+ *                           exactly two things — the editor and `wikiQuery`.
  *
  * @module dsh-tiddlywiki/client/note-widget
  */
@@ -55,7 +59,7 @@ import { openEditorPopup, isEditorPopupOpen, isEditorPopupBlank } from './editor
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
 import { EDIT_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
 import { buildTagEditor } from './note-widget-tags.ts'
-import { uploadInto } from './note-widget-upload.ts'
+import { createNoteUploadUi } from './note-widget-upload-ui.ts'
 import { createRecentPicker } from './note-widget-recent.ts'
 import { createNoteScope } from './note-widget-scope.ts'
 import { installCardDrag, positionCard } from './note-widget-placement.ts'
@@ -356,41 +360,10 @@ export function createNoteWidget(): NoteWidgetHandle {
     })
 
     // ── file upload (button + drag & drop onto the editor) ────────────────
-    const uploadBtn = document.createElement('button')
-    uploadBtn.type = 'button'
-    uploadBtn.className = 'dsh-tw-note-upload'
-    uploadBtn.title = t('note.uploadTitle')
-    uploadBtn.textContent = t('note.upload')
-    const fileInput = document.createElement('input')
-    fileInput.type = 'file'
-    fileInput.multiple = true
-    fileInput.hidden = true
-    uploadBtn.addEventListener('click', () => { fileInput.click() })
-    fileInput.addEventListener('change', () => {
-      for (const file of Array.from(fileInput.files ?? [])) void uploadInto(file, editor, wikiQuery)
-      fileInput.value = ''
-    })
-
-    let dragDepth = 0
-    editor.el.addEventListener('dragenter', (event) => {
-      event.preventDefault()
-      dragDepth++
-      editor.el.classList.add('dsh-tw-note-drop')
-    })
-    editor.el.addEventListener('dragover', (event) => { event.preventDefault() })
-    editor.el.addEventListener('dragleave', (event) => {
-      event.preventDefault()
-      dragDepth = Math.max(0, dragDepth - 1)
-      if (dragDepth === 0) editor.el.classList.remove('dsh-tw-note-drop')
-    })
-    editor.el.addEventListener('drop', (event) => {
-      event.preventDefault()
-      dragDepth = 0
-      editor.el.classList.remove('dsh-tw-note-drop')
-      const files = event.dataTransfer?.files
-      if (files === undefined || files.length === 0) return
-      for (const file of Array.from(files)) void uploadInto(file, editor, wikiQuery)
-    })
+    // 整组（按钮、隐藏的 file input、拖放接线与它自有的 `dragDepth`）住在
+    // note-widget-upload-ui.ts（v0.30.46）；卡片只把它要的东西递进去：编辑器与
+    // `wikiQuery`（附件必须落在**这张卡片的目标库**里）。
+    const upload = createNoteUploadUi({ editor, wikiQuery })
 
     const foot = document.createElement('div')
     foot.className = 'dsh-tw-note-foot'
@@ -405,7 +378,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     recentBtn.title = t('note.recentTitle')
     recentBtn.textContent = t('note.recent')
     recentBtn.addEventListener('click', () => { recent.toggle() })
-    footLeft.append(uploadBtn, recentBtn, hint)
+    footLeft.append(upload.button, recentBtn, hint)
     const footRight = document.createElement('div')
     footRight.className = 'dsh-tw-note-foot-right'
     const editBtn = document.createElement('button')
