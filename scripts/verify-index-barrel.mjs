@@ -106,4 +106,54 @@ assert.deepEqual(
   'typecheck / verify:unit / verify:static 都看不见这种丢失。',
 )
 
-console.log(`INDEX BARREL OK（scripts 需要 ${needed.size} 个具名导出，src/index.ts 导出 ${exported.size} 个）`)
+// ── 第二道：**完整公共面的棘轮**（v0.30.51）──────────────────────────────────
+//
+// 上面那道只守「本仓库脚本用得到的」导出（175 个）。而 barrel 一共导出 ~290 个，
+// 剩下的**没有任何消费者** —— 它们的存在意义是「npm 下游 / 未来的调用方」。
+// v0.30.42 就是这么丢掉 `MARKDOWN_PLUGIN` 的：零消费者 ⇒ 零报错 ⇒ 只有人肉
+// `git diff` 能发现。同一类事故在 v0.30.48 又发生一次（`writeLocationState`，
+// 那次恰好在 scripts 里有消费者、被第一道守门逮住）。
+//
+// 所以这里再加一道**只增不减的棘轮**：把当前导出的完整名单快照进
+// `scripts/index-barrel-surface.json`，之后
+//   - **少了一个名字** ⇒ 红（并点名），这是我们要拦的事故；
+//   - **多了一个名字** ⇒ 也红，提示把它加进快照 —— 因为「公共面悄悄变大」
+//     同样应当是一次**有意识的**决定（否则 barrel 会慢慢长出没人负责的 API）。
+//
+// ⚠️ 只比**名字集合**，不比每个名字从哪里来 —— 搬迁（换来源模块）本来就是允许的。
+const surfaceFile = path.join(repoRoot, 'scripts/index-barrel-surface.json')
+
+// `--update-surface` 必须在「快照不存在」的检查**之前**处理 —— 否则首次生成会
+// 被自己的存在性断言拦住（本版实测）。
+if (process.argv.includes('--update-surface')) {
+  const next = { note: 'src/index.ts 的具名导出公共面（只增不减的棘轮；由 scripts/verify-index-barrel.mjs 守门）', exports: [...exported].sort() }
+  fs.writeFileSync(surfaceFile, `${JSON.stringify(next, null, 2)}\n`, 'utf8')
+  console.log(`INDEX BARREL SURFACE UPDATED（写入 ${next.exports.length} 个名字）`)
+  process.exit(0)
+}
+
+if (!fs.existsSync(surfaceFile)) {
+  assert.fail(`缺少公共面快照 ${path.relative(repoRoot, surfaceFile)} —— 用 node scripts/verify-index-barrel.mjs --update-surface 生成`)
+}
+const snapshot = JSON.parse(fs.readFileSync(surfaceFile, 'utf8'))
+assert.ok(Array.isArray(snapshot.exports) && snapshot.exports.length >= 100,
+  '公共面快照格式不对或为空（应当是 { exports: [...] } 且至少 100 项）')
+
+const previous = new Set(snapshot.exports)
+const dropped = snapshot.exports.filter((name) => !exported.has(name)).sort()
+const added = [...exported].filter((name) => !previous.has(name)).sort()
+assert.deepEqual(
+  dropped,
+  [],
+  `这些名字从 src/index.ts 的公共面上消失了：${dropped.join(', ')}\n` +
+  '它们在本仓库里**没有消费者**（所以编译器和别的守门都不会响），但下游可能正在用。\n' +
+  '如果这是有意的移除，请在同一个 commit 里跑 `node scripts/verify-index-barrel.mjs --update-surface` 更新快照。',
+)
+assert.deepEqual(
+  added,
+  [],
+  `公共面上新增了这些名字：${added.join(', ')}\n` +
+  '新增公共 API 应当是有意识的决定 —— 确认后跑 `node scripts/verify-index-barrel.mjs --update-surface`。',
+)
+
+console.log(`INDEX BARREL OK（scripts 需要 ${needed.size} 个具名导出；公共面快照 ${snapshot.exports.length} 个，当前导出 ${exported.size} 个）`)
