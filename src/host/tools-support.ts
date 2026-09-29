@@ -531,7 +531,15 @@ export function insertIntoSection(base: string, heading: string, addition: strin
     const s = line.replace(/\r$/, '')
     const md = /^#{1,6}\s+(.*)$/.exec(s)
     if (md !== null) return (md[1] ?? '').trim()
-    const tw = /^!{1,6}\s*(.*)$/.exec(s)
+    // Wikitext headings are `!`…`!!!!!!`. The NEGATIVE LOOKAHEAD excludes `![…]`
+    // — Markdown's image syntax (`![shot](a.png)`) and TW's `![[embed]]` — which
+    // the old `/^!{1,6}\s*(.*)$/` matched as a level-1 heading whose text was
+    // `[shot](a.png)` (v0.30.12). A note with an image right after a heading then
+    // looked like it had a section named after the image, so a `heading` append
+    // could land in the wrong place, and the "next heading" scan stopped early —
+    // splitting the section at the picture. `! [link]` (with a space) still works,
+    // and `!Heading` without a space still works (TW allows both).
+    const tw = /^!{1,6}(?![![])\s*(.*)$/.exec(s)
     if (tw !== null) return (tw[1] ?? '').trim()
     return null
   }

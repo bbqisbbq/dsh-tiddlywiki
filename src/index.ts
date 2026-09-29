@@ -59,6 +59,7 @@ import { dshHomePath, defineTool } from './sdk.ts'
 // 守门脚本因此不必钉单个文件名）。index.ts 仍是唯一的插件入口，也仍然拥有全部
 // 可变状态（farm / 控制文件缓存 / switching / disposed），子模块只拿到显式的 deps。
 import { createWikiViews, proxyBaseForEntry, restartAffectedWikis, resolveWikiRoot } from './index-wikis.ts'
+import { createMutationLock } from './host/mutation-lock.ts'
 import { createGitLayer } from './index-git.ts'
 import { createPromptSurface, createServerTuning } from './index-prompt.ts'
 import { createClipSurface } from './index-clip.ts'
@@ -90,6 +91,12 @@ export {
 export { openInTwEditor, registerRoutes } from './host/routes.ts'
 export { writeSessionSummary, SESSION_SUMMARY_PREFIX } from './host/routes.ts'
 export type { SessionQueryFace, SessionSummaryResult } from './host/routes.ts'
+// Pure helper behind `tiddlywiki_append`'s `heading` placement (v0.30.12): exported
+// for the HEADLESS gates — its only regression test used to live in the e2e suite,
+// which needs a real TW child, so cheap edge cases ("an image is not a heading")
+// had nowhere to run.
+export { insertIntoSection } from './host/tools-support.ts'
+export { createMutationLock, type MutationLock } from './host/mutation-lock.ts'
 export { registerAdminRoutes, resolveTwRoot, readWikiInfo, writeWikiInfo, ensurePlugin, bundledCatalog, ensureLanguage, pinLanguageTiddler, normalizeThemes, readActiveThemeName, MASKED_SECRET, maskConfigSecrets, stripMaskedSecrets } from './host/admin.ts'
 export { escapeInline } from './host/session-summary.ts'
 export { seedDocNote, docNoteText, DOC_NOTE_TITLE, DOC_NOTE_TAG, DOC_NOTE_TEXT } from './host/seed-notes.ts'
@@ -789,7 +796,12 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const fallbackWechat = normalizeWechatConfig(config.wechat)
     /** Used only while nothing runs: base defaults, no wiki tiddler to read. */
     const idleConfig = new ConfigStore(baseShape)
-    const disposeRoutes = registerRoutes({ webServer: ws }, {
+    // ONE mutation lock for the whole plugin (v0.30.12): /restart, /sync,
+  // /admin/restart and the seed restart all stop the TW child — before this,
+  // the admin half had no lock at all and could race the others.
+  const mutationLock = createMutationLock()
+  const disposeRoutes = registerRoutes({ webServer: ws }, {
+      mutationLock,
       server: (req) => target(req)?.server,
       // The roster the GUI selector + the settings page read. It reports what
       // the FARM serves right now (in single mode that is the one synthesized
@@ -888,6 +900,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       },
     })
     const adminDeps: AdminDeps = {
+      mutationLock,
       server: (req) => target(req)?.server,
       getClient: (req) => target(req)?.client(),
       getWikiPath: (req) => target(req)?.path ?? defaultPath(),

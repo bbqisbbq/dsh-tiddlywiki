@@ -62,6 +62,7 @@ import { WriteConflictError } from './write-policy.ts'
 import { conflictTokens, resolveTags, timestampTitle } from './routes-helpers.ts'
 import type { WechatAdapter, WechatPublishConfig, WechatPublishJobView, WechatPublishStartResult, WechatReadyView } from './wechat-publish.ts'
 import { createSessionRoutes } from './routes-session.ts'
+import { createMutationLock, type MutationLock } from './mutation-lock.ts'
 import { createNoteRoutes } from './routes-note.ts'
 import { createWechatRoutes } from './routes-wechat.ts'
 // Face types the session routes were extracted with: `registerRoutes`'s own
@@ -186,6 +187,11 @@ export interface RouteDeps {
   noteDefaults: (req: IncomingMessage) => { tag: string }
   /** Effective UI flags of the targeted wiki. */
   uiDefaults: (req: IncomingMessage) => UiDefaultsPublic
+  /**
+   * The plugin-wide mutation lock (v0.30.12). Optional so a harness that builds a
+   * partial RouteDeps still registers; when omitted the surface makes its own.
+   */
+  mutationLock?: MutationLock
   /**
    * The targeted wiki's UI language (v0.30.6), raw (`zh`/`en`/`zh-CN`…). The
    * CLIENT normalizes it; `/status` carries it as `lang` so every client surface
@@ -336,13 +342,14 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    * other (and a restart racing a restart is what left orphan TW children).
    * A second concurrent caller gets 429 instead of piling on (v0.19.0).
    */
-  let mutationInFlight: string | undefined
-  const beginMutation = (label: string): boolean => {
-    if (mutationInFlight !== undefined) return false
-    mutationInFlight = label
-    return true
-  }
-  const endMutation = (): void => { mutationInFlight = undefined }
+  // v0.30.12: the lock is now SHARED with the admin routes (`/admin/restart`,
+  // `/admin/seeds/{run,remove}`), which used to race it — see host/mutation-lock.ts.
+  // `deps.mutationLock` is created once in index.ts; the fallback keeps a harness
+  // that builds a partial RouteDeps working (its own lock is still correct for a
+  // single surface).
+  const mutationLock = deps.mutationLock ?? createMutationLock()
+  const beginMutation = (label: string): boolean => mutationLock.begin(label)
+  const endMutation = (): void => mutationLock.end()
 
   /**
    * Absolute twin of `twProxy` for embedders whose own document is not on

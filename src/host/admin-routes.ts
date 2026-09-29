@@ -20,6 +20,7 @@ import type { WikiSwitchResult } from './wiki-switch.ts'
 import { GitFace } from './git.ts'
 import { readWikiInfo, writeWikiInfo, bundledCatalog, readActiveThemeName, scanWikiRuntimePlugins, normalizeThemes, pinLanguageTiddler, type WikiInfo } from './admin-catalog.ts'
 import { maskConfigSecrets, stripMaskedSecrets } from './admin-secrets.ts'
+import type { MutationLock } from './mutation-lock.ts'
 
 export interface AdminDeps {
   /** The TW child serving the wiki this request targets (undefined = not up). */
@@ -46,6 +47,12 @@ export interface AdminDeps {
    * says 「正在配置：books」), so the wiki-scoped admin handlers check this FIRST.
    */
   targetProblem?: (req: IncomingMessage) => string | undefined
+  /**
+   * The plugin-wide mutation lock (v0.30.12): `/admin/restart` and the seed runs
+   * must not overlap with `/sync` or with each other — they all stop the TW child
+   * and race the same syncer queue. Optional so harnesses still work.
+   */
+  mutationLock?: MutationLock
   /**
    * Called after a successful settings-page save (v0.21.0). The plugin rebuilds
    * its system-prompt section here, so a prompt.* edit applies to the running
@@ -408,6 +415,15 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       // that restarted nothing while the settings page scoped to that wiki
       // believed it had.
       if (refuseStoppedTarget(req, res)) return
+      // v0.30.12: take the SHARED mutation lock. Before this, the settings page
+      // could press 「重启」 while a `/sync` was draining the same queue (or while
+      // another restart was in flight) — the two operations both stop the TW child.
+      const lock = deps.mutationLock
+      if (lock !== undefined && !lock.begin('admin-restart')) {
+        json(res, { ok: false, error: `另一个重启/同步正在进行中（${lock.current() ?? '?'}），请稍候` }, 429)
+        return
+      }
+      try {
       // v0.24.1: drain the syncer queue first (ironclad rule #1) — this route
       // used to kill the child with writes still queued, losing them silently.
       const drained = await drainThenStop({
@@ -417,6 +433,9 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         log: (message) => console.warn('[dsh-tiddlywiki]', message),
       })
       json(res, { ok: true, status: deps.server(req)?.status().status, drained })
+      } finally {
+        lock?.end()
+      }
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
@@ -469,6 +488,14 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       // content writes would lose them).
       let restarted = false
       let restartError: string | undefined
+      // v0.30.12：这一段会 drain + 重启 TW 子进程，所以必须拿**共享**的变更锁
+      // （否则设置页「初始化」与 `/sync`、`/admin/restart` 会同时停子进程）。
+      // 拿不到就如实报冲突，而不是排队硬上。
+      const seedLock = deps.mutationLock
+      if (needsRestartAfterSeeds(results) && seedLock !== undefined && !seedLock.begin('admin-seeds')) {
+        json(res, { ok: false, error: `另一个重启/同步正在进行中（${seedLock.current() ?? '?'}），请稍候` }, 429)
+        return
+      }
       if (needsRestartAfterSeeds(results)) {
         try {
           const flushed = await waitForFileWrite(join(deps.getWikiPath(req), 'tiddlers', RENDER_PLUGIN_FILE), 8_000, 150, seedStartedAt)
@@ -491,6 +518,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         }
       }
       const ok = results.every((r) => r.ok)
+      seedLock?.end()
       json(res, { ok, results, restarted, ...(restartError !== undefined ? { restartError } : {}) }, ok ? 200 : 400)
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)

@@ -36,6 +36,7 @@ import {
   DEFAULT_NOTE_TYPE,
   ensureTiddlerTimestamps,
   formatTiddlerDate,
+  insertIntoSection,
   normalizeFieldsArg,
   parseTiddlerDate,
 } from '../lib/index.js'
@@ -301,6 +302,45 @@ test('assertNoConflict：force / 不存在 / 不给令牌 → 放行', () => {
   assert.doesNotThrow(() => assertNoConflict('X', existing, { expectedModified: 'x', force: true }))
   assert.doesNotThrow(() => assertNoConflict('X', undefined, { expectedModified: 'x' }))
   assert.doesNotThrow(() => assertNoConflict('X', existing, {}))
+})
+
+/* ────────────────── append 的 heading 定位（v0.30.12）────────────────── */
+
+// 为什么单测：`insertIntoSection` 是纯函数，而它的**唯一**回归测试原先在 e2e 里
+// （verify-tools.mjs，要 spawn TW）。这个缺陷（Markdown 图片被当成 wikitext 标题）
+// 正是"只有 e2e 才发现、跑得又慢"的那一类，所以搬到秒级单测里来。
+test('insertIntoSection：Markdown 图片/嵌入不算标题（v0.30.12 修）', () => {
+  const note = ['## 工作日志', '', '![截图](a.png)', '', '正文一行', '', '## 下一节', '', '尾部'].join('\n')
+  // 关键后果 1：标题文本不得变成 `[截图](a.png)`。
+  const wrong = insertIntoSection(note, '[截图](a.png)', '不应落这里')
+  assert.equal(wrong.matched, false, '图片行不得被当成标题（否则模型能 append 到一个"图片标题"上）')
+  // 关键后果 2：定位「下一节」时必须跳过图片行，落点在两者之间。
+  const ok = insertIntoSection(note, '工作日志', '补一句')
+  assert.equal(ok.matched, true)
+  assert.ok(
+    ok.text.indexOf('补一句') > ok.text.indexOf('## 工作日志') && ok.text.indexOf('补一句') < ok.text.indexOf('## 下一节'),
+    `内容必须落在「工作日志」与「下一节」之间：\n${ok.text}`,
+  )
+})
+
+test('insertIntoSection：真 wikitext 标题仍然认（`!` / `! 空格` / `!Heading`）', () => {
+  for (const [name, heading] of [['感叹号+空格', '! 章节'], ['紧贴', '!章节'], ['二级', '!! 小节']]) {
+    const note = `${heading}\n正文\n`
+    const r = insertIntoSection(note, heading.replace(/^!+\s*/, ''), 'X')
+    assert.equal(r.matched, true, `${name}（${heading}）必须能被定位`)
+    assert.ok(r.text.includes('X'), `${name} 必须真的插入`)
+  }
+  // `! [链接]`（有空格）不该被 lookahead 误伤。
+  const linked = insertIntoSection('! [链接] 章节\n正文', '[链接] 章节', 'Y')
+  assert.equal(linked.matched, true, '`! [链接]`（感叹号后有空格）必须仍被当成标题')
+})
+
+test('insertIntoSection：CRLF 笔记仍能定位（v0.26.6 回归不许退化）', () => {
+  const note = '## A\r\n\r\n甲\r\n\r\n## B\r\n\r\n乙\r\n'
+  const r = insertIntoSection(note, 'A', '新块')
+  assert.equal(r.matched, true)
+  assert.ok(r.text.includes('新块'), '内容要写进去')
+  assert.ok(!/(^|[^\r])\n(?!\r)/.test(r.text.replace(/^[^\n]*\n/, '')), 'CRLF 文档里不得混入 LF 行')
 })
 
 console.log(failures === 0 ? '\nWRITE POLICY OK' : `\nWRITE POLICY FAILED (${failures})`)
