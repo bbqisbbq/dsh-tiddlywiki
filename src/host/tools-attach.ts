@@ -24,12 +24,24 @@ const ATTACH_MIME_BY_EXT: Record<string, string> = {
   epub: 'application/epub+zip',
 }
 
+/**
+ * Is this MIME stored as PLAIN TEXT in the tiddler (TW's own convention)?
+ *
+ * Deliberately narrow: `text/*` plus `application/json` — exactly the text types
+ * in `ATTACH_MIME_BY_EXT`. `image/svg+xml` also ends with `+xml` but must NOT be
+ * routed here: TW treats it as an image attachment, and swapping its body for
+ * plain text would change how it renders.
+ */
+function isTextMime(mime: string): boolean {
+  return mime.startsWith('text/') || mime === 'application/json'
+}
+
 export function attachTool(env: ToolEnv) {
   const { deps, requireWiki } = env
   // ── tiddlywiki_attach ────────────────────────────────────────────────────
   return defineTool({
     name: 'tiddlywiki_attach',
-    description: '把一个本机文件或公网 http(s) 地址存成 wiki 的二进制附件 tiddler（图片 / PDF / 压缩包等，type + base64 正文，随 wiki 进 git）。可选把附件嵌入/链接进某篇笔记。**同名已有条目默认拒绝写入**（避免静默覆盖既有笔记；确认要覆盖才传 `force: true`，tags 与自定义字段仍会保留）。这是 agent 唯一能写入二进制附件的途径。',
+    description: '把一个本机文件或公网 http(s) 地址存成 wiki 的附件 tiddler（二进制如图片 / PDF / 压缩包存成 type + base64 正文；**文本**如 `text/markdown` / `text/plain` / `application/json` 存成 type + 纯文本正文，这样 TW 才渲染得出来、也才搜得到，随 wiki 进 git）。可选把附件嵌入/链接进某篇笔记。**同名已有条目默认拒绝写入**（避免静默覆盖既有笔记；确认要覆盖才传 `force: true`，tags 与自定义字段仍会保留）。这是 agent 唯一能写入二进制附件的途径。',
     parameters: {
       title: { type: 'string', description: '附件 tiddler 标题（同时决定其在 wiki 里的名字）', required: true },
       path: { type: 'string', description: '本机绝对路径（与 url 二选一）' },
@@ -42,7 +54,8 @@ export function attachTool(env: ToolEnv) {
     },
     output: {
       render: (_args, value: AttachResult) => {
-        const lines = [`已保存附件「${value.title}」（${value.mime}，${value.bytes} 字节，base64 约 ${value.chars} 字符）`]
+        const size = value.encoding === 'base64' ? `base64 约 ${value.chars} 字符` : `纯文本 ${value.chars} 字符`
+        const lines = [`已保存附件「${value.title}」（${value.mime}，${value.bytes} 字节，${size}）`]
         if (value.source !== null) lines.push(`来源: ${value.source}`)
         if (value.embedInto !== null) lines.push(`已嵌入笔记「${value.embedInto}」`)
         lines.push(`打开: [${value.title}](/dsh-tiddlywiki/tw/#${encodeURIComponent(value.title)})`)
@@ -110,7 +123,21 @@ export function attachTool(env: ToolEnv) {
       const explicitTags = Array.isArray(args.tags)
         ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0)
         : undefined
-      const { tiddler } = buildWriteTiddler(title, buffer.toString('base64'), {
+      // v0.30.22：文本类附件必须存**纯文本**，不能一律 base64。
+      //
+      // 旧实现无条件 `buffer.toString('base64')`，于是 attach 一个 .md/.txt/.json
+      // 会得到 `type: text/markdown` + 一整段 base64：TW 把那段 base64 当**正文**
+      // 渲染（满屏乱码），而 `isBinaryType('text/markdown')` 又是 false，所以它还
+      // 会被当成文本条目进检索与 lint —— 搜出来同样是乱码。TW 自己的约定是
+      // 文本存纯文本、只有二进制才 base64。
+      //
+      // 只接受能**原样往返**的 UTF-8：不能往返（例如 latin-1 的 .txt）就退回 base64，
+      // 并在回执里如实报 `encoding`，绝不假装存成了文本。
+      const decoded = buffer.toString('utf8')
+      const asText = isTextMime(mime) && Buffer.from(decoded, 'utf8').equals(buffer)
+      const encoding: 'text' | 'base64' = asText ? 'text' : 'base64'
+      const body = asText ? decoded : buffer.toString('base64')
+      const { tiddler } = buildWriteTiddler(title, body, {
         existing,
         ...(explicitTags !== undefined && explicitTags.length > 0 ? { tags: explicitTags } : {}),
         fields: {
@@ -145,7 +172,7 @@ export function attachTool(env: ToolEnv) {
         await wiki.put(noteTiddler)
       }
       deps.autoCommit()
-      return { ok: true, title, mime, bytes: buffer.length, chars: buffer.toString('base64').length, source, embedInto }
+      return { ok: true, title, mime, bytes: buffer.length, chars: body.length, encoding, source, embedInto }
     },
   })
 }

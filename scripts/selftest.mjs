@@ -253,6 +253,16 @@ try {
   assert(attachTid?.type === 'image/png' && (attachTid.text ?? '').length > 0, 'attachment tiddler carries the base64 body')
   assert(isBinaryType(attachTid?.type) === true, 'attachment registers as a binary type (excluded from search)')
   assert(((await api.get('AttachNote'))?.text ?? '').includes('[img[AttachProbe.png]]'), 'attach embeds the image into the target note')
+  // v0.30.22：文本类附件必须存**纯文本**。旧实现无条件 base64，于是 attach 一个
+  // .md 得到 `type: text/markdown` + 一整段 base64：TW 当正文渲染（满屏乱码），
+  // 而它不是二进制类型 ⇒ 还会进检索/lint（搜出来也是乱码）。
+  const attachTextSrc = join(tmpdir(), `dsh-tw-attach-md-${Date.now()}.md`)
+  await writeFile(attachTextSrc, '# 文本附件\n\n这是正文。\n', 'utf8')
+  const attachedText = await attachTool.execute({ title: 'AttachProbe.md', path: attachTextSrc }, undefined)
+  assert(attachedText.mime === 'text/markdown' && attachedText.encoding === 'text', `文本附件按纯文本存（${attachedText.mime}/${attachedText.encoding}）`)
+  const attachTextTid = await api.get('AttachProbe.md')
+  assert(attachTextTid?.type === 'text/markdown' && (attachTextTid.text ?? '').startsWith('# 文本附件'), '文本附件 tiddler 的正文是原文，而不是 base64')
+  assert(isBinaryType(attachTextTid?.type) === false, '文本附件不是二进制类型（照旧进检索，且现在搜得到真内容）')
   let attachBothThrew = false
   try { await attachTool.execute({ title: 'Bad', path: attachSrc, url: 'https://example.com/x.png' }, undefined) } catch { attachBothThrew = true }
   assert(attachBothThrew, 'attach requires exactly one of path/url')

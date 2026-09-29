@@ -127,7 +127,18 @@ export interface TrashResult { action: string; message: string; items?: TrashIte
 export interface AppendResult { ok: boolean; title: string; mode: 'append' | 'prepend'; heading: string | null; /** v0.26.6：给了 heading 时该标题是否真的定位成功（false = 未找到，文本已追加到文末）。 */ headingMatched?: boolean; created: boolean; added: number; total: number; type?: string | null; typeDefaulted?: boolean; typeChanged?: { from: string; to: string }; /** 新建时自动打上的工作区标记（v0.24.0）。 */ workspace?: string }
 export interface BacklinkHit { title: string; refs: number; via: 'link' | 'tag'; modified: string | null }
 export interface BacklinkResult { title: string; total: number; linkCount: number; tagCount: number; items: BacklinkHit[] }
-export interface AttachResult { ok: boolean; title: string; mime: string; bytes: number; chars: number; source: string | null; embedInto: string | null }
+export interface AttachResult {
+  ok: boolean
+  title: string
+  mime: string
+  bytes: number
+  /** 存进 tiddler 的正文长度（`encoding: 'base64'` 时是 base64 字符数）。 */
+  chars: number
+  /** v0.30.22：正文是**纯文本**还是 base64 —— 回执必须如实说明存的是哪种。 */
+  encoding: 'text' | 'base64'
+  source: string | null
+  embedInto: string | null
+}
 export interface LintIssue { kind: string; count: number; hint: string; samples: string[] }
 export interface LintResult { scanned: number; /** 实际运行的检查（v0.25.0）。 */ checks: string[]; /** 请求里无法识别的检查名（回执必须报出来）。 */ unknownChecks: string[]; issues: LintIssue[] }
 /**
