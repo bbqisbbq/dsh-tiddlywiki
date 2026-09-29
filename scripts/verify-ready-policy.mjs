@@ -182,7 +182,14 @@ await test('配置链路：config.ts / index.ts / wiki-instance.ts / settings-pa
   // v0.28.0: the WikiServer construction moved into host/wiki-instance.ts, so
   // asserting only on index.ts would let "someone dropped the wiring" pass. Both
   // hops of the chain are asserted.
-  assert.ok(/base:\s*config,/.test(index), 'index.ts 必须把 cordis 基座配置交给实例（base: config）')
+  //
+  // v0.30.50: the two hops BELOW moved once more — the farm construction (and
+  // with it `base: config`) now lives in the `src/index` FAMILY's startup stage
+  // (index-startup.ts), which is read through readFamily. The invariant is
+  // unchanged and still asserted on both hops: the cordis base config must reach
+  // the instance, and the ready-timeout must be re-applied on boot and on every
+  // settings save.
+  assert.ok(/base:\s*(?:deps\.)?config,/.test(index), 'index 族必须把 cordis 基座配置交给实例（base: config）')
   assert.ok(/readyTimeoutMs:\s*options\.base\.startup\.readyTimeoutMs/.test(instance), 'WikiServer 必须接到该配置（wiki-instance.ts）')
   assert.ok(/applyServerTuning\(\)/.test(index), '启动与设置页保存后必须重新应用（applyServerTuning）')
   assert.ok(/this\.server\.setReadyTimeout\(this\.eff\(\)\.startup\?\.readyTimeoutMs\)/.test(instance), 'applyServerTuning 必须读 effective config（wiki-instance.ts）')

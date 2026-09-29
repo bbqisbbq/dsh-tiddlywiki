@@ -21,20 +21,24 @@
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { type SessionsFace, type WebServerFace } from './host/routes.ts'
 import { type PluginConfigShape } from './host/config.ts'
-import { resolveTwRoot } from './host/admin.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
 import { WechatPublishRunner } from './host/wechat-publish.ts'
 import { registerTiddlywikiTools, type ToolsDeps, type ToolScope } from './host/tools.ts'
 import {
   defaultLocationStateFile,
   locationPath,
+  // v0.30.49 / v0.30.50：readLocationState / readRegistry **只**被下面的 barrel
+  // 再导出使用（`export { … } from '…'` 是独立语句、不消费 import 绑定）⇒
+  // `noUnusedLocals` 把它们点成「未使用」。**必须无视这条 error 并留着**：
+  // 删掉它们会让 lib/index.js 少一个导出（v0.30.48/v0.30.50 各实测一次 ——
+  // typecheck / verify:unit / verify:static 全绿，只有 e2e 才崩）。
+  // 判据：scripts/verify-index-barrel.mjs（进 verify:static）。
   readLocationState,
   type WikiLocation,
 } from './host/wiki-location.ts'
 import { WikiInstance } from './host/wiki-instance.ts'
 import { WikiFarm, resolveAgentScope, targetRuntimeFor } from './host/wiki-farm.ts'
-import { defaultSessionScopeFile, readSessionScopes } from './host/session-scope.ts'
-import { installSplitSkill } from './host/skill-install.ts'
+import { defaultSessionScopeFile } from './host/session-scope.ts'
 import {
   DEFAULT_WIKI_ID,
   DEFAULT_WIKI_MODE,
@@ -56,6 +60,7 @@ import { resolveConfig, type ResolvedConfig, type TiddlywikiConfig } from './ind
 import { createMutationLock } from './host/mutation-lock.ts'
 import { createGitLayer } from './index-git.ts'
 import { createRouteStage } from './index-routes.ts'
+import { createStartupStage } from './index-startup.ts'
 import { createPromptSurface, createServerTuning } from './index-prompt.ts'
 import { createClipSurface } from './index-clip.ts'
 
@@ -161,7 +166,6 @@ export {
   listWikiCandidates,
   locationPath,
   normalizeLocation,
-  readLocationState,
   // v0.30.49：这条 **barrel 再导出** 是给 `lib/index.js` 的**外部**使用者的
   // （scripts/verify-wiki-switch.mjs 就 import 它）。⚠️ 再导出是**独立语句**，
   // 它不消费上面那条 import 的绑定 —— 所以 `noUnusedLocals` 会把 import 里的
@@ -181,6 +185,15 @@ export {
   type WikiLocationSource,
   type WikiLocationState,
 } from './host/wiki-location.ts'
+// v0.30.49 / v0.30.50 —— **为什么这两条单独写在 `from` 形式之外**：
+// 同一个名字既要在 `lib/index.js` 上存在（barrel 公共面），又会让
+// `export { X } from '…'` 那种写法**不消费上面 import 的绑定** ⇒
+// `noUnusedLocals` 报「声明了但没读」，而删掉 import 就静默少一个导出
+// （v0.30.48 / v0.30.50 各踩一次；只有 e2e 能发现）。
+// 用「无 from 的 export」＝ **真的读一次那个绑定**，两个要求同时满足：
+// 绑定被消费、导出照样在。判据仍是 scripts/verify-index-barrel.mjs。
+export { readLocationState }
+export { readRegistry }
 export { switchWiki, type WikiSwitchResult, type WikiSwitchDeps } from './host/wiki-switch.ts'
 export {
   DEFAULT_WIKI_ID,
@@ -199,7 +212,6 @@ export {
   normalizeEntry,
   normalizeWikiIcon,
   normalizeWikiId,
-  readRegistry,
   removeWiki,
   singleEntryRegistry,
   upsertWiki,
@@ -525,12 +537,37 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
    */
   let switching = false
 
-  /** single 模式的位置：旧指针文件 > cordis 默认（v0.22.0 的优先级，逐字保留）。 */
-  const singleModeLocation = async (): Promise<WikiLocation> => {
-    const state = await readLocationState(locationStateFile)
-    if (state.error !== undefined) console.warn('[dsh-tiddlywiki]', state.error)
-    return state.active ?? defaultLocation
-  }
+  // ── Startup stage (v0.30.50) ──────────────────────────────────────────────
+  // 整个自举任务（skill → 控制文件 → 会话作用域 → 建 farm → startAll →
+  // prompt → 剪藏桥）搬进 index-startup.ts。`disposed` 与 `farm` 仍归本文件
+  // （前者是拆卸 effect 与这个任务的共同主人，后者路由/工具/视图都要读），
+  // 所以它们以**回调**形式传进去 —— 与 index-wikis / index-routes 同一手法。
+  //
+  // ⚠️ 顺序本身是语义，见 index-startup.ts 的模块头（尤其是「skill 必须在
+  // wiki 之前装」那条，它是真实事故的产物）。
+  const startupStage = createStartupStage({
+    config,
+    git,
+    repos,
+    defaultLocation,
+    locationStateFile,
+    registryFile,
+    sessionScopeFile,
+    proxyBase,
+    isDisposed: () => disposed,
+    setFarm: (next) => { farm = next },
+    setControl: (state) => {
+      controlRegistry = state.registry
+      controlSource = state.source
+      controlWarnings = state.warnings
+      controlError = state.error
+    },
+    setSessionScopes: (scopes) => { sessionScopes = scopes },
+    applyPrompt,
+    clipBridge,
+    effectiveBridge,
+    defaultCurrentLocation: () => wikiViews.defaultCurrentLocation(),
+  })
 
   /**
    * The CONTROL FILE as the settings page edits it — deliberately NOT the
@@ -546,93 +583,10 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   const controlRegistryNow = (): WikiRegistry =>
     controlRegistry ?? singleEntryRegistry(defaultCurrentLocation(), DEFAULT_WIKI_ID, DEFAULT_WIKI_MODE)
 
-  const startupTask = (async () => {
-    try {
-      /**
-       * Ship the 「拆分知识库」 skill FIRST (v0.28.0).
-       *
-       * It is deliberately independent of the wiki: it only writes a file into
-       * `$DSH_HOME/skills`, and it must still happen when the wiki is slow to
-       * start, fails to start, or the user is mid-migration with a broken config.
-       * (It used to sit after `farm.startAll()` — which meant a wiki that never
-       * became ready also silently never installed the skill. Found by restarting
-       * a real host, not by a test.)
-       *
-       * A plugin cannot register a skill ROOT, so writing into the user's own root
-       * is the only zero-config path; it only ever touches its own file (the
-       * marker line decides — see host/skill-install.ts).
-       */
-      try {
-        const installed = await installSplitSkill()
-        if (installed.action === 'failed') console.warn('[dsh-tiddlywiki] 拆库 skill 安装失败：', installed.error)
-        else console.info(`[dsh-tiddlywiki] 拆库 skill：${installed.action}（${installed.path}）`)
-      } catch (err) {
-        console.warn('[dsh-tiddlywiki] 拆库 skill 安装异常：', err)
-      }
-      // THE CONTROL FILE FIRST (v0.28.0): it carries the mode (single/multi), the
-      // wiki list and the default id, and it must be read before anything starts
-      // — which is exactly why it lives OUTSIDE every wiki (wiki-registry.ts).
-      // The control file decides: mode + the wiki list.
-      const read = await readRegistry({ file: registryFile, legacyFile: locationStateFile, fallback: defaultLocation })
-      // Per-session scopes are a PREFERENCE: an unreadable file just means "no
-      // explicit scope" and every session falls back to the default wiki.
-      const scopes = await readSessionScopes(sessionScopeFile)
-      if (scopes.error !== undefined) console.warn('[dsh-tiddlywiki]', scopes.error)
-      sessionScopes = scopes.scopes
-      controlRegistry = read.registry
-      controlSource = read.source
-      controlWarnings = read.warnings
-      controlError = read.error
-      if (read.error !== undefined) console.warn('[dsh-tiddlywiki]', read.error)
-      for (const warning of read.warnings) console.warn('[dsh-tiddlywiki]', warning)
-      console.info(`[dsh-tiddlywiki] ${read.registry.mode} 模式 · ${read.registry.wikis.length} 个知识库（来源：${read.source}）`)
-      // single 模式 = 今天的行为，逐字保留：位置仍由旧指针文件（其次 cordis 默认）
-      // 决定，registry 此时只记住 `mode` 与候选列表 —— 所以这里合成一份单条清单。
-      const runRegistry = read.registry.mode === 'multi'
-        ? read.registry
-        : singleEntryRegistry(await singleModeLocation(), DEFAULT_WIKI_ID, 'single')
-      farm = new WikiFarm<WikiInstance>(runRegistry, {
-        createRuntime: (entry) => new WikiInstance({
-          entry,
-          base: config,
-          git,
-          twRoot: resolveTwRoot,
-          touchCommit: (dir) => { void repos.touch(dir) },
-          flushCommits: (dir) => repos.flush(dir),
-          proxyBase: () => proxyBase(entry),
-        }),
-        log: (message) => console.warn('[dsh-tiddlywiki]', message),
-      })
-      // Every instance brings ITSELF up (child → its config tiddler → seeds →
-      // git → committer), so this one call replaces the old step-by-step startup.
-      // One wiki failing never stops the others (the farm reports it).
-      const change = await farm.startAll()
-      if (change.started.length > 0) console.info(`[dsh-tiddlywiki] 已启动：${change.started.join(', ')}`)
-      // The prompt section is a plugin-level singleton: rebuild it now that the
-      // default wiki's config tiddler has been loaded.
-      applyPrompt()
-      if (disposed) {
-        await farm.disposeAll()
-        return
-      }
-      // Clip bridge: bind once on the DEFAULT wiki's configured port (works even
-      // while disabled — every request re-checks the effective enabled flag, so
-      // the settings-page toggle applies without a dsh web restart).
-      try {
-        await clipBridge.start(effectiveBridge().port)
-        console.info(`[dsh-tiddlywiki] clip bridge listening on 127.0.0.1:${clipBridge.port} (enabled=${effectiveBridge().enabled})`)
-      } catch (err) {
-        console.warn('[dsh-tiddlywiki] clip bridge start:', err)
-      }
-      if (disposed) {
-        try { await clipBridge.stop() } catch { /* already closing */ }
-        await farm.disposeAll()
-        return
-      }
-    } catch (err) {
-      console.warn('[dsh-tiddlywiki] startup issue (self-healing is armed):', err)
-    }
-  })()
+  // The task is fire-and-forget (v0.19.1): teardown can run while it still
+  // awaits, so the task itself stops the child when it notices `disposed`.
+  const startupPromise = startupStage.start()
+  void startupPromise
 
   /**
    * The folder the default wiki occupies, running or not.
@@ -719,7 +673,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       disposed = true
       try {
         await Promise.race([
-          startupTask.catch(() => undefined),
+          startupPromise.catch(() => undefined),
           new Promise<void>((r) => { setTimeout(r, 3_000).unref?.() }),
         ])
       } catch { /* startup issues are already logged */ }
