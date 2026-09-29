@@ -268,6 +268,9 @@ await test('affectedBy：只报内容真的变了的库（共享仓库下"该重
   assert.deepEqual(ids(['README.md']), [], '仓库根的改动不属于任何库 → 谁都不重启')
   assert.deepEqual(ids(['workbench/notes.tid']), [], '前缀相同的兄弟目录不算（不是 work 的内容）')
   assert.deepEqual(ids([]), [], '没有改动就没有重启')
+  // v0.30.37：**未知**（diff 算不出来）必须与「没有改动」严格区分 —— 保守重启该仓库下的全部库。
+  // 动机：HEAD 动了但 diff 失败时，若按 [] 处理就是一个库都不重启 ⇒ TW 一直显示旧内容，而回执说同步成功。
+  assert.deepEqual(ids(undefined), ['work', 'personal'], '不知道哪些文件变了 ⇒ 该仓库下全部库都重启（保守）；与"没有改动"必须可区分')
 })
 
 console.log(failures === 0 ? '\nWIKI FARM CHECKS OK' : `\nWIKI FARM CHECKS FAILED (${failures})`)
