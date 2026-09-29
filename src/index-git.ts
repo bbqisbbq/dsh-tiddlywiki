@@ -18,12 +18,12 @@
  *
  * @module dsh-tiddlywiki/index-git
  */
-import type { AutoCommitter, GitFace } from './host/git.ts'
+import type { AutoCommitter, GitFace, GitSyncTarget } from './host/git.ts'
 import { RepoCommitters } from './host/repo-committers.ts'
 import { normalizeWechatConfig, type WechatPublishConfig } from './host/wechat-publish.ts'
 import type { BridgeConfig } from './host/clip-bridge.ts'
 import type { PluginConfigShape } from './host/config.ts'
-import type { WikiEntry } from './host/wiki-registry.ts'
+import { entryPath, type WikiEntry } from './host/wiki-registry.ts'
 import type { WikiFarm } from './host/wiki-farm.ts'
 import type { WikiInstance } from './host/wiki-instance.ts'
 import { entryIsInRepo } from './index-wikis.ts'
@@ -96,6 +96,13 @@ export interface GitLayer {
    * tiddler), or the cordis base while nothing runs.
    */
   eff: () => PluginConfigShape
+  /**
+   * Every registered knowledge base that COULD be git-synced (v0.30.5): its
+   * folder, its repository root (cached `rev-parse`) and its EFFECTIVE
+   * `git.remote`. Registry-based on purpose — a STOPPED wiki still has a
+   * repository on disk, and syncing is a disk operation (no TW child involved).
+   */
+  gitTargets: () => Promise<GitSyncTarget[]>
   /** Workspace (project) marking for agent-created notes (v0.24.0). */
   effectiveWorkspaceMark: () => boolean
   /** The clip bridge's effective config (default wiki's, else cordis base). */
@@ -161,6 +168,30 @@ export function createGitLayer(deps: GitLayerDeps): GitLayer {
   const effectiveBridge = (): BridgeConfig => defaultInstance()?.bridgeConfig() ?? (deps.baseShape().bridge as BridgeConfig)
   const effectiveWechat = (): WechatPublishConfig => normalizeWechatConfig(eff().wechat)
 
+  const gitTargets = async (): Promise<GitSyncTarget[]> => {
+    const live = farm()
+    if (live === undefined) return []
+    const base = deps.gitConfig()
+    const out: GitSyncTarget[] = []
+    for (const entry of live.registry.wikis) {
+      const runtime = live.runtime(entry.id)
+      const dir = entryPath(entry)
+      const g = (runtime?.eff() ?? deps.baseShape()).git ?? {}
+      const remote = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : base.remote).trim()
+      const repoRoot = await repos.repoRootOf(dir)
+      out.push({
+        id: entry.id,
+        label: entry.label ?? entry.id,
+        dir,
+        ...(repoRoot !== undefined ? { repoRoot } : {}),
+        remote,
+        branch: typeof g.branch === 'string' && g.branch.trim().length > 0 ? g.branch.trim() : base.branch,
+        running: runtime !== undefined,
+      })
+    }
+    return out
+  }
+
   const teardownCommitter = async (): Promise<void> => {
     for (const runtime of farm()?.allRuntimes() ?? []) await runtime.teardownExtras()
     await repos.flush()
@@ -183,6 +214,7 @@ export function createGitLayer(deps: GitLayerDeps): GitLayer {
 
   return {
     repos,
+    gitTargets,
     teardownCommitter,
     reapplyGitConfig,
     eff,

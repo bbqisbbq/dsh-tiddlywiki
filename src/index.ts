@@ -447,7 +447,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     registryFile: () => registryFile,
     isDisposed: () => disposed,
   })
-  const { repos, teardownCommitter, reapplyGitConfig, effectiveWorkspaceMark, effectiveBridge, effectiveWechat } = gitLayer
+  const { repos, gitTargets, teardownCommitter, reapplyGitConfig, effectiveWorkspaceMark, effectiveBridge, effectiveWechat } = gitLayer
 
   /** sessionId → wikiId (v0.28.0). Loaded at boot, written by the GUI selector. */
   let sessionScopes: Record<string, string> = {}
@@ -551,9 +551,10 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // hidden or stopped wiki fails loudly instead of writing somewhere else.
     scope: toolScope,
     git,
-    // ⚠️ The GIT tools still act on the DEFAULT wiki's repository: a sync is a
-    // repository-level operation (see host/repo-committers.ts), and per-session
-    // git is not something the user asked for.
+    // v0.30.5（作者裁定）：同步**所有**配了 `git.remote` 的库 —— 一次一个仓库
+    // （多库可能共用一个工作树），逐仓库独立成败。此前只动会话作用域那个库，
+    // 回执却按会话作用域标注（"作用对象与标注不一致"）。
+    gitTargets: () => gitTargets(),
     wikiPath: () => defaultInstance()?.path ?? locationPath(defaultLocation),
     autoCommit: () => defaultInstance()?.touchAutoCommit(),
     // After a pull that changed the working tree, restart the wikis whose content

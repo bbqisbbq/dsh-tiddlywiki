@@ -121,6 +121,30 @@ function parseCount(line: string, re: RegExp): number | undefined {
   return m === null ? undefined : Number(m[1])
 }
 
+/**
+ * One knowledge base that can be git-synced (v0.30.5).
+ *
+ * WHY THIS EXISTS: `tiddlywiki_git_sync` used to act on the SESSION's wiki only
+ * (and, before v0.30.0, on the DEFAULT repo while the receipt named the session's
+ * wiki). Knowledge bases usually live in DIFFERENT repositories, so "sync my
+ * notes" has to mean "sync every repo that has a remote" — once per repository,
+ * because several wikis may share one work tree (`repoRoot` is resolved by the
+ * git layer and carried here so the tool needs no extra `git rev-parse`).
+ */
+export interface GitSyncTarget {
+  id: string
+  label: string
+  /** The wiki folder (what every GitFace call takes). */
+  dir: string
+  /** `git rev-parse --show-toplevel` of `dir`, or undefined when it has none. */
+  repoRoot?: string
+  /** Effective `git.remote` for its repository. '' = not configured → skipped. */
+  remote: string
+  branch: string
+  /** Whether its TW child is currently serving (the receipt says so). */
+  running: boolean
+}
+
 export class GitFace {
   /**
    * FIFO mutex for the index-touching operations (`commit` and `pull

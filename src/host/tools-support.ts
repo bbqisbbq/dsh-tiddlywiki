@@ -10,7 +10,7 @@
  */
 import { parseTiddlerDate } from './tw-api.ts'
 import type { Tiddler, TiddlyWebClient } from './tw-api.ts'
-import type { GitFace, GitStatusView } from './git.ts'
+import type { GitFace, GitStatusView, GitSyncTarget } from './git.ts'
 import { flattenTiddlerFields, normalizeFieldsArg } from './write-policy.ts'
 import { WORKSPACE_FIELD, workspaceMarkFromCwd } from './workspace.ts'
 
@@ -72,6 +72,12 @@ export interface ToolsDeps {
    */
   restartAffected?: (dir: string, changedFiles: readonly string[]) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
   /**
+   * Every registered knowledge base that COULD be git-synced (v0.30.5), with
+   * its repository root and effective `git.remote`. Absent in headless contexts
+   * → `git_sync` falls back to "no targets" and says so.
+   */
+  gitTargets?: () => Promise<GitSyncTarget[]>
+  /**
    * Workspace (project) name for a session, resolved from its cwd (v0.24.0).
    * Absent in headless contexts → no automatic workspace marking.
    */
@@ -124,6 +130,32 @@ export interface BacklinkResult { title: string; total: number; linkCount: numbe
 export interface AttachResult { ok: boolean; title: string; mime: string; bytes: number; chars: number; source: string | null; embedInto: string | null }
 export interface LintIssue { kind: string; count: number; hint: string; samples: string[] }
 export interface LintResult { scanned: number; /** 实际运行的检查（v0.25.0）。 */ checks: string[]; /** 请求里无法识别的检查名（回执必须报出来）。 */ unknownChecks: string[]; issues: LintIssue[] }
+/**
+ * How one REPOSITORY's sync went (v0.30.5).
+ *
+ * The receipt is per repository, not per wiki: `git` can only ever pull/commit/
+ * push once per work tree, so "which wiki did this?" is answered by the `wikis`
+ * list instead of by running the same command N times.
+ */
+export interface SyncRepoResult {
+  /** Repository root, or the wiki folder when git could not resolve one. */
+  root: string
+  /** Display labels of the knowledge bases living in this repository. */
+  wikis: string[]
+  /** Their ids — what `tiddlywiki_git_resolve wiki=<id>` takes. */
+  wikiIds: string[]
+  ok: boolean
+  message: string
+  changed?: boolean
+  commit?: string
+  push?: string
+  conflictFiles?: string[]
+  restarted?: string[]
+  restartFailed?: Array<{ id: string; message: string }>
+  drainFailed?: boolean
+  status?: GitStatusView
+}
+
 export interface SyncResult {
   action: string
   ok: boolean
@@ -148,11 +180,27 @@ export interface SyncResult {
    */
   drainFailed?: boolean
   status?: GitStatusView
+  /**
+   * Repositories that were NOT synced, with the reason (v0.30.5). Never
+   * silently ignored: "sync said OK" must not be readable as "we synced
+   * everything" when some wiki simply has no `git.remote`.
+   */
+  skipped?: string[]
+  /** One entry per repository that actually ran (in deterministic order). */
+  repos?: SyncRepoResult[]
+  /** Ids of the knowledge bases whose TW child was restarted after the pull. */
+  // NOTE: the flat fields above are the SINGLE-repo aliases kept for
+  // compatibility (a one-wiki install sees the pre-v0.30.5 shape). With several
+  // repositories, read `repos[]` — the aliases then describe the FIRST repo only.
 }
 export interface ResolveResult {
   ok: boolean
   action: string
   message: string
+  /** Repository the resolve acted on (v0.30.5), when known. */
+  repo?: string
+  /** Labels of the knowledge bases sharing that repository. */
+  wikis?: string[]
   files?: string[]
   commit?: string
   hint?: string
