@@ -148,11 +148,21 @@ export function createNoteWidget(): NoteWidgetHandle {
   const ensureTarget = (): Promise<void> => {
     targetPromise ??= fetchStatus().then((payload) => {
       if (disposed) return
-      rosterMode = typeof payload?.mode === 'string' ? payload.mode : 'single'
-      roster = (Array.isArray(payload?.wikis) ? payload.wikis : []).map((item) => ({ id: item.id, label: item.label, running: item.running }))
+      // v0.29.0: a FAILED `/status` must not be memoized. `fetchStatus()`
+      // resolves `null` when the request fails, and caching that verdict pinned
+      // `targetWiki` to `undefined` for the rest of the page's life — so one
+      // hiccup put every quick note back into the DEFAULT wiki (the exact bug
+      // this function exists to prevent) and the 「写入」 selector never
+      // appeared. Dropping the memo lets the next open try again.
+      if (payload == null) {
+        targetPromise = undefined
+        return
+      }
+      rosterMode = typeof payload.mode === 'string' ? payload.mode : 'single'
+      roster = (Array.isArray(payload.wikis) ? payload.wikis : []).map((item) => ({ id: item.id, label: item.label, running: item.running }))
       // 单库：`targetWiki` 保持 undefined = 逐字与升级前相同的行为。
       if (roster.length <= 1) return
-      defaultWikiId = typeof payload?.defaultId === 'string' ? payload.defaultId : undefined
+      defaultWikiId = typeof payload.defaultId === 'string' ? payload.defaultId : undefined
       const followFocus = (): void => {
         if (!targetPicked) targetWiki = resolveFocusWiki(roster, defaultWikiId)
       }
@@ -264,9 +274,15 @@ export function createNoteWidget(): NoteWidgetHandle {
     if (ui === undefined) return
     const text = ui.editor.getValue()
     const title = ui.titleInput.value.trim()
-    // 正文与标题皆空，或「只有自动生成的标题、正文一个字都没写」：没有可恢复的
-    // 内容，清掉草稿即可（否则会写出一份空草稿，下次打开误报「已恢复未保存草稿」）。
-    if (text.trim().length === 0 && (title.length === 0 || title === autoTitle)) {
+    // 正文为空 = 没有值得恢复的内容，一律清掉草稿（v0.29.0）。
+    //
+    // 旧判据是「正文为空 **且** 标题为空或是自动生成的那个标题」。它漏掉了一条
+    // 真实入口：**恢复草稿**的分支从不设置自动标题（恢复出来的是草稿里存的那个
+    // 标题），于是「打开卡片 → 恢复出旧时间戳标题 → 把正文清空 → 关窗」会写出
+    // 一份 {text:'', title:'<旧时间戳>'} 的草稿，下次打开又对着**空白编辑器**报
+    // 「已恢复未保存草稿」—— 正是 v0.22.8 修掉的那个症状。
+    // 一份只有标题、没有正文的草稿没有任何恢复价值，所以判据直接取「正文为空」。
+    if (text.trim().length === 0) {
       clearDraft()
       return
     }

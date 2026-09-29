@@ -42,6 +42,9 @@ function renderSync(value: SyncResult): Array<{ type: 'text'; text: string }> {
   if (value.restartFailed !== undefined) {
     for (const item of value.restartFailed) lines.push(`TW 重启失败：${item.id} —— ${item.message}`)
   }
+  if (value.drainFailed === true) {
+    lines.push('⚠️ 重启前未能确认 syncer 队列已排干（等待超时）——若刚写过笔记，请先用 tiddlywiki_get 确认它已落盘；必要时再执行一次 tiddlywiki_git_sync。')
+  }
   if (value.status !== undefined) {
     lines.push(`状态: ${gitStatusBits(value.status)}`)
     const s = value.status
@@ -73,7 +76,7 @@ export function gitSyncTool(env: ToolEnv) {
        * the one that actually changed, and would interrupt a wiki nothing
        * happened to (v0.28.0).
        */
-      const restartIfChanged = async (pulled: { changed?: boolean; changedFiles?: string[] }): Promise<{ restarted?: string[]; restartFailed?: Array<{ id: string; message: string }> }> => {
+      const restartIfChanged = async (pulled: { changed?: boolean; changedFiles?: string[] }): Promise<{ restarted?: string[]; restartFailed?: Array<{ id: string; message: string }>; drainFailed?: boolean }> => {
         if (pulled.changed !== true) return {}
         if (deps.restartAffected === undefined) return {}
         try {
@@ -84,9 +87,17 @@ export function gitSyncTool(env: ToolEnv) {
           // note is gone — not even the git commit that follows can recover it).
           // The agent path is the risky one: `tiddlywiki_put` → `git_sync`
           // back-to-back. Same sentinel trick as seeds.ts / index.ts.
-          await flushPendingWrites(requireWiki(sessionIdOf(exec)), join(dir, 'tiddlers')).catch(() => undefined)
+          //
+          // v0.29.0: `flushPendingWrites` NEVER rejects (seeds.ts) — it resolves
+          // `false` on timeout — so the old `.catch(() => undefined)` was dead
+          // code AND threw the verdict away, restarting on an unproven drain with
+          // no trace. Keep the best-effort policy (a wedged TW must still be
+          // restartable, exactly like `drainThenStop`) but carry the verdict out
+          // to the receipt.
+          const drained = await flushPendingWrites(requireWiki(sessionIdOf(exec)), join(dir, 'tiddlers')).catch(() => false)
           const outcome = await deps.restartAffected(dir, pulled.changedFiles ?? [])
           return {
+            ...(drained ? {} : { drainFailed: true }),
             ...(outcome.restarted.length > 0 ? { restarted: outcome.restarted } : {}),
             ...(outcome.failed.length > 0 ? { restartFailed: outcome.failed } : {}),
           }

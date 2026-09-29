@@ -24,10 +24,17 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const WECHAT_DIR = path.join(repoRoot, 'tools', 'wechat')
+
+// The decorator is imported for REAL so one assertion below can check BEHAVIOUR
+// instead of the presence of a substring (v0.29.0 audit). The class-stripping
+// assertion used to be `/(bad regex)/.test(src) || /class/.test(src)` — the
+// right-hand side matches any occurrence of the word "class" (a comment is
+// enough), so it was vacuously true and that rule had no guard at all.
+const { decorate } = await import(pathToFileURL(path.join(WECHAT_DIR, 'wechat-html.js')).href)
 
 let failures = 0
 function test(name, fn) {
@@ -107,8 +114,12 @@ test('装饰器对每个元素注入内联 style（微信唯一认的形式）',
   const src = read('wechat-html.js')
   assert.ok(/style="/.test(src), 'wechat-html.js 没有注入内联 style')
   assert.ok(/ELEMENT_STYLES/.test(src), '找不到排版主题表 ELEMENT_STYLES')
-  // 必须清掉 class（微信保留 class 但无样式可依附，是噪音）
-  assert.ok(/class\\s\*=\\s\*/.test(src) || /class/.test(src), '看不到清理 class 的处理')
+  // 必须真的清掉 class（微信保留 class 但无样式可依附，是噪音）。
+  // 断言落在**输出**上：源码里出现 "class" 字样不算数 —— 旧写法
+  // `|| /class/.test(src)` 连注释里的 class 都算命中 ⇒ 恒真、零守门。
+  const decorated = decorate('<p class="markdown tc-tiddlylink">hi</p>')
+  assert.ok(!/class\s*=/.test(decorated), `装饰后仍残留 class：${decorated}`)
+  assert.ok(/style="/.test(decorated), `装饰后没有内联 style：${decorated}`)
 })
 
 // ── 5. 发布前检查必须存在，且是「只告警不阻断」 ───────────────────────────

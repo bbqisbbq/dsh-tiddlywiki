@@ -30,8 +30,12 @@
  * @module dsh-tiddlywiki/client/dock-align
  */
 
-/** The measurement/padding key, exported so the gate can assert on it. */
-export const DOCK_ALIGN_MIN_INPUT_WIDTH = 300
+/**
+ * Minimum width (px) for a text field to count as the composer input: a dock
+ * entry's own inputs are small, the composer's card is not. Module-private — no
+ * gate asserts on it (the old comment claimed otherwise; it was stale).
+ */
+const DOCK_ALIGN_MIN_INPUT_WIDTH = 300
 
 /**
  * Start aligning `wrap` with the composer input card. Returns the disposer; call

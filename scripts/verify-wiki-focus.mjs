@@ -201,7 +201,7 @@ test('新会话（空白会话）的知识库选择器：走 selector.context，
 
 test('快速笔记：单库模式不得露出「写入」选择器（作者 2026-09-28 报障）', () => {
   const note = readFamily(repoRoot, 'src/client/note-widget')
-  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const styles = readFamily(repoRoot, 'src/client/styles')
   // 症状：单库模式下界面出现一个「写入」下拉、点开没有选项。
   // 根因：`hidden` 属性在 CSS 里只是 display:none，而 .dsh-tw-note-wiki 有显式
   // display:inline-flex —— **显式 display 会盖掉 hidden**，元素照样渲染。
@@ -221,7 +221,7 @@ test('dock 条目必须与 composer 输入框对齐，且选择器与按钮**并
   const align = readFileSync(path.join(repoRoot, 'src/client/dock-align.ts'), 'utf8')
   const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
   const scope = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
-  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const styles = readFamily(repoRoot, 'src/client/styles')
 
   // 规则只有一份：dock 槽位是 composer 的**兄弟节点**，必须测出输入框卡片再补 padding。
   assert.match(align, /export function alignDockEntry\(/, '对齐逻辑必须收在 dock-align.ts 一份')
@@ -342,7 +342,7 @@ test('快速笔记 native 路径：必须先解析目标库，再写（v0.29.0�
 
 test('侧边栏入口：每个在运行的库一个入口，用自己的显示名（作者 2026-09-28 要求）', () => {
   const sidebar = readFileSync(path.join(repoRoot, 'src/client/sidebar-entry.ts'), 'utf8')
-  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const styles = readFamily(repoRoot, 'src/client/styles')
 
   // 多库：按名册逐库建行，标签取该库的 display label
   assert.match(sidebar, /const running = list\.filter\(\(w\) => w\.running\)/, '只列在运行的库（点了就该能打开）')
@@ -410,7 +410,7 @@ test('图标弹层必须有 CSS —— 只有 DOM 没有样式，视觉上就是
   //
   // 教训：断言「某个类名存在」不等于断言「这个组件可用」。渲染型组件的守门
   // 至少要跨两个文件——一个说"我生成了这个 DOM"，一个说"这个 DOM 有样式"。
-  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const styles = readFamily(repoRoot, 'src/client/styles')
   const pickerPath = path.join(repoRoot, 'src/client/settings-icon-picker.ts')
   const picker = readFileSync(pickerPath, 'utf8')
 
@@ -475,9 +475,9 @@ test('styles.ts 的 CSS_TEXT 必须是一整块、且正文里没有反引号 / 
   // 反引号，那个反引号本身就变成了 close 的位置，body 在它之前就结束了 ——
   // 于是「body 里没有反引号」永远成立，注入反引号反而让断言更容易通过。
   //（这类"用出错的输入去验证出错的解析器"的假绿，是本仓库最该警惕的一种守门。）
-  const raw = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const raw = readFileSync(path.join(repoRoot, 'src/client/styles-css.ts'), 'utf8')
   const start = raw.indexOf('const CSS_TEXT')
-  assert.ok(start > 0, 'styles.ts 里找不到 CSS_TEXT —— 请同步本脚本')
+  assert.ok(start > 0, 'styles-css.ts 里找不到 CSS_TEXT —— 请同步本脚本（CSS 正文已从 styles.ts 移到这里）')
   const open = raw.indexOf('`', start)
   assert.ok(open > start, 'CSS_TEXT 的模板串开引号找不到 —— 请同步本脚本')
   const close = raw.indexOf('`', open + 1)
@@ -560,7 +560,7 @@ test('每库图标：/admin/wikis 的 GET 必须回传 icon（v0.28.8 修「选�
 })
 
 test('hidden 必须真的隐藏：全局兜底一条，不许再逐元素补（踩过 12 次）', () => {
-  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const styles = readFamily(repoRoot, 'src/client/styles')
   const sidebar = readFileSync(path.join(repoRoot, 'src/client/sidebar-entry.ts'), 'utf8')
   // 根因：hidden 属性在 CSS 里只是 display:none，任何显式 display 都能盖掉它。
   // 本仓库为此在不同元素上各补过一条规则（面板 iframe/错误块、快速笔记、FAB 菜单与
@@ -881,7 +881,7 @@ test('切库不再"卡一下"：立即换文档 + 焦点只重画高亮 + 换库
   const sidebar = readFileSync(path.join(repoRoot, 'src/client/sidebar-entry.ts'), 'utf8')
   const frame = readFileSync(path.join(repoRoot, 'src/client/tw-frame.ts'), 'utf8')
   const panel = readFileSync(path.join(repoRoot, 'src/client/panel.ts'), 'utf8')
-  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+  const styles = readFamily(repoRoot, 'src/client/styles')
 
   // ① 内核：焦点一变必须**立即**换（复用上一次 /status 的 payload），再后台复探。
   //    判据是顺序 —— switchFrameNow() 必须在同一个订阅里、且早于 doRefresh()。

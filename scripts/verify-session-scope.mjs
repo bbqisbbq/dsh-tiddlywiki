@@ -238,6 +238,18 @@ try {
     const stats = await stat(dirAsFile)
     assert.equal(stats.isDirectory(), true, '拒绝写入后必须原样保留那个路径（没被改成文件）')
   })
+  await test('写：内容解析不出来（坏 JSON）也必须中止，且原文件一字节不变', async () => {
+    // v0.29.0：读路径软失败是对的（偏好而已），但写入路径的 `state ?? 空状态`
+    // 会把一份坏文件的**其它所有会话**一起抹掉——同一份读-改-写，另一种入口。
+    const corrupt = join(scratch, 'corrupt.json')
+    const original = '{ "version": 1, "sessions": { "keep-me": { "wikiId": "work", '
+    await writeFile(corrupt, original, 'utf8')
+    await assert.rejects(
+      () => setSessionScope('s-loss', 'books', corrupt),
+      /无法解析/,
+    )
+    assert.equal(await readFile(corrupt, 'utf8'), original, '中止 = 什么都没发生（坏文件原样保留，供人工修复）')
+  })
 } finally {
   await rm(scratch, { recursive: true, force: true })
 }

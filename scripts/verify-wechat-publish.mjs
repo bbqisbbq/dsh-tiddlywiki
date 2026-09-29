@@ -408,12 +408,15 @@ await test('路由：未启用 403 / 方法校验 405 / 同源 403 / token 401 /
     },
   }
   let config = { enabled: false, command: stub, token: '', adapter: 'publish-note', dsn: '' }
+  // The farm mode is read per request (v0.29.0): multi-wiki must refuse to
+  // publish, because the adapter's callback base URL cannot name a wiki.
+  let mode = 'single'
   const runner = makeRunner()
   const dispose = registerRoutes({ webServer }, {
     server: () => ({}),
     serverById: () => ({}),
     wikiIds: () => [],
-    wikiSummaries: () => ({ mode: 'single', defaultId: 'main', items: [] }),
+    wikiSummaries: () => ({ mode, defaultId: 'main', items: [] }),
     getClient: () => ({ get: async (title) => (title === 'known' ? { title, text: 'x' } : undefined) }),
     git: {},
     autoCommit: () => {},
@@ -465,6 +468,16 @@ await test('路由：未启用 403 / 方法校验 405 / 同源 403 / token 401 /
     assert.equal((await post('/wechat/publish', { title: 'missing-note' })).status, 400, '不存在的笔记必须在起任务前被挡下')
     assert.equal((await post('/wechat/publish', { title: 'known', adapter: 'evil' })).status, 400)
     assert.equal((await post('/wechat/publish', { title: '$:/plugins/dsh-tiddlywiki/config' })).status, 400, '插件密钥命名空间不得发布')
+    // 多库模式：必须响亮拒绝。发布链路是把**一个**基址（--dsn）交给 opencli，
+    // 它再加 `/render`、`/get?title=`；库 id 只能走路径，`?wiki=` 到不了那两次
+    // 调用。放行的话，任务会拿 B 库的标题去渲染**默认库**的同名笔记并发出去。
+    mode = 'multi'
+    const multi = await post('/wechat/publish', { title: 'known' })
+    const multiRaw = await multi.text()
+    assert.equal(multi.status, 400, `多库模式必须拒绝发布，实际 ${multi.status} ${multiRaw}`)
+    assert.match(multiRaw, /多知识库模式/, `拒绝理由必须说清是库的问题：${multiRaw}`)
+    assert.equal((await fetch(url('/wechat/ready'))).status, 200, 'ready 是只读探测，不受多库限制')
+    mode = 'single'
     // token：配置后无头 401、带头通过
     config = { ...config, token: 'sekret' }
     assert.equal((await post('/wechat/publish', { title: 'known' })).status, 401)

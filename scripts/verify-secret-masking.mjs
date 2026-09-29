@@ -127,6 +127,21 @@ test('与掩码相同的 git remote 被丢弃；真正的新 remote 保留', () 
   assert.equal(replaced.git.remote, 'https://github.com/other/x.git')
 })
 
+test('缓存过期（有人在 TW 里改过 remote）时，打码 remote 仍不得落库（v0.29.0）', () => {
+  // 现场：/admin/config 用**内存缓存**的配置去比对，而 ConfigStore.set 合并的是
+  // **刚读到的** tiddler。两者不一致时，旧的「相等才丢弃」判定会失败，于是
+  // `https://***@…` 被当成真 remote 写进库 —— 一个 URL 字面被打码的坏仓库。
+  // 新判据落在字符串本身（`//***@`），不依赖任何缓存。
+  const redacted = maskConfigSecrets(stored).git.remote
+  const staleCache = { git: { remote: 'https://github.com/human/edited-elsewhere.git' } }
+  const out = stripMaskedSecrets({ git: { remote: redacted } }, staleCache)
+  assert.equal('remote' in out.git, false, `缓存过期时也不得写回打码 remote：${JSON.stringify(out.git)}`)
+  // 同一个过期缓存下，人类改过的**新** remote 仍然是「真改动」，必须保留。
+  // （注意：写回与缓存**完全相同**的值属于「没改」，被丢弃等价于保留，不算回归。）
+  const real = 'https://github.com/human/second-edit.git'
+  assert.equal(stripMaskedSecrets({ git: { remote: real } }, staleCache).git.remote, real)
+})
+
 console.log('escapeInline —— 注入汇总 wikitext 的字符串必须转义')
 
 test('HTML 元字符被转义（TW 原样透传 HTML）', () => {

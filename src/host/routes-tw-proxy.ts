@@ -53,69 +53,27 @@ function forwardHeaders(headers: IncomingHttpHeaders): Record<string, string> {
 }
 
 /**
- * Titles the browser-facing TW surfaces must never serve (v0.19.3 / v0.20.0).
- *
- * `$:/plugins/dsh-tiddlywiki/config` holds the shared tokens and the git
- * remote (possibly with a PAT); `/tw` and `/api` forward ANY path to the
- * loopback TW child, whose TiddlyWeb REST answers for `$:/…` titles — a
- * route-level guard on `/get` was therefore trivially bypassed by
- * `GET /dsh-tiddlywiki/tw/recipes/default/tiddlers/%24%3A%2Fplugins%2F…`
- * (verified). The whole plugin namespace is blocked: nothing under it is
- * needed by the TW frontend, and the host itself talks to TW directly.
- *
- * v0.20.0: the SAME predicate now also guards `POST /render`, which had been
- * left open — TW's `/render` route renders ANY tiddler by title, so
- * `{"title":"$:/plugins/dsh-tiddlywiki/config"}` returned the raw config
- * (tokens + PAT in plain text inside `<pre><code>`, where the fragment
- * sanitizer keeps it). Verified end-to-end against a scratch wiki before the
- * fix. Every route that turns a caller-supplied title into TW output must use
- * `isBlockedProxyTitle`.
- *
- * v0.28.8: this lives here (not in routes.ts) because this module owns every
- * caller of it — but `/get` in routes.ts still uses it too, hence the export.
+ * The secret-namespace guard itself now lives in `proxy-guard.ts` (v0.29.0).
+ * Extracted because the AGENT TOOL layer needs the same predicate
+ * (`tiddlywiki_get` reached `$:/plugins/dsh-tiddlywiki/config` directly, so
+ * the model could read the tokens these routes are careful to hide), and a
+ * tool module must not import a route module for a security primitive.
+ * Imported for internal use below and re-exported so this module keeps the
+ * exact surface its existing caller (`/get` in routes.ts) already uses.
  */
-export const BLOCKED_PROXY_TITLE_PREFIXES = ['$:/plugins/dsh-tiddlywiki/']
+import {
+  BLOCKED_PROXY_TITLE_PREFIXES,
+  isBlockedProxyPath,
+  isBlockedProxyTitle,
+  referencesBlockedTitle,
+} from './proxy-guard.ts'
 
-/** True when a caller-supplied tiddler title addresses the secret namespace. */
-export const isBlockedProxyTitle = (title: string): boolean =>
-  BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => title.startsWith(prefix))
-
-/**
- * True when a proxied pathname addresses a blocked (secret-bearing) tiddler.
- *
- * Decodes the WHOLE path rather than looking for a literal `/tiddlers/` marker
- * (v0.23.5). TW core's `get-tiddler-html.js` route is a SINGLE segment
- * (`path = /^\/([^\/]+)$/`) decoded with `decodeURIComponentSafe`, so
- * `GET /tw/%24%3A%2Fplugins%2Fdsh-tiddlywiki%2Fconfig` reached the config
- * tiddler while the old marker check saw no `/tiddlers/` at all (verified
- * before the fix: 200, 715 bytes of config JSON on both `/tw` and `/api`).
- * Raw, once- and twice-decoded forms are all checked so double-encoding cannot
- * slip through either.
- */
-export const isBlockedProxyPath = (pathname: string): boolean => {
-  let candidate = pathname
-  for (let i = 0; i < 3; i += 1) {
-    if (BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => candidate.includes(prefix))) return true
-    let next = candidate
-    try {
-      next = decodeURIComponent(candidate)
-    } catch { /* malformed encoding: stop decoding and use what we have */ }
-    if (next === candidate) break
-    candidate = next
-  }
-  return BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => candidate.includes(prefix))
+export {
+  BLOCKED_PROXY_TITLE_PREFIXES,
+  isBlockedProxyPath,
+  isBlockedProxyTitle,
+  referencesBlockedTitle,
 }
-
-/**
- * Does caller-supplied CONTENT reference the protected namespace? (v0.23.5)
- * TW's `/render` resolves `{{…}}` transclusions server-side, so the `text`
- * branch was a second way to print the config tiddler: verified before the fix,
- * `POST /render {"text":"{{$:/plugins/dsh-tiddlywiki/config}}"}` returned 200
- * with the config JSON inside `<pre><code>` — the fragment sanitizer only strips
- * tags, it cannot know the text is a secret.
- */
-export const referencesBlockedTitle = (value: string | undefined): boolean =>
-  value !== undefined && BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => value.includes(prefix))
 
 /**
  * Every request-scoped dependency the three TW-facing routes use. Deliberately

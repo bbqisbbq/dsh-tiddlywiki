@@ -161,7 +161,19 @@ export async function setSessionScope(sessionId: string, wikiId: string | undefi
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
   }
-  const parsed = existing.length > 0 ? (parseState(existing).state ?? { version: SESSION_SCOPE_VERSION, sessions: {} }) : { version: SESSION_SCOPE_VERSION, sessions: {} }
+  // v0.29.0: an UNPARSEABLE file is not "no file" either. The old code fell
+  // back to an empty state and then rewrote the whole file, so one bad byte
+  // (a partial write, a hand edit) silently dropped EVERY other session's
+  // knowledge-base scope. Reading may stay fail-soft (a preference is not worth
+  // blocking a reader over — mirroring the trash-index rule), but the WRITE
+  // path must abort: nothing has happened yet, and a retry is cheap.
+  const parsedExisting = existing.length > 0 ? parseState(existing) : undefined
+  if (existing.length > 0 && parsedExisting?.state === undefined) {
+    throw new Error(
+      `会话作用域文件无法解析（${file}）：本次写入已中止，以免丢掉其他会话的作用域。请检查该文件（或删除它以重置）后重试。`,
+    )
+  }
+  const parsed = parsedExisting?.state ?? { version: SESSION_SCOPE_VERSION, sessions: {} }
   const pruned = pruneScopes(parsed, Date.now())
   if (wikiId === undefined) delete pruned.sessions[sessionId]
   else pruned.sessions[sessionId] = { wikiId, at: new Date().toISOString() }

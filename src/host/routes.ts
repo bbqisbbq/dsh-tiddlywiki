@@ -1241,6 +1241,25 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
       if (!guardWechat(req, res)) return
+      // v0.29.0: the publish chain cannot express WHICH knowledge base it means.
+      //
+      // The adapter is a separate local process handed ONE base URL (`--dsn`)
+      // and it appends `/render` and `/get?title=…` to it — so a wiki id can
+      // only travel in that PATH, never as `?wiki=`. In a multi-wiki install the
+      // job would pass its own existence check against wiki B and then
+      // render/publish the DEFAULT wiki's same-titled note: wrong content, on a
+      // public platform, with nothing in the receipt saying so. Refuse loudly
+      // instead. (Single-wiki installs — the overwhelming majority, and the
+      // only configuration this feature was verified in — behave identically to
+      // before.) The proper fix is a wiki-scoped alias prefix (`/w/<id>/render`)
+      // that the DSN can point at; tracked as a follow-up, not done here.
+      if (deps.wikiSummaries(req).mode !== 'single') {
+        json(res, {
+          ok: false,
+          error: '多知识库模式下暂不支持从 TW 面板发布到公众号：发布链路回连宿主的地址无法指定库，会读到默认库的同名笔记。请在「设置 → 知识库 → 运行模式」切为单库后发布，或改用命令行 opencli 并显式传 --dsn。',
+        }, 400)
+        return
+      }
       let body: { title?: unknown; adapter?: unknown } = {}
       try {
         body = JSON.parse(await readBody(req)) as { title?: unknown; adapter?: unknown }

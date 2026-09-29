@@ -219,9 +219,19 @@ export function buildVersionInvocation(opts: { platform: NodeJS.Platform; comman
   return { file: opts.command, args: ['--version'], windowsVerbatimArguments: false }
 }
 
-/** Keep the first `limit` characters (stdout of a long run must not grow forever). */
+/**
+ * Cap captured output, keeping the TAIL (v0.29.0).
+ *
+ * It used to keep the first `limit` characters, which broke the verdict:
+ * `interpretPublishOutcome()` looks for the adapter's `-f json` row at the END
+ * of stdout (that is where a CLI prints its result), so a run whose output
+ * exceeded the cap lost the row and was reported as
+ * 「命令已完成（未解析到结构化回执）」 — an ok verdict for what may have been a
+ * failure. Same for stderr, where the LAST line is the real error
+ * (`lastNonEmptyLine` reads it). The tail is the informative end of a log.
+ */
 export function capOutput(text: string, limit: number = MAX_JOB_OUTPUT_CHARS): string {
-  return text.length <= limit ? text : text.slice(0, limit)
+  return text.length <= limit ? text : text.slice(text.length - limit)
 }
 
 /** The tail of a log, with the last `limit` characters (overlay display). */

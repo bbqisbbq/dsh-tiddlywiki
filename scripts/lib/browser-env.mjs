@@ -49,8 +49,8 @@ function tryRequire(spec) {
   }
 }
 
-/** Chrome/Edge candidate paths for Windows / macOS / Linux. */
-export const CHROME_CANDIDATES = [
+/** Chrome/Edge candidate paths for Windows / macOS / Linux (module-private). */
+const CHROME_CANDIDATES = [
   // Windows
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',

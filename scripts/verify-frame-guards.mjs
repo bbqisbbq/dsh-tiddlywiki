@@ -321,7 +321,16 @@ await test('note-widget：保存/丢弃后重置必须取消防抖并记录已�
   assert.match(body, /clearTimeout\(draftTimer\)/, '重置前必须取消在途的防抖定时器')
   assert.match(body, /persistedSignature\s*=/, '重置后必须把「空内容 + 新标题」记为已定型，否则会写出幽灵草稿')
   const flush = bodyOf(noteWidget, 'const flushDraft = ')
-  assert.match(flush, /autoTitle/, 'flushDraft 必须识别「只有自动标题、正文为空」= 没有可恢复内容')
+  // v0.29.0：判据从「正文为空 **且** 标题是自动生成的」升级为「正文为空」。
+  // 恢复草稿的分支不会设置自动标题（恢复出来的是草稿里存的标题），旧判据漏掉
+  // 「恢复 → 清空正文 → 关窗」这条入口，于是仍会写出一份空草稿、下次打开对着
+  // 空白编辑器报「已恢复未保存草稿」（v0.22.8 的另一个入口）。
+  assert.match(flush, /text\.trim\(\)\.length === 0/, 'flushDraft 必须把「正文为空」当成没有可恢复内容')
+  assert.match(flush, /clearDraft\(\)/, '正文为空时必须清掉草稿')
+  assert.ok(
+    !/title === autoTitle/.test(flush),
+    'flushDraft 不得再把「要不要写草稿」挂在标题上（恢复草稿时那个标题不是自动生成的，会漏掉）',
+  )
 })
 
 console.log('v0.23.5 —— 生命周期 / 进程守卫（源码级：这些坑都死过一次）')

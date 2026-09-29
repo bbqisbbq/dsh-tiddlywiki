@@ -401,6 +401,13 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
   const handleRestart = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      // v0.29.0: same guard the sibling route `/restart` has had — without it a
+      // `?wiki=<registered but stopped>` request ran the drain against
+      // `client: undefined` and `deps.getWikiPath(req)`'s DEFAULT-path fallback,
+      // then answered `{ok:true, drained:true, status:undefined}`: a FAKE success
+      // that restarted nothing while the settings page scoped to that wiki
+      // believed it had.
+      if (refuseStoppedTarget(req, res)) return
       // v0.24.1: drain the syncer queue first (ironclad rule #1) — this route
       // used to kill the child with writes still queued, losing them silently.
       const drained = await drainThenStop({

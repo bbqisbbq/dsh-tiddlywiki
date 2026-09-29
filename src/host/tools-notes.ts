@@ -8,6 +8,7 @@
  */
 import { defineTool } from '../sdk.ts'
 import { isBinaryType, toIsoDateString } from './tw-api.ts'
+import { isBlockedProxyTitle } from './proxy-guard.ts'
 import { assertNoConflict, buildWriteTiddler, normalizeTagArg } from './write-policy.ts'
 import { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX } from './workspace.ts'
 import {
@@ -71,6 +72,16 @@ export function getTool(env: ToolEnv) {
       },
     },
     execute: async (args: { title: string }, exec: unknown): Promise<GetResult> => {
+      // Ironclad rule #6 (v0.29.0): every path that turns a caller-supplied
+      // title into TW output runs the secret-namespace guard. `/get`, `/tw`,
+      // `/api` and `/render` already did; the tool did not, so the MODEL could
+      // read `$:/plugins/dsh-tiddlywiki/config` (bridge/ui/wechat tokens +
+      // a credentialed git remote) that those routes exist to hide.
+      if (isBlockedProxyTitle(args.title)) {
+        throw new Error(
+          `tiddlywiki_get: 「${args.title}」属于插件自身命名空间（$:/plugins/dsh-tiddlywiki/），可能含密钥，工具层拒绝读取。需要看配置请让人类在 DSH 设置页查看。`,
+        )
+      }
       const wiki = requireWiki(sessionIdOf(exec))
       const t = await wiki.get(args.title)
       if (t === undefined) return { notFound: true, title: args.title, text: '', tags: [], fields: {}, modified: null }
@@ -371,7 +382,14 @@ export function renameTool(env: ToolEnv) {
       } catch (err) {
         deleteFailed = err instanceof Error ? err.message : String(err)
       }
-      if (refsTiddlers === 0 && refsSkipped === 0) {
+      // v0.29.0: only a scan can conclude "nothing references the old title".
+      // With `updateRefs: false` nothing was scanned, so the old condition
+      // (`refsTiddlers === 0 && refsSkipped === 0`) was vacuously true and the
+      // receipt LIED — it told the model there were no references while every
+      // referrer still pointed at the old title.
+      if (args.updateRefs === false) {
+        warning = 'updateRefs=false：已跳过引用更新，其它笔记里指向旧标题的链接仍然指向旧标题，需要时请手动处理（或重新执行一次不传 updateRefs 的重命名）。'
+      } else if (refsTiddlers === 0 && refsSkipped === 0) {
         warning = '未找到任何其他 tiddler 引用旧标题；如确实需要，可手动补充链接。'
       }
       if (refsSkipped > 0) {

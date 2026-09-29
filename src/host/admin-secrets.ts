@@ -73,6 +73,23 @@ export function maskConfigSecrets(config: PluginConfigShape): PluginConfigShape 
 }
 
 /**
+ * Does a remote URL still carry `redactRemoteUrl()`'s marker?
+ *
+ * WHY a structural check and not only "equals the redaction of what we have
+ * cached" (v0.29.0): the cached value can be STALE. A human can edit the config
+ * tiddler's `git.remote` in the TW editor, and `/admin/config` compares against
+ * `deps.config(req).get()` (an in-memory cache) while `ConfigStore.set` merges
+ * onto a FRESHLY read tiddler. When those disagree the equality test fails and
+ * the redacted string (`https://***@github.com/…`) is persisted as the real
+ * remote — a repo with a literally-redacted URL. The marker is unambiguous, so
+ * that half needs no cache at all.
+ */
+export const REDACTED_REMOTE_RE = /\/\/\*{3,}@/
+
+/** True when `redactRemoteUrl()` produced (or would produce) this string. */
+export const isRedactedRemoteUrl = (value: string): boolean => REDACTED_REMOTE_RE.test(value)
+
+/**
  * Drop the masked placeholders from an incoming config patch so saving the
  * settings page never overwrites a stored secret with `********` (or the
  * redacted git remote with `https://***@…`). `bridge.token`/`ui.sendToAgent.token`
@@ -110,8 +127,12 @@ export function stripMaskedSecrets<T extends Record<string, unknown>>(patch: T, 
   if (copy.git !== undefined && typeof copy.git === 'object' && copy.git !== null) {
     const git = { ...(copy.git as Record<string, unknown>) }
     const storedRemote = typeof current.git?.remote === 'string' ? current.git.remote : ''
-    if (typeof git.remote === 'string' && storedRemote.length > 0 && git.remote === redactRemoteUrl(storedRemote)) {
-      delete git.remote
+    if (typeof git.remote === 'string') {
+      // Structural first (cache-independent), equality second (belt): either
+      // way a value carrying the redaction marker must never reach the tiddler.
+      const redacted = isRedactedRemoteUrl(git.remote)
+        || (storedRemote.length > 0 && git.remote === redactRemoteUrl(storedRemote))
+      if (redacted) delete git.remote
     }
     copy.git = git
   }

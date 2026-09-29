@@ -124,9 +124,6 @@ export interface WikiInstanceOptions {
   log?: (message: string) => void
 }
 
-/** Where a restart/stop is allowed to come from (kept for diagnostics). */
-export type WikiInstanceState = 'stopped' | 'starting' | 'running' | 'failed'
-
 /**
  * Ensure the wiki's `.gitignore` covers TW's transient artifacts, WITHOUT
  * clobbering rules the user added. Only touched when one of the managed lines
@@ -286,7 +283,14 @@ export class WikiInstance {
     const port = typeof b.port === 'number' && Number.isInteger(b.port) && b.port > 0 && b.port < 65536 ? b.port : this.options.base.bridge.port
     const token = typeof b.token === 'string' ? b.token : ''
     const tag = typeof b.tag === 'string' && b.tag.trim().length > 0 ? b.tag.trim() : this.options.base.bridge.tag
-    return { enabled: b.enabled === true, port, token, tag }
+    // v0.29.0: `wiki` MUST be carried through. v0.28.8 added the field to
+    // BridgeConfig / PluginConfigShape / the settings page and to the
+    // startup log, but this re-construction (a hand-written object literal)
+    // dropped it — so in multi-wiki installs every clip landed in the DEFAULT
+    // wiki and the 「剪藏写入」 selector was decoration. Nothing failed loudly:
+    // the value simply never reached `clipTarget()`.
+    const wiki = typeof b.wiki === 'string' && b.wiki.trim().length > 0 ? b.wiki.trim() : undefined
+    return { enabled: b.enabled === true, port, token, tag, ...(wiki !== undefined ? { wiki } : {}) }
   }
 
   /**

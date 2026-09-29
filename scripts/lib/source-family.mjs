@@ -35,12 +35,3 @@ export function readFamily(repoRoot, relBase) {
     .map((n) => `// ---- ${path.join(relBase, n).replace(/\\/g, '/')} ----\n${normalize(fs.readFileSync(path.join(dir, n), 'utf8'))}`)
     .join('\n')
 }
-
-/** Names of the files a `readFamily()` call covers (for error messages). */
-export function familyFiles(repoRoot, relBase) {
-  const base = path.basename(relBase)
-  const dir = path.dirname(path.join(repoRoot, relBase))
-  return fs.readdirSync(dir)
-    .filter((n) => n === `${base}.ts` || (n.startsWith(`${base}-`) && n.endsWith('.ts')))
-    .sort()
-}

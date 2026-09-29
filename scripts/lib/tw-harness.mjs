@@ -40,7 +40,7 @@ export async function waitFor(cond, timeoutMs = 10_000, stepMs = 100) {
  * @param {string} pathname
  * @returns {Function | undefined}
  */
-export function matchRoute(routes, pathname) {
+function matchRoute(routes, pathname) {
   const exact = routes.find((r) => r.kind === 'exact' && r.path === pathname)
   if (exact !== undefined) return exact.handler
   let best

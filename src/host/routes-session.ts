@@ -318,6 +318,13 @@ export function createSessionRoutes(deps: SessionRouteDeps): SessionRouteHandler
         })
       }
       const result = await pendingSummary
+      // Bound the summary cache (v0.29.0). Only the REJECTION path used to delete
+      // its entry, so every successful session kept one forever: a Map keyed by
+      // session id that only grew (small values, but unbounded). Entries are only
+      // reusable for SUMMARY_REUSE_MS, so anything older is dead weight.
+      for (const [id, entry] of summaryInFlight) {
+        if (Date.now() - entry.at >= SUMMARY_REUSE_MS) summaryInFlight.delete(id)
+      }
       json(res, { ok: true, ...result, twUrl: deps.twProxyPath, twUrlAbsolute: deps.twProxyAbsoluteBase(req) })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))

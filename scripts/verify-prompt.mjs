@@ -147,8 +147,13 @@ test('委派给 schema 的规则必须在工具 description 里（从提示词�
     )
   }
   // 反向：这些句子**不该**再出现在 slim 里（出现了说明去重没做完）。
-  assert.ok(!slim.includes('ws/<项目名>'), 'slim 不该再复述工作区标记（已在 put 的 schema 里）')
-  assert.ok(!slim.includes('先在工作区内查'), 'slim 不该再复述先窄后宽（已在 search 的 schema 里）')
+  // 关键：needle 必须与上面「schema 里必须有」用的是**同一个字符串**。
+  // 旧写法把反向 needle 手写成了 `先在工作区内查` —— 那个措辞在全仓都不存在
+  // （schema 里是「先在该工作区内检索」），于是这条反向断言永远为真、永久变绿，
+  // 「去重没做完」这条回归根本没人拦（v0.29.0 审计实测）。
+  const needleOf = (what) => delegated.find(([w]) => w === what)[1]
+  assert.ok(!slim.includes(needleOf('工作区标签自动打')), 'slim 不该再复述工作区标记（已在 put 的 schema 里）')
+  assert.ok(!slim.includes(needleOf('检索先窄后宽')), 'slim 不该再复述先窄后宽（已在 search 的 schema 里）')
 })
 
 test('可选功能默认不打扰：不进提示词（v0.23.0）', () => {

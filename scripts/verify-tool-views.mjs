@@ -103,7 +103,19 @@ test('wiki 链接拦截器同时匹配相对与绝对同源 /dsh-tiddlywiki/tw/#
   assert.ok(/matchTwProxyPath\(url\.pathname\)/.test(viewsSrc), '拦截器必须走 matchTwProxyPath 判定 pathname（同时支持裸路径与 /tw/<id>/）')
   assert.ok(/function matchTwProxyPath\(/.test(viewsSrc), 'matchTwProxyPath 必须存在')
   assert.ok(/pathname === TW_PROXY_BASE/.test(viewsSrc), 'matchTwProxyPath 必须认裸 TW 代理基址')
-  assert.ok(!/^\/dsh-tiddlywiki\\\/tw\\\/#/.test(viewsSrc.replace(/\n/g, ' ')) || !/new RegExp\(`\^\$\{TW_PROXY_BASE/.test(viewsSrc), '旧的「仅相对路径」正则拦截器已移除')
+  // 反向：旧的「只认相对路径」正则拦截器不得回来。判据是**那条正则本身**
+  // （`/^\/dsh-tiddlywiki\/tw\/#(.+)$/`）。旧写法 `!/^\/dsh-tiddlywiki\\\/tw\\\/#/`
+  // 有两个坑：`^` 没有 m 标志、又作用在折行后的整份文本上 ⇒ 只有文件开头正好是
+  // 它才为假 ⇒ `!A` 恒真，断言永不失败（v0.29.0 审计实测）。现在直接查那条正则在
+  // 源码里还在不在 —— 它一旦被改写回「相对路径 only」，这里立刻红。
+  assert.ok(
+    !viewsSrc.includes('\\/dsh-tiddlywiki\\/tw\\/#'),
+    '旧的「仅相对路径」正则拦截器又回来了（链接判定必须走 matchTwProxyPath，否则多库/绝对 href 会漏）',
+  )
+  assert.ok(
+    !/new RegExp\(`\^\$\{TW_PROXY_BASE/.test(viewsSrc),
+    '不允许再按「以 TW_PROXY_BASE 开头」手拼正则（裸 /tw/ 与 /tw/<id>/ 要分别判定）',
+  )
 })
 
 test('多库：卡片取数/链接/缓存都必须带上会话作用域的知识库（v0.28.8，反馈 10）', () => {

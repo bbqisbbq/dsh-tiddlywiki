@@ -1,0 +1,914 @@
+/**
+ * The client stylesheet TEXT, kept apart from the injection logic (v0.29.0).
+ *
+ * WHY IT MOVED: `styles.ts` had grown to ~950 lines of which ~900 were this one
+ * template literal, and it is a file several guards read (rule presence, plus
+ * "the literal was not truncated"), so any edit to the injection code started
+ * with scrolling past a wall of CSS.
+ *
+ * CONTRACT FOR EDITORS (both checks live in `scripts/verify-wiki-focus.mjs`):
+ *   - the text must NOT contain a backtick (it would close the template early),
+ *   - it must NOT contain `${` (it would be interpolated as JS).
+ * The body must still start with a CSS comment and end with `}`.
+ *
+ * @module dsh-tiddlywiki/client/styles-css
+ */
+export const CSS_TEXT = `
+/* ── sidebar entry ───────────────────────────────────────────── */
+/* ⚠️ hidden 属性在 CSS 里只是 display:none，**任何显式 display 都能盖掉它**。
+   这条全局兜底（v0.28.5）盖住全表里所有自带 display 的组件。已经踩过 12 次：
+   面板 iframe、错误块、快速笔记、FAB 菜单/提示、右侧栏、目标库下拉、草稿栏、
+   最近列表 —— 每次都是"某个元素 hidden 了却还显示"，然后为它单独补一条规则。
+   多库模式下默认那一行「TiddlyWiki」也是靠 hidden 让位给每库入口行的，没有这条
+   它照样渲染（作者 2026-09-28 报障）。一条全局规则替掉那 12 条逐元素规则。 */
+[hidden] { display: none !important; }
+.dsh-tw-entry {
+  display: flex; align-items: center; gap: 8px; position: relative;
+  width: calc(100% - 8px); margin: 2px 4px; padding: 6px 10px;
+  border: none; border-radius: 8px; background: transparent;
+  color: var(--dsw-alias-label-secondary, inherit); font: inherit; font-size: 13px;
+  cursor: pointer; text-align: left;
+}
+.dsh-tw-entry:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, inherit); }
+/* 每库自定义图标（v0.28.4）：emoji 走 textContent，尺寸与 SVG 图标对齐。 */
+.dsh-tw-entry-icon.dsh-tw-entry-emoji {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; font-size: 13px; line-height: 1;
+}
+.dsh-tw-entry[data-active="true"] { background: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.18)); color: var(--dsw-alias-label-primary, inherit); font-weight: 500; }
+/* 多库（v0.28.2）：每库一个入口行，当前焦点库加一条左侧标线，和「面板正打开哪个库」区分开
+   —— 面板是同一个，但焦点库决定它加载谁。 */
+.dsh-tw-entry[data-focus="true"] { box-shadow: inset 2px 0 0 0 var(--dsw-alias-brand-primary, #3e63dd); }
+.dsh-tw-entry svg { flex: none; }
+.dsh-tw-entry .dsh-tw-entry-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Collapsed rail: the shell narrows the sidebar to a 56px icon rail (dual
+   signals — the frame's data-sidebar-collapsed + the sidebar root's hashed
+   *_collapsed class, same doctrine as dsh-taskboard 0.4.3). Mirror the
+   native 36×36 icon-button geometry: center the icon, hide the label, and
+   scale it up to match the shell's 18px rail icons. */
+[data-sidebar-collapsed] [data-dsh-tw-entry],
+[class*="_collapsed"] [data-dsh-tw-entry] {
+  width: 36px; height: 36px; min-width: 36px;
+  margin: 0 0 12px; padding: 0;
+  justify-content: center; gap: 0; text-align: center;
+}
+[data-sidebar-collapsed] [data-dsh-tw-entry] .dsh-tw-entry-label,
+[class*="_collapsed"] [data-dsh-tw-entry] .dsh-tw-entry-label { display: none; }
+[data-sidebar-collapsed] [data-dsh-tw-entry] svg,
+[class*="_collapsed"] [data-dsh-tw-entry] svg { width: 18px; height: 18px; }
+
+/* ── center-column panel (fixed overlay, JS-pinned to the column rect) ── */
+.dsh-tw-view {
+  display: none; flex-direction: column; min-height: 0; box-sizing: border-box;
+  background: var(--dsw-alias-bg-layer-1, var(--dsw-bg, #fff));
+}
+html[data-dsh-tw-active] .dsh-tw-view { display: flex; }
+/* Hide the conversation content the panel overlays (all three column gens). */
+html[data-dsh-tw-active] [data-pane="conversation"] > :not([data-dsh-tw-view]),
+html[data-dsh-tw-active] [class*="centerCol"] > :not([data-dsh-tw-view]),
+html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view]) { display: none !important; }
+
+/* The iframe background follows the DSH theme so a blank/preload frame never
+   flashes pure white in dark mode (TW paints its own palette once loaded). */
+.dsh-tw-panel-frame { flex: 1; min-height: 0; border: 0; width: 100%; display: block; background: var(--dsw-alias-bg-layer-1, #fff); }
+
+.dsh-tw-panel-error {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; color: var(--dsw-alias-label-secondary, #666); font-size: 13px; text-align: center; padding: 20px;
+}
+.dsh-tw-panel-error button {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25)); background: transparent;
+  color: inherit; font: inherit; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+}
+.dsh-tw-panel-error button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-panel-error code { font-size: 11px; opacity: .8; max-width: 80%; overflow-wrap: anywhere; }
+
+/* 换库提示条（v0.28.14）：换一份 wiki 文档要重新下载 10–30MB 且 TW 回 no-store（缓存不了），
+   那 1–2 秒里界面什么都不动 —— 这条就是"正在发生什么"的唯一说明。两个 TW 界面共用它：
+   它是 view 的最后一个孩子，在 flex column 里天然落在底部。 */
+.dsh-tw-loading {
+  flex: 0 0 auto; padding: 6px 12px; font-size: 12px; text-align: center;
+  color: var(--dsw-alias-label-secondary, #666);
+  background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,.08));
+  border-top: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.18));
+}
+
+/* ── right-sidebar tab (DSH new rightbar) ──────────────────────
+   The React body host fills the rightbar pane; the TW iframe lives inside
+   it and follows the DSH theme like the center-column panel. */
+.dsh-tw-rightbar-tab {
+  position: relative; display: flex; flex-direction: column;
+  width: 100%; height: 100%; min-height: 0; box-sizing: border-box;
+  background: var(--dsw-alias-bg-layer-1, var(--dsw-bg, #fff));
+}
+.dsh-tw-rightbar-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dsh-tw-rightbar-frame-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dsh-tw-rightbar-frame {
+  flex: 1; min-height: 0; border: 0; width: 100%; display: block;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.dsh-tw-rightbar-error {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; color: var(--dsw-alias-label-secondary, #666); font-size: 13px; text-align: center; padding: 20px;
+}
+.dsh-tw-rightbar-error button {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25)); background: transparent;
+  color: inherit; font: inherit; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+}
+.dsh-tw-rightbar-error button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-rightbar-error code { font-size: 11px; opacity: .8; max-width: 80%; overflow-wrap: anywhere; }
+
+/* ── floating quick-note widget ────────────────────────────────
+   Positioned ABOVE the shutdown launcher FAB (fixed right:24 bottom:24,
+   z-index 900, 46px) and BELOW its confirm overlay (z-index 1000).
+   Interactive overlays (the open card, the native-editor popup) sit ABOVE the
+   passive FAB column (sync/status, z-index 950) so those FABs never cover the
+   card's own bottom-right buttons. */
+.dsh-tw-note {
+  position: fixed; right: 24px; bottom: 88px; z-index: 980;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+  font-family: inherit;
+}
+
+.dsh-tw-note-card {
+  width: 340px; max-width: calc(100vw - 40px);
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  border-radius: 14px; box-shadow: var(--dsw-shadow-lv3, 0 8px 30px rgba(0,0,0,.22));
+  padding: 12px; display: flex; flex-direction: column; gap: 10px;
+  font-size: 13px;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  animation: dsh-tw-note-in 180ms ease;
+}
+
+@keyframes dsh-tw-note-in {
+  from { opacity: 0; transform: translateY(8px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.dsh-tw-note-head {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; font-weight: 600; letter-spacing: .2px;
+  color: var(--dsw-alias-label-primary, #222);
+  /* 标题栏 = 拖动把手（拖卡片移动）；touch-action:none 让触屏也能拖动 */
+  cursor: move; user-select: none; -webkit-user-select: none; touch-action: none;
+}
+.dsh-tw-note-head-dragging { cursor: grabbing; opacity: .96; }
+.dsh-tw-note-head .dsh-tw-note-label { margin-right: auto; display: flex; align-items: center; gap: 6px; }
+.dsh-tw-note-close {
+  border: none; background: transparent; color: var(--dsw-alias-label-secondary, #888);
+  font: inherit; font-size: 15px; line-height: 1; padding: 2px 6px; border-radius: 6px; cursor: pointer;
+}
+.dsh-tw-note-close:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, #222); }
+/* 标题与标签上下分行：标题一行，标签 chips+输入框独占一行，
+   避免标签增多时把并排的标题栏一起撑高。 */
+.dsh-tw-note-fields { display: flex; flex-direction: column; gap: 8px; }
+.dsh-tw-note-fields input {
+  width: 100%; box-sizing: border-box; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  border-radius: 8px; padding: 6px 9px; font: inherit; font-size: 12px;
+  background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, inherit);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.dsh-tw-note-fields input:focus, .dsh-tw-note-editor .cm-editor.cm-focused {
+  outline: none; border-color: var(--dsw-alias-brand-primary, #3e63dd);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 25%, transparent);
+}
+/* ── Markdown editor (CodeMirror 6, see markdown-editor.ts) ──────────
+   The .cm-editor box carries the border/radius/min-height the old textarea
+   had; font metrics live on the scroller so lines/selection stay aligned. */
+.dsh-tw-note-editor { position: relative; min-width: 0; }
+.dsh-tw-note-editor .cm-editor {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18)); border-radius: 8px;
+  background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #222);
+  font-size: 13px; min-height: 120px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.dsh-tw-note-editor .cm-scroller {
+  font-family: inherit; font-size: 13px; line-height: 1.5;
+  min-height: 120px; overflow: auto;
+}
+.dsh-tw-note-editor .cm-content {
+  caret-color: var(--dsw-alias-label-primary, #222);
+  padding: 8px 9px;
+}
+.dsh-tw-note-editor .cm-placeholder { color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
+.dsh-tw-note-editor .cm-line { padding: 0; }
+/* Selection + active line follow the theme. */
+.dsh-tw-note-editor .cm-editor .cm-selectionBackground,
+.dsh-tw-note-editor .cm-editor.cm-focused .cm-selectionBackground {
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 22%, transparent) !important;
+}
+.dsh-tw-note-editor .cm-editor .cm-activeLine {
+  background: color-mix(in srgb, var(--dsw-alias-label-secondary, #888) 8%, transparent);
+}
+/* Drag-over highlight (file upload) targets the CodeMirror box now. */
+.dsh-tw-note-drop .cm-editor {
+  border-color: var(--dsw-alias-brand-primary, #3e63dd);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 25%, transparent);
+}
+/* 底部操作条（v0.22.6）：340px 的卡片里本就不下 5 个控件，旧的 flex 收缩会把
+   「✏️ 在 TW 中编辑」这类按钮里的文字压成两行（用户实测报障）。现在按钮一律
+   nowrap + 不收缩，装不下时**整组换行**（右组落到第二行、仍贴右），
+   「Ctrl+Enter」提示留在左组并允许收缩让位——任何情况下都不再折断按钮文字。 */
+.dsh-tw-note-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap;
+}
+.dsh-tw-note-foot-left, .dsh-tw-note-foot-right {
+  display: flex; align-items: center; gap: 8px; min-width: 0; flex-wrap: wrap;
+}
+/* 换行后右组仍贴右缘（space-between 只对第一行生效）。 */
+.dsh-tw-note-foot-right { margin-left: auto; }
+.dsh-tw-note-foot button { white-space: nowrap; flex: 0 0 auto; }
+.dsh-tw-note-hint {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 58%, transparent);
+}
+.dsh-tw-note-upload {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease;
+}
+.dsh-tw-note-upload:hover { filter: brightness(.96); }
+.dsh-tw-note-upload:active { transform: scale(.96); }
+.dsh-tw-note-save {
+  border: 1px solid transparent; background: var(--dsw-alias-brand-primary, #3e63dd); color: #fff;
+  font: inherit; font-size: 12px; padding: 6px 16px; border-radius: 8px; cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease;
+}
+.dsh-tw-note-save:hover:not(:disabled) { filter: brightness(1.08); }
+.dsh-tw-note-save:active:not(:disabled) { transform: scale(.96); }
+.dsh-tw-note-save:disabled { opacity: .55; cursor: default; }
+.dsh-tw-note-edit {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease;
+}
+.dsh-tw-note-edit:hover:not(:disabled) { filter: brightness(.96); }
+.dsh-tw-note-edit:active:not(:disabled) { transform: scale(.96); }
+.dsh-tw-note-edit:disabled { opacity: .55; cursor: default; }
+/* ── Multi-tag chip editor (quick-note tags) ─────────────────────────────── */
+.dsh-tw-note-tags { position: relative; width: 100%; display: flex; flex-direction: column; gap: 4px; }
+.dsh-tw-note-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.dsh-tw-note-tagchip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 6px 2px 8px; border-radius: 999px; font-size: 11px; line-height: 1.4;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 10%, var(--dsw-alias-bg-layer-1, #fff));
+  border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 30%, transparent);
+  color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-note-tagchip-x {
+  cursor: pointer; font-size: 12px; line-height: 1; padding: 0 2px; border-radius: 50%;
+  color: var(--dsw-alias-label-secondary, #888);
+}
+.dsh-tw-note-tagchip-x:hover { color: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-note-taginput { width: 100%; box-sizing: border-box; }
+.dsh-tw-note-tagsuggest {
+  position: absolute; left: 0; right: 0; top: calc(100% + 2px); z-index: 60;
+  max-height: 168px; overflow-y: auto; border-radius: 8px; padding: 4px;
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  box-shadow: var(--dsw-shadow-lv2, 0 4px 16px rgba(0,0,0,.16));
+  font-size: 12px;
+}
+.dsh-tw-note-tagsuggest-item {
+  padding: 6px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dsh-tw-note-tagsuggest-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+/* ── Native-editor popup iframe (quick-note "在 TW 中编辑") ──────────────── */
+.dsh-tw-editor-popup {
+  position: fixed; left: 0; right: 0; top: 0; bottom: 0; margin: auto;
+  width: min(880px, 92vw); height: min(640px, 86vh);
+  display: flex; flex-direction: column; overflow: hidden;
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.2));
+  border-radius: 12px; box-shadow: 0 14px 44px rgba(0,0,0,.3);
+  z-index: 990; font-family: inherit; font-size: 13px;
+}
+.dsh-tw-editor-bar {
+  display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+  padding: 7px 8px 7px 14px; cursor: move; user-select: none;
+  /* 拖拽把手：touch-action:none 让触屏也能拖动（对照 .dsh-tw-note-head） */
+  touch-action: none;
+  background: var(--dsw-alias-bg-layer-1, #f4f5f7);
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.1));
+}
+.dsh-tw-editor-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tw-editor-close {
+  border: none; background: transparent; cursor: pointer; font-size: 14px; line-height: 1;
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 58%, transparent); padding: 5px 8px; border-radius: 6px;
+}
+.dsh-tw-editor-close:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-editor-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: var(--dsw-alias-bg-layer-1, #fff); }
+/* 右下角缩放把手：touch-action:none 让触屏也能拖拽缩放（对照 .dsh-tw-note-head） */
+.dsh-tw-editor-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; }
+
+/* ── toast ──────────────────────────────────────────────────── */
+.dsh-tw-toast {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+  background: var(--dsw-alias-bg-inverse, rgba(30,30,30,.92)); color: var(--dsw-alias-label-inverse, #fff);
+  font-size: 13px; padding: 8px 16px; border-radius: 999px; z-index: 10001;
+  opacity: 0; transition: opacity .2s ease; pointer-events: none;
+  max-width: 80vw; overflow-wrap: anywhere;
+}
+.dsh-tw-toast.dsh-tw-toast-show { opacity: 1; }
+
+/* ── settings page (config panel §13) ────────────────────────── */
+.dsh-tw-settings { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; min-width: 0; }
+.dsh-tw-settings-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 知识库列表里的一行（v0.28.0）：卡片式，便于扫读"哪个库、在哪、在不在跑"。 */
+.dsh-tw-settings-kbrow {
+  display: flex; flex-direction: column; gap: 4px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.12)); border-radius: 8px;
+  padding: 8px 10px; margin: 0 0 8px;
+}
+.dsh-tw-settings-chip {
+  font-size: 12px; padding: 2px 10px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.25));
+}
+.dsh-tw-settings-chip[data-state="running"] { color: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-settings-chip[data-state="starting"] { color: var(--dsw-alias-state-warning-primary, #d9822b); }
+.dsh-tw-settings-chip[data-state="failed"], .dsh-tw-settings-chip[data-state="stopped"] { color: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-settings-chip[data-state="ok"] { color: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-settings-chip[data-state="missing"] { color: var(--dsw-alias-state-error-primary, #d13b3b); }
+/* seed 有更新（v0.22.0 内容哈希比对）：提示色，不是错误。 */
+.dsh-tw-settings-chip[data-state="update"] { color: var(--dsw-alias-state-warning-primary, #d9822b); flex: 0 0 auto; }
+/* 插件徽标（v0.26.0）：「TW 内已禁用」= 中性灰（非错误，是用户自己的选择），不收缩。 */
+.dsh-tw-settings-chip[data-state="disabled"] { color: var(--dsw-alias-label-secondary, #666); flex: 0 0 auto; }
+.dsh-tw-settings-chip[data-state="ok"] { flex: 0 0 auto; }
+.dsh-tw-settings-section { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.18)); }
+.dsh-tw-settings-h { margin: 0; font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
+/* 字段行：标签自然换行（不再固定 170px 列导致断行错乱），输入框右对齐限宽。
+   align-items: flex-start 让多行标签与输入框顶对齐；复选框行保持垂直居中。 */
+.dsh-tw-settings-field {
+  display: flex; align-items: flex-start; gap: 10px; font-size: 12px;
+  color: var(--dsw-alias-label-secondary, var(--dsw-alias-label-primary, #222));
+}
+.dsh-tw-settings-field-check { align-items: center; cursor: pointer; }
+.dsh-tw-settings-label { flex: 1 1 45%; min-width: 0; line-height: 1.55; padding-top: 3px; }
+.dsh-tw-settings-field-check .dsh-tw-settings-label { padding-top: 0; }
+.dsh-tw-settings-input {
+  flex: 0 1 240px; min-width: 140px; max-width: 55%; box-sizing: border-box;
+  font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
+  background: var(--dsw-alias-bg-input, transparent); color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-settings-input:focus {
+  outline: none; border-color: var(--dsw-alias-brand-primary, #3e63dd);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 22%, transparent);
+}
+/* 多行自由文本（v0.21.0 系统提示词 extra/override）：占满整行、等宽、可纵向拉伸。 */
+.dsh-tw-settings-field-area { flex-direction: column; align-items: stretch; gap: 4px; }
+.dsh-tw-settings-field-area .dsh-tw-settings-label { flex: 0 0 auto; padding-top: 0; }
+.dsh-tw-settings-area {
+  flex: 1 1 auto; max-width: 100%; min-height: 64px; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; line-height: 1.5;
+}
+/* 提示词预览：只读、等宽、限高滚动（长提示词数千字符）。 */
+.dsh-tw-settings-prompt-preview {
+  margin: 0; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.5;
+  padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
+  background: var(--dsw-alias-bg-input, rgba(128,128,128,.06)); color: var(--dsw-alias-label-primary, #222);
+}
+/* 知识库位置（v0.22.0）：同目录候选 wiki 的快捷填入按钮。 */
+.dsh-tw-settings-candidates { flex-wrap: wrap; align-items: center; gap: 6px; }
+.dsh-tw-settings-chipbtn { flex: 0 0 auto; padding: 2px 8px; font-size: 12px; }
+.dsh-tw-settings-list { display: flex; flex-direction: column; gap: 2px; max-height: 240px; overflow: auto; }
+.dsh-tw-settings-plugin { display: flex; align-items: center; gap: 8px; padding: 3px 4px; border-radius: 6px; font-size: 12px; }
+.dsh-tw-settings-plugin:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.08)); }
+/* 行内名称：可增长到 200px 再省略，长中文标题不再被 130px 列截断得七零八落。 */
+.dsh-tw-settings-name {
+  font-weight: 500; flex: 0 1 200px; min-width: 0;
+  color: var(--dsw-alias-label-primary, #222);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* 行内说明：占剩余空间、单行省略（悬停 title 看全），避免 flex-wrap 换行错乱。 */
+.dsh-tw-settings-row.dsh-tw-settings-plugin .dsh-tw-settings-muted {
+  flex: 1 1 100px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dsh-tw-settings-head { padding: 2px 4px 4px; font-size: 11px; }
+.dsh-tw-settings-col { flex: 0 0 14px; text-align: center; color: var(--dsw-alias-label-secondary, #666); }
+.dsh-tw-settings-row.dsh-tw-settings-plugin input { flex: 0 0 auto; margin: 0; }
+/* 说明/次要文字：不依赖可能缺失或与背景不一致的 label-dimmed token，改由主题
+   主文字色 label-primary 派生（58% 透明），在任何深浅主题下都保证可读。 */
+.dsh-tw-settings-muted {
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 58%, transparent);
+  font-size: 12px;
+}
+.dsh-tw-settings-btn {
+  align-self: flex-start; border: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.28));
+  background: transparent; color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 7px; cursor: pointer;
+  flex: none;
+}
+.dsh-tw-settings-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
+.dsh-tw-settings-btn:disabled { opacity: .55; cursor: default; }
+.dsh-tw-settings-btn.dsh-tw-settings-primary {
+  background: var(--dsw-alias-brand-primary, #3e63dd); border-color: transparent; color: #fff;
+}
+/* 反初始化/危险操作按钮：错误色描边+文字，悬停浅色底。 */
+.dsh-tw-settings-btn.dsh-tw-settings-danger {
+  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d13b3b) 45%, transparent);
+  color: var(--dsw-alias-state-error-primary, #d13b3b);
+}
+.dsh-tw-settings-btn.dsh-tw-settings-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #d13b3b) 10%, transparent);
+}
+/* 字段旁的行内错误提示（v0.25.0：数值字段越界/非法时不再静默回落）：它只在
+   .dsh-tw-settings-field 这个横向 flex 行里独占一行，窄屏才不会把提示挤成竖排单字。
+   ⚠️ 必须限定在字段内：同一个 class 也用于页面级加载失败横幅，而外层
+   .dsh-tw-settings 是 flex-direction: column —— 在那里 flex-basis:100% 会把横幅
+   撑成整屏高。CSS 注释里不要出现反引号：本文件的样式整体放在 JS 模板串里。 */
+.dsh-tw-settings-error { color: var(--dsw-alias-state-error-primary, #d13b3b); font-size: 12px; }
+.dsh-tw-settings-field .dsh-tw-settings-error { flex: 1 1 100%; }
+.dsh-tw-settings-search { flex: 0 0 auto; max-width: 220px; }
+.dsh-tw-settings-check { accent-color: var(--dsw-alias-brand-primary, #3e63dd); }
+
+/* ── "知识库" FAB (v0.5: quick-note + sync + panel status merged) ──────────
+   One fixed cluster above the shutdown launcher FAB (bottom:24). The FAB
+   carries a git status dot; the menu pops upward from it. */
+.dsh-tw-fab-wrap {
+  position: fixed; right: 24px; bottom: 88px; z-index: 960;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+}
+.dsh-tw-fab {
+  position: relative;
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  box-shadow: var(--dsw-shadow-lv3, 0 4px 16px rgba(0,0,0,.16)); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background-color 120ms ease, transform 80ms ease;
+}
+.dsh-tw-fab:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
+.dsh-tw-fab:active { transform: scale(.94); }
+.dsh-tw-fab-icon { display: inline-flex; }
+.dsh-tw-fab-dot {
+  position: absolute; right: 0; bottom: 0; width: 11px; height: 11px;
+  border-radius: 50%; border: 2px solid var(--dsw-alias-bg-layer-2, #fff);
+  background: #999; box-sizing: border-box;
+}
+.dsh-tw-fab-dot[data-state="clean"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-fab-dot[data-state="dirty"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
+.dsh-tw-fab-dot[data-state="behind"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-fab-dot[data-state="syncing"] { background: var(--dsw-alias-brand-primary, #3e63dd); }
+.dsh-tw-fab-menu {
+  min-width: 220px; max-width: calc(100vw - 48px);
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  border-radius: 12px; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  box-shadow: var(--dsw-shadow-lv3, 0 8px 30px rgba(0,0,0,.22));
+  font-size: 13px;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  animation: dsh-tw-note-in 160ms ease;
+}
+
+.dsh-tw-fab-status {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 9px; font-size: 12px; color: var(--dsw-alias-label-secondary, #666);
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08));
+  margin-bottom: 4px;
+}
+/* 状态行是悬停 tip 的定位锚点（菜单里只剩这一行状态）。 */
+.dsh-tw-fab-status-tiprow { position: relative; }
+.dsh-tw-fab-status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 详细状态 tip：悬停第一行（TW 服务状态）时弹出，显示 TW 服务 + git 状态 +
+   最近日志，取代旧版菜单里的第二行 git 状态行。 */
+.dsh-tw-fab-tip {
+  position: absolute; right: 0; bottom: calc(100% + 8px);
+  z-index: 70; max-width: 300px; min-width: 200px;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  box-shadow: var(--dsw-shadow-lv3, 0 8px 30px rgba(0,0,0,.22));
+  font-size: 11px; line-height: 1.6; white-space: pre-line; word-break: break-word;
+  text-align: left;
+}
+
+.dsh-tw-fab-tip::after {
+  content: ''; position: absolute; right: 16px; bottom: -5px;
+  width: 10px; height: 10px; transform: rotate(45deg);
+  background: var(--dsw-alias-bg-layer-2, #fff);
+  border-right: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  border-bottom: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+}
+.dsh-tw-fab-status-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; flex: none; }
+.dsh-tw-fab-status-dot[data-state="running"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-fab-status-dot[data-state="starting"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
+.dsh-tw-fab-status-dot[data-state="failed"], .dsh-tw-fab-status-dot[data-state="stopped"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-fab-status-dot[data-state="clean"] { background: var(--dsw-alias-state-success-primary, #3eaa5f); }
+.dsh-tw-fab-status-dot[data-state="dirty"] { background: var(--dsw-alias-state-warning-primary, #d9822b); }
+.dsh-tw-fab-status-dot[data-state="behind"] { background: var(--dsw-alias-state-error-primary, #d13b3b); }
+.dsh-tw-fab-status-dot[data-state="syncing"] { background: var(--dsw-alias-brand-primary, #3e63dd); }
+.dsh-tw-fab-item {
+  display: flex; align-items: center; gap: 6px; text-align: left;
+  border: none; background: transparent; color: inherit; font: inherit; font-size: 13px;
+  padding: 7px 9px; border-radius: 8px; cursor: pointer;
+}
+.dsh-tw-fab-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-fab-item:active { background: var(--dsw-alias-interactive-bg-active, rgba(128,128,128,.18)); }
+/* 多知识库切换分组（v0.28.0）：一行小标题 + 每库一行；当前焦点用 ● 标记。 */
+.dsh-tw-fab-group {
+  font-size: 11px; opacity: .6; padding: 6px 9px 2px; letter-spacing: .04em;
+}
+.dsh-tw-fab-item[data-current="1"] { font-weight: 600; }
+
+/* ── 会话级知识库选择器（v0.28.0，同一个 conversation.input.dock 槽位）──
+   与快速笔记按钮同区、纵向 flex 排列；只在"多于一个可见库"时渲染（组件自己返回
+   null），所以单库安装这一整块都不存在。 */
+/* ── 会话级知识库选择器（v0.28.0；v0.28.7 起并入快速笔记那一行）──
+   它现在渲染在 .dsh-tw-dock-note **里面**、按钮的前面，所以：
+   - 不再 width:100%（那是"独占一整行"的写法，会把按钮挤下去）；
+   - 不再自己做 padding/justify —— 右对齐与"与 composer 输入框对齐"由父级
+     统一负责（见 client/dock-align.ts），一行只测量一次、天然同一基线。
+   只在"多于一个可见库"时渲染（组件自己返回 null），单库安装这一块 DOM 不存在。 */
+.dsh-tw-scope-dock {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px;
+}
+.dsh-tw-scope-label { opacity: .7; }
+.dsh-tw-scope-select {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: inherit; font: inherit; font-size: 12px;
+  padding: 3px 8px; border-radius: 999px; max-width: 260px;
+}
+.dsh-tw-scope-select:disabled { opacity: .6; }
+.dsh-tw-scope-note { opacity: .75; }
+/* 快速笔记卡片的目标库选择（v0.28.0，R7）：只在多库时出现。 */
+.dsh-tw-note-wiki { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+/* ⚠️ hidden 属性在 CSS 里只是 display:none，**任何显式 display 都能盖掉它** ——
+   上面那条 display:inline-flex 就盖掉了，于是单库模式下这个空下拉照样显示出来
+   （作者 2026-09-28 报障："有个写入下拉，但是没有选项"）。显式尊重 hidden，
+   并把这一条写在后面（同优先级靠后者生效）。 */
+
+.dsh-tw-note-wiki-label { opacity: .7; }
+.dsh-tw-note-wiki-select {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: inherit; font: inherit; font-size: 12px;
+  padding: 2px 6px; border-radius: 999px; max-width: 220px;
+}
+.dsh-tw-note-wiki-hint { font-size: 12px; opacity: .75; }
+
+
+/* ── input-dock quick-note button（聊天输入框上方，conversation.input.dock）──
+   该槽位渲染为「输入框上方的全宽条目」纵向 flex 排列（todo/cost-meter/goal/
+   queue/git-graph 等插件同区），此按钮以紧凑小胶囊呈现，不与其他条目重叠。
+   justify-content: flex-end 把按钮放在输入框上方横条的末尾（右端）。 */
+.dsh-tw-dock-note {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 4px 8px 0; box-sizing: border-box; width: 100%;
+}
+.dsh-tw-dock-note-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 5px 12px; border-radius: 999px;
+  cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.dsh-tw-dock-note-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.1)); }
+.dsh-tw-dock-note-btn-active {
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 45%, transparent);
+  color: var(--dsw-alias-brand-primary, #3e63dd);
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 8%, var(--dsw-alias-bg-layer-2, #fff));
+}
+.dsh-tw-dock-note-icon { display: inline-flex; flex: none; }
+.dsh-tw-dock-note-label { white-space: nowrap; }
+
+/* ── quick-note restored-draft banner ─────────────────────────────────────── */
+.dsh-tw-note-draft {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 5px 9px; border-radius: 8px; font-size: 12px;
+  background: color-mix(in srgb, var(--dsw-alias-state-warning-primary, #d9822b) 12%, transparent);
+  color: var(--dsw-alias-label-primary, #222);
+}
+
+.dsh-tw-note-draft-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tw-note-draft-discard {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: transparent; color: inherit; font: inherit; font-size: 12px;
+  padding: 2px 10px; border-radius: 999px; cursor: pointer; flex: none;
+}
+.dsh-tw-note-draft-discard:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+
+/* ── quick-note recent-notes picker ───────────────────────────────────────── */
+.dsh-tw-note-recent {
+  position: absolute; right: 0; bottom: calc(100% - 8px); z-index: 70;
+  width: 340px; max-width: calc(100vw - 40px); max-height: 280px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  border-radius: 12px; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.15));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  box-shadow: var(--dsw-shadow-lv3, 0 8px 30px rgba(0,0,0,.22));
+  font-size: 13px;
+}
+
+.dsh-tw-note-recent-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 6px 8px; border-radius: 7px; cursor: pointer;
+}
+.dsh-tw-note-recent-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-note-recent-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tw-note-recent-meta { flex: none; font-size: 11px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
+.dsh-tw-note-recent-muted { padding: 8px 10px; font-size: 12px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
+.dsh-tw-note-recent-btn {
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease;
+}
+.dsh-tw-note-recent-btn:hover { filter: brightness(.96); }
+.dsh-tw-note-recent-btn:active { transform: scale(.96); }
+
+/* ── reply-stream native tool cards ────────────────────────────────── */
+.dsh-tw-toolcard {
+  margin: 4px 0; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16));
+  border-radius: 10px; background: var(--dsw-alias-bg-layer-2, #fff);
+  overflow: hidden; max-width: 640px;
+}
+.dsh-tw-toolcard-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px;
+}
+.dsh-tw-toolcard-badge {
+  flex: none; font-size: 11px; line-height: 1; padding: 4px 8px; border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #3e63dd) 12%, transparent);
+  color: var(--dsw-alias-brand-primary, #3e63dd); font-weight: 600;
+}
+.dsh-tw-toolcard-title {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; font-weight: 600; color: var(--dsw-alias-label-primary, #222);
+}
+/* 知识库徽标（v0.28.8）：会话明确选了某个库时才渲染。刻意比工具名徽标**弱**
+   （描边 + 次要色），它是上下文说明而不是动作；库名可能较长，所以限宽省略。 */
+.dsh-tw-toolcard-wiki {
+  flex: none; max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  color: var(--dsw-alias-label-secondary, #555);
+}
+.dsh-tw-toolcard-open {
+  flex: none; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 11px; padding: 4px 9px; border-radius: 999px; cursor: pointer;
+  transition: filter 120ms ease, transform 80ms ease;
+}
+.dsh-tw-toolcard-open:hover { filter: brightness(.96); }
+.dsh-tw-toolcard-open:active { transform: scale(.96); }
+.dsh-tw-toolcard-meta {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 0 10px 6px; font-size: 11px;
+}
+.dsh-tw-toolcard-sub { color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
+.dsh-tw-toolcard-tags { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.dsh-tw-toolcard-tag {
+  font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 8%, transparent);
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 70%, transparent);
+}
+.dsh-tw-toolcard-tag-more {
+  font-size: 10px; line-height: 1; padding: 3px 7px; border-radius: 999px;
+  background: transparent;
+  border: 1px dashed color-mix(in srgb, var(--dsw-alias-label-primary, #222) 25%, transparent);
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent);
+}
+.dsh-tw-toolcard-body {
+  padding: 4px 12px 10px; font-size: 13px; line-height: 1.6;
+  color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-toolcard-body > :first-child { margin-top: 4px; }
+.dsh-tw-toolcard-body > :last-child { margin-bottom: 0; }
+.dsh-tw-toolcard-loading, .dsh-tw-toolcard-pending {
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); font-size: 12px;
+}
+.dsh-tw-toolcard-empty, .dsh-tw-toolcard-error { font-size: 12px; }
+.dsh-tw-toolcard-error { color: var(--dsw-alias-state-error-primary, #c0392b); }
+.dsh-tw-toolcard-fallback {
+  margin: 0; padding: 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word;
+  font: 11px/1.55 ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 5%, transparent);
+  max-height: 320px; overflow: auto;
+}
+.dsh-tw-toolcard-foot {
+  padding: 0 10px 8px; font-size: 11px;
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 45%, transparent);
+}
+/* Native TW fragment — minimal re-theme of the tc-* classes TW emits, so
+   links/tables/code render legibly in the DSH page (TW's own CSS is not
+   loaded here). Trust: the HTML comes from the LOCAL wiki. */
+.dsh-tw-toolcard-native {
+  max-height: 420px; overflow: auto; padding-right: 4px;
+}
+.dsh-tw-toolcard-native a { color: var(--dsw-alias-brand-primary, #3e63dd); text-decoration: underline; cursor: pointer; }
+.dsh-tw-toolcard-native a.tc-tiddlylink-missing { text-decoration-style: dashed; opacity: .85; }
+.dsh-tw-toolcard-native table { border-collapse: collapse; margin: 6px 0; display: block; max-width: 100%; overflow-x: auto; }
+.dsh-tw-toolcard-native th, .dsh-tw-toolcard-native td { border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.2)); padding: 4px 8px; text-align: left; }
+.dsh-tw-toolcard-native pre, .dsh-tw-toolcard-native code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+}
+.dsh-tw-toolcard-native pre { background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 6%, transparent); padding: 8px; border-radius: 6px; overflow-x: auto; }
+.dsh-tw-toolcard-native code { background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 8%, transparent); padding: 1px 4px; border-radius: 4px; }
+.dsh-tw-toolcard-native pre code { background: transparent; padding: 0; }
+.dsh-tw-toolcard-native blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--dsw-alias-border-l2, rgba(0,0,0,.25)); color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 70%, transparent); }
+.dsh-tw-toolcard-native img { max-width: 100%; height: auto; border-radius: 6px; }
+.dsh-tw-toolcard-native .tc-error { color: var(--dsw-alias-state-error-primary, #c0392b); }
+/* List rows (search / recent / batch). A row is title/tags/meta on the first
+   line plus the match snippet on a second (the route has shipped a context
+   snippet since v0.19.0; the card drops it and the row shows only a title). */
+.dsh-tw-toolcard-list { display: flex; flex-direction: column; gap: 2px; }
+.dsh-tw-toolcard-row {
+  display: flex; flex-direction: column; gap: 1px; padding: 4px 6px; border-radius: 6px;
+  color: inherit; text-decoration: none; font-size: 12px;
+}
+.dsh-tw-toolcard-row:hover { background: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 7%, transparent); }
+.dsh-tw-toolcard-row-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.dsh-tw-toolcard-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-toolcard-row:hover .dsh-tw-toolcard-row-title { color: var(--dsw-alias-brand-primary, #3e63dd); }
+.dsh-tw-toolcard-row-tags { flex: none; font-size: 10px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 55%, transparent); }
+.dsh-tw-toolcard-row-meta { flex: none; font-size: 10px; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 40%, transparent); }
+.dsh-tw-toolcard-row-snippet {
+  font-size: 11px; line-height: 1.45; color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 62%, transparent);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dsh-tw-toolcard-tags-wrap { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* ── 会话「知识库」Tab（conversation.view 槽位）────────────────────
+   根节点是 shell 的 viewArea（flex column）的直接 flex 子项，用
+   flex:1 + min-height:0 撑满会话体；内容区（.dsh-tw-summary-native）再 flex:1
+   并自行滚动（v0.16.19 起为 host /render 原生片段，不再有 iframe）。
+   主题沿用 --dsw-alias-* 设计令牌。 */
+.dsh-tw-summary {
+  flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
+  box-sizing: border-box; background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.dsh-tw-summary-bar {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 6px 14px; border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.1));
+  font-size: 12px; color: var(--dsw-alias-label-secondary, #666);
+}
+.dsh-tw-summary-bar-title { flex: none; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-summary-bar-hint { flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-tw-summary-bar-spacer { flex: 1; }
+.dsh-tw-summary-btn {
+  flex: none; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; cursor: pointer;
+}
+.dsh-tw-summary-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-summary-btn:disabled { opacity: .55; cursor: default; }
+/* 原生片段容器：flex 撑满 + 内部滚动；tc-* 重主题复用
+   .dsh-tw-toolcard-native（与回复流工具卡同一条渲染管线与样式）。 */
+.dsh-tw-summary-native {
+  flex: 1 1 0; min-height: 0; overflow: auto; max-height: none;
+  padding: 10px 16px 16px; font-size: 13px; line-height: 1.6;
+  color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-summary-native > :first-child { margin-top: 0; }
+.dsh-tw-summary-native > :last-child { margin-bottom: 0; }
+.dsh-tw-summary-native h1 { font-size: 17px; margin: 10px 0 8px; }
+.dsh-tw-summary-native h2 { font-size: 15px; margin: 10px 0 6px; }
+.dsh-tw-summary-native h3 { font-size: 14px; margin: 8px 0 6px; }
+.dsh-tw-summary-native h4, .dsh-tw-summary-native h5, .dsh-tw-summary-native h6 { font-size: 13px; margin: 6px 0 4px; }
+.dsh-tw-summary-native p { margin: 6px 0; }
+.dsh-tw-summary-native ul, .dsh-tw-summary-native ol { margin: 6px 0; padding-left: 22px; }
+.dsh-tw-summary-native li { margin: 2px 0; }
+.dsh-tw-summary-state {
+  flex: 1 1 0; min-height: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; padding: 24px;
+  text-align: center; color: var(--dsw-alias-label-secondary, #666); font-size: 13px;
+}
+.dsh-tw-summary-state-spin { font-size: 22px; }
+.dsh-tw-summary-state-title { font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-summary-state-detail { max-width: 420px; word-break: break-all; font-size: 12px; }
+
+/* ── 无障碍 / 动效偏好 ────────────────────────────────────────────────────
+   插件自有可交互元素统一补 :focus-visible 轮廓（键盘用户可定位；鼠标点击不显示
+   轮廓，不改变现有视觉）。输入框沿用各自的 focus 样式，不在此重复。 */
+.dsh-tw-entry:focus-visible,
+.dsh-tw-fab:focus-visible,
+.dsh-tw-fab-item:focus-visible,
+.dsh-tw-dock-note-btn:focus-visible,
+.dsh-tw-note-close:focus-visible,
+.dsh-tw-note-upload:focus-visible,
+.dsh-tw-note-save:focus-visible,
+.dsh-tw-note-edit:focus-visible,
+.dsh-tw-note-recent-btn:focus-visible,
+.dsh-tw-note-recent-item:focus-visible,
+.dsh-tw-note-tagsuggest-item:focus-visible,
+.dsh-tw-note-draft-discard:focus-visible,
+.dsh-tw-note-tagchip-x:focus-visible,
+.dsh-tw-settings-btn:focus-visible,
+.dsh-tw-settings-check:focus-visible,
+.dsh-tw-summary-btn:focus-visible,
+.dsh-tw-toolcard-open:focus-visible,
+.dsh-tw-toolcard-row:focus-visible,
+.dsh-tw-panel-error button:focus-visible,
+.dsh-tw-rightbar-error button:focus-visible,
+.dsh-tw-editor-close:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary, #3e63dd);
+  outline-offset: 2px;
+}
+/* 系统「减少动态效果」：关掉入场动画（内容与交互完全不变）。 */
+@media (prefers-reduced-motion: reduce) {
+  .dsh-tw-note-card,
+  .dsh-tw-fab-menu { animation: none; }
+}
+
+/* ── 设置页分页与作用域条（v0.28.8，反馈 3/4/11）─────────────────────────
+   多库时页面按「总览 / 本库配置 / 全局」分开，并常驻显示正在配置哪个库。
+   单库模式三者都不渲染，所以下面这些类在单库 DOM 里根本不出现。 */
+.dsh-tw-settings-tabs {
+  display: flex; gap: 4px; margin: 0 0 10px; padding: 3px;
+  border-radius: 10px; background: var(--dsw-alias-bg-layer-2, rgba(0,0,0,.04));
+}
+.dsh-tw-settings-tab {
+  flex: 1; border: 0; background: transparent; cursor: pointer; font: inherit;
+  font-size: 12px; padding: 6px 10px; border-radius: 8px;
+  color: var(--dsw-alias-label-secondary, #555);
+}
+.dsh-tw-settings-tab:hover { color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-settings-tab-active {
+  background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #222);
+  font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08);
+}
+/* sticky：列表在页面下方，往回滚时这条必须还在（它就是"我在改哪个库"的答案）。 */
+.dsh-tw-settings-scopebar {
+  position: sticky; top: 0; z-index: 2;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: 0 0 10px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.dsh-tw-settings-scopebar-label { font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-settings-scopebar-exit { margin-left: auto; }
+
+/* ── 每库图标：按钮 + 弹出式分页网格（v0.28.8，反馈 1/2）──────────────────
+   ⚠️ 这一段的缺席曾是真实缺陷（见下）：选择器的 DOM 与守门都到位了，唯独 CSS
+   没写 —— 于是弹层以「无样式块」的形式挂在 document.body 底部，视觉上等于
+   "点了没反应"。修复时连同守门一起补：verify-wiki-focus 现在断言本节存在，
+   而不只是断言 TS 里出现过那几个类名字符串（那正是当初漏掉的原因）。
+
+   弹层 append 到 document.body（不受祖先 overflow 裁剪），所以定位必须用
+   position:fixed —— 相对 body 的 absolute 会被页面滚动带走。 */
+.dsh-tw-settings-iconbtn {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.dsh-tw-settings-iconbtn-face {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; flex: 0 0 auto;
+}
+.dsh-tw-settings-iconbtn-face > svg { width: 16px; height: 16px; display: block; }
+.dsh-tw-settings-iconbtn-label { font-size: 12px; }
+.dsh-tw-iconpicker {
+  position: fixed;
+  /* ⚠️ 1100 —— 不是"随便一个够大的数"。设置页是 DSH 的 Modal，它渲染进 portal
+     且根层就是 position:fixed + z-index:1000（dsh-client-ui-primitives 的
+     Modal.module.css）。所以弹层写 z-index:60 会被整个 Modal 盖住：弹是弹了，
+     但在"设置弹窗的后面"（v0.28.9 真机报障）。
+     1100 是 DSH 自己给「锚点在对话框内部的浮层」定的值 —— Menu.module.css 的
+     .portal，注释原话："Portaled lists must layer above modal overlays (z 1000)
+     — an anchor inside a dialog still expects its menu on top"。
+     对齐它即高于 Modal(1000)，与我们自己的 toast(10001) 不冲突。 */
+  z-index: 1100;
+  width: min(420px, calc(100vw - 24px));
+  max-height: min(70vh, 420px); overflow: auto;
+  padding: 10px; border-radius: 12px;
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  color: var(--dsw-alias-label-primary, #222);
+  box-shadow: 0 8px 28px rgba(0,0,0,.22);
+}
+.dsh-tw-iconpicker-grid {
+  display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px;
+}
+.dsh-tw-iconpicker-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 6px 2px; border-radius: 8px; cursor: pointer; font: inherit;
+  border: 1px solid transparent; background: transparent; color: inherit;
+  min-width: 0;
+}
+.dsh-tw-iconpicker-cell:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12));
+}
+.dsh-tw-iconpicker-cell[data-current='true'] {
+  border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.3));
+  background: var(--dsw-alias-bg-layer-2, rgba(0,0,0,.06));
+}
+.dsh-tw-iconpicker-face {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px;
+}
+.dsh-tw-iconpicker-face > svg { width: 20px; height: 20px; display: block; }
+/* 名称是第二信息：长了就省略，绝不让它把格子撑开（8 列必须对齐）。 */
+.dsh-tw-iconpicker-name {
+  font-size: 10px; line-height: 1.2; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--dsw-alias-label-secondary, #666);
+}
+.dsh-tw-iconpicker-pager {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.12));
+}
+`

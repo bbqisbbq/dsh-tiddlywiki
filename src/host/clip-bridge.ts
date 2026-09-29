@@ -588,6 +588,18 @@ export function parseClipPayload(body: unknown): { ok: true; value: ClipPayload 
       .slice(0, MAX_CLIP_IMAGES)
   }
   if (title.length === 0) return { ok: false, error: '缺少 title（页面标题）' }
+  // v0.29.0 SECURITY: the bridge is reachable from an ARBITRARY page by design
+  // (a bookmarklet runs in the page's origin, so no Origin/Sec-Fetch-Site check
+  // can be added without breaking the feature), and `bridge.token` is empty by
+  // default — so the title it accepts must at least stay out of the SYSTEM
+  // namespace. It used to be taken verbatim, which let a malicious page
+  // `PUT $:/plugins/dsh-tiddlywiki/config` with attacker JSON: the ConfigStore
+  // then reads it (`wechat.command` is spawned as a CLI, `git.remote` is used
+  // for the next sync) — or simply overwrite the plugin's own state. No
+  // legitimate web clip lands under `$:/`.
+  if (title.startsWith('$:/')) {
+    return { ok: false, error: '标题落在系统命名空间（$:/…）：剪藏桥拒绝写入' }
+  }
   if (url.length === 0) return { ok: false, error: '缺少 url（页面地址）' }
   return { ok: true, value: { title, url, text, tags: extraTags, source, images } }
 }

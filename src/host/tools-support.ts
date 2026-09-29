@@ -137,6 +137,16 @@ export interface SyncResult {
   restarted?: string[]
   /** Wikis that could not be restarted (the pull itself still succeeded). */
   restartFailed?: Array<{ id: string; message: string }>
+  /**
+   * The pre-restart drain did NOT prove the syncer queue empty (v0.29.0).
+   * Surfaced instead of swallowed: `flushPendingWrites` never rejects — it
+   * resolves `false` on timeout — so the old `.catch(() => undefined)` was both
+   * dead code and a way to restart on an unproven drain with no trace. The
+   * best-effort policy stays (a wedged TW must still be restartable, exactly
+   * like `drainThenStop`), but the model must be able to see it and tell the
+   * user to verify the note landed.
+   */
+  drainFailed?: boolean
   status?: GitStatusView
 }
 export interface ResolveResult {

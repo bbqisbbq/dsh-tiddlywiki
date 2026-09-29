@@ -284,6 +284,10 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
         }
         paint()
         // 焦点变化（可能来自别的入口：侧边栏某一行、快速笔记卡片）也要跟上。
+        // v0.29.0：`build()` 会因名册变化**再次**执行（见 FAB 点击处理），所以
+        // 必须先退订上一次再订阅 —— 否则每次重建都泄漏一个监听器 + 上一份
+        // roster/wikiItems 闭包，而那个旧 `paint()` 还会继续改已经脱离文档的节点。
+        focusOff?.()
         focusOff = subscribeFocusWiki(() => { paint() })
         // 每次打开菜单前重画一次，避免因为订阅时机错过而显示旧值。
         repaintWikiMenu = paint
