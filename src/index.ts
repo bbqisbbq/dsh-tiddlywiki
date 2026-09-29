@@ -162,6 +162,19 @@ export {
   locationPath,
   normalizeLocation,
   readLocationState,
+  // v0.30.49：这条 **barrel 再导出** 是给 `lib/index.js` 的**外部**使用者的
+  // （scripts/verify-wiki-switch.mjs 就 import 它）。⚠️ 再导出是**独立语句**，
+  // 它不消费上面那条 import 的绑定 —— 所以 `noUnusedLocals` 会把 import 里的
+  // 同名行点名成「未使用」，而**删掉 import 会让这条导出引用不到绑定**，
+  // `lib/index.js` 随即少一个导出（v0.30.48 实测：typecheck / verify:unit /
+  // verify:static 全绿，只有 e2e 的 verify-wiki-switch 崩在缺导出那行）。
+  // 判据现在由 scripts/verify-index-barrel.mjs 守住（反向验证过：删掉即红）。
+  //
+  // ⚠️ 写这段注释时踩到一个**就在这条语句内部**的坑：注释里**不能出现右花括号**，
+  // 否则任何按花括号配对的解析器（tsc 自己的扫描器也在内）都会把它当成 export
+  // 列表的结尾，后面的 from 子句变成语法垃圾 —— 症状是「导出了却仍报缺」，
+  // 而 tsc 的报错指向完全无关的 import 行。要描述这个语法请用文字。
+  writeLocationState,
   LOCATION_STATE_VERSION,
   type WikiLocation,
   type WikiLocationInfo,
