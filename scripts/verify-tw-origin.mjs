@@ -76,9 +76,15 @@ await test('宿主接线：/status 与两个 twUrl 载荷都带上绝对孪生�
   // v0.28.8：`/session/summary` 的 handler 搬进了 routes-session.ts，所以这条断言
   // 必须跨**两个**文件数「两处 twUrlAbsolute」—— 规则没变（桌面壳需要一个绝对
   // 基址），变的只是它们所在的文件。钉死单文件会在纯搬迁后假红。
+  //
+  // v0.30.2：会话路由这一侧改成按**模块族**读（`routes-session.ts` +
+  // `routes-session-*.ts`）。下一步要拆的正是那个 432 行的 createSessionRoutes()
+  // （汇总 handler 会搬去 routes-session-summary.ts）—— 族读让「规则」继续成立，
+  // 而**计数**仍是 2，所以这条断言不会退化成「数了几个文件」。
   const routes = read('src/host/routes.ts')
-  const sessionRoutes = read('src/host/routes-session.ts')
-  const all = `${routes}\n${sessionRoutes}`
+  const sessionFamily = readSrc('src/host/routes-session')
+  assert.ok(sessionFamily.includes('createSessionRoutes'), 'routes-session 族里找不到 createSessionRoutes（基名写错了？）')
+  const all = `${routes}\n${sessionFamily}`
   assert.match(routes, /twProxyAbsolute: twProxyAbsoluteBase\(req\)/, '/status 必须回 twProxyAbsolute')
   const twins = all.match(/twUrlAbsolute: (?:deps\.)?twProxyAbsoluteBase\(req\)/g) ?? []
   assert.equal(twins.length, 2, `/edit 与 /session/summary 都要回 twUrlAbsolute（实际 ${twins.length} 处）`)
