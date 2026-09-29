@@ -14,6 +14,7 @@
  * @module dsh-tiddlywiki/client/note-widget-draft
  */
 import { fetchStatus } from './status-cache.ts'
+import { pad2 } from './format.ts'
 
 /**
  * 旧版全局草稿 key（v0.18.0 及以前）。多标签页会互相覆盖，现在只作为一次性
@@ -119,13 +120,9 @@ export function draftSignature(title: string, text: string, tags: string[]): str
   return `${title}\u0000${text}\u0000${tags.join('\u0001')}`
 }
 
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : String(n)
-}
-
 /** Default note title: `YYYY-MM-DD HH:mm`. */
 export function timestampTitle(date = new Date()): string {
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`
 }
 
 /** Compact Chinese relative time for the recent picker (e.g. "3小时前"). */

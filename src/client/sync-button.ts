@@ -20,6 +20,7 @@ import { toast } from './toast.ts'
 
 import { SYNC_ENDPOINT, describeSyncResult, type SyncResultPayload } from './endpoints.ts'
 import { fetchStatus, type StatusPayload } from './status-cache.ts'
+import { pad2 } from './format.ts'
 const POLL_MS = 30_000
 
 /**
@@ -35,13 +36,9 @@ export interface SyncStateView {
   tooltip: string
 }
 
-function pad(n: number): string {
-  return n < 10 ? `0${n}` : String(n)
-}
-
 /** Compact local time for the tooltip (e.g. "10:32"). */
 function clock(date: Date): string {
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`
 }
 
 /** Map a git summary onto a SyncStateView. */

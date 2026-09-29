@@ -141,7 +141,6 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
     // 改成渲染在快速笔记那一行**里面**的元素，而那一行整行负责与输入框右缘对齐
     // （quick-note-dock.ts 的 wrapRef）。如果这里再量一次、再补一次右内边距，就是
     // 同一个右缘被补两遍 —— 选择器会被推进去一大截，正是"没和对话框对齐"的复现。
-    // 保留 wrapRef 是为了给根元素一个稳定引用做测量/调试锚点，不参与对齐计算。
 
     React.useEffect(() => {
       if (sessionId === undefined) return
@@ -230,7 +229,10 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
 
     return React.createElement(
       'div',
-      { ref: wrapRef, className: 'dsh-tw-scope-dock' },
+      // ⚠️ 这个 ref **不是**死代码（v0.30.4 差点被我当"调试锚点"删掉，守门当场变红）：
+// `scripts/verify-wiki-focus.mjs` 断言「选择器的根元素必须挂 ref」，因为对齐是按行
+// 测量的，元素必须有一个可被持有的身份。改这里之前先读那条断言。
+{ ref: wrapRef, className: 'dsh-tw-scope-dock' },
       React.createElement('span', { className: 'dsh-tw-scope-label' }, '知识库'),
       React.createElement(
         'select',

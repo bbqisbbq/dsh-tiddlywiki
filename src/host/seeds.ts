@@ -217,8 +217,9 @@ interface SeedMeta {
   startup?: boolean
   /** One-shot marker tiddler (enables content-hash bookkeeping). */
   markerTitle?: string
-  /** Startup-path gate for seeds belonging to an opt-in feature (v0.23.0). */
-  gate?: (ctx: SeedContext) => boolean
+  // ⚠️ 这里**故意没有** `gate`（v0.30.4）：它只被 `defineSeed` 的第二个参数（impl）
+  // 读取，写在 meta 字面量里的 gate 会被静默忽略 —— 三个微信公众号 seed 都写在 impl 里。
+  // 删掉这个字段后放错位置会变成编译错误，而不是「gate 永远为真」。
 }
 
 type SeedWriter = (client: TiddlyWebClient, opts?: { force?: boolean; tools?: readonly PromptToolSummary[] }) => Promise<boolean>

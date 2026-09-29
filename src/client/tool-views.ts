@@ -154,7 +154,7 @@ function str(value: unknown): string {
 
 /* ── fetch helpers (same-origin JSON / fragment) ── */
 
-async function fetchJson(url: string): Promise<Record<string, unknown> | null> {
+async function fetchJsonOrNull(url: string): Promise<Record<string, unknown> | null> {
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
     // 404 is a NORMAL answer on `/get` (missing tiddler) and carries the
@@ -365,7 +365,7 @@ function TiddlerBodyCard(props: { toolName: string; title: string; subtitle: str
       const cached = readBodyCache(wikiId, title)
       if (cached !== undefined) return { get: cached.get, html: cached.html }
       const [get, html] = await Promise.all([
-        fetchJson(withWikiQuery(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`, wikiId)),
+        fetchJsonOrNull(withWikiQuery(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`, wikiId)),
         fetchRender(title, wikiId),
       ])
       // 只缓存「渲染成功」的结果：服务不可用 / 条目不存在 / 渲染降级这类瞬时或
@@ -516,7 +516,7 @@ function SearchCard(props: { toolName: string; args: Record<string, unknown>; te
   const paramsKey = params.toString()
   const wikiId = useScopedWikiId()
   // wikiId 要进依赖：scope 解析完成后再取一次，而不是把默认库的结果留在屏上。
-  const data = useAsync(() => fetchJson(withWikiQuery(`${SEARCH_ENDPOINT}?${paramsKey}`, wikiId)), [paramsKey, wikiId])
+  const data = useAsync(() => fetchJsonOrNull(withWikiQuery(`${SEARCH_ENDPOINT}?${paramsKey}`, wikiId)), [paramsKey, wikiId])
   const payload = data.data
   const items = Array.isArray(payload?.items) ? (payload.items as Record<string, unknown>[]) : []
   const rows = items.map((item) => ({
@@ -567,7 +567,7 @@ function RecentCard(props: { toolName: string; args: Record<string, unknown> }):
   if (typeof props.args.since === 'string' && props.args.since.length > 0) params.set('since', props.args.since)
   const paramsKey = params.toString()
   const wikiId = useScopedWikiId()
-  const data = useAsync(() => fetchJson(withWikiQuery(`${RECENT_ENDPOINT}?${paramsKey}`, wikiId)), [paramsKey, wikiId])
+  const data = useAsync(() => fetchJsonOrNull(withWikiQuery(`${RECENT_ENDPOINT}?${paramsKey}`, wikiId)), [paramsKey, wikiId])
   const payload = data.data
   const items = Array.isArray(payload?.items) ? (payload.items as Record<string, unknown>[]) : []
   const rows = items.map((item) => ({
@@ -614,7 +614,7 @@ const TAGS_CARD_LIMIT = 60
 function TagsCard(props: { toolName: string }): React.ReactElement {
   const wikiId = useScopedWikiId()
   const data = useAsync(
-    () => fetchJson(withWikiQuery(`${TAGS_ENDPOINT}?limit=${TAGS_CARD_LIMIT}&sort=count`, wikiId)),
+    () => fetchJsonOrNull(withWikiQuery(`${TAGS_ENDPOINT}?limit=${TAGS_CARD_LIMIT}&sort=count`, wikiId)),
     [wikiId],
   )
   const payload = data.data

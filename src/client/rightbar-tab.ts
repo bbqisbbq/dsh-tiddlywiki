@@ -57,7 +57,6 @@ type UseRightbarTabInfo = () => RightbarTabInfo
 
 export interface RightbarTabBodyProps {
   useTabInfo: UseRightbarTabInfo
-  sessionId?: string
 }
 
 /** The slot-registry face this module needs (keyed seats register by `key`). */

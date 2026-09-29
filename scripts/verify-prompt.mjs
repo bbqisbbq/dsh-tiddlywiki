@@ -315,8 +315,11 @@ test('多库作用域横幅（v0.28.0）：单库逐字节不变，多库必须�
   // 作用域指向一个没在跑的库时，原因要带进横幅（模型才知道该让用户做什么）。
   assert.match(scopeBanner({ ...MULTI, reason: '知识库「工作」当前没有运行，请先在界面上启动它再试' }), /请先在界面上启动它/)
 
-  // 多库的文本仍必须有界——它每个会话都要注入一次。
-  assert.ok(composed.length <= 1800, `多库注入文本过长：${composed.length} 字符（预算 1800）`)
+  // 多库的文本仍必须有界——它每个会话都要注入一次。预算必须**跟着 SLIM_BUDGET 走**：
+  // 旧版把这个数手写成 1800，而 v0.29.0 把 slim 从 1918 瘦到 1011 之后它就再没跟上，
+  // 于是一个"永远成立"的数留在这里假装在守门。横幅实测 ~70 字符，给 200 余量。
+  const multiBudget = SLIM_BUDGET + 200
+  assert.ok(composed.length <= multiBudget, `多库注入文本过长：${composed.length} 字符（预算 ${multiBudget} = slim ${SLIM_BUDGET} + 横幅余量 200）`)
 })
 
 if (failures > 0) {

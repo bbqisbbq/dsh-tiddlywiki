@@ -22,9 +22,16 @@
  * - Host-header whitelist (127.0.0.1 / localhost / ::1) blocks DNS rebinding:
  *   a malicious website that resolves its own domain to the loopback cannot
  *   use the bridge with its own Host header;
- * - optional shared `token` — when set, every write must carry
- *   `x-clip-token`. The bookmarklet ships it; a random webpage on the
- *   internet cannot know it, so it cannot pollute the wiki;
+ * - **ANY web page may submit a clip — that is ACCEPTED, by the author's
+ *   decision (2026-09-29)**, as long as it cannot destroy system state: the
+ *   payload validator refuses every `$:/…` title (v0.30.0), so a page can ADD
+ *   notes but cannot overwrite the plugin's config, the trash index or any
+ *   other system tiddler. No Origin / Sec-Fetch-Site check is applied on
+ *   purpose — the bookmarklet runs INSIDE the page's origin, so such a check
+ *   would break the very feature it is meant to serve;
+ * - `bridge.token` is an OPT-IN extra restriction, NOT the premise: when set,
+ *   every write must present `x-clip-token`. Off by default — 「任意页面能给
+ *   你的 wiki 建笔记」是许可的，不允许的只有覆盖系统项（上面那条）；
  * - CORS preflight answered with `Access-Control-Allow-Origin: *` +
  *   `Access-Control-Allow-Private-Network: true` so (a) a bookmarklet running
  *   on an https page may read the response, and (b) Chromium's Private Network
