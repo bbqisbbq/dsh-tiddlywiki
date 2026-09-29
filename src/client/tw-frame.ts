@@ -27,6 +27,7 @@
  * @module dsh-tiddlywiki/client/tw-frame
  */
 import * as React from 'react'
+import { t } from './i18n.ts'
 import { RESTART_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
 import { fetchStatus, type StatusPayload } from './status-cache.ts'
 import { getFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
@@ -37,18 +38,24 @@ export const ACTIVATE_EVENT = 'dsh-panel-activate'
 /** The "知识库" FAB's reload event; side frames reload with the center one. */
 export const PANEL_RELOAD_EVENT = 'dsh-tw-panel-reload'
 
-/** Tab chip / + menu / guide copy default (label refreshed from `/status` ui.tabLabel). */
-let tabLabel = '知识库'
+/**
+ * Tab chip / + menu / guide copy default (label refreshed from `/status` ui.tabLabel).
+ *
+ * v0.30.13: the fallback is resolved LAZILY in `getTabLabel()` — a module-level
+ * `t(...)` would freeze whichever language happened to be cached when the bundle
+ * loaded, and a language change would never show up on this surface.
+ */
+let tabLabel: string | undefined
 
 /** Update the shared surface label from the live config (ui.tabLabel). */
-export function setTabLabel(label: string): void {
+export function setTabLabel(label: string | undefined): void {
   const trimmed = typeof label === 'string' ? label.trim() : ''
   if (trimmed.length > 0) tabLabel = trimmed
 }
 
-/** Current shared surface label (ui.tabLabel, default 「知识库」). */
+/** Current shared surface label (ui.tabLabel, default 「知识库」/「Knowledge base」). */
 export function getTabLabel(): string {
-  return tabLabel
+  return tabLabel ?? t('frame.tabLabelDefault')
 }
 
 /** POST /restart; `false` on any failure. Shared by both TW surfaces (v0.22.3). */
@@ -228,15 +235,15 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     errorArea.hidden = false
     errorArea.replaceChildren()
     const p = document.createElement('div')
-    p.textContent = 'TiddlyWiki 服务不可用'
+    p.textContent = t('frame.twUnavailable')
     const code = document.createElement('code')
     code.textContent = message
     const retry = document.createElement('button')
     retry.type = 'button'
-    retry.textContent = '重试'
+    retry.textContent = t('frame.retry')
     retry.addEventListener('click', () => {
       retry.disabled = true
-      retry.textContent = '重启中…'
+      retry.textContent = t('frame.restarting')
       void requestRestart().finally(() => { void doRefresh() })
     })
     errorArea.append(p, code, retry)
@@ -249,7 +256,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     errorArea.hidden = false
     errorArea.replaceChildren()
     const p = document.createElement('div')
-    p.textContent = 'TiddlyWiki 服务正在启动…'
+    p.textContent = t('frame.twStarting')
     errorArea.append(p)
   }
 
@@ -281,7 +288,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    */
   const showSwitching = (label: string): void => {
     if (loadingEl === undefined) return
-    loadingEl.textContent = `正在载入知识库「${label}」…`
+    loadingEl.textContent = t('frame.loadingWiki', { label })
     loadingEl.hidden = false
     clearSwitchTimer()
     switchTimer = window.setTimeout(() => { switchTimer = undefined; hideSwitching() }, 15_000)
@@ -404,7 +411,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     // that status-cache exists to bound.
     if (!visible) return
     if (payload === null) {
-      showError('无法访问 /dsh-tiddlywiki/status')
+      showError(t('frame.statusUnreachable'))
       return
     }
     // 记住这一份：换库要用它的 mode / 代理基址 / 名册（见 switchFrameNow 与 wikiLabel）。
@@ -436,7 +443,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
         const wiki = hooks.wikiId?.()
         showFrame(payload.url, wiki, wiki === undefined ? undefined : wikiLabel(wiki))
       } else {
-        showError('服务未返回编辑器地址')
+        showError(t('frame.noEditorUrl'))
       }
       return
     }
@@ -449,7 +456,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       return
     }
     refreshAttempts = 0
-    showError(payload.error ?? `服务状态：${payload.status}`)
+    showError(payload.error ?? t('frame.statusError', { status: payload.status }))
   }
 
   const onReloadRequest = (): void => {

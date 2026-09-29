@@ -13,6 +13,7 @@
  *
  * @module dsh-tiddlywiki/client/note-widget-draft
  */
+import { getLang, t } from './i18n.ts'
 import { fetchStatus } from './status-cache.ts'
 import { pad2 } from './format.ts'
 
@@ -125,20 +126,24 @@ export function timestampTitle(date = new Date()): string {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`
 }
 
-/** Compact Chinese relative time for the recent picker (e.g. "3小时前"). */
+/**
+ * Compact relative time for the recent picker (zh: "3小时前" / en: "3 h ago").
+ *
+ * 日期兜底（≥30 天）也走当前语言（v0.30.13）：此前硬编码 `zh-CN`，英文界面下
+ * 最近列表会出现两种语言混排。 */
 export function relativeTime(iso: string | null): string {
   if (iso === null) return ''
   const ms = new Date(iso).getTime()
   if (Number.isNaN(ms)) return ''
   const diff = Date.now() - ms
   const min = Math.floor(diff / 60_000)
-  if (min < 1) return '刚刚'
-  if (min < 60) return `${min}分钟前`
+  if (min < 1) return t('note.relJustNow')
+  if (min < 60) return t('note.relMinutes', { n: min })
   const hr = Math.floor(min / 60)
-  if (hr < 24) return `${hr}小时前`
+  if (hr < 24) return t('note.relHours', { n: hr })
   const day = Math.floor(hr / 24)
-  if (day < 30) return `${day}天前`
-  return new Date(ms).toLocaleDateString('zh-CN')
+  if (day < 30) return t('note.relDays', { n: day })
+  return new Date(ms).toLocaleDateString(getLang() === 'zh' ? 'zh-CN' : 'en-US')
 }
 
 /** The default tag for a new note (settings `note.tag`).

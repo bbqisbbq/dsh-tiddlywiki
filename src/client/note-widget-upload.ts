@@ -8,6 +8,7 @@
  *
  * @module dsh-tiddlywiki/client/note-widget-upload
  */
+import { t } from './i18n.ts'
 import { toast } from './toast.ts'
 import { type MarkdownEditor } from './markdown-editor.ts'
 import { UPLOAD_ENDPOINT } from './endpoints.ts'
@@ -23,7 +24,7 @@ export const MAX_UPLOAD_BYTES = 64 * 1024 * 1024
  */
 export async function uploadInto(file: File, editor: MarkdownEditor, wikiQuery: (url: string) => string = (url) => url): Promise<void> {
   if (file.size > MAX_UPLOAD_BYTES) {
-    toast(`文件过大（≤ ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`)
+    toast(t('note.uploadTooLarge', { mb: Math.round(MAX_UPLOAD_BYTES / 1024 / 1024) }))
     return
   }
   try {
@@ -35,7 +36,7 @@ export async function uploadInto(file: File, editor: MarkdownEditor, wikiQuery: 
     })
     const payload = (await res.json().catch(() => null)) as { ok?: boolean; name?: string; url?: string; error?: string } | null
     if (!res.ok || payload?.ok !== true) {
-      toast(`上传失败：${payload?.error ?? `HTTP ${res.status}`}`)
+      toast(t('note.uploadFailed', { message: payload?.error ?? `HTTP ${res.status}` }))
       return
     }
     const name = payload.name ?? file.name
@@ -43,8 +44,8 @@ export async function uploadInto(file: File, editor: MarkdownEditor, wikiQuery: 
       ? `![${name}](${payload.url})`
       : `[${name}](${payload.url})`
     editor.insertAtCaret(markdown)
-    toast(`已上传「${name}」并插入链接`)
+    toast(t('note.uploaded', { name }))
   } catch (err) {
-    toast(`上传失败：${err instanceof Error ? err.message : String(err)}`)
+    toast(t('note.uploadFailed', { message: err instanceof Error ? err.message : String(err) }))
   }
 }

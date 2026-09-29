@@ -9,6 +9,7 @@
  *
  * @module dsh-tiddlywiki/client/sidebar-entry
  */
+import { t } from './i18n.ts'
 import type { PanelState } from './state.ts'
 import { fetchUiConfig, subscribeUiConfig } from './ui-config.ts'
 import { fetchStatus } from './status-cache.ts'
@@ -122,7 +123,7 @@ function createEntry(
   entry.dataset.dshTwEntry = ''
   entry.className = 'dsh-tw-entry'
   if (wikiId !== undefined) entry.dataset.wiki = wikiId
-  entry.setAttribute('aria-label', `TiddlyWiki 知识库：${label}`)
+  entry.setAttribute('aria-label', t('chrome.sidebarEntryLabel', { label }))
   const iconEl = document.createElement('span')
   iconEl.className = 'dsh-tw-entry-icon'
   applyWikiIcon(iconEl, icon)
@@ -256,7 +257,7 @@ export function mountSidebarEntry(state: PanelState): () => void {
       row.labelEl.textContent = w.label
       // 图标每次同步（v0.28.4）：在设置页改完图标，10s 内的轮询就会把它换过来。
       applyWikiIcon(row.iconEl, w.icon)
-      row.entry.setAttribute('aria-label', `TiddlyWiki 知识库：${w.label}`)
+      row.entry.setAttribute('aria-label', t('chrome.sidebarEntryLabel', { label: w.label }))
     }
     // 当前焦点库高亮：与点击判定同源（`shownWiki()`），不会出现"高亮的行点一下反而关掉面板"
     paintFocus()

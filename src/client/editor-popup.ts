@@ -10,6 +10,7 @@
  *
  * @module dsh-tiddlywiki/client/editor-popup
  */
+import { t } from './i18n.ts'
 import { attachThemeSync } from './theme-sync.ts'
 import { ACTIVATE_EVENT } from './tw-frame.ts'
 
@@ -32,7 +33,7 @@ let onActivate: ((event: Event) => void) | undefined
 export function openEditorPopup(url: string, label: string): void {
   ensurePopup()
   if (root === undefined || frame === undefined) return
-  if (titleEl !== undefined) titleEl.textContent = `TiddlyWiki 编辑器 · ${label}`
+  if (titleEl !== undefined) titleEl.textContent = t('note.editorTitleWith', { label })
   root.style.display = ''
   // 与中央面板/右栏 Tab 互斥：打开即广播本弹窗的身份，让其它 TW 客户端自行关闭。
   document.dispatchEvent(new CustomEvent(ACTIVATE_EVENT, { detail: EDITOR_POPUP_PANEL_NAME }))
@@ -142,30 +143,30 @@ function ensurePopup(): void {
   // 无障碍语义：浮层是一个模态对话框（不做焦点陷阱，只声明语义 + 打开时移焦）。
   root.setAttribute('role', 'dialog')
   root.setAttribute('aria-modal', 'true')
-  root.setAttribute('aria-label', 'TiddlyWiki 编辑器')
+  root.setAttribute('aria-label', t('note.editorTitle'))
 
   const bar = document.createElement('div')
   bar.className = 'dsh-tw-editor-bar'
   titleEl = document.createElement('span')
   titleEl.className = 'dsh-tw-editor-title'
-  titleEl.textContent = 'TiddlyWiki 编辑器'
+  titleEl.textContent = t('note.editorTitle')
   const close = document.createElement('button')
   close.type = 'button'
   close.className = 'dsh-tw-editor-close'
   close.textContent = '✕'
-  close.title = '关闭'
+  close.title = t('note.editorClose')
   bar.append(titleEl, close)
 
   frame = document.createElement('iframe')
   frame.className = 'dsh-tw-editor-frame'
   frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups')
-  frame.title = 'TiddlyWiki 编辑器'
+  frame.title = t('note.editorTitle')
   // Same-origin sandbox keeps $tw reachable; let the popup follow DSH theme.
   themeSyncDispose = attachThemeSync(frame)
 
   const resize = document.createElement('div')
   resize.className = 'dsh-tw-editor-resize'
-  resize.title = '拖拽调整大小'
+  resize.title = t('note.editorResize')
 
   root.append(bar, frame, resize)
   document.body.append(root)

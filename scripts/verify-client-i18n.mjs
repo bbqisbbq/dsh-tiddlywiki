@@ -41,7 +41,10 @@ const ALLOWLIST = [
   ['tool-views.ts', '工作区'],
   ['tool-views.ts', '缩小范围'],
   // ── TW/协议取值（不是文案）────────────────────────────────────────────
-  ['session-summary.ts', '知识库'],
+  // ── DSH shell 自己按钮的 aria-label 匹配（DOM 协议，不是我们的文案）────
+  // `sidebar-entry.ts` 靠这段选择器找到 shell 的「新建会话」按钮以对齐侧边栏；
+  // 两种语言都要匹配（用户可能把 DSH 界面切到英文），所以中文串必须留在选择器里。
+  ['sidebar-entry.ts', '新会话'],
 ]
 
 let failures = 0
@@ -144,19 +147,9 @@ test('目录里没有从未使用的键（死条目）', () => {
  * with the file's name, so the list cannot rot silently).
  */
 const PENDING_CONVERSION = [
-  'editor-popup.ts',
-  'knowledge-fab.ts',
-  'note-widget-draft.ts',
-  'note-widget-upload.ts',
-  'note-widget.ts',
-  'quick-note-dock.ts',
-  'session-summary.ts',
   'settings-page-catalog.ts',
   'settings-page-config.ts',
-  'sidebar-entry.ts',
   'tool-views.ts',
-  'tw-frame.ts',
-  'wiki-scope-dock.ts',
 ]
 
 /** CJK literals in `file` that are NOT inside a `t(...)` call. */

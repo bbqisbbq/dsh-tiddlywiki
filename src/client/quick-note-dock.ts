@@ -15,6 +15,7 @@
  * @module dsh-tiddlywiki/client/quick-note-dock
  */
 import * as React from 'react'
+import { t } from './i18n.ts'
 import { NOTE_STATE_EVENT, type NoteWidgetHandle } from './note-widget.ts'
 import { fetchUiConfig } from './ui-config.ts'
 import { alignDockEntry } from './dock-align.ts'
@@ -80,10 +81,10 @@ export function createQuickNoteDock(
       return alignDockEntry(wrap)
     }, [])
     const native = mode === 'native'
-    const label = native ? '快速笔记' : (open ? '快速笔记（已打开）' : '快速笔记')
+    const label = native || !open ? t('chrome.dockQuickNote') : t('chrome.quickNoteOpenLabel')
     const title = native
-      ? '快速笔记：直接打开 TiddlyWiki 原生编辑器（再次点击可收起弹窗）'
-      : (open ? '快速笔记已打开（点此按钮或卡片右上角 ✕ 收起）' : '打开快速笔记（在按钮上方弹出，可拖动标题栏移动）')
+      ? t('chrome.quickNoteTipNative')
+      : (open ? t('chrome.quickNoteTipOpen') : t('chrome.quickNoteTipClosed'))
     return React.createElement(
       'div',
       { ref: wrapRef, className: 'dsh-tw-dock-note' },

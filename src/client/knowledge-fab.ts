@@ -16,6 +16,7 @@
  *
  * @module dsh-tiddlywiki/client/knowledge-fab
  */
+import { t } from './i18n.ts'
 import type { PanelState } from './state.ts'
 import type { NoteWidgetHandle } from './note-widget.ts'
 import type { SyncController } from './sync-button.ts'
@@ -69,11 +70,11 @@ interface TwHealth { state: string; text: string; logs: string[] }
 /** Fetch the TW service health (state line text + recent logs for the tip). */
 async function fetchTwHealth(): Promise<TwHealth> {
   const p = await fetchStatus()
-  if (p === null) return { state: 'failed', text: '状态不可达', logs: [] }
+  if (p === null) return { state: 'failed', text: t('chrome.fabStatusUnreachable'), logs: [] }
   const logs = Array.isArray(p.logs) ? p.logs.filter((l): l is string => typeof l === 'string') : []
-  if (p.status === 'running') return { state: 'running', text: `TW 在线 · ${p.url ?? ''}`, logs }
-  if (p.status === 'starting') return { state: 'starting', text: 'TW 启动中…', logs }
-  return { state: 'failed', text: p.error ?? `TW 状态：${p.status ?? '?'}`, logs }
+  if (p.status === 'running') return { state: 'running', text: t('chrome.fabTwOnline', { url: p.url ?? '' }), logs }
+  if (p.status === 'starting') return { state: 'starting', text: t('chrome.fabTwStarting'), logs }
+  return { state: 'failed', text: p.error ?? t('chrome.fabTwStatus', { status: p.status ?? '?' }), logs }
 }
 
 /**
@@ -99,7 +100,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
    */
   let repaintWikiMenu: (() => void) | undefined
   /** Latest TW health snapshot, merged into the hover tip. */
-  let twHealth: TwHealth = { state: 'unknown', text: 'TiddlyWiki 服务…', logs: [] }
+  let twHealth: TwHealth = { state: 'unknown', text: t('chrome.fabServiceUnknown'), logs: [] }
 
   const closeMenu = (): void => {
     menuOpen = false
@@ -119,10 +120,10 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
   /** Rebuild the TW status row's hover tip (TW 服务 + git 状态 + 最近日志). */
   const renderTip = (): void => {
     if (tip === undefined) return
-    const lines: string[] = [`TiddlyWiki 服务：${twHealth.text}`]
-    lines.push(`知识库同步：${sync.getState().tooltip}`)
+    const lines: string[] = [t('chrome.fabTipTitle', { text: twHealth.text })]
+    lines.push(t('chrome.fabTipSync', { text: sync.getState().tooltip }))
     if (twHealth.logs.length > 0) {
-      lines.push('最近日志：')
+      lines.push(t('chrome.fabTipLogs'))
       lines.push(...twHealth.logs.slice(-3))
     }
     tip.textContent = lines.join('\n')
@@ -132,7 +133,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
   const renderDot = (): void => {
     const s = sync.getState()
     if (dot !== undefined) dot.dataset.state = s.state
-    if (fabBtn !== undefined) fabBtn.title = `知识库 · ${s.tooltip}`
+    if (fabBtn !== undefined) fabBtn.title = t('chrome.fabTitle', { text: s.tooltip })
     renderTip()
   }
 
@@ -196,7 +197,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       twDot.dataset.state = 'unknown'
       twStatusEl = document.createElement('span')
       twStatusEl.className = 'dsh-tw-fab-status-text'
-      twStatusEl.textContent = 'TiddlyWiki 服务…'
+      twStatusEl.textContent = t('chrome.fabServiceUnknown')
       twRow.append(twDot, twStatusEl)
       // 悬停详细状态 tip（TW 服务 + git + 最近日志）。
       tip = document.createElement('div')
@@ -217,8 +218,8 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       const item = document.createElement('button')
       item.type = 'button'
       item.className = 'dsh-tw-fab-item'
-      item.textContent = '📝 快速笔记'
-      item.title = 'ui.quickNoteMode=native 时直接打开 TW 原生编辑器；card 时打开 Markdown 卡片'
+      item.textContent = t('chrome.fabQuickNote')
+      item.title = t('chrome.fabQuickNoteTip')
       item.addEventListener('click', () => {
         closeMenu()
         // open-only：卡片弹窗只能由卡片上的 ✕ 关闭，触发按钮不负责收起。
@@ -237,7 +238,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       if (roster.wikis.length > 1) {
         const heading = document.createElement('div')
         heading.className = 'dsh-tw-fab-group'
-        heading.textContent = '知识库'
+        heading.textContent = t('chrome.scopeSlotLabel')
         menu.append(heading)
         /** 每个库的菜单项，便于焦点变化时就地刷新选中标记。 */
         const wikiItems = new Map<string, HTMLButtonElement>()
@@ -262,7 +263,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
           item.type = 'button'
           item.className = 'dsh-tw-fab-item'
           item.dataset.current = '0'
-          item.title = `${wiki.path}${wiki.running ? '' : '（未运行，打开会启动）'}`
+          item.title = `${wiki.path}${wiki.running ? '' : t('chrome.fabWikiNotRunning')}`
           item.addEventListener('click', () => {
             closeMenu()
             setFocusWiki(wiki.id)
@@ -294,7 +295,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       }
 
       panelLabel = document.createElement('span')
-      panelLabel.textContent = '打开 TW 面板'
+      panelLabel.textContent = t('chrome.fabOpenPanel')
       const item = document.createElement('button')
       item.type = 'button'
       item.className = 'dsh-tw-fab-item'
@@ -308,7 +309,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       const reload = document.createElement('button')
       reload.type = 'button'
       reload.className = 'dsh-tw-fab-item'
-      reload.textContent = '🔄 重载 TW 面板'
+      reload.textContent = t('chrome.fabReload')
       reload.addEventListener('click', () => {
         closeMenu()
         document.dispatchEvent(new CustomEvent(PANEL_RELOAD_EVENT))
@@ -321,7 +322,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       const item = document.createElement('button')
       item.type = 'button'
       item.className = 'dsh-tw-fab-item'
-      item.textContent = '🔁 同步'
+      item.textContent = t('chrome.fabSync')
       item.addEventListener('click', () => {
         closeMenu()
         void sync.trigger()
@@ -332,7 +333,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     fabBtn = document.createElement('button')
     fabBtn.type = 'button'
     fabBtn.className = 'dsh-tw-fab'
-    fabBtn.setAttribute('aria-label', 'TiddlyWiki 知识库')
+    fabBtn.setAttribute('aria-label', t('chrome.fabAriaLabel'))
     const icon = document.createElement('span')
     icon.className = 'dsh-tw-fab-icon'
     icon.innerHTML = BOOK_ICON
@@ -368,7 +369,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
 
   // Reflect panel open/close in the menu label.
   const unsubPanel = state.subscribe(() => {
-    if (panelLabel !== undefined) panelLabel.textContent = state.isOpen() ? '收起 TW 面板' : '打开 TW 面板'
+    if (panelLabel !== undefined) panelLabel.textContent = state.isOpen() ? t('chrome.fabClosePanel') : t('chrome.fabOpenPanel')
   })
   const unsubSync = sync.subscribe(renderDot)
 

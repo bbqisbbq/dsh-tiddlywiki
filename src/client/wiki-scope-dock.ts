@@ -20,6 +20,7 @@
  * @module dsh-tiddlywiki/client/wiki-scope-dock
  */
 import * as React from 'react'
+import { t } from './i18n.ts'
 import { fetchStatus } from './status-cache.ts'
 import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
 // 切库后要立刻失效其它界面的作用域缓存（v0.28.8，见 wiki-scope.ts）。
@@ -210,7 +211,7 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
           })
           const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; scope?: string; resolved?: unknown; reason?: string; error?: string }
           if (!res.ok || payload.ok !== true) {
-            setNote(payload.error ?? `切换失败（HTTP ${res.status}）`)
+            setNote(payload.error ?? t('chrome.scopeSwitchFailed', { status: res.status }))
             return
           }
           setScope(typeof payload.scope === 'string' ? payload.scope : wanted)
@@ -233,22 +234,23 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
 // `scripts/verify-wiki-focus.mjs` 断言「选择器的根元素必须挂 ref」，因为对齐是按行
 // 测量的，元素必须有一个可被持有的身份。改这里之前先读那条断言。
 { ref: wrapRef, className: 'dsh-tw-scope-dock' },
-      React.createElement('span', { className: 'dsh-tw-scope-label' }, '知识库'),
+      // 与 `scope-seat.ts` 注册槽位时用的标签同源（同一行里两处都写「知识库」会漂移）。
+      React.createElement('span', { className: 'dsh-tw-scope-label' }, t('chrome.scopeSlotLabel')),
       React.createElement(
         'select',
         {
           className: 'dsh-tw-scope-select',
           value: selected,
           disabled: busy,
-          'aria-label': '本会话使用的知识库',
-          title: '本会话的 tiddlywiki_* 工具与注入提示词都作用于这个知识库（下一个模型步骤生效）',
+          'aria-label': t('chrome.scopeAriaLabel'),
+          title: t('chrome.scopeTitle'),
           onChange: (event: React.ChangeEvent<HTMLSelectElement>) => { apply(event.target.value) },
         },
         ...ordered.map((wiki) => React.createElement(
           'option',
           { key: wiki.id, value: wiki.id },
           // 「（默认）」是**身份标记**，不是库名：库名照旧是它自己的显示名。
-          `${wiki.label}${wiki.id === defaultId ? '（默认）' : ''}${wiki.running ? '' : '（未运行，选中会启动）'}`,
+          `${wiki.label}${wiki.id === defaultId ? t('chrome.scopeDefaultMark') : ''}${wiki.running ? '' : t('chrome.scopeNotRunning')}`,
         )),
       ),
       note !== undefined ? React.createElement('span', { className: 'dsh-tw-scope-note' }, note) : null,

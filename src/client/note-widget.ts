@@ -33,6 +33,7 @@
  *
  * @module dsh-tiddlywiki/client/note-widget
  */
+import { t } from './i18n.ts'
 import { toast } from './toast.ts'
 import { openEditorPopup, isEditorPopupOpen, isEditorPopupBlank } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
@@ -330,11 +331,11 @@ export function createNoteWidget(): NoteWidgetHandle {
         | { ok?: boolean; title?: string; draftTitle?: string; twUrl?: string; twUrlAbsolute?: string; error?: string }
         | null
       if (!res.ok || payload?.ok !== true) {
-        toast(`打开失败：${payload?.error ?? `HTTP ${res.status}`}`)
+        toast(t('note.openFailed', { message: payload?.error ?? `HTTP ${res.status}` }))
         return false
       }
       if (typeof payload.twUrl !== 'string' || typeof payload.draftTitle !== 'string') {
-        toast('打开失败：服务未返回编辑器地址')
+        toast(t('note.openNoEditorUrl'))
         return false
       }
       clearDraft()
@@ -355,10 +356,10 @@ export function createNoteWidget(): NoteWidgetHandle {
       const bases = twProxyFor(rosterMode, targetWiki, payload.twUrl, payload.twUrlAbsolute)
       const popupUrl = `${resolveTwUrl(bases.relative, bases.absolute)}#${encodeURIComponent(payload.draftTitle)}`
       openEditorPopup(popupUrl, payload.title ?? title)
-      toast(`已在弹出窗口打开「${payload.title ?? title}」编辑器`)
+      toast(t('note.openedInPopup', { title: payload.title ?? title }))
       return true
     } catch (err) {
-      toast(`打开失败：${err instanceof Error ? err.message : String(err)}`)
+      toast(t('note.openFailed', { message: err instanceof Error ? err.message : String(err) }))
       return false
     }
   }
@@ -374,8 +375,8 @@ export function createNoteWidget(): NoteWidgetHandle {
       const res = await fetch(wikiQuery(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`), { signal: AbortSignal.timeout(10_000) })
       const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; text?: string; tags?: string[]; notFound?: boolean; error?: string; modified?: string | null; revision?: number | null } | null
       if (!res.ok || payload?.ok !== true || typeof payload.title !== 'string') {
-        const reason = payload?.notFound === true ? '不存在' : (payload?.error ?? `HTTP ${res.status}`)
-        toast(`读取失败：${reason}`)
+        const reason = payload?.notFound === true ? t('note.notFound') : (payload?.error ?? `HTTP ${res.status}`)
+        toast(t('note.loadFailed', { message: reason }))
         return
       }
       if (ui === undefined) return
@@ -393,10 +394,10 @@ export function createNoteWidget(): NoteWidgetHandle {
       persistedSignature = draftSignature(payload.title, payload.text ?? '', payload.tags ?? [])
       hideDraftBanner()
       closeRecent()
-      toast(`已载入「${payload.title}」`)
+      toast(t('note.loaded', { title: payload.title }))
       ui.editor.focus()
     } catch (err) {
-      toast(`读取失败：${err instanceof Error ? err.message : String(err)}`)
+      toast(t('note.loadFailed', { message: err instanceof Error ? err.message : String(err) }))
     }
   }
 
@@ -409,7 +410,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     ui.recentWrap.textContent = ''
     const loading = document.createElement('div')
     loading.className = 'dsh-tw-note-recent-muted'
-    loading.textContent = '加载中…'
+    loading.textContent = t('note.loading')
     ui.recentWrap.append(loading)
     void (async () => {
       try {
@@ -437,7 +438,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         if (items.length === 0) {
           const empty = document.createElement('div')
           empty.className = 'dsh-tw-note-recent-muted'
-          empty.textContent = payload?.ok === true ? '暂无笔记' : `加载失败：${payload?.error ?? '未知'}`
+          empty.textContent = payload?.ok === true ? t('note.noNotes') : t('note.listFailed', { message: payload?.error ?? t('note.unknown') })
           ui.recentWrap.append(empty)
           return
         }
@@ -448,7 +449,7 @@ export function createNoteWidget(): NoteWidgetHandle {
           // 键盘可达：div + click 对键盘用户不可用，补 role/tabIndex/Enter·Space。
           row.setAttribute('role', 'button')
           row.tabIndex = 0
-          row.setAttribute('aria-label', `载入笔记「${item.title}」`)
+          row.setAttribute('aria-label', t('note.loadNote', { title: item.title }))
           const name = document.createElement('span')
           name.className = 'dsh-tw-note-recent-name'
           name.textContent = item.title
@@ -472,7 +473,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         ui.recentWrap.replaceChildren()
         const empty = document.createElement('div')
         empty.className = 'dsh-tw-note-recent-muted'
-        empty.textContent = `加载失败：${err instanceof Error ? err.message : String(err)}`
+        empty.textContent = t('note.listFailed', { message: err instanceof Error ? err.message : String(err) })
         ui.recentWrap.append(empty)
       }
     })()
@@ -493,11 +494,11 @@ export function createNoteWidget(): NoteWidgetHandle {
     head.className = 'dsh-tw-note-head'
     const label = document.createElement('span')
     label.className = 'dsh-tw-note-label'
-    label.textContent = '📝 快速笔记'
+    label.textContent = t('note.cardLabel')
     const closeBtn = document.createElement('button')
     closeBtn.type = 'button'
     closeBtn.className = 'dsh-tw-note-close'
-    closeBtn.title = '收起'
+    closeBtn.title = t('note.close')
     closeBtn.textContent = '✕'
     head.append(label, closeBtn)
 
@@ -507,19 +508,19 @@ export function createNoteWidget(): NoteWidgetHandle {
     draftBanner.hidden = true
     const bannerText = document.createElement('span')
     bannerText.className = 'dsh-tw-note-draft-text'
-    bannerText.textContent = '已恢复未保存草稿'
+    bannerText.textContent = t('note.draftRestored')
     const discardBtn = document.createElement('button')
     discardBtn.type = 'button'
     discardBtn.className = 'dsh-tw-note-draft-discard'
-    discardBtn.textContent = '丢弃'
+    discardBtn.textContent = t('note.discard')
     draftBanner.append(bannerText, discardBtn)
 
     const fields = document.createElement('div')
     fields.className = 'dsh-tw-note-fields'
     const titleInput = document.createElement('input')
     titleInput.className = 'dsh-tw-note-title'
-    titleInput.placeholder = '标题（默认时间戳）'
-    titleInput.setAttribute('aria-label', '笔记标题（默认时间戳）')
+    titleInput.placeholder = t('note.titlePlaceholder')
+    titleInput.setAttribute('aria-label', t('note.titleAriaLabel'))
     // 标签建议必须来自**同一张卡片写入的那个库**（v0.29.0）：helper 一直支持
     // `wikiQuery`，但这里漏传了，于是多库下建议列表来自默认库——点一个建议就把
     // 一个只存在于别处的标签写进目标库。上传那两处一直是传的（见下）。
@@ -534,10 +535,10 @@ export function createNoteWidget(): NoteWidgetHandle {
     wikiField.hidden = true
     const wikiLabel = document.createElement('span')
     wikiLabel.className = 'dsh-tw-note-wiki-label'
-    wikiLabel.textContent = '写入'
+    wikiLabel.textContent = t('note.writeTo')
     const wikiSelect = document.createElement('select')
     wikiSelect.className = 'dsh-tw-note-wiki-select'
-    wikiSelect.setAttribute('aria-label', '这条笔记写进哪个知识库')
+    wikiSelect.setAttribute('aria-label', t('note.writeToAriaLabel'))
     wikiField.append(wikiLabel, wikiSelect)
     const wikiHint = document.createElement('span')
     wikiHint.className = 'dsh-tw-note-wiki-hint'
@@ -554,7 +555,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       const wiki = roster.find((item) => item.id === targetWiki)
       const stopped = wiki !== undefined && !wiki.running
       wikiHint.hidden = !stopped
-      wikiHint.textContent = stopped ? `${wiki.label} 当前没在运行：先在右下角「知识库」菜单里打开它` : ''
+      wikiHint.textContent = stopped ? t('note.targetStopped', { label: wiki.label }) : ''
     }
     wikiSelect.addEventListener('change', () => {
       targetPicked = true
@@ -586,8 +587,8 @@ export function createNoteWidget(): NoteWidgetHandle {
         ...roster.map((item) => {
           const option = document.createElement('option')
           option.value = item.id
-          const mark = item.id === defaultWikiId ? '（默认）' : ''
-          option.textContent = item.running ? `${item.label}${mark}` : `${item.label}${mark}（未运行）`
+          const mark = item.id === defaultWikiId ? t('note.defaultMark') : ''
+          option.textContent = item.running ? `${item.label}${mark}` : `${item.label}${mark}${t('note.notRunningSuffix')}`
           return option
         }),
       )
@@ -602,7 +603,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     // keymap only runs after the widget is fully wired, so this is safe).
     let doSave: (() => Promise<void>) | undefined
     const editor = buildMarkdownEditor({
-      placeholder: '写点东西… Markdown 高亮，可 📎/拖入文件\nCtrl+Enter 保存',
+      placeholder: t('note.editorPlaceholder'),
       onSave: () => { void doSave?.() },
       onChange: scheduleDraft,
     })
@@ -611,8 +612,8 @@ export function createNoteWidget(): NoteWidgetHandle {
     const uploadBtn = document.createElement('button')
     uploadBtn.type = 'button'
     uploadBtn.className = 'dsh-tw-note-upload'
-    uploadBtn.title = '上传文件到 wiki 并插入 Markdown 链接（也可直接拖入编辑器）'
-    uploadBtn.textContent = '📎 上传'
+    uploadBtn.title = t('note.uploadTitle')
+    uploadBtn.textContent = t('note.upload')
     const fileInput = document.createElement('input')
     fileInput.type = 'file'
     fileInput.multiple = true
@@ -654,8 +655,8 @@ export function createNoteWidget(): NoteWidgetHandle {
     const recentBtn = document.createElement('button')
     recentBtn.type = 'button'
     recentBtn.className = 'dsh-tw-note-recent-btn'
-    recentBtn.title = '最近修改的笔记，点击载入继续编辑'
-    recentBtn.textContent = '🕘 最近'
+    recentBtn.title = t('note.recentTitle')
+    recentBtn.textContent = t('note.recent')
     recentBtn.addEventListener('click', toggleRecent)
     footLeft.append(uploadBtn, recentBtn, hint)
     const footRight = document.createElement('div')
@@ -663,12 +664,12 @@ export function createNoteWidget(): NoteWidgetHandle {
     const editBtn = document.createElement('button')
     editBtn.type = 'button'
     editBtn.className = 'dsh-tw-note-edit'
-    editBtn.title = '保存并在 TiddlyWiki 原生编辑器中打开'
-    editBtn.textContent = '✏️ 在 TW 中编辑'
+    editBtn.title = t('note.editTitle')
+    editBtn.textContent = t('note.editInTw')
     const saveBtn = document.createElement('button')
     saveBtn.type = 'button'
     saveBtn.className = 'dsh-tw-note-save'
-    saveBtn.textContent = '保存'
+    saveBtn.textContent = t('note.save')
     footRight.append(editBtn, saveBtn)
     foot.append(footLeft, footRight)
 
@@ -733,19 +734,19 @@ export function createNoteWidget(): NoteWidgetHandle {
       if (saving) return
       const text = editor.getValue().trim()
       if (text.length === 0) {
-        toast('内容为空，未保存')
+        toast(t('note.saveEmpty'))
         return
       }
       // 「写入」选中的那个库没在跑：host 现在会拒绝（而不是写进默认库），
       // 所以先说清楚，别让用户写完一整段才发现（v0.29.0）。
       const stopped = stoppedTarget()
       if (stopped !== undefined) {
-        toast(`「${stopped.label}」当前没在运行：先在右下角「知识库」菜单里打开它，或改「写入」目标`)
+        toast(t('note.saveTargetStopped', { label: stopped.label }))
         return
       }
       saving = true
       saveBtn.disabled = true
-      saveBtn.textContent = '保存中…'
+      saveBtn.textContent = t('note.saving')
       try {
         const title = titleInput.value.trim()
         const body: Record<string, unknown> = { title, tags: tagEditor.getTags(), text }
@@ -765,20 +766,20 @@ export function createNoteWidget(): NoteWidgetHandle {
         const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; error?: string; conflict?: boolean } | null
         if (!res.ok || payload?.ok !== true) {
           if (res.status === 409 || payload?.conflict === true) {
-            toast('保存被拒绝：这篇笔记在你读取之后被改动过。请用「🕘 最近」重新载入后再保存。')
+            toast(t('note.saveConflict'))
             return
           }
-          toast(`保存失败：${payload?.error ?? `HTTP ${res.status}`}`)
+          toast(t('note.saveFailed', { message: payload?.error ?? `HTTP ${res.status}` }))
           return
         }
         saveDone()
-        toast(`已保存「${payload.title ?? titleInput.value}」`)
+        toast(t('note.saved', { title: payload.title ?? titleInput.value }))
       } catch (err) {
-        toast(`保存失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('note.saveFailed', { message: err instanceof Error ? err.message : String(err) }))
       } finally {
         saving = false
         saveBtn.disabled = false
-        saveBtn.textContent = '保存'
+        saveBtn.textContent = t('note.save')
       }
     }
 
@@ -790,12 +791,12 @@ export function createNoteWidget(): NoteWidgetHandle {
       const text = editor.getValue()
       const tags = tagEditor.getTags()
       editBtn.disabled = true
-      editBtn.textContent = '打开中…'
+      editBtn.textContent = t('note.opening')
       try {
         await postEditAndOpen(title, text, tags)
       } finally {
         editBtn.disabled = false
-        editBtn.textContent = '✏️ 在 TW 中编辑'
+        editBtn.textContent = t('note.editInTw')
       }
     }
 
@@ -855,7 +856,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       // 与保存后同样的「重置即定型」：否则 500ms 后防抖会把这份空内容又写成草稿，
       // 下次打开又弹「已恢复未保存草稿」（v0.22.8）。
       resetForNewNote()
-      toast('已丢弃草稿')
+      toast(t('note.draftDiscarded'))
     })
 
     // 刷新 / 关闭标签页（pagehide）也同步落盘一次：dispose() 只在插件卸载路径
@@ -883,12 +884,12 @@ export function createNoteWidget(): NoteWidgetHandle {
         ui.editor.setValue(draft.text)
         ui.titleInput.value = draft.title
         ui.tagEditor.setTags(draft.tags)
-        ui.bannerText.textContent = hit?.foreign === true ? '已恢复未保存草稿（来自其它窗口）' : '已恢复未保存草稿'
+        ui.bannerText.textContent = hit?.foreign === true ? t('note.draftRestoredForeign') : t('note.draftRestored')
         ui.draftBanner.hidden = false
         if (hit?.foreign === true) {
           // 不是本窗口写的草稿（旧全局 key 迁移 / 窗口 id 变化）：可见提示而不是
           // 静默覆盖，并采纳为本窗口所有，后续打开不再重复提示。
-          toast('已恢复其它窗口的未保存草稿')
+          toast(t('note.draftRestoredForeignToast'))
           adoptDraft(draft)
         }
       } else {
@@ -927,7 +928,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         if (disposed) return
         const stopped = stoppedTarget()
         if (stopped !== undefined) {
-          toast(`「${stopped.label}」当前没在运行：先在右下角「知识库」菜单里打开它，再记这条笔记`)
+          toast(t('note.nativeTargetStopped', { label: stopped.label }))
           return
         }
         const hit = loadDraft()
@@ -944,7 +945,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         }
         if (hit !== null && hit.foreign && (hit.draft.text.trim().length > 0 || hit.draft.title.trim().length > 0)) {
           // 非本窗口的草稿：恢复进原生编辑器前给出可见提示，并采纳为本窗口所有。
-          toast('已恢复其它窗口的未保存草稿')
+          toast(t('note.draftRestoredForeignToast'))
           adoptDraft(hit.draft)
         }
         // 必须 await：否则 finally 会在 POST 在途时就放开守卫，第二次点击仍会重复提交。

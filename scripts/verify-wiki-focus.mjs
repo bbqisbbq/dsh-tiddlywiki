@@ -928,7 +928,9 @@ test('切库不再"卡一下"：立即换文档 + 焦点只重画高亮 + 换库
   // ③ 换库提示：DOM 与 CSS 两边都必须在场。
   //    本仓库的血债（v0.28.9）：只有 DOM 没有 CSS = 用户看到的是"点了没反应"。
   assert.match(frame, /loading: string/, '皮肤必须声明换库提示的类名')
-  assert.match(frame, /正在载入知识库「\$\{label\}」…/, '提示必须写清正在载入的是哪个库（id 对用户没有意义）')
+  // v0.30.13：文案搬进了 i18n 目录 ⇒ 断言「目录里有带 {label} 的模板」+「代码里有调用点」。
+  assert.ok(catalogText().includes('正在载入知识库「{label}」…'), '提示必须写清正在载入的是哪个库（id 对用户没有意义）——文案在 i18n 目录里')
+  assert.match(frame, /t\('frame\.loadingWiki',\s*\{\s*label\s*\}\)/, '换库提示必须把库名传进 t()')
   assert.match(panel, /loading: 'dsh-tw-loading'/, '中央面板的皮肤必须带上提示类名')
   assert.match(frame, /loading: 'dsh-tw-loading'/, '右侧栏的皮肤同样（两个 TW 界面共用这一条提示）')
   assert.match(

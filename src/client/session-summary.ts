@@ -38,6 +38,7 @@
  * @module dsh-tiddlywiki/client/session-summary
  */
 import * as React from 'react'
+import { t } from './i18n.ts'
 import { GET_ENDPOINT, SESSION_SUMMARY_ENDPOINT as SUMMARY_ENDPOINT, withWikiQuery } from './endpoints.ts'
 // The render call lives in ONE place (render-fetch.ts) — this module and
 // tool-views.ts used to carry near-identical copies (v0.22.8).
@@ -161,7 +162,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
     }
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       setPhase('error')
-      setError('缺少会话 ID')
+      setError(t('chrome.summaryMissingSession'))
       return
     }
     // 连续失败到顶：不再自动重试（彻底停止自愈），只提示手动刷新。
@@ -171,7 +172,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         return
       }
       setPhase('error')
-      setError(`连续 ${MAX_MISSES} 次生成失败，已停止自动重试，请点「🔄 刷新」`)
+      setError(t('chrome.summaryRetriesExhausted', { n: MAX_MISSES }))
       return
     }
     try {
@@ -193,7 +194,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         return
       }
       if (typeof data.title !== 'string' || data.title.length === 0) {
-        fail('汇总生成失败：缺少标题')
+        fail(t('chrome.summaryNoTitle'))
         return
       }
       setSummaryTitle(data.title)
@@ -213,7 +214,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
             return
           }
           setPhase('error')
-          setError('汇总条目不存在，自动重建失败，请重试')
+          setError(t('chrome.summaryRebuildFailed'))
           return
         }
         if (exists === 'unknown') {
@@ -224,10 +225,10 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
             return
           }
           setPhase('error')
-          setError('渲染失败：wiki 渲染服务不可用（host /render），条目状态未知')
+          setError(t('chrome.summaryRenderUnknown'))
           return
         }
-        fail('渲染失败：wiki 渲染服务不可用（host /render）')
+        fail(t('chrome.summaryRenderUnavailable'))
         return
       }
       failuresRef.current = 0
@@ -290,7 +291,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
           }
           // 连续失败到顶：不再自动重建，交还手动「🔄 刷新」（interval 保留，只做探测）。
           setPhase('error')
-          setError('汇总条目已失效且自动重建多次失败，请点「🔄 刷新」重试')
+          setError(t('chrome.summaryExpired'))
           return
         }
         // 'yes'：条目还在，但内容可能仍是上次生成那一刻的快照（tab 一直开着时，
@@ -348,15 +349,15 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
       'div',
       { className: 'dsh-tw-summary-state' },
       React.createElement('div', { className: 'dsh-tw-summary-state-spin' }, '⏳'),
-      React.createElement('div', null, '正在生成会话 wiki 汇总…'),
+      React.createElement('div', null, t('chrome.summaryGenerating')),
     )
   } else if (phase === 'error') {
     content = React.createElement(
       'div',
       { className: 'dsh-tw-summary-state' },
-      React.createElement('div', { className: 'dsh-tw-summary-state-title' }, '知识库汇总暂不可用'),
+      React.createElement('div', { className: 'dsh-tw-summary-state-title' }, t('chrome.summaryUnavailable')),
       React.createElement('div', { className: 'dsh-tw-summary-state-detail' }, error),
-      React.createElement('button', { type: 'button', className: 'dsh-tw-summary-btn', onClick: refresh }, '重试'),
+      React.createElement('button', { type: 'button', className: 'dsh-tw-summary-btn', onClick: refresh }, t('chrome.summaryRetry')),
     )
   } else {
     // 原生 TW 片段：HTML 来自本地 wiki（与嵌入式编辑器和工具卡同一信任级别）；
@@ -370,7 +371,7 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
         ? React.createElement(
             'div',
             { className: 'dsh-tw-summary-state-detail' },
-            '⚠️ 未能确认最新状态（wiki 查询或刷新失败），以下是上次生成的内容',
+            t('chrome.summaryStale'),
           )
         : null,
       React.createElement('div', { dangerouslySetInnerHTML: { __html: html ?? '' } }),
@@ -390,13 +391,13 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
     React.createElement(
       'div',
       { className: 'dsh-tw-summary-bar' },
-      React.createElement('span', { className: 'dsh-tw-summary-bar-title' }, '📚 本会话知识库'),
-      React.createElement('span', { className: 'dsh-tw-summary-bar-hint' }, '产生 / 读取 / 检索过的笔记（含子代理）'),
+      React.createElement('span', { className: 'dsh-tw-summary-bar-title' }, t('chrome.summaryBarTitle')),
+      React.createElement('span', { className: 'dsh-tw-summary-bar-hint' }, t('chrome.summaryBarHint')),
       React.createElement('span', { className: 'dsh-tw-summary-bar-spacer' }),
       React.createElement(
         'button',
-        { type: 'button', className: 'dsh-tw-summary-btn', onClick: refresh, disabled: phase === 'loading', title: '重新生成并刷新汇总' },
-        '🔄 刷新',
+        { type: 'button', className: 'dsh-tw-summary-btn', onClick: refresh, disabled: phase === 'loading', title: t('chrome.summaryRefreshTitle') },
+        t('chrome.summaryRefresh'),
       ),
     ),
     content,
