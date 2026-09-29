@@ -824,6 +824,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       autoCommit: (req) => target(req)?.touchAutoCommit(),
       noteDefaults: (req) => ({ tag: target(req)?.noteTag() ?? config.note.tag }),
       uiDefaults: (req) => target(req)?.uiDefaults() ?? fallbackUi,
+      langOf: (req) => target(req)?.uiLanguage() ?? (typeof baseShape.uiLanguage === 'string' && baseShape.uiLanguage.trim().length > 0 ? baseShape.uiLanguage.trim() : 'zh'),
       getWikiPath: (req) => target(req)?.path ?? defaultPath(),
       targetProblem,
       // Same helper as the agent tool (one implementation, two callers): a pull

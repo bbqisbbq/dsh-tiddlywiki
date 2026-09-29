@@ -257,6 +257,16 @@ export class WikiInstance {
     return this.config.get()
   }
 
+  /**
+   * The UI language of THIS wiki (v0.30.6): the same value the TW child gets,
+   * exposed so `/status` can drive the CLIENT i18n from one setting.
+   */
+  uiLanguage(): string {
+    const value = this.eff().uiLanguage
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim()
+    return this.options.base.uiLanguage
+  }
+
   /** The note tag new notes get here (config tiddler overrides the base). */
   noteTag(): string {
     const tag = this.eff().note?.tag

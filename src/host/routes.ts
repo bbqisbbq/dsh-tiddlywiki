@@ -193,6 +193,17 @@ export interface RouteDeps {
   noteDefaults: (req: IncomingMessage) => { tag: string }
   /** Effective UI flags of the targeted wiki. */
   uiDefaults: (req: IncomingMessage) => UiDefaultsPublic
+  /**
+   * The targeted wiki's UI language (v0.30.6), raw (`zh`/`en`/`zh-CN`…). The
+   * CLIENT normalizes it; `/status` carries it as `lang` so every client surface
+   * speaks the language the user configured once, for both halves.
+   */
+  /**
+   * OPTIONAL on purpose: harnesses (and any embedder) that build a partial
+   * RouteDeps must not crash `/status` — the client falls back to the default
+   * language when `lang` is absent.
+   */
+  langOf?: (req: IncomingMessage) => string
   /** Absolute folder of the targeted wiki. */
   getWikiPath: (req: IncomingMessage) => string
   /**
@@ -626,6 +637,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       git: gitSummary,
       note: { tag: deps.noteDefaults(req).tag },
       ui: deps.uiDefaults(req),
+      // v0.30.6: the client half's language (see RouteDeps.langOf). Optional so a
+      // partial RouteDeps (harnesses) still serves /status; absent → client default.
+      ...(typeof deps.langOf === 'function' ? { lang: deps.langOf(req) } : {}),
       // The knowledge-base roster (v0.28.0): the GUI's per-wiki selector and the
       // settings page read it from here. Deliberately WITHOUT per-wiki git
       // status — that would spawn up to five git processes per wiki on every

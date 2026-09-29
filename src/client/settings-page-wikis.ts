@@ -17,6 +17,7 @@ import { toast } from './toast.ts'
 import { invalidateUiConfig } from './ui-config.ts'
 import { makeIconButton, openIconPicker } from './settings-icon-picker.ts'
 import { make } from './dom.ts'
+import { t } from './i18n.ts'
 import {
   ADMIN_WIKI_LOCATION_ENDPOINT as WIKI_LOCATION_ENDPOINT,
   ADMIN_WIKI_RESET_ENDPOINT as WIKI_RESET_ENDPOINT,
@@ -53,21 +54,21 @@ export interface WikiLocationView {
  */
 export function renderWikiListSection(body: HTMLElement, isDisposed: () => boolean, refresh: () => Promise<void>): void {
   const section = make('section', 'dsh-tw-settings-section')
-  section.append(make('h3', 'dsh-tw-settings-h', '知识库列表'))
-  const status = make('div', 'dsh-tw-settings-muted', '读取中…')
+  section.append(make('h3', 'dsh-tw-settings-h', t('settings.wikis.title')))
+  const status = make('div', 'dsh-tw-settings-muted', t('settings.wikis.loading'))
   const modeRow = make('div', 'dsh-tw-settings-row')
   const list = make('div')
   const addRoot = make('input', 'dsh-tw-settings-input')
-  addRoot.placeholder = '根目录（绝对路径，如 D:\\notes）'
+  addRoot.placeholder = t('settings.wikis.rootPlaceholder')
   const addName = make('input', 'dsh-tw-settings-input')
-  addName.placeholder = '文件夹名（如 books）'
+  addName.placeholder = t('settings.wikis.namePlaceholder')
   const addLabel = make('input', 'dsh-tw-settings-input')
-  addLabel.placeholder = '显示名（留空用文件夹名）'
-  const addBtn = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '添加知识库')
+  addLabel.placeholder = t('settings.wikis.labelPlaceholder')
+  const addBtn = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', t('settings.wikis.add'))
   addBtn.type = 'button'
   const addRow = make('div', 'dsh-tw-settings-row dsh-tw-settings-field')
   addRow.append(addRoot, addName, addLabel, addBtn)
-  const hint = make('div', 'dsh-tw-settings-muted', '多库模式下每个知识库是一个独立的 TW 子进程（约 150MB）：标了「开局自启」的随 DSH 一起起，其余在你打开或选中它时启动。对 Agent 隐身的库不进会话选择器，检索/工具也永远不碰它。')
+  const hint = make('div', 'dsh-tw-settings-muted', t('settings.wikis.hint'))
   section.append(status, modeRow, list, addRow, hint)
   body.append(section)
 
@@ -84,12 +85,16 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
       })
       if (isDisposed()) return
       const failures = data.change?.errors ?? []
-      if (failures.length > 0) toast(`部分操作失败：${failures.map((item) => `${item.id}：${item.message}`).join('；')}`)
+      if (failures.length > 0) toast(t('settings.wikis.partialFailure', {
+        message: failures
+          .map((item) => t('settings.wikis.failureItem', { id: item.id, message: item.message }))
+          .join(t('settings.wikis.failureJoin')),
+      }))
       render(data)
       await refresh()
     } catch (err) {
       if (isDisposed()) return
-      toast(`操作失败：${err instanceof Error ? err.message : String(err)}`)
+      toast(t('settings.wikis.actionFailed', { message: err instanceof Error ? err.message : String(err) }))
       await load()
     }
   }
@@ -110,12 +115,12 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
         signal: AbortSignal.timeout(180_000),
       })
       if (isDisposed()) return
-      if (data.ok !== true) toast(`失败：${data.error ?? '未知错误'}`)
+      if (data.ok !== true) toast(t('settings.wikis.failed', { message: data.error ?? t('settings.wikis.unknownError') }))
       await load()
       await refresh()
     } catch (err) {
       if (isDisposed()) return
-      toast(`失败：${err instanceof Error ? err.message : String(err)}`)
+      toast(t('settings.wikis.failed', { message: err instanceof Error ? err.message : String(err) }))
       await load()
     }
   }
@@ -125,11 +130,11 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
     // 「默认库」这个字样不再出现在界面上（v0.28.12，作者 2026-09-29）：直接说**那个库的名字**，
     // 读不到清单时用中性说法兜底，绝不退回「默认库」。
     const defaultLabel = (view.wikis ?? []).find((wiki) => wiki.id === view.defaultId)?.label
-    const defaultName = defaultLabel !== undefined && defaultLabel.length > 0 ? defaultLabel : '默认的那个库'
-    modeRow.replaceChildren(make('span', 'dsh-tw-settings-label', '运行模式：'))
+    const defaultName = defaultLabel !== undefined && defaultLabel.length > 0 ? defaultLabel : t('settings.wikis.unknownName')
+    modeRow.replaceChildren(make('span', 'dsh-tw-settings-label', t('settings.wikis.modeLabel')))
     const modes: Array<[string, string]> = [
-      ['single', `单库（只跑 ${defaultName}）`],
-      ['multi', '多库（清单里的库都可用）'],
+      ['single', t('settings.wikis.modeSingle', { name: defaultName })],
+      ['multi', t('settings.wikis.modeMulti')],
     ]
     for (const [value, text] of modes) {
       const active = view.mode === value
@@ -138,9 +143,9 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
       chip.disabled = active
       chip.addEventListener('click', () => {
         const ok = window.confirm(value === 'multi'
-          ? '切换到多库模式：清单里标了「开局自启」的知识库都会启动（每个库一个 TW 子进程）。继续？'
-          : `切换到单库模式：除 ${defaultName} 外的知识库会被停掉（内容与清单都不受影响）。继续？`)
-        if (ok) void post({ action: 'set-mode', mode: value }, '切换模式中…')
+          ? t('settings.wikis.switchToMulti')
+          : t('settings.wikis.switchToSingle', { name: defaultName }))
+        if (ok) void post({ action: 'set-mode', mode: value }, t('settings.wikis.switchingMode'))
       })
       modeRow.append(chip)
     }
@@ -150,11 +155,15 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
     for (const wiki of wikis) {
       const row = make('div', 'dsh-tw-settings-kbrow')
       const isDefault = wiki.id === view.defaultId
-      row.append(make('div', 'dsh-tw-settings-label', `${isDefault ? '★ ' : ''}${wiki.label}（${wiki.id}）`))
+      row.append(make('div', 'dsh-tw-settings-label', t('settings.wikis.rowTitle', {
+        mark: isDefault ? '★ ' : '',
+        label: wiki.label,
+        id: wiki.id,
+      })))
       row.append(make('div', 'dsh-tw-settings-muted', [
-        wiki.running ? '运行中' : '未运行',
-        wiki.agentVisible ? 'Agent 可见' : 'Agent 隐身',
-        wiki.autostart ? '开局自启' : '按需启动',
+        wiki.running ? t('settings.wikis.running') : t('settings.wikis.stopped'),
+        wiki.agentVisible ? t('settings.wikis.agentVisible') : t('settings.wikis.agentHidden'),
+        wiki.autostart ? t('settings.wikis.autostart') : t('settings.wikis.onDemand'),
         wiki.path,
       ].join(' · ')))
 
@@ -169,12 +178,12 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
       const configure = make(
         'button',
         `dsh-tw-settings-btn dsh-tw-settings-chipbtn${configuring ? ' dsh-tw-settings-primary' : ''}`,
-        configuring ? '退出配置' : '配置',
+        configuring ? t('settings.exitConfig') : t('settings.wikis.configure'),
       )
       configure.type = 'button'
       configure.title = configuring
-        ? `回到默认知识库的配置（当前正在配置「${wiki.label}」）`
-        : `把配置区切换到「${wiki.label}」（每个库有自己的配置 tiddler）`
+        ? t('settings.wikis.exitConfigTitle', { label: wiki.label })
+        : t('settings.wikis.configureTitle', { label: wiki.label })
       configure.addEventListener('click', () => {
         // 选库就切到「本库配置」那一页：用户点「配置」想看的就是按库生效的那几块
         // （插件/主题/语言/初始化），停在「总览」会让这次点击看起来没反应。
@@ -184,31 +193,34 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
         else enterWikiScope(wiki.id, configuring)
         void refresh()
       })
-      const power = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.running ? '停止' : '启动')
+      const power = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.running ? t('settings.wikis.stop') : t('settings.wikis.start'))
       power.type = 'button'
       power.addEventListener('click', () => {
-        void post({ action: wiki.running ? 'stop' : 'start', id: wiki.id }, wiki.running ? '停止中…' : '启动中…')
+        void post(
+          { action: wiki.running ? 'stop' : 'start', id: wiki.id },
+          wiki.running ? t('settings.wikis.stopping') : t('settings.wikis.starting'),
+        )
       })
-      const makeDefault = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '设为默认')
+      const makeDefault = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', t('settings.wikis.setDefault'))
       makeDefault.type = 'button'
       makeDefault.disabled = isDefault
-      makeDefault.addEventListener('click', () => { void post({ action: 'set-default', id: wiki.id }, '保存中…') })
-      const visibility = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.agentVisible ? '对 Agent 隐身' : '对 Agent 可见')
+      makeDefault.addEventListener('click', () => { void post({ action: 'set-default', id: wiki.id }, t('settings.wikis.saving')) })
+      const visibility = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.agentVisible ? t('settings.wikis.hideFromAgent') : t('settings.wikis.showToAgent'))
       visibility.type = 'button'
       visibility.addEventListener('click', () => {
-        void post({ action: 'update', wiki: { ...wiki, agentVisible: !wiki.agentVisible } }, '保存中…')
+        void post({ action: 'update', wiki: { ...wiki, agentVisible: !wiki.agentVisible } }, t('settings.wikis.saving'))
       })
-      const autostart = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.autostart ? '取消开局自启' : '开局自启')
+      const autostart = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.autostart ? t('settings.wikis.disableAutostart') : t('settings.wikis.autostart'))
       autostart.type = 'button'
       autostart.addEventListener('click', () => {
-        void post({ action: 'update', wiki: { ...wiki, autostart: !wiki.autostart } }, '保存中…')
+        void post({ action: 'update', wiki: { ...wiki, autostart: !wiki.autostart } }, t('settings.wikis.saving'))
       })
-      const remove = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '移出列表')
+      const remove = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', t('settings.wikis.removeFromList'))
       remove.type = 'button'
       remove.disabled = wikis.length <= 1
       remove.addEventListener('click', () => {
-        const ok = window.confirm(`把「${wiki.label}」移出清单？\n\n**目录与内容不会被删除**（仍在 ${wiki.path}），只是插件不再管理它。`)
-        if (ok) void post({ action: 'remove', id: wiki.id }, '移出中…')
+        const ok = window.confirm(t('settings.wikis.removeConfirm', { label: wiki.label, path: wiki.path }))
+        if (ok) void post({ action: 'remove', id: wiki.id }, t('settings.wikis.removing'))
       })
       // 图标选择（v0.28.4；v0.28.8 改成弹出式网格 + 分页）：它和 label 一样属于
       // "库的身份"，所以在列表里改，而不是塞进常规配置区。
@@ -217,32 +229,32 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
       // 原生下拉既扫不过来，也**画不出图标本身**（option 只能显示文字）。作者要的
       // 是"一个弹出框可以弹出展示系统中所有的图标，太多的话可以考虑分页展示"。
       const currentIcon = typeof wiki.icon === 'string' ? wiki.icon : ''
-      const iconPicker = makeIconButton(currentIcon, `「${wiki.label}」的入口图标`)
+      const iconPicker = makeIconButton(currentIcon, t('settings.wikis.iconAria', { label: wiki.label }))
       iconPicker.addEventListener('click', () => {
         openIconPicker(iconPicker, currentIcon, (next) => {
           void post(next.length > 0
             ? { action: 'update', wiki: { ...wiki, icon: next } }
-            : { action: 'update', wiki: { ...wiki, icon: '' } }, '保存中…')
+            : { action: 'update', wiki: { ...wiki, icon: '' } }, t('settings.wikis.saving'))
         })
       })
       // 「改目录」只在多库模式出现（v0.28.1）：单库模式下这件事由「知识库位置」负责
       // （它写 wiki 之外的指针文件），两处并存会让用户不知道以哪个为准。
       if (view.mode === 'multi') {
-        const move = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '改目录')
+        const move = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', t('settings.wikis.moveDir'))
         move.type = 'button'
         move.addEventListener('click', () => {
-          const root = window.prompt(`把「${wiki.label}」的根目录换成？\n\n当前：${wiki.root}`, wiki.root)
+          const root = window.prompt(t('settings.wikis.moveRootPrompt', { label: wiki.label, root: wiki.root }), wiki.root)
           if (root === null) return
           if (root.trim().length === 0) {
-            toast('根目录不能为空')
+            toast(t('settings.wikis.rootRequired'))
             return
           }
-          const name = window.prompt(`文件夹名（当前：${wiki.name}；填 . 表示直接用上面这个根目录）`, wiki.name)
+          const name = window.prompt(t('settings.wikis.moveNamePrompt', { name: wiki.name }), wiki.name)
           if (name === null) return
           const target = { root: root.trim(), name: name.trim().length > 0 ? name.trim() : wiki.name }
           void (isDefault
-            ? postLocation(WIKI_SWITCH_ENDPOINT, target, '搬动中（会停/起这个库）…')
-            : post({ action: 'update', wiki: { ...wiki, ...target } }, '保存中…'))
+            ? postLocation(WIKI_SWITCH_ENDPOINT, target, t('settings.wikis.moving'))
+            : post({ action: 'update', wiki: { ...wiki, ...target } }, t('settings.wikis.saving')))
         })
         actions.append(move)
       }
@@ -258,13 +270,13 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
     const root = addRoot.value.trim()
     const name = addName.value.trim()
     if (root.length === 0 || name.length === 0) {
-      toast('请填写根目录与文件夹名')
+      toast(t('settings.wikis.needRootAndName'))
       return
     }
     const wiki: Record<string, unknown> = { root, name }
     const label = addLabel.value.trim()
     if (label.length > 0) wiki.label = label
-    void post({ action: 'add', wiki }, '添加中（新库需要初始化与冷启动，请稍候）…')
+    void post({ action: 'add', wiki }, t('settings.wikis.adding'))
   })
 
   const load = async (): Promise<void> => {
@@ -275,7 +287,7 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
       render(view)
     } catch (err) {
       if (isDisposed()) return
-      status.textContent = `读取知识库列表失败：${err instanceof Error ? err.message : String(err)}`
+      status.textContent = t('settings.wikis.listFailed', { message: err instanceof Error ? err.message : String(err) })
     }
   }
   void load()
@@ -310,32 +322,32 @@ export function renderWikiLocationSection(body: HTMLElement, isDisposed: () => b
 
 function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => boolean, refresh: () => Promise<void>): void {
   const section = make('section', 'dsh-tw-settings-section')
-  section.append(make('h3', 'dsh-tw-settings-h', '知识库位置（可切换）'))
-  const status = make('div', 'dsh-tw-settings-muted', '读取中…')
+  section.append(make('h3', 'dsh-tw-settings-h', t('settings.wikis.locationTitle')))
+  const status = make('div', 'dsh-tw-settings-muted', t('settings.wikis.loading'))
   const sourceLine = make('div', 'dsh-tw-settings-muted')
   const stateLine = make('div', 'dsh-tw-settings-muted')
   const warn = make('div', 'dsh-tw-settings-muted')
   const rootInput = make('input', 'dsh-tw-settings-input')
   const nameInput = make('input', 'dsh-tw-settings-input')
-  rootInput.placeholder = '绝对路径，如 D:\\notes 或 $DSH_HOME/tiddlywiki'
-  nameInput.placeholder = '文件夹名（默认 main；填 . 表示直接用上面这个目录）'
+  rootInput.placeholder = t('settings.wikis.rootPlaceholderSingle')
+  nameInput.placeholder = t('settings.wikis.folderPlaceholderSingle')
   const rootWrap = make('label', 'dsh-tw-settings-field')
-  rootWrap.append(make('span', 'dsh-tw-settings-label', '根目录（wikiRoot）'), rootInput)
+  rootWrap.append(make('span', 'dsh-tw-settings-label', t('settings.wikis.rootField')), rootInput)
   const nameWrap = make('label', 'dsh-tw-settings-field')
-  nameWrap.append(make('span', 'dsh-tw-settings-label', '文件夹名（wiki）'), nameInput)
-  const switchBtn = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '切换到这个位置')
+  nameWrap.append(make('span', 'dsh-tw-settings-label', t('settings.wikis.folderField')), nameInput)
+  const switchBtn = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', t('settings.wikis.switchHere'))
   switchBtn.type = 'button'
-  const resetBtn = make('button', 'dsh-tw-settings-btn', '恢复为配置默认')
+  const resetBtn = make('button', 'dsh-tw-settings-btn', t('settings.wikis.resetToConfig'))
   resetBtn.type = 'button'
   const row = make('div', 'dsh-tw-settings-row')
   row.append(switchBtn, resetBtn)
   const candidates = make('div', 'dsh-tw-settings-row dsh-tw-settings-candidates')
-  const hint = make('div', 'dsh-tw-settings-muted', '切换会停掉并就地重启 TW 子进程（几秒）；新目录若还没有 tiddlywiki.info，插件会自动 `--init server` 初始化一个全新知识库。选中的位置会记在 $DSH_HOME 下的指针文件里（不进 wiki），可用「恢复为配置默认」清除。')
+  const hint = make('div', 'dsh-tw-settings-muted', t('settings.wikis.locationHint'))
 
   const setBusy = (busy: boolean, label: string): void => {
     switchBtn.disabled = busy
     resetBtn.disabled = busy
-    switchBtn.textContent = busy ? label : '切换到这个位置'
+    switchBtn.textContent = busy ? label : t('settings.wikis.switchHere')
   }
 
   const load = async (): Promise<void> => {
@@ -343,34 +355,37 @@ function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => bool
     try {
       const data = await fetchJson<WikiLocationView>(WIKI_LOCATION_ENDPOINT)
       if (isDisposed()) return
-      if (data.ok !== true) throw new Error(data.error ?? '获取失败')
+      if (data.ok !== true) throw new Error(data.error ?? t('settings.wikis.locationUnavailable'))
       const current = data.current ?? {}
-      status.textContent = `当前：${current.path ?? '(未知)'}`
+      status.textContent = t('settings.wikis.current', { path: current.path ?? t('settings.wikis.unknownPath') })
       const sourceText = current.source === 'state'
-        ? '来源：指针文件（在设置页切换过）'
+        ? t('settings.wikis.sourceState')
         : current.source === 'config'
-          ? '来源：cordis 配置（config.wikiRoot / config.wiki）'
-          : '来源：默认值（$DSH_HOME/tiddlywiki + main）'
-      sourceLine.textContent = `${sourceText} · 配置默认：${data.default?.path ?? '(未知)'}`
-      stateLine.textContent = data.stateFile !== undefined ? `指针文件：${data.stateFile}（不存在＝使用配置默认）` : ''
+          ? t('settings.wikis.sourceConfig')
+          : t('settings.wikis.sourceDefault')
+      sourceLine.textContent = t('settings.wikis.sourceLine', {
+        source: sourceText,
+        path: data.default?.path ?? t('settings.wikis.unknownPath'),
+      })
+      stateLine.textContent = data.stateFile !== undefined ? t('settings.wikis.stateFile', { path: data.stateFile }) : ''
       warn.textContent = data.error !== undefined ? `⚠️ ${data.error}` : ''
       if (rootInput.value.length === 0 && typeof current.root === 'string') rootInput.value = current.root
       if (nameInput.value.length === 0 && typeof current.name === 'string') nameInput.value = current.name
       candidates.replaceChildren()
       const names = data.candidates ?? []
       if (names.length > 0) {
-        candidates.append(make('span', 'dsh-tw-settings-label', '同目录下可选的 wiki：'))
+        candidates.append(make('span', 'dsh-tw-settings-label', t('settings.wikis.candidatesLabel')))
         for (const name of names) {
-          const chip = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', name === '.' ? '(根目录本身)' : name)
+          const chip = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', name === '.' ? t('settings.wikis.rootItself') : name)
           chip.type = 'button'
-          chip.title = `填入文件夹名「${name}」`
+          chip.title = t('settings.wikis.candidateTitle', { name })
           chip.addEventListener('click', () => { nameInput.value = name })
           candidates.append(chip)
         }
       }
     } catch (err) {
       if (isDisposed()) return
-      status.textContent = `读取位置失败：${err instanceof Error ? err.message : String(err)}`
+      status.textContent = t('settings.wikis.locationFailed', { message: err instanceof Error ? err.message : String(err) })
     }
   }
 
@@ -378,11 +393,11 @@ function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => bool
     const root = rootInput.value.trim()
     const name = nameInput.value.trim().length > 0 ? nameInput.value.trim() : 'main'
     if (root.length === 0) {
-      toast('请先填写根目录（绝对路径）')
+      toast(t('settings.wikis.needRoot'))
       return
     }
-    if (!window.confirm(`切换知识库到：\n${root}\\${name}\n\n会停止并重启 TW 子进程；当前对话/工具随后读写的是新知识库。确定继续？`)) return
-    setBusy(true, '切换中…（重启 TW）')
+    if (!window.confirm(t('settings.wikis.switchConfirm', { path: `${root}\\${name}` }))) return
+    setBusy(true, t('settings.wikis.switching'))
     void (async () => {
       try {
         const data = await fetchJson<{ ok?: boolean; error?: string; warning?: string; path?: string; rolledBack?: boolean }>(WIKI_SWITCH_ENDPOINT, {
@@ -391,14 +406,14 @@ function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => bool
           body: JSON.stringify({ root, name }),
           signal: AbortSignal.timeout(120_000),
         })
-        if (data.warning !== undefined) toast(`已切换到 ${data.path ?? ''}（注意：${data.warning}）`)
-        else toast(`已切换到 ${data.path ?? ''}`)
+        if (data.warning !== undefined) toast(t('settings.wikis.switchedWarn', { path: data.path ?? '', warning: data.warning }))
+        else toast(t('settings.wikis.switched', { path: data.path ?? '' }))
         invalidateUiConfig()
         await load()
         await refresh()
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
-        toast(`切换失败：${message}`)
+        toast(t('settings.wikis.switchFailed', { message }))
         await load()
       } finally {
         setBusy(false, '')
@@ -407,8 +422,8 @@ function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => bool
   })
 
   resetBtn.addEventListener('click', () => {
-    if (!window.confirm('恢复为配置默认位置？会删除位置指针文件，并（必要时）切回配置里的知识库。')) return
-    setBusy(true, '切换中…（重启 TW）')
+    if (!window.confirm(t('settings.wikis.resetConfirm'))) return
+    setBusy(true, t('settings.wikis.switching'))
     void (async () => {
       try {
         const data = await fetchJson<{ ok?: boolean; error?: string; warning?: string; path?: string }>(WIKI_RESET_ENDPOINT, {
@@ -417,12 +432,14 @@ function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => bool
           body: '{}',
           signal: AbortSignal.timeout(120_000),
         })
-        toast(data.warning !== undefined ? `已恢复默认（注意：${data.warning}）` : `已恢复为配置默认：${data.path ?? ''}`)
+        toast(data.warning !== undefined
+          ? t('settings.wikis.resetWarn', { warning: data.warning })
+          : t('settings.wikis.resetDone', { path: data.path ?? '' }))
         invalidateUiConfig()
         await load()
         await refresh()
       } catch (err) {
-        toast(`恢复失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('settings.wikis.resetFailed', { message: err instanceof Error ? err.message : String(err) }))
         await load()
       } finally {
         setBusy(false, '')

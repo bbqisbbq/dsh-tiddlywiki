@@ -17,6 +17,17 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块族」读源码，拆分不断言路径
 
+/**
+ * The i18n catalog text (v0.30.6): user-visible copy MOVED out of the client
+ * modules into `i18n-*.ts`. Assertions about "what the user is told" therefore
+ * check the CATALOG for the sentence plus the module for a `t('…')` CALL SITE —
+ * matching the Chinese literal inside settings-page-wikis.ts would now be a
+ * false red, which is the whole point of the layer.
+ */
+const catalogText = () => fs.readdirSync(path.join(repoRoot, 'src/client'))
+  .filter((n) => n.startsWith('i18n-') && n.endsWith('.ts'))
+  .map((n) => fs.readFileSync(path.join(repoRoot, 'src/client', n), 'utf8'))
+  .join('\n')
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 /** Minimal localStorage so the focus store can be imported in Node. */
@@ -257,7 +268,8 @@ test('设置页：知识库列表是第一块，且能改模式/启停/默认/�
     assert.ok(settings.includes(`action: '${action}'`) || settings.includes(`action: wiki.running ? 'stop' : 'start'`) || settings.includes('action: \'set-mode\''), `设置页必须能发出 ${action}`)
   }
   assert.match(settings, /agentVisible: !wiki\.agentVisible/, '必须能切换对 Agent 的可见性')
-  assert.match(settings, /\*\*目录与内容不会被删除\*\*/, '移出列表必须说清"不删目录"（否则没人敢点）')
+  assert.ok(catalogText().includes('目录与内容不会被删除'), '移出列表必须说清「不删目录」否则没人敢点（文案在 i18n 目录里）')
+  assert.match(settings, /t\('settings\./, '设置页文案必须走 t()（调用点在代码里、文案在 i18n 目录里）')
 })
 
 test('设置页：配置作用域必须显式（per-wiki 请求都要带 ?wiki=）', () => {
@@ -538,8 +550,8 @@ test('图标集：host 名单与客户端可渲染集合必须完全一致，且
 
   // 分页：作者明确要求「太多的话可以考虑分页展示」。
   assert.match(settings, /ICON_PAGE_SIZE/, '选择器必须有分页常量')
-  assert.match(settings, /上一页/, '选择器必须有上一页')
-  assert.match(settings, /下一页/, '选择器必须有下一页')
+  assert.ok(catalogText().includes('上一页') && catalogText().includes('下一页'), '选择器必须有上一页/下一页（文案在 i18n 目录里）')
+  assert.match(settings, /t\('settings\./, '图标选择器的文案必须走 t()')
   // 单页时不显示分页控件（少量图标别多出没用的按钮）。
   assert.match(settings, /if \(pages > 1\)/, '只有超过一页才显示分页控件')
 })
@@ -652,10 +664,11 @@ test('设置页分页：多库时按「总览/本库配置/全局」分开，且
   // 模块级变量，从前**没有任何路径**把它清回默认库 —— 连关掉设置页再打开都还在。
   assert.match(settings, /function renderScopeBar\(/, '必须有常驻的作用域条')
   assert.match(settings, /dsh-tw-settings-scopebar/, '作用域条要有自己的类名（sticky 靠 CSS）')
-  assert.match(settings, /'退出配置'/, '必须提供「退出配置」按钮（这是反馈里找不到的出口）')
+  assert.ok(catalogText().includes('退出配置'), '必须提供「退出配置」按钮（这是反馈里找不到的出口）——文案现在住在 i18n 目录里')
   assert.match(settings, /editingWiki = undefined/, '退出配置必须把 editingWiki 清回默认库')
   // 「配置」按钮不能再是单程票：从前它 disable 成「正在配置」就再也点不回去了。
-  assert.match(settings, /configuring \? '退出配置' : '配置'/, '「配置」必须是个开关（可再次点击退出）')
+  // 开关语义不变，只是两种文案都从目录里取：`configuring ? t('…') : t('…')`。
+  assert.match(settings, /configuring[\s\S]{0,240}?t\('settings\.[\s\S]{0,240}?t\('settings\./, '「配置」必须是个开关（可再次点击退出），两种文案都要走 t()')
   assert.ok(
     !/configure\.disabled = configuring/.test(settings),
     '「配置」按钮不得在配置中禁用（禁用 = 没有出口，正是本次反馈）',
@@ -750,20 +763,23 @@ test('「默认库」不得作为选项名出现：默认的那个库要用它�
   // 会话选择器三条落地判据（它是最要命的一处：新会话默认选中的就是那个库）。
   const dock = files.wikiScopeDock
   assert.match(dock, /readResolvedWiki/, '必须读 /session/wiki 的 resolved（默认库的真实 id 与 label）')
-  assert.match(dock, /（默认）/, '默认库那一项必须带「（默认）」身份标记（否则用户不知道哪个是默认）')
+  assert.ok(catalogText().includes('（默认）'), '默认库那一项必须带「（默认）」身份标记（否则用户不知道哪个是默认）')
+  assert.match(dock, /t\('chrome\.|（默认）/, '选择器文案必须走 t()（或仍处于待转换状态，见 verify-client-i18n.mjs 的 PENDING_CONVERSION）')
   assert.match(dock, /const selected = scope\.length > 0 && listed\(scope\) \? scope : defaultId/, '没显式选过时必须显示默认库（而不是空白/无名占位）')
   assert.match(dock, /const wanted = next === defaultId \? '' : next/, '选中默认那一项 = 清空显式作用域（仍然跟随默认，默认改了也跟着走）')
 
   // 快速笔记卡片：那个 value='' 的占位选项必须已经删掉；默认库只标身份，不改名。
   assert.ok(!/fallback\.textContent = '默认库'/.test(files.noteWidget), '快速笔记卡片不得再有名为「默认库」的选项')
-  assert.match(files.noteWidget, /const mark = item\.id === default(Wiki)?Id \? '（默认）' : ''/, '卡片里的默认库同样只加身份标记')
+  assert.match(files.noteWidget, /const mark = item\.id === default(Wiki)?Id \? [^\n]*(t\('note\.|'（默认）')/, '卡片里的默认库同样只加身份标记（文案来自目录）')
 
   // 设置页剪藏目标：空值那一项改名成默认库的显示名，且默认库不得在同一个下拉里出现两次。
-  assert.match(files.settingsConfig, /placeholder\.textContent = `\$\{defaultLabel\}（默认）`/, '剪藏目标下拉里空值那一项必须改名成默认库的显示名')
+  assert.match(files.settingsConfig, /placeholder\.textContent = [^\n]*(t\('config\.|（默认）)/, '剪藏目标下拉里空值那一项必须改名成默认库的显示名（后缀文案来自目录）')
   assert.match(files.settingsConfig, /if \(wiki\.id === view\.defaultId\) continue/, '默认库由空值那一项代表，不得再单独列一遍（否则同一个库出现两次）')
   // 单库模式那个单选与确认框同样直呼其名。
-  assert.match(files.settingsWikis, /单库（只跑 \$\{defaultName\}）/, '「单库」模式标签必须写出默认库的名字')
-  assert.match(files.settingsWikis, /除 \$\{defaultName\} 外的知识库会被停掉/, '切单库的确认文案必须写出默认库的名字')
+  // 规则不变（必须写出默认库的名字），但文案来自目录 ⇒ 断言「目录里有带 {name} 的模板」+「调用点传了 name」。
+  assert.ok(catalogText().includes('单库（只跑 {name}）'), '「单库」模式文案必须带 {name} 占位符（文案在 i18n 目录里）')
+  assert.ok(catalogText().includes('除 {name} 外'), '切单库的确认文案必须带 {name} 占位符')
+  assert.match(files.settingsWikis, /t\('settings\.wikis\.(modeSingle|switchToSingle)',\s*\{\s*name/, '切单库/单库文案必须把默认库的名字传进 t()')
 })
 
 test('侧边栏多库入口：点另一个库 = 切换，不是关面板（作者 2026-09-29 报障「要点击两次才能切库」）', () => {

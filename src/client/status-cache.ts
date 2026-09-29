@@ -14,6 +14,7 @@
  *
  * @module dsh-tiddlywiki/client/status-cache
  */
+import { setLang } from './i18n.ts'
 import { STATUS_ENDPOINT } from './endpoints.ts'
 
 /** The subset of the host status payload the client surfaces consume. */
@@ -49,6 +50,11 @@ export interface StatusPayload {
    * WITHOUT per-wiki git status — that would spawn up to five git processes per
    * wiki on every poll.
    */
+  /**
+   * The configured UI language of the targeted wiki (v0.30.6), raw. `fetchStatus`
+   * feeds it to `setLang()` so every client surface speaks it.
+   */
+  lang?: string
   mode?: string
   defaultId?: string
   wikis?: Array<{
@@ -94,7 +100,11 @@ export function fetchStatus(): Promise<StatusPayload | null> {
     try {
       const res = await fetch(STATUS_ENDPOINT, { signal: AbortSignal.timeout(8_000) })
       if (!res.ok) return null
-      return (await res.json()) as StatusPayload
+      const payload = (await res.json()) as StatusPayload
+      // One place keeps the client's language in sync with the host's config
+      // (v0.30.6): every surface already reads /status through this cache.
+      setLang(payload.lang)
+      return payload
     } catch {
       return null
     }

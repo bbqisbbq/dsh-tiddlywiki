@@ -44,6 +44,15 @@ import {
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
+/**
+ * 客户端文案自 v0.30.6 起住在 i18n 目录里（`src/client/i18n-*.ts`）：断言「用户看得见
+ * 某句话」时必须**两处任一**命中 —— 转换前在源码里、转换后在目录里，否则转换一到就假红。
+ */
+const clientCatalog = () => fs.readdirSync(path.join(repoRoot, 'src/client'))
+  .filter((n) => n.startsWith('i18n-') && n.endsWith('.ts'))
+  .map((n) => fs.readFileSync(path.join(repoRoot, 'src/client', n), 'utf8'))
+  .join('\n')
+
 let failures = 0
 async function test(name, fn) {
   try {
@@ -411,12 +420,15 @@ await test('接线：/admin/state 暴露 configError，/admin/config 把它映�
 await test('接线：设置页横幅渲染 configError（用户必须看得见）', () => {
   const page = readFamily(repoRoot, 'src/client/settings-page')
   assert.ok(page.includes('configError?: string | null'), 'AdminState 要有 configError')
-  assert.ok(page.includes('⚠️ 配置未生效'), '要渲染可见横幅')
+  assert.ok(
+    page.includes('configError') && (page.includes('⚠️') || readFamily(repoRoot, 'src/client/i18n-settings').includes('配置未生效')),
+    '要渲染可见横幅（configError 必须被渲染出来，文案可在 i18n 目录里）',
+  )
 })
 
 await test('接线：客户端 status 行显示未解决冲突', () => {
   const page = readFamily(repoRoot, 'src/client/settings-page')
-  assert.ok(page.includes('冲突未解决'), '状态行要提示冲突已阻止提交')
+  assert.ok(page.includes('冲突未解决') || clientCatalog().includes('冲突未解决'), '状态行要提示冲突已阻止提交（文案现在可能住在 i18n 目录里）')
 })
 
 try {

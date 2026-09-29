@@ -33,6 +33,7 @@
 import * as React from 'react'
 import { toast } from './toast.ts'
 import { make } from './dom.ts'
+import { t } from './i18n.ts'
 import {
   ADMIN_RESTART_ENDPOINT as RESTART_ENDPOINT,
   ADMIN_STATE_ENDPOINT as STATE_ENDPOINT,
@@ -129,14 +130,20 @@ function mountSettingsPage(container: HTMLElement): () => void {
    * 莫名其妙找不到设置项）。多库时才显式 'multi'。
    */
   let rosterMode: string | undefined
+  /**
+   * 名册原件（v0.30.6）：作用域条要说出**正在配置的那个库的显示名**，而
+   * `/admin/state` 只回那个库的路径/git/配置，**没有名字**。这一份来自上面那次
+   * **本来就有的** `/admin/wikis` 模式探测（见 modePromise）—— 复用，不发新请求。
+   */
+  let roster: WikisView | undefined
 
   const refresh = async (): Promise<void> => {
     // 首屏先给占位（v0.24.x）：以前 await 期间什么都不画，整块白屏看起来像插件坏了。
-    if (!rendered) body.replaceChildren(make('div', 'dsh-tw-settings-muted', '加载中…'))
+    if (!rendered) body.replaceChildren(make('div', 'dsh-tw-settings-muted', t('settings.loading')))
     try {
       // 与 /status 并行探模式：失败/超时不阻塞配置页渲染（回落成单库的保守视图）。
       const modePromise = fetchJson<WikisView>(WIKI_LIST_ENDPOINT)
-        .then((v) => { rosterMode = typeof v?.mode === 'string' ? v.mode : undefined })
+        .then((v) => { rosterMode = typeof v?.mode === 'string' ? v.mode : undefined; roster = v })
         .catch(() => { rosterMode = undefined })
       const state = await fetchJson<AdminState>(withWiki(STATE_ENDPOINT))
       await modePromise
@@ -154,17 +161,17 @@ function mountSettingsPage(container: HTMLElement): () => void {
           delete catalogPending.themeActive
           catalogScope = editingWiki
         }
-      })
+      }, scopeWikiLabel(roster, editingWiki))
     } catch (err) {
       if (disposed) return
       // 不再 body.replaceChildren() / statusRow.replaceChildren()：那会把已经渲染出来的
       // 表单节点连同用户的输入一起摘掉。首屏（还没有任何内容）时把「加载中…」换成实话。
-      if (!rendered) body.replaceChildren(make('div', 'dsh-tw-settings-muted', '配置尚未加载。'))
-      const retry = make('button', 'dsh-tw-settings-btn', '重试')
+      if (!rendered) body.replaceChildren(make('div', 'dsh-tw-settings-muted', t('settings.notLoaded')))
+      const retry = make('button', 'dsh-tw-settings-btn', t('settings.retry'))
       retry.type = 'button'
       retry.addEventListener('click', () => { void refresh() })
       loadError.replaceChildren(
-        make('span', undefined, `加载配置失败：${err instanceof Error ? err.message : String(err)} `),
+        make('span', undefined, `${t('settings.loadFailed', { message: err instanceof Error ? err.message : String(err) })} `),
         retry,
       )
       loadError.hidden = false
@@ -195,16 +202,16 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
     // An unresolved conflict is the one git state that blocks commits (v0.23.4):
     // say so instead of the generic「有未提交改动」.
     state.git?.conflict !== undefined
-      ? `⚠️ 冲突未解决（${state.git.conflict.files.length} 个文件，已阻止提交）`
-      : (state.git?.dirty === true ? '有未提交改动' : ''),
+      ? t('settings.gitConflict', { count: state.git.conflict.files.length })
+      : (state.git?.dirty === true ? t('settings.gitDirty') : ''),
   ].filter(Boolean).join(' · ')
   const label = make('span', 'dsh-tw-settings-muted', info)
-  const sync = make('button', 'dsh-tw-settings-btn', '同步')
+  const sync = make('button', 'dsh-tw-settings-btn', t('settings.sync'))
   sync.type = 'button'
-  sync.title = 'git 同步（pull → commit → push）'
+  sync.title = t('settings.syncTitle')
   sync.addEventListener('click', () => {
     sync.disabled = true
-    sync.textContent = '同步中…'
+    sync.textContent = t('settings.syncing')
     void (async () => {
       try {
         // ⚠️ 必须带作用域（v0.29.0）：这两个按钮在同一行显示的是**正在配置的那个库**
@@ -213,33 +220,35 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
         const res = await fetch(withWiki(SYNC_ENDPOINT), { method: 'POST', signal: AbortSignal.timeout(120_000) })
         const payload = (await res.json().catch(() => null)) as SyncResultPayload | null
         const result = describeSyncResult(payload, res.status)
-        toast(result.ok ? `同步完成：${result.message}` : `同步失败：${result.message}`)
+        toast(result.ok
+          ? t('settings.syncDone', { message: result.message })
+          : t('settings.syncFailed', { message: result.message }))
       } catch (err) {
-        toast(`同步失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('settings.syncFailed', { message: err instanceof Error ? err.message : String(err) }))
       } finally {
         sync.disabled = false
-        sync.textContent = '同步'
+        sync.textContent = t('settings.sync')
         void refresh()
       }
     })()
   })
-  const restart = make('button', 'dsh-tw-settings-btn', '重启 TW')
+  const restart = make('button', 'dsh-tw-settings-btn', t('settings.restart'))
   restart.type = 'button'
   restart.addEventListener('click', () => {
     restart.disabled = true
-    restart.textContent = '重启中…'
+    restart.textContent = t('settings.restarting')
     void (async () => {
       try {
         // 120s 是显式的：宿主 /admin/restart 会等 TW 就绪才回包，软窗口默认 60s
         // （大知识库冷启动更久，v0.22.5 记录过 44s+），而 fetchJson 默认只给 15s ——
         // 于是宿主重启成功、前端却报「重启失败」。同一原因也命中过知识库切换。
         await fetchJson(withWiki(RESTART_ENDPOINT), { method: 'POST', signal: AbortSignal.timeout(120_000) })
-        toast('TW 已重启')
+        toast(t('settings.restarted'))
       } catch (err) {
-        toast(`重启失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('settings.restartFailed', { message: err instanceof Error ? err.message : String(err) }))
       } finally {
         restart.disabled = false
-        restart.textContent = '重启 TW'
+        restart.textContent = t('settings.restart')
         void refresh()
       }
     })()
@@ -265,12 +274,31 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
  * import 本文件（那就成环了）。这里只重新导出类型，保持公开面不变。
  */
 
-/** Tab 栏文案。 */
-const TAB_LABELS: Array<{ id: SettingsTab; label: string }> = [
-  { id: 'overview', label: '总览' },
-  { id: 'library', label: '本库配置' },
-  { id: 'global', label: '全局' },
+/**
+ * Tab 栏文案（v0.30.6）：label 是**函数**，渲染时才取值 —— 模块级常量只求值一次，
+ * 写死 `t(...)` 会让「切语言后设置页立即重画」失效（见 i18n.ts 的说明）。
+ */
+const TAB_LABELS: Array<{ id: SettingsTab; label: () => string }> = [
+  { id: 'overview', label: () => t('settings.tabOverview') },
+  { id: 'library', label: () => t('settings.tabLibrary') },
+  { id: 'global', label: () => t('settings.tabGlobal') },
 ]
+
+/**
+ * 作用域条要显示的那个库的**显示名**（v0.30.6）。
+ *
+ * `/admin/state` 只回路径/git/配置，没有名字；名字只有 `/admin/wikis` 的名册里有，
+ * 而那份名册本来就被 mountSettingsPage 取过一次（探模式）—— 复用，绝不新发请求。
+ * `id` 为空 = 没显式选库（配置的就是默认那个库），此时取名册的 `defaultId`。
+ * 名册里查不到时回落 id（**显示名优先，但绝不把 id 说成「默认库」**）。
+ */
+function scopeWikiLabel(roster: WikisView | undefined, id: string | undefined): string | undefined {
+  const wikis = roster?.wikis ?? []
+  const target = id ?? roster?.defaultId
+  const label = target === undefined ? undefined : wikis.find((wiki) => wiki.id === target)?.label
+  if (label !== undefined && label.length > 0) return label
+  return id
+}
 
 /**
  * 顶部配置作用域条（v0.28.8，反馈 4）。
@@ -283,20 +311,24 @@ const TAB_LABELS: Array<{ id: SettingsTab; label: string }> = [
  *
  * 所以这条是 sticky 的，且**只有多库模式**才渲染（单库没有"作用域"可言）。
  */
-function renderScopeBar(body: HTMLElement, mode: string | undefined, refresh: () => Promise<void>): void {
+function renderScopeBar(body: HTMLElement, mode: string | undefined, refresh: () => Promise<void>, scopeLabel?: string): void {
   if (mode !== 'multi') return
   const bar = make('div', 'dsh-tw-settings-scopebar')
-  const label = editingWiki === undefined
-    ? '正在配置：默认知识库'
-    : `正在配置：${editingWiki}`
+  // 只说**那个库的显示名**（v0.28.12）：没显式选库时配置的就是「跟随默认」的那个库，
+  // 名字给得出就带上「（默认）」身份标记；名册没回来（名字读不到）才用中性说法。
+  const label = scopeLabel === undefined || scopeLabel.length === 0
+    ? t('settings.scopeFollowDefault')
+    : (editingWiki === undefined
+      ? t('settings.scopeEditingDefault', { name: scopeLabel })
+      : t('settings.scopeEditing', { name: scopeLabel }))
   bar.append(make('span', 'dsh-tw-settings-scopebar-label', label))
   bar.append(make('span', 'dsh-tw-settings-muted', editingWiki === undefined
-    ? '在「总览」里点某个库的「配置」可切到那个库'
-    : '编辑的是该库自己的配置 tiddler；改完记得点下面的「保存配置」'))
+    ? t('settings.scopeHintPick')
+    : t('settings.scopeHintEditing')))
   if (editingWiki !== undefined) {
-    const exit = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn dsh-tw-settings-scopebar-exit', '退出配置')
+    const exit = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn dsh-tw-settings-scopebar-exit', t('settings.exitConfig'))
     exit.type = 'button'
-    exit.title = '回到默认知识库的配置（不影响已保存的内容）'
+    exit.title = t('settings.scopeExitTitle')
     exit.addEventListener('click', () => {
       // 清回默认库 —— 写入口只有 setEditingWiki 一处（值住在 settings-page-runtime.ts，
       // 多处直接赋值正是反馈 4 里"退不出去"的成因）。
@@ -316,7 +348,7 @@ function renderTabBar(body: HTMLElement, mode: string | undefined, refresh: () =
   bar.setAttribute('role', 'tablist')
   for (const tab of TAB_LABELS) {
     const active = activeTab === tab.id
-    const btn = make('button', `dsh-tw-settings-tab${active ? ' dsh-tw-settings-tab-active' : ''}`, tab.label)
+    const btn = make('button', `dsh-tw-settings-tab${active ? ' dsh-tw-settings-tab-active' : ''}`, tab.label())
     btn.type = 'button'
     btn.setAttribute('role', 'tab')
     btn.setAttribute('aria-selected', active ? 'true' : 'false')
@@ -337,11 +369,10 @@ function renderTabBar(body: HTMLElement, mode: string | undefined, refresh: () =
  * 的情况下应该隐藏，点击配置相应的库的时候才展示出来让人配置」。
  */
 function renderPickLibraryHint(body: HTMLElement): void {
-  body.append(make('div', 'dsh-tw-settings-muted',
-    '插件管理（自带官方插件）/ 主题管理 / 语言管理 / 初始化，都是**按知识库**生效的。请先在「总览」里点某个库的「配置」，这里才会显示它们。'))
+  body.append(make('div', 'dsh-tw-settings-muted', t('settings.pickLibraryHint')))
 }
 
-function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState, catalogPending: CatalogPending, rosterMode?: string, dropCatalogPendingOnScopeChange?: () => void): void {
+function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState, catalogPending: CatalogPending, rosterMode?: string, dropCatalogPendingOnScopeChange?: () => void, scopeLabel?: string): void {
   body.replaceChildren()
   // 库作用域变了 → 先作废上一个库的「未应用勾选」（v0.29.0），再渲染任何东西：
   // 否则渲染出来的复选框是 A 库的期望集合，而页面说的是 B 库（点应用就写错库）。
@@ -351,7 +382,7 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
   // refused until it is fixed (v0.23.4 — that is how a user's prompt.extra /
   // git.remote were silently wiped on 2026-09-18).
   if (typeof state.configError === 'string' && state.configError.length > 0) {
-    body.append(makeErrorBanner(`⚠️ 配置未生效：${state.configError}`))
+    body.append(makeErrorBanner(t('settings.configInactive', { message: state.configError })))
   }
   // Config section: only rebuild when the server-side config actually changed.
   // Otherwise the status row's 同步/重启 buttons (and the catalog apply buttons)
@@ -370,7 +401,7 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
   // 上一个库的脏值本来就不该带过去。
   const dirty = configState.isDirty?.() === true
   if (serverChanged && dirty && !scopeChanged) {
-    body.append(makeErrorBanner('⚠️ 服务器上的配置在别处被改动过（另一个标签页保存 / 语言管理等），当前表单仍是旧值：直接点「保存配置」会以本页内容覆盖那些改动。'))
+    body.append(makeErrorBanner(t('settings.configStale')))
   }
   // 重建的三种情况（v0.29.0：把"切库"单独加进来，但**不能**顺手改掉 v0.25.0 的保护）：
   //   ① 还没有表单；② 用户切了库（他就是要另一个库的表单，旧库的脏值不该带过去）；
@@ -386,7 +417,7 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
   // 并在最上方 sticky 地说明正在配置哪个库、随时可以退出。单库两者都不渲染，
   // 于是下面的渲染顺序就是以前那一条平铺（DOM 逐字不变）。
   renderTabBar(body, rosterMode, refresh)
-  renderScopeBar(body, rosterMode, refresh)
+  renderScopeBar(body, rosterMode, refresh, scopeLabel)
   const multi = rosterMode === 'multi'
   // 单库：全部平铺（与以前一致）。多库：按当前 Tab 只渲染对应的一组。
   const showOverview = !multi || activeTab === 'overview'

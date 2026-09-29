@@ -15,6 +15,7 @@
  * @module dsh-tiddlywiki/client/settings-icon-picker
  */
 import { make } from './dom.ts'
+import { t } from './i18n.ts'
 import { DEFAULT_ICON_SVG, ICON_NAMES, ICON_SVG } from './wiki-icon.ts'
 /**
  * Icon picker labels. The NAMES come from `wiki-icon.ts`, so the set the picker
@@ -25,52 +26,58 @@ import { DEFAULT_ICON_SVG, ICON_NAMES, ICON_SVG } from './wiki-icon.ts'
  * longer be a `<select>` of ~8 emoji-ish options — long lists in a native select
  * are hard to scan and cannot show the actual drawing. It is a POPUP GRID with
  * pagination, where each cell renders the REAL icon (see `openIconPicker`).
+ *
+ * v0.30.6: the labels are resolved per call (see `iconLabels`) instead of being a
+ * module-level table, so the popup speaks the current language even after a
+ * language change (a module constant would freeze the language at import time).
  */
-const ICON_LABELS: Record<string, string> = {
-  // ── 官方 DSH 图标集（与上游组件一一对应，见 scripts/gen-wiki-icons.mjs）──
-  archive: '归档',
-  'archive-check': '归档（已完成）',
-  'archive-off': '取消归档',
-  unarchive: '取出归档',
-  database: '数据库',
-  data: '数据',
-  folder: '文件夹',
-  globe: '地球 / 公开',
-  branch: '分支',
-  list: '清单',
-  checklist: '核对清单',
-  'flat-list': '平铺列表',
-  skill: '技能',
-  goal: '目标',
-  compact: '紧凑',
-  clock: '时钟 / 历史',
-  alarm: '提醒',
-  pin: '置顶',
-  shield: '安全 / 私密',
-  api: '接口',
-  code: '代码',
-  users: '团队',
-  user: '个人',
-  plugin: '插件',
-  pinwheel: '插件风车',
-  gauge: '仪表 / 用量',
-  tree: '工作区树',
-  personalization: '个性化',
-  link: '链接',
-  search: '检索',
-  settings: '设置',
-  sparkle: '灵感',
-  think: '思考',
-  light: '浅色',
-  dark: '深色',
-  refresh: '刷新',
-  // ── 自绘（上游没有对应图标）──
-  book: '书',
-  briefcase: '公文包',
-  home: '房子',
-  notebook: '笔记本',
-  flask: '实验',
-  star: '星标',
+function iconLabels(): Record<string, string> {
+  return {
+    // ── 官方 DSH 图标集（与上游组件一一对应，见 scripts/gen-wiki-icons.mjs）──
+    archive: t('settings.icon.archive'),
+    'archive-check': t('settings.icon.archiveCheck'),
+    'archive-off': t('settings.icon.archiveOff'),
+    unarchive: t('settings.icon.unarchive'),
+    database: t('settings.icon.database'),
+    data: t('settings.icon.data'),
+    folder: t('settings.icon.folder'),
+    globe: t('settings.icon.globe'),
+    branch: t('settings.icon.branch'),
+    list: t('settings.icon.list'),
+    checklist: t('settings.icon.checklist'),
+    'flat-list': t('settings.icon.flatList'),
+    skill: t('settings.icon.skill'),
+    goal: t('settings.icon.goal'),
+    compact: t('settings.icon.compact'),
+    clock: t('settings.icon.clock'),
+    alarm: t('settings.icon.alarm'),
+    pin: t('settings.icon.pin'),
+    shield: t('settings.icon.shield'),
+    api: t('settings.icon.api'),
+    code: t('settings.icon.code'),
+    users: t('settings.icon.users'),
+    user: t('settings.icon.user'),
+    plugin: t('settings.icon.plugin'),
+    pinwheel: t('settings.icon.pinwheel'),
+    gauge: t('settings.icon.gauge'),
+    tree: t('settings.icon.tree'),
+    personalization: t('settings.icon.personalization'),
+    link: t('settings.icon.link'),
+    search: t('settings.icon.search'),
+    settings: t('settings.icon.settings'),
+    sparkle: t('settings.icon.sparkle'),
+    think: t('settings.icon.think'),
+    light: t('settings.icon.light'),
+    dark: t('settings.icon.dark'),
+    refresh: t('settings.icon.refresh'),
+    // ── 自绘（上游没有对应图标）──
+    book: t('settings.icon.book'),
+    briefcase: t('settings.icon.briefcase'),
+    home: t('settings.icon.home'),
+    notebook: t('settings.icon.notebook'),
+    flask: t('settings.icon.flask'),
+    star: t('settings.icon.star'),
+  }
 }
 
 /** A few emoji that read well at sidebar size and are easy to tell apart. */
@@ -97,8 +104,9 @@ interface IconChoice { value: string; label: string; kind: 'default' | 'name' | 
  * that was an explicit rule of the original `<select>` implementation).
  */
 function iconChoices(current: string): IconChoice[] {
-  const choices: IconChoice[] = [{ value: '', label: '默认图标', kind: 'default' }]
-  for (const name of ICON_NAMES) choices.push({ value: name, label: ICON_LABELS[name] ?? name, kind: 'name' })
+  const labels = iconLabels()
+  const choices: IconChoice[] = [{ value: '', label: t('settings.iconPicker.default'), kind: 'default' }]
+  for (const name of ICON_NAMES) choices.push({ value: name, label: labels[name] ?? name, kind: 'name' })
   for (const emoji of EMOJI_CHOICES) choices.push({ value: emoji, label: emoji, kind: 'emoji' })
   if (current.length > 0 && !choices.some((c) => c.value === current)) {
     choices.push({ value: current, label: current, kind: 'custom' })
@@ -133,10 +141,10 @@ export function makeIconButton(current: string, ariaLabel: string): HTMLButtonEl
   const btn = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn dsh-tw-settings-iconbtn')
   btn.type = 'button'
   btn.setAttribute('aria-label', ariaLabel)
-  btn.title = current.length === 0 ? '选择入口图标（默认）' : `选择入口图标（当前：${current}）`
+  btn.title = current.length === 0 ? t('settings.iconPicker.titleDefault') : t('settings.iconPicker.titleCurrent', { icon: current })
   const face = make('span', 'dsh-tw-settings-iconbtn-face')
   paintIconValue(face, current)
-  btn.append(face, make('span', 'dsh-tw-settings-iconbtn-label', '图标'))
+  btn.append(face, make('span', 'dsh-tw-settings-iconbtn-label', t('settings.iconPicker.label')))
   return btn
 }
 
@@ -163,7 +171,7 @@ export function openIconPicker(anchor: HTMLElement, current: string, onPick: (ne
 
   const popup = make('div', 'dsh-tw-iconpicker')
   popup.setAttribute('role', 'dialog')
-  popup.setAttribute('aria-label', '选择入口图标')
+  popup.setAttribute('aria-label', t('settings.iconPicker.aria'))
   const grid = make('div', 'dsh-tw-iconpicker-grid')
   const pager = make('div', 'dsh-tw-iconpicker-pager')
   popup.append(grid, pager)
@@ -204,18 +212,18 @@ export function openIconPicker(anchor: HTMLElement, current: string, onPick: (ne
     }
     pager.replaceChildren()
     if (pages > 1) {
-      const prev = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '‹ 上一页')
+      const prev = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', t('settings.iconPicker.prev'))
       prev.type = 'button'
       prev.disabled = page === 0
       prev.addEventListener('click', () => { page -= 1; paintPage() })
-      const info = make('span', 'dsh-tw-settings-muted', `第 ${page + 1} / ${pages} 页 · 共 ${choices.length} 个`)
-      const next = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', '下一页 ›')
+      const info = make('span', 'dsh-tw-settings-muted', t('settings.iconPicker.page', { page: page + 1, pages, total: choices.length }))
+      const next = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', t('settings.iconPicker.next'))
       next.type = 'button'
       next.disabled = page >= pages - 1
       next.addEventListener('click', () => { page += 1; paintPage() })
       pager.append(prev, info, next)
     } else {
-      pager.append(make('span', 'dsh-tw-settings-muted', `共 ${choices.length} 个图标`))
+      pager.append(make('span', 'dsh-tw-settings-muted', t('settings.iconPicker.total', { total: choices.length })))
     }
   }
   paintPage()
