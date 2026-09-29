@@ -30,6 +30,12 @@
  *   - note-widget-draft.ts  draft persistence + pure helpers
  *   - note-widget-tags.ts   the multi-tag chip editor
  *   - note-widget-upload.ts attachment upload (and MAX_UPLOAD_BYTES)
+ *   - note-widget-recent.ts the 「最近」picker (dropdown + load-into-editor,
+ *                           v0.30.41: its open-state moved with it)
+ *   - note-widget-scope.ts  WHICH wiki the card works on: roster + focus-follow
+ *                           + "target is stopped" (v0.30.42). The DOM half of the
+ *                           「写入」 selector stays here and is registered through
+ *                           `scope.setSyncDom()`.
  *
  * @module dsh-tiddlywiki/client/note-widget
  */
@@ -37,12 +43,12 @@ import { t } from './i18n.ts'
 import { toast } from './toast.ts'
 import { openEditorPopup, isEditorPopupOpen, isEditorPopupBlank } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
-import { EDIT_ENDPOINT, GET_ENDPOINT, NOTE_ENDPOINT, RECENT_ENDPOINT, resolveTwUrl, twProxyFor, withWikiQuery } from './endpoints.ts'
-import { fetchStatus } from './status-cache.ts'
-import { resolveFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
+import { EDIT_ENDPOINT, NOTE_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
 import { buildTagEditor } from './note-widget-tags.ts'
 import { uploadInto } from './note-widget-upload.ts'
-import { DRAFT_DEBOUNCE_MS, adoptDraft, clearDraft, draftSignature, fetchDefaultTag, loadDraft, persistDraft, relativeTime, timestampTitle } from './note-widget-draft.ts'
+import { createRecentPicker } from './note-widget-recent.ts'
+import { createNoteScope } from './note-widget-scope.ts'
+import { DRAFT_DEBOUNCE_MS, adoptDraft, clearDraft, draftSignature, fetchDefaultTag, loadDraft, persistDraft, timestampTitle } from './note-widget-draft.ts'
 
 /**
  * Broadcast by the card on open/close (detail: { open }). The input-dock quick-
@@ -64,8 +70,6 @@ interface BuiltUi {
   bannerText: HTMLSpanElement
   recentWrap: HTMLDivElement
 }
-
-interface RecentItem { title: string; tags: string[]; modified: string | null; snippet: string }
 
 /** The quick-note card handle the FAB drives. */
 export interface NoteWidgetHandle {
@@ -102,95 +106,17 @@ export function createNoteWidget(): NoteWidgetHandle {
   let onPageHide: (() => void) | undefined
   let defaultTag = 'inbox'
   /**
-   * WHICH knowledge base this card works on (v0.28.0, 需求 R7).
+   * WHICH knowledge base this card works on (v0.28.0 需求 R7 / v0.29.0).
    *
-   * Default = the GUI's focused wiki (你在看哪个库，快速笔记就进哪个库), and the card's
-   * own selector overrides it for as long as the card is open. `undefined` = the
-   * default wiki, i.e. exactly what every call used to do — single-wiki installs
-   * never see a change (and never see the selector).
-   *
-   * EVERY call of the card must be scoped together: 标签建议 / 最近 / 草稿读取 /
-   * 附件上传 / 保存 / 以及随后弹出的编辑器。只改保存那一处就会出现"标签列表来自 A、
-   * 笔记写进 B"，比不做还糟。
+   * The state and the resolution now live in note-widget-scope.ts (v0.30.42);
+   * the card keeps the DOM half of the 「写入」 selector and registers it through
+   * `scope.setSyncDom()`. `wikiQuery` stays the single way to build a URL — every
+   * call of the card must be scoped together (标签建议 / 最近 / 草稿 / 附件 / 保存 /
+   * 弹出的编辑器), or the note lands in A while its tags came from B.
    */
-  let targetWiki: string | undefined
-  /** True once the user picked a wiki in THIS card (stop following the focus). */
-  let targetPicked = false
-  /** The roster's mode, for the per-wiki proxy base of the editor popup. */
-  let rosterMode = 'single'
-  /** The knowledge-base roster (empty in single mode / before /status lands). */
-  let roster: Array<{ id: string; label: string; running: boolean }> = []
-  /** The registry default (its display name carries the 「（默认）」 mark). */
-  let defaultWikiId: string | undefined
-  /** 焦点库订阅（dispose 需回收）。 */
-  let focusOff: (() => void) | undefined
-  const wikiQuery = (url: string): string => withWikiQuery(url, targetWiki)
-  /**
-   * DOM half of `ensureTarget()`: repaint the 「写入」 selector from `roster`.
-   *
-   * A no-op until the Markdown card has been built — which is exactly why the
-   * roster resolution can live OUTSIDE `build()` (v0.29.0). The native path
-   * never builds the card, so it gets no selector but must still get the wiki.
-   */
-  let syncTargetDom: () => void = () => {}
-  /**
-   * Resolve WHICH knowledge base this card works on, ONCE, for BOTH entry paths.
-   *
-   * v0.29.0. This lookup used to live inside `build()`, so only the Markdown card
-   * (`open()`) ever learned the roster. The DEFAULT click path is `openNative()`
-   * (直达 TW 原生编辑器), which never builds the card — `targetWiki` therefore
-   * stayed undefined and `rosterMode` stayed `'single'`, and every quick note was
-   * written into the **default** wiki and opened in the default wiki's editor
-   * while the user was reading another one. The 「写入」 selector that was
-   * supposed to make that impossible never appeared either, because it is part of
-   * the card. Silent, and only reachable in a multi-wiki install.
-   */
-  let targetPromise: Promise<void> | undefined
-  const ensureTarget = (): Promise<void> => {
-    targetPromise ??= fetchStatus().then((payload) => {
-      if (disposed) return
-      // v0.29.0: a FAILED `/status` must not be memoized. `fetchStatus()`
-      // resolves `null` when the request fails, and caching that verdict pinned
-      // `targetWiki` to `undefined` for the rest of the page's life — so one
-      // hiccup put every quick note back into the DEFAULT wiki (the exact bug
-      // this function exists to prevent) and the 「写入」 selector never
-      // appeared. Dropping the memo lets the next open try again.
-      if (payload == null) {
-        targetPromise = undefined
-        return
-      }
-      rosterMode = typeof payload.mode === 'string' ? payload.mode : 'single'
-      roster = (Array.isArray(payload.wikis) ? payload.wikis : []).map((item) => ({ id: item.id, label: item.label, running: item.running }))
-      // 单库：`targetWiki` 保持 undefined = 逐字与升级前相同的行为。
-      if (roster.length <= 1) return
-      defaultWikiId = typeof payload.defaultId === 'string' ? payload.defaultId : undefined
-      const followFocus = (): void => {
-        if (!targetPicked) targetWiki = resolveFocusWiki(roster, defaultWikiId)
-      }
-      followFocus()
-      // 未在本卡片里手动选过时，跟随 GUI 的焦点库（你在看哪个库，笔记就进哪个库）。
-      focusOff ??= subscribeFocusWiki(() => {
-        followFocus()
-        syncTargetDom()
-      })
-      syncTargetDom()
-    })
-    return targetPromise
-  }
-  /**
-   * The resolved target, when it is known AND not running.
-   *
-   * `/note` / `/edit` refuse a stopped wiki instead of writing into the default
-   * one (v0.29.0), so the honest answer is to say so BEFORE the user writes a
-   * paragraph — the card has `wikiHint` for that, the native path has only us.
-   */
-  const stoppedTarget = (): { id: string; label: string } | undefined => {
-    if (targetWiki === undefined) return undefined
-    const item = roster.find((entry) => entry.id === targetWiki)
-    return item !== undefined && !item.running ? item : undefined
-  }
+  const scope = createNoteScope({ isDisposed: () => disposed })
+  const wikiQuery = scope.wikiQuery
   let draftTimer: number | undefined
-  let recentOpen = false
   /**
    * Optimistic-concurrency token of the note currently loaded into the card
    * (v0.19.1): set by the 「🕘 最近」picker, echoed on save so a human edit made
@@ -353,7 +279,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       // to load and the native editor would come up read-only.
       // 弹窗编辑器必须落在**同一个**库上（v0.28.0）：写入的是 A、编辑器打开 B（空的）
       // 是这张卡片最容易出现的"看起来成功了"的失败。
-      const bases = twProxyFor(rosterMode, targetWiki, payload.twUrl, payload.twUrlAbsolute)
+      const bases = twProxyFor(scope.getMode(), scope.getTargetWiki(), payload.twUrl, payload.twUrlAbsolute)
       const popupUrl = `${resolveTwUrl(bases.relative, bases.absolute)}#${encodeURIComponent(payload.draftTitle)}`
       openEditorPopup(popupUrl, payload.title ?? title)
       toast(t('note.openedInPopup', { title: payload.title ?? title }))
@@ -364,120 +290,19 @@ export function createNoteWidget(): NoteWidgetHandle {
     }
   }
 
-  const closeRecent = (): void => {
-    recentOpen = false
-    if (ui !== undefined) ui.recentWrap.hidden = true
-  }
-
-  /** Load a tiddler into the editor (recent picker click). */
-  const loadNote = async (title: string): Promise<void> => {
-    try {
-      const res = await fetch(wikiQuery(`${GET_ENDPOINT}?title=${encodeURIComponent(title)}`), { signal: AbortSignal.timeout(10_000) })
-      const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; text?: string; tags?: string[]; notFound?: boolean; error?: string; modified?: string | null; revision?: number | null } | null
-      if (!res.ok || payload?.ok !== true || typeof payload.title !== 'string') {
-        const reason = payload?.notFound === true ? t('note.notFound') : (payload?.error ?? `HTTP ${res.status}`)
-        toast(t('note.loadFailed', { message: reason }))
-        return
-      }
-      if (ui === undefined) return
-      ui.editor.setValue(payload.text ?? '')
-      ui.titleInput.value = payload.title
-      ui.tagEditor.setTags(payload.tags ?? [])
-      // Remember the concurrency token of this note so a later save refuses to
-      // overwrite a concurrent human edit (v0.19.1). A freshly loaded note is by
-      // definition not "already persisted" by this card.
-      loadedToken = {
-        title: payload.title,
-        ...(typeof payload.modified === 'string' && payload.modified.length > 0 ? { modified: payload.modified } : {}),
-        ...(typeof payload.revision === 'number' ? { revision: payload.revision } : {}),
-      }
-      persistedSignature = draftSignature(payload.title, payload.text ?? '', payload.tags ?? [])
-      hideDraftBanner()
-      closeRecent()
-      toast(t('note.loaded', { title: payload.title }))
-      ui.editor.focus()
-    } catch (err) {
-      toast(t('note.loadFailed', { message: err instanceof Error ? err.message : String(err) }))
-    }
-  }
-
-  /** Toggle the recent-notes dropdown (fetches lazily each open). */
-  const toggleRecent = (): void => {
-    if (ui === undefined) return
-    if (recentOpen) { closeRecent(); return }
-    recentOpen = true
-    ui.recentWrap.hidden = false
-    ui.recentWrap.textContent = ''
-    const loading = document.createElement('div')
-    loading.className = 'dsh-tw-note-recent-muted'
-    loading.textContent = t('note.loading')
-    ui.recentWrap.append(loading)
-    void (async () => {
-      try {
-        const res = await fetch(wikiQuery(`${RECENT_ENDPOINT}?limit=15`), { signal: AbortSignal.timeout(10_000) })
-        const payload = (await res.json().catch(() => null)) as { ok?: boolean; items?: unknown[]; error?: string } | null
-        if (!recentOpen || ui === undefined) return
-        ui.recentWrap.replaceChildren()
-        // 服务端字段可能缺失（旧 host / 异常项）：逐项归一化，绝不因为
-        // item.tags 未定义就抛 TypeError 被兜底成「加载失败」（同 tool-views 写法）。
-        const items: RecentItem[] = []
-        if (payload?.ok === true) {
-          for (const raw of payload.items ?? []) {
-            if (raw === null || typeof raw !== 'object') continue
-            const rec = raw as Record<string, unknown>
-            const itemTitle = typeof rec.title === 'string' ? rec.title : ''
-            if (itemTitle.length === 0) continue
-            items.push({
-              title: itemTitle,
-              tags: Array.isArray(rec.tags) ? rec.tags.filter((t): t is string => typeof t === 'string') : [],
-              modified: typeof rec.modified === 'string' ? rec.modified : null,
-              snippet: typeof rec.snippet === 'string' ? rec.snippet : '',
-            })
-          }
-        }
-        if (items.length === 0) {
-          const empty = document.createElement('div')
-          empty.className = 'dsh-tw-note-recent-muted'
-          empty.textContent = payload?.ok === true ? t('note.noNotes') : t('note.listFailed', { message: payload?.error ?? t('note.unknown') })
-          ui.recentWrap.append(empty)
-          return
-        }
-        for (const item of items) {
-          const row = document.createElement('div')
-          row.className = 'dsh-tw-note-recent-item'
-          row.title = item.snippet || item.title
-          // 键盘可达：div + click 对键盘用户不可用，补 role/tabIndex/Enter·Space。
-          row.setAttribute('role', 'button')
-          row.tabIndex = 0
-          row.setAttribute('aria-label', t('note.loadNote', { title: item.title }))
-          const name = document.createElement('span')
-          name.className = 'dsh-tw-note-recent-name'
-          name.textContent = item.title
-          const meta = document.createElement('span')
-          meta.className = 'dsh-tw-note-recent-meta'
-          const bits: string[] = [relativeTime(item.modified)]
-          if (item.tags.length > 0) bits.unshift(item.tags.slice(0, 3).join(','))
-          meta.textContent = bits.join(' · ')
-          row.append(name, meta)
-          row.addEventListener('click', () => { void loadNote(item.title) })
-          row.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              void loadNote(item.title)
-            }
-          })
-          ui.recentWrap.append(row)
-        }
-      } catch (err) {
-        if (!recentOpen || ui === undefined) return
-        ui.recentWrap.replaceChildren()
-        const empty = document.createElement('div')
-        empty.className = 'dsh-tw-note-recent-muted'
-        empty.textContent = t('note.listFailed', { message: err instanceof Error ? err.message : String(err) })
-        ui.recentWrap.append(empty)
-      }
-    })()
-  }
+  /**
+   * The 「🕘 最近」picker (v0.30.41). Its open-state, its dropdown DOM and the
+   * load-into-editor path now live in note-widget-recent.ts; the two pieces of
+   * card state it feeds (`loadedToken` / `persistedSignature`) arrive as setters,
+   * so nothing in this file had to be renamed or moved.
+   */
+  const recent = createRecentPicker({
+    getUi: () => ui,
+    wikiQuery,
+    hideDraftBanner,
+    setLoadedToken: (token) => { loadedToken = token },
+    setPersistedSignature: (signature) => { persistedSignature = signature },
+  })
 
   /** Build the whole card DOM once, then wire every interaction. */
   const build = (): void => {
@@ -552,14 +377,13 @@ export function createNoteWidget(): NoteWidgetHandle {
      * processes is not something a card should trigger by accident.
      */
     const markStopped = (): void => {
-      const wiki = roster.find((item) => item.id === targetWiki)
+      const wiki = scope.getRoster().find((item) => item.id === scope.getTargetWiki())
       const stopped = wiki !== undefined && !wiki.running
       wikiHint.hidden = !stopped
       wikiHint.textContent = stopped ? t('note.targetStopped', { label: wiki.label }) : ''
     }
     wikiSelect.addEventListener('change', () => {
-      targetPicked = true
-      targetWiki = wikiSelect.value.length > 0 ? wikiSelect.value : undefined
+      scope.pick(wikiSelect.value.length > 0 ? wikiSelect.value : undefined)
       markStopped()
     })
 
@@ -569,7 +393,8 @@ export function createNoteWidget(): NoteWidgetHandle {
      * resolves it too), in which case it already called the no-op stub — so build()
      * calls it once more here to catch up.
      */
-    syncTargetDom = (): void => {
+    scope.setSyncDom((): void => {
+      const roster = scope.getRoster()
       // 单库：连选择器都不该存在。这里**还有一个**兜底 —— 除 `hidden` 外把 select 禁用、
       // 标签也藏掉，因为"能看见一个没有选项的下拉"比"什么都不显示"糟得多（v0.28.1 修）。
       if (roster.length <= 1) {
@@ -587,16 +412,16 @@ export function createNoteWidget(): NoteWidgetHandle {
         ...roster.map((item) => {
           const option = document.createElement('option')
           option.value = item.id
-          const mark = item.id === defaultWikiId ? t('note.defaultMark') : ''
+          const mark = item.id === scope.getDefaultWikiId() ? t('note.defaultMark') : ''
           option.textContent = item.running ? `${item.label}${mark}` : `${item.label}${mark}${t('note.notRunningSuffix')}`
           return option
         }),
       )
-      wikiSelect.value = targetWiki ?? ''
+      wikiSelect.value = scope.getTargetWiki() ?? ''
       wikiField.hidden = false
       markStopped()
-    }
-    void ensureTarget().then(() => syncTargetDom())
+    })
+    void scope.ensureTarget().then(() => scope.syncDom())
     titleInput.addEventListener('input', scheduleDraft)
 
     // Mod-Enter save routes through doSave, which is assigned below (the editor
@@ -657,7 +482,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     recentBtn.className = 'dsh-tw-note-recent-btn'
     recentBtn.title = t('note.recentTitle')
     recentBtn.textContent = t('note.recent')
-    recentBtn.addEventListener('click', toggleRecent)
+    recentBtn.addEventListener('click', () => { recent.toggle() })
     footLeft.append(uploadBtn, recentBtn, hint)
     const footRight = document.createElement('div')
     footRight.className = 'dsh-tw-note-foot-right'
@@ -688,7 +513,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     const close = (): void => {
       opened = false
       root.hidden = true
-      closeRecent()
+      recent.close()
       emitState(false)
     }
 
@@ -739,7 +564,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       }
       // 「写入」选中的那个库没在跑：host 现在会拒绝（而不是写进默认库），
       // 所以先说清楚，别让用户写完一整段才发现（v0.29.0）。
-      const stopped = stoppedTarget()
+      const stopped = scope.stoppedTarget()
       if (stopped !== undefined) {
         toast(t('note.saveTargetStopped', { label: stopped.label }))
         return
@@ -907,7 +732,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       if (ui === undefined) return
       opened = false
       ui.root.hidden = true
-      closeRecent()
+      recent.close()
       emitState(false)
     },
     async openNative() {
@@ -924,9 +749,9 @@ export function createNoteWidget(): NoteWidgetHandle {
       nativeOpening = true
       try {
         // v0.29.0: 必须先解析目标库 —— 这条路径不建卡片，此前因此**永远**写进默认库。
-        await ensureTarget()
+        await scope.ensureTarget()
         if (disposed) return
-        const stopped = stoppedTarget()
+        const stopped = scope.stoppedTarget()
         if (stopped !== undefined) {
           toast(t('note.nativeTargetStopped', { label: stopped.label }))
           return
@@ -959,8 +784,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     },
     dispose() {
       disposed = true
-      focusOff?.()
-      focusOff = undefined
+      scope.dispose()
       if (onPageHide !== undefined) {
         window.removeEventListener('pagehide', onPageHide)
         onPageHide = undefined
