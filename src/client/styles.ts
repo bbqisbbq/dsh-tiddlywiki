@@ -88,6 +88,16 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-panel-error button:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
 .dsh-tw-panel-error code { font-size: 11px; opacity: .8; max-width: 80%; overflow-wrap: anywhere; }
 
+/* 换库提示条（v0.28.14）：换一份 wiki 文档要重新下载 10–30MB 且 TW 回 no-store（缓存不了），
+   那 1–2 秒里界面什么都不动 —— 这条就是"正在发生什么"的唯一说明。两个 TW 界面共用它：
+   它是 view 的最后一个孩子，在 flex column 里天然落在底部。 */
+.dsh-tw-loading {
+  flex: 0 0 auto; padding: 6px 12px; font-size: 12px; text-align: center;
+  color: var(--dsw-alias-label-secondary, #666);
+  background: var(--dsw-alias-bg-layer-2, rgba(128,128,128,.08));
+  border-top: 1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.18));
+}
+
 /* ── right-sidebar tab (DSH new rightbar) ──────────────────────
    The React body host fills the rightbar pane; the TW iframe lives inside
    it and follows the DSH theme like the center-column panel. */

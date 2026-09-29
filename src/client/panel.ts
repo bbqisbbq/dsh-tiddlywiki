@@ -76,6 +76,7 @@ const PANEL_SKIN: TwFrameSkin = {
   frameWrapStyle: 'flex:1;min-height:0;display:flex;flex-direction:column',
   frame: 'dsh-tw-panel-frame',
   error: 'dsh-tw-panel-error',
+  loading: 'dsh-tw-loading',
 }
 
 /**

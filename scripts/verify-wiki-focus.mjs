@@ -809,5 +809,58 @@ test('侧边栏多库入口（行为级）：面板开着时点另一个库，�
   assert.equal(state2.isOpen(), true)
 })
 
+test('切库不再"卡一下"：立即换文档 + 焦点只重画高亮 + 换库提示必须有 CSS（v0.28.14）', () => {
+  // 症状（作者报障）：「点击切换感觉会卡那么一下」。两段来源：
+  // ① 旧实现只调 doRefresh()，而它**先等一次 /status 往返** —— host 处理一次 /status 要跑
+  //    最多 5 个 git 进程（本机实测 300–400ms），于是"点下去"到"真的开始换"之间是空的；
+  // ② 换文档 = 重新下载整份 wiki（本机实测 9.9MB / 29.9MB / 28MB，TW 自己回 no-store、
+  //    没有 ETag，缓存不了也预取不了）。② 是固有的，① 可以去掉；同时 ② 必须给可见说明。
+  const sidebar = readFileSync(path.join(repoRoot, 'src/client/sidebar-entry.ts'), 'utf8')
+  const frame = readFileSync(path.join(repoRoot, 'src/client/tw-frame.ts'), 'utf8')
+  const panel = readFileSync(path.join(repoRoot, 'src/client/panel.ts'), 'utf8')
+  const styles = readFileSync(path.join(repoRoot, 'src/client/styles.ts'), 'utf8')
+
+  // ① 内核：焦点一变必须**立即**换（复用上一次 /status 的 payload），再后台复探。
+  //    判据是顺序 —— switchFrameNow() 必须在同一个订阅里、且早于 doRefresh()。
+  const at = frame.indexOf('const unsubscribeFocus = subscribeFocusWiki(')
+  assert.ok(at > 0, '找不到内核的焦点订阅 —— 请同步这条守门')
+  const sub = frame.slice(at, frame.indexOf('\n  })', at))
+  assert.match(sub, /switchFrameNow\(\)/, '焦点变化必须走 switchFrameNow（不再等 /status 往返）')
+  assert.ok(
+    sub.indexOf('switchFrameNow()') < sub.indexOf('doRefresh()'),
+    '先立即换、再后台复探；顺序反了就又回到"点下去先空 0.3–0.4 秒"',
+  )
+  assert.ok(!/await/.test(sub), '这个订阅里不许出现 await（同步就该把 iframe 指过去）')
+  assert.match(frame, /const switchFrameNow = \(\): void =>/, '立即换库必须收成一个同步函数')
+  assert.match(frame, /lastStatus = payload/, '要留住最近一次 /status 的 payload（换库靠它算地址，不再打一次）')
+
+  // ② 侧边栏：焦点变化只重画高亮。旧实现是再跑一遍 applyRoster()，那会**再打一次 /status**
+  //    并把所有行重建一遍 —— 名册没变，变的只是哪一行亮着。
+  //    ⚠️ 反断言必须跑在**剥掉注释**的代码上：上面那段历史的说明里就写着旧写法（本仓库的
+  //    老教训：拿注释里的词判断代码行为，必假绿）。
+  const sidebarCode = sidebar.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '')
+  assert.match(sidebar, /subscribeFocusWiki\(paintFocus\)/, '焦点变化只重画高亮（paintFocus）')
+  assert.ok(
+    !/subscribeFocusWiki\(\(\) => \{ void applyRoster\(\) \}\)/.test(sidebarCode),
+    '不许在焦点变化时重跑名册：那会再打一次 /status（host 每次要跑最多 5 个 git 进程）',
+  )
+  assert.match(sidebar, /const paintFocus = \(\): void =>/, '高亮重画要收在一个函数里，供 applyRoster 与焦点订阅共用同一条真相')
+
+  // ③ 换库提示：DOM 与 CSS 两边都必须在场。
+  //    本仓库的血债（v0.28.9）：只有 DOM 没有 CSS = 用户看到的是"点了没反应"。
+  assert.match(frame, /loading: string/, '皮肤必须声明换库提示的类名')
+  assert.match(frame, /正在载入知识库「\$\{label\}」…/, '提示必须写清正在载入的是哪个库（id 对用户没有意义）')
+  assert.match(panel, /loading: 'dsh-tw-loading'/, '中央面板的皮肤必须带上提示类名')
+  assert.match(frame, /loading: 'dsh-tw-loading'/, '右侧栏的皮肤同样（两个 TW 界面共用这一条提示）')
+  assert.match(
+    styles,
+    /\.dsh-tw-loading \{/,
+    'styles.ts 里必须有 .dsh-tw-loading 的规则 —— 只有 DOM 没有 CSS 就是看不见（v0.28.9 的教训）',
+  )
+  // 兜底：load 一直不来时提示要能自己收起（否则永久挂着"正在载入"）。
+  assert.match(frame, /switchTimer = window\.setTimeout\([\s\S]{0,80}hideSwitching\(\)/, '提示必须有超时兜底')
+  assert.match(frame, /clearSwitchTimer\(\)/, 'dispose 要回收那个计时器')
+})
+
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)

@@ -119,6 +119,8 @@ let statusMode = 'ok'
 let requests = []
 globalThis.fetch = async (url, init) => {
   requests.push({ url: String(url), method: init?.method ?? 'GET' })
+  // 'hang'：请求发出去但永远不回来（用来证明"换库不依赖 /status 往返"，v0.28.14）。
+  if (statusMode === 'hang') return new Promise(() => {})
   await new Promise((r) => setTimeout(r, 0))
   if (statusMode === 'reject') throw new Error('network down')
   return { ok: true, status: 200, json: async () => statusPayload }
@@ -132,6 +134,8 @@ const tw = await import(pathToFileURL(path.join(repoRoot, 'src/client/tw-frame.t
 if (tw === null) process.exit(1)
 const { createTwFrameSurface, loadableFrameUrl, PANEL_RELOAD_EVENT, getTabLabel, setTabLabel } = tw
 const { invalidateStatus } = await import(pathToFileURL(path.join(repoRoot, 'src/client/status-cache.ts')).href)
+// 真实的焦点库模块：换库路径由它的订阅驱动（v0.28.14）。
+const { setFocusWiki } = await import(pathToFileURL(path.join(repoRoot, 'src/client/wiki-focus.ts')).href)
 
 /** The panel's real skin (close enough for behaviour; classes are CSS-only). */
 const SKIN = {
@@ -141,6 +145,7 @@ const SKIN = {
   frameWrapStyle: 'flex:1;min-height:0;display:flex;flex-direction:column',
   frame: 'dsh-tw-panel-frame',
   error: 'dsh-tw-panel-error',
+  loading: 'dsh-tw-loading',
 }
 
 /** Settle the async /status chain (fetch → json → show*). */
@@ -389,6 +394,92 @@ await test('换库：目标库 ≠ 当前库时必须先换库、再把 hash 落
     `#${encodeURIComponent('某条目')}`,
     'hash 必须在换库之后落到新文档上（否则导航静默丢失，用户停在库首页）',
   )
+  surface.dispose()
+})
+
+await test('换库（点击入口行）：必须立刻开始换文档，不许等 /status 往返；期间要有可见说明（v0.28.14）', async () => {
+  // 症状（作者 2026-09-29 报障）：「点击切换感觉会卡那么一下」。
+  // 两段来源：① 旧实现只调 doRefresh()，而它**先等一次 /status 往返** —— host 处理一次
+  // /status 要跑最多 5 个 git 进程（本机实测 300–400ms），于是"点下去"到"真的开始换"之间
+  // 是空的；② 换文档 = 重新下载整份 wiki（本机实测 9.9MB / 29.9MB / 28MB，TW 自己回
+  // no-store，缓存不了），这段界面上什么都不动。
+  // ②是固有的，①可以去掉；同时②必须给个可见说明。这条测试把①钉死（fetch 永不返回）。
+  invalidateStatus()
+  statusMode = 'ok'
+  statusPayload = {
+    ok: true,
+    status: 'running',
+    twProxy: '/dsh-tiddlywiki/tw/',
+    mode: 'multi',
+    defaultId: 'work',
+    wikis: [{ id: 'work', label: '工作' }, { id: 'personal', label: '个人' }],
+  }
+  let focus = 'work'
+  setFocusWiki('work')
+  const surface = createTwFrameSurface(SKIN, { wikiId: () => focus })
+  const view = surface.build()
+  const frame = view.children[0].children[0]
+  const loadingHint = view.children[2]
+  assert.equal(loadingHint.className, 'dsh-tw-loading', '提示条必须带皮肤类名（CSS 靠它生效）')
+  assert.equal(loadingHint.hidden, true, '初始不显示')
+  frame.contentWindow = { $tw: {}, location: { hash: '' } }
+  surface.setVisible(true)
+  await settle()
+  frame.fire('load')
+  assert.equal(frame.dataset.loaded, 'http://127.0.0.1:3080/dsh-tiddlywiki/tw/work/', '前置：先载入 work')
+  assert.equal(loadingHint.hidden, true, '首次载入完成后提示必须已收起')
+
+  const before = frame.srcAssignments.length
+  // 关键：让 /status 永远不返回，再切库 —— iframe 必须**已经**指过去了。
+  statusMode = 'hang'
+  focus = 'personal'
+  setFocusWiki('personal')
+  assert.equal(
+    frame.srcAssignments.length,
+    before + 1,
+    '焦点一变就必须开始换文档：等 /status（300–400ms）正是"点下去卡一下"的第一段',
+  )
+  assert.equal(
+    frame.srcAssignments.at(-1),
+    'http://127.0.0.1:3080/dsh-tiddlywiki/tw/personal/',
+    '必须指向新库',
+  )
+  assert.equal(loadingHint.hidden, false, '换库期间必须有可见说明（否则 1–2 秒的等待看起来就是卡死）')
+  assert.match(loadingHint.textContent, /正在载入知识库「个人」/, '说明里要写清正在载入哪个库')
+  assert.equal(frame.hidden, false, '提示条不得动 frame 的显隐（那条规则是 v0.22.3 的血债）')
+
+  // 新文档到达 → 提示收起（幂等）。
+  frame.fire('load')
+  assert.equal(loadingHint.hidden, true, 'load 之后提示必须收起')
+  invalidateStatus() // 丢掉那个永不 resolve 的请求，别污染后面的用例
+  surface.dispose()
+})
+
+await test('换库提示：`load` 不来时会自己收起（不能永久挂着「正在载入」）', async () => {
+  invalidateStatus()
+  statusMode = 'ok'
+  statusPayload = {
+    ok: true, status: 'running', twProxy: '/dsh-tiddlywiki/tw/', mode: 'multi',
+    wikis: [{ id: 'work', label: '工作' }, { id: 'personal', label: '个人' }],
+  }
+  let focus = 'work'
+  setFocusWiki('work')
+  const surface = createTwFrameSurface(SKIN, { wikiId: () => focus })
+  const view = surface.build()
+  const frame = view.children[0].children[0]
+  const loadingHint = view.children[2]
+  frame.contentWindow = { $tw: {}, location: { hash: '' } }
+  surface.setVisible(true)
+  await settle()
+  frame.fire('load')
+  focus = 'personal'
+  statusMode = 'hang'
+  setFocusWiki('personal')
+  assert.equal(loadingHint.hidden, false)
+  // 15s 兜底计时器：直接推到点（真实时间里 load 早该来了）。
+  await new Promise((r) => setTimeout(r, 15_200))
+  assert.equal(loadingHint.hidden, true, 'load 一直不来时，提示必须自己收起（否则永久挂在界面上）')
+  invalidateStatus()
   surface.dispose()
 })
 

@@ -130,10 +130,27 @@ await test('客户端接线：frame 与快速笔记弹窗都走 resolveTwUrl', (
   const frame = readSrc('src/client/tw-frame')
   // v0.28.0：先经 twProxyFor(mode, wikiId, …) 得到**本库**的基址（相对与绝对都带 id），
   // 再交给 resolveTwUrl 决定用相对还是宿主的绝对基址。两步都不能少：
-  assert.match(frame, /const bases = twProxyFor\(payload\.mode, hooks\.wikiId\?\.\(\), payload\.twProxy, payload\.twProxyAbsolute\)/)
-  // v0.28.11：showFrame 多了一个「这个地址是哪个库的」参数（换库时序要用它），
-  // 所以断言不再钉死右括号——关键是两个基址都进了 resolveTwUrl。
-  assert.match(frame, /showFrame\(resolveTwUrl\(bases\.relative, bases\.absolute\), hooks\.wikiId\?\.\(\)\)/)
+  // v0.28.14：换库快路径（switchFrameNow）也要用同一套 —— 焦点一变就同步换文档，
+  // 而**不是**等 /status 往返，于是 tw-frame 里现在有**两处** showFrame 调用点，
+  // 两处都必须走 resolveTwUrl。所以判据从"钉死某一行"改成"数调用点"：
+  //   ① 每次 twProxyFor 都要拿到相对与绝对两个基址；
+  //   ② 每个 showFrame 的地址参数都必须是 resolveTwUrl(bases.relative, bases.absolute)，
+  //      不许出现拿裸基址直接 showFrame 的写法。
+  assert.match(frame, /const bases = twProxyFor\(payload\.mode, wiki, payload\.twProxy, payload\.twProxyAbsolute\)/)
+  const proxies = frame.match(/const bases = twProxyFor\(payload\.mode, wiki, payload\.twProxy, payload\.twProxyAbsolute\)/g) ?? []
+  assert.ok(
+    proxies.length >= 2,
+    `doRefresh 与换库快路径都要先经 twProxyFor 拿到本库的两个基址（实际 ${proxies.length} 处）`,
+  )
+  const resolved = frame.match(/showFrame\(resolveTwUrl\(bases\.relative, bases\.absolute\), wiki/g) ?? []
+  assert.ok(
+    resolved.length >= 2,
+    `doRefresh 与换库快路径都必须经 resolveTwUrl 交地址（实际 ${resolved.length} 处）`,
+  )
+  assert.ok(
+    !/showFrame\((?:bases\.(?:relative|absolute)|payload\.twProxy)/.test(frame),
+    'showFrame 不得直接吃裸基址：非 http(s) 文档（桌面版 dsh-app:）必须换成宿主的绝对 http 基址，否则 TW 没有同步器',
+  )
   assert.match(frame, /import \{ RESTART_ENDPOINT, resolveTwUrl, twProxyFor \} from '\.\/endpoints\.ts'/)
   const note = readSrc('src/client/note-widget')
   // v0.28.0：快速笔记弹窗同样先经 twProxyFor 得到**本卡片目标库**的基址（写入与随后打开的

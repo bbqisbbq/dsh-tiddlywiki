@@ -247,16 +247,30 @@ export function mountSidebarEntry(state: PanelState): () => void {
       // 图标每次同步（v0.28.4）：在设置页改完图标，10s 内的轮询就会把它换过来。
       applyWikiIcon(row.iconEl, w.icon)
       row.entry.setAttribute('aria-label', `TiddlyWiki 知识库：${w.label}`)
-      // 当前焦点库高亮（与点击判定同源：`shownWiki()`，不会出现"高亮的行点一下反而关掉面板"）
-      const focused = shownWiki() === w.id
-      if (focused) row.entry.dataset.focus = 'true'
-      else delete row.entry.dataset.focus
     }
+    // 当前焦点库高亮：与点击判定同源（`shownWiki()`），不会出现"高亮的行点一下反而关掉面板"
+    paintFocus()
     // 让放置逻辑把新行插进去（复用同一个 root）
     if (root !== undefined) { placed = false; tryPlace() }
   }
   void applyRoster()
-  const unsubscribeFocus = subscribeFocusWiki(() => { void applyRoster() })
+  /**
+   * 焦点变化只需要重画**高亮**（v0.28.14）。
+   *
+   * 旧实现是 `subscribeFocusWiki(() => { void applyRoster() })`：每切一次库都**再打一次
+   * `/status`**（host 处理一次要跑最多 5 个 git 进程、实测 300–400ms）并把所有行重建一遍、
+   * 重新走一次放置逻辑。可是名册并没有变 —— 变的只是"哪一行亮着"。而那次往返正是
+   * 「点下去要等一下界面才动」的一部分（见 tw-frame.ts 的 switchFrameNow）。
+   */
+  const paintFocus = (): void => {
+    const focus = shownWiki()
+    for (const [key, row] of rows) {
+      if (key === '') continue
+      if (key === focus) row.entry.dataset.focus = 'true'
+      else delete row.entry.dataset.focus
+    }
+  }
+  const unsubscribeFocus = subscribeFocusWiki(paintFocus)
   const rosterTimer = window.setInterval(() => { void applyRoster() }, 10_000)
   let root: HTMLElement | undefined
   let placed = false

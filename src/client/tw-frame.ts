@@ -28,7 +28,7 @@
  */
 import * as React from 'react'
 import { RESTART_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
-import { fetchStatus } from './status-cache.ts'
+import { fetchStatus, type StatusPayload } from './status-cache.ts'
 import { getFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
@@ -111,6 +111,8 @@ export interface TwFrameSkin {
   frame: string
   /** Error / starting panel. */
   error: string
+  /** Hint shown while a DIFFERENT wiki's document is on the wire (v0.28.14). */
+  loading: string
 }
 
 /**
@@ -177,7 +179,19 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
   let view: HTMLDivElement | undefined
   let frame: HTMLIFrameElement | undefined
   let errorArea: HTMLDivElement | undefined
+  let loadingEl: HTMLDivElement | undefined
   let refreshTimer: number | undefined
+  /** "Switching wiki" hint timer (v0.28.14). */
+  let switchTimer: number | undefined
+  /**
+   * The last successful `/status` payload (v0.28.14).
+   *
+   * A wiki switch needs only two things from it — `mode` and the proxy bases — and we
+   * already have them from the refresh that opened the current wiki. Re-fetching costs
+   * a full round-trip (the host runs up to five `git` processes per `/status`, measured
+   * 300–400 ms here), which used to sit BETWEEN the click and the start of the switch.
+   */
+  let lastStatus: StatusPayload | undefined
   /** In-flight hash-readiness retry timers (cancelled by dispose, v0.19.1). */
   const hashWaitTimers = new Set<number>()
   let refreshAttempts = 0
@@ -209,6 +223,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
 
   const showError = (message: string): void => {
     if (frame === undefined || errorArea === undefined) return
+    hideSwitching()
     frame.hidden = true
     errorArea.hidden = false
     errorArea.replaceChildren()
@@ -229,6 +244,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
 
   const showStarting = (): void => {
     if (frame === undefined || errorArea === undefined) return
+    hideSwitching()
     frame.hidden = true
     errorArea.hidden = false
     errorArea.replaceChildren()
@@ -237,7 +253,44 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     errorArea.append(p)
   }
 
-  const showFrame = (url: string, wiki: string | undefined): void => {
+  /** Cancel the "switching wiki" hint's safety timer. */
+  const clearSwitchTimer = (): void => {
+    if (switchTimer !== undefined) {
+      window.clearTimeout(switchTimer)
+      switchTimer = undefined
+    }
+  }
+
+  /** Drop the "loading another wiki" hint (the new document arrived, or we gave up). */
+  const hideSwitching = (): void => {
+    clearSwitchTimer()
+    if (loadingEl !== undefined) loadingEl.hidden = true
+  }
+
+  /**
+   * Say 「正在载入知识库「X」…」 while a DIFFERENT wiki's document is on the wire.
+   *
+   * WHY (v0.28.14，作者报障「点击切换感觉会卡那么一下」): 一个 iframe 只能装一份 TW
+   * 文档，换库 = 重新下载并解析**整份** wiki。本机实测这份文档是 **9.9 MB / 29.9 MB /
+   * 28 MB**，而且 TW 自己回 `Cache-Control: no-store`、没有 ETag —— 既缓存不了也预取不了。
+   * 这段时间界面完全不动，用户只能感觉"卡住了"。加载时长不是这套代码能把控的，但**界面
+   * 必须说清正在发生什么**（否则一次正常的 1–2 秒等待看起来就是"卡死/没反应"）。
+   *
+   * 兜底 15s：`load` 万一不来（库没起来 / 服务挂了），提示不能永久挂在界面上 —— 那条路径
+   * 由 showError/showStarting 接管。
+   */
+  const showSwitching = (label: string): void => {
+    if (loadingEl === undefined) return
+    loadingEl.textContent = `正在载入知识库「${label}」…`
+    loadingEl.hidden = false
+    clearSwitchTimer()
+    switchTimer = window.setTimeout(() => { switchTimer = undefined; hideSwitching() }, 15_000)
+  }
+
+  /** A wiki's display name, from the last roster we saw (falls back to its id). */
+  const wikiLabel = (id: string): string => lastStatus?.wikis?.find((w) => w.id === id)?.label ?? id
+
+  const showFrame = (url: string, wiki: string | undefined, label?: string): void => {
     if (frame === undefined || errorArea === undefined) return
     errorArea.hidden = true
     // Only reveal the frame while the surface is on screen: doRefresh() can
@@ -252,6 +305,8 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       frame.dataset.loaded = url
       frameLoaded = false
       frame.src = url
+      // 换了文档 = 重新下载整份 wiki（10–30MB、no-store）：这段时间必须给个可见说明。
+      if (label !== undefined) showSwitching(label)
     }
     // 换库这一步到此为止（url 没变也算了结：单库模式下两个 id 解析出同一条裸路径）。
     // 迟到的 hash 请求现在才允许落地 —— src 真的换了就等 load 事件再调一次。
@@ -352,6 +407,8 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       showError('无法访问 /dsh-tiddlywiki/status')
       return
     }
+    // 记住这一份：换库要用它的 mode / 代理基址 / 名册（见 switchFrameNow 与 wikiLabel）。
+    lastStatus = payload
     if (payload.ui !== undefined) {
       // Shared surface label + theme config: both are module-level, so any
       // surface that polls keeps them fresh for every other surface.
@@ -372,10 +429,12 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
         // TW refuses to load its sync adaptor anywhere else — see resolveTwUrl.
         // WHICH knowledge base (v0.28.0): the focused one in multi mode, else the
         // bare path (= the default wiki, exactly as before).
-        const bases = twProxyFor(payload.mode, hooks.wikiId?.(), payload.twProxy, payload.twProxyAbsolute)
-        showFrame(resolveTwUrl(bases.relative, bases.absolute), hooks.wikiId?.())
+        const wiki = hooks.wikiId?.()
+        const bases = twProxyFor(payload.mode, wiki, payload.twProxy, payload.twProxyAbsolute)
+        showFrame(resolveTwUrl(bases.relative, bases.absolute), wiki, wiki === undefined ? undefined : wikiLabel(wiki))
       } else if (typeof payload.url === 'string') {
-        showFrame(payload.url, hooks.wikiId?.())
+        const wiki = hooks.wikiId?.()
+        showFrame(payload.url, wiki, wiki === undefined ? undefined : wikiLabel(wiki))
       } else {
         showError('服务未返回编辑器地址')
       }
@@ -411,13 +470,44 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
   document.addEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
 
   /**
+   * Point the frame at the focused wiki RIGHT NOW, using the last `/status` payload.
+   *
+   * v0.28.14（作者报障「点击切换感觉会卡那么一下」）：旧实现只调 `doRefresh()`，而它要**先**
+   * 等一次 `/status` 往返才动 iframe。host 处理一次 `/status` 会跑最多五个 `git` 进程
+   * （本机实测 300–400 ms），于是"点下去"与"真的开始换库"之间空了 0.3–0.4 秒，紧接着才是
+   * 10–30MB 文档的下载与解析 —— 两段加起来就是那一下卡顿。换库需要的全部信息（`mode`、
+   * 代理基址、名册）上一次刷新已经拿到了，没有理由再等一次。
+   *
+   * 没有可用 payload（首次加载失败、服务在重启）时什么都不做：调用方的 `doRefresh()`
+   * 仍会照旧把整件事做完，行为与 v0.28.13 完全一致。
+   */
+  const switchFrameNow = (): void => {
+    const payload = lastStatus
+    if (payload === undefined || payload.status !== 'running') return
+    const wiki = hooks.wikiId?.()
+    const label = wiki === undefined ? undefined : wikiLabel(wiki)
+    if (typeof payload.twProxy === 'string') {
+      const bases = twProxyFor(payload.mode, wiki, payload.twProxy, payload.twProxyAbsolute)
+      showFrame(resolveTwUrl(bases.relative, bases.absolute), wiki, label)
+    } else if (typeof payload.url === 'string') {
+      showFrame(payload.url, wiki, label)
+    }
+  }
+
+  /**
    * Switching the focused knowledge base needs a different proxy path, so the
    * frame reloads (v0.28.0). TW reloads inside the iframe — one iframe cannot
    * host two editors, and silently keeping the old wiki's data while the UI says
    * otherwise is exactly the confusion this feature must not create.
+   *
+   * v0.28.14：**先立即换，再后台复探**。`switchFrameNow()` 用已有 payload 当场把 iframe
+   * 指过去（并把"正在载入…"挂上），`doRefresh()` 只负责随后的状态/配置对账，不再挡在
+   * 用户点击与界面反应之间。
    */
   const unsubscribeFocus = subscribeFocusWiki(() => {
-    if (!disposed && visible) void doRefresh()
+    if (disposed || !visible) return
+    switchFrameNow()
+    void doRefresh()
   })
 
   const build = (): HTMLDivElement => {
@@ -438,14 +528,22 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     const errorEl = document.createElement('div')
     errorEl.className = skin.error
     errorEl.hidden = true
-    viewEl.append(wrapEl, errorEl)
+    // 换库提示（v0.28.14）：**view 的最后一个孩子**。刻意不放进 wrap / 不改 frame 的
+    // 显隐规则 —— 那条"未载入 TW 地址就绝不显示 frame"的规则是 v0.22.3 的血债，不碰它。
+    const loadingEl2 = document.createElement('div')
+    loadingEl2.className = skin.loading
+    loadingEl2.hidden = true
+    viewEl.append(wrapEl, errorEl, loadingEl2)
     view = viewEl
     frame = frameEl
     errorArea = errorEl
+    loadingEl = loadingEl2
     // Track load so a pending tiddler-hash navigation can target a ready
     // document (setting contentWindow.location.hash before load is a no-op).
     frameEl.addEventListener('load', () => {
       frameLoaded = true
+      // 新文档到了：收起"正在载入…"（幂等，普通刷新时它本来就是隐藏的）。
+      hideSwitching()
       applyPendingHash()
     })
     // Embedded TW follows the DSH light/dark theme (non-persisting palette
@@ -476,6 +574,8 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       } else {
         // Hidden surfaces stop polling and get a fresh budget on the next show.
         clearRetry()
+        // 界面都不显示了，"正在载入…" 没有意义（也不该在再次打开时凭空挂着）。
+        hideSwitching()
         refreshAttempts = 0
       }
     },
@@ -506,6 +606,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       document.removeEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
       unsubscribeFocus()
       clearRetry()
+      clearSwitchTimer()
       for (const timer of hashWaitTimers) window.clearTimeout(timer)
       hashWaitTimers.clear()
       themeSyncDispose?.()
@@ -567,6 +668,7 @@ const RIGHTBAR_SKIN: TwFrameSkin = {
   frameWrap: 'dsh-tw-rightbar-frame-wrap',
   frame: 'dsh-tw-rightbar-frame',
   error: 'dsh-tw-rightbar-error',
+  loading: 'dsh-tw-loading',
 }
 
 /**
