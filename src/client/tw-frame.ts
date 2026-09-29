@@ -141,7 +141,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    * 一旦集中成一个对象，抽取时就只需传**一个** `surfaceState`，而不是六七个访问器
    * （v0.30.37 的结论：按访问器硬抽只会造出一个又宽又漏的接口，比原样更难读）。
    *
-   * 目前只收两个**没有守门引用**的状态；`pendingHash` / `wikiSwitchPending` 另算 ——
+   * 目前只收两个**没有守门引用**的状态；`surfaceState.pendingHash` / `surfaceState.wikiSwitchPending` 另算 ——
    * 它们被 4 + 2 处源码级守门按文本钉着，改名要同时把那些断言的判据从
    * 「钉变量名」改成「钉语义」。
    */
@@ -150,9 +150,12 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     hashWaitTimers: new Set<number>(),
     /** iframe 是否已经 load 过（`showFrame` 之后才为真）。 */
     frameLoaded: false,
+    /** 待落的 hash（`null` = 没有待办）；被新请求取代时会被改写。 */
+    pendingHash: null as string | null,
+    /** 换库进行中：此刻落 hash 会落进**正在被替换**的那份文档（v0.28.11）。 */
+    wikiSwitchPending: false,
   }
   let refreshAttempts = 0
-  let pendingHash: string | null = null
   /**
    * Which wiki the iframe currently points at, and whether a switch to another
    * one is still in flight (v0.28.11).
@@ -160,13 +163,12 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    * A link names the wiki it belongs to; when that differs from the wiki the
    * frame is showing, the frame must RELOAD at `/tw/<id>/` BEFORE the hash is
    * applied. Applying it first puts the hash in the outgoing document (wrong
-   * wiki, or "找不到条目"), and the reload that follows clears `pendingHash`,
-   * so the navigation is silently lost. `wikiSwitchPending` is what makes the
+   * wiki, or "找不到条目"), and the reload that follows clears `surfaceState.pendingHash`,
+   * so the navigation is silently lost. `surfaceState.wikiSwitchPending` is what makes the
    * hash wait; `showFrame()` clears it once the refresh has run.
    */
   let frameWiki: string | undefined
   let frameWikiKnown = false
-  let wikiSwitchPending = false
   let themeSyncDispose: (() => void) | undefined
 
   /** Cancel the pending bounded retry (a new refresh supersedes it). */
@@ -266,8 +268,8 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     }
     // 换库这一步到此为止（url 没变也算了结：单库模式下两个 id 解析出同一条裸路径）。
     // 迟到的 hash 请求现在才允许落地 —— src 真的换了就等 load 事件再调一次。
-    wikiSwitchPending = false
-    if (pendingHash !== null) applyPendingHash()
+    surfaceState.wikiSwitchPending = false
+    if (surfaceState.pendingHash !== null) applyPendingHash()
   }
 
   /**
@@ -285,10 +287,10 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    * A newer open request supersedes an in-flight wait.
    */
   const applyPendingHash = (): void => {
-    if (pendingHash === null || frame === undefined || !surfaceState.frameLoaded) return
+    if (surfaceState.pendingHash === null || frame === undefined || !surfaceState.frameLoaded) return
     // 换库还没完成：此刻写 hash 只会落进**正在被替换**的那份文档。
-    if (wikiSwitchPending) return
-    const hash = pendingHash
+    if (surfaceState.wikiSwitchPending) return
+    const hash = surfaceState.pendingHash
     const win = frame.contentWindow
     if (win === null) {
       fallbackLoad(hash)
@@ -296,7 +298,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     }
     const tryOnce = (attempt: number): void => {
       if (disposed) return // unmounted: do not keep waiting or touch the frame
-      if (pendingHash !== hash) return // superseded by a newer request
+      if (surfaceState.pendingHash !== hash) return // superseded by a newer request
       // Cross-origin frame (v0.26.7): on the DSH desktop app the TW frame is
       // loaded from the host's loopback HTTP origin — the only way TW's
       // TiddlyWeb sync adaptor will load there — which makes it a different
@@ -325,7 +327,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
         fallbackLoad(hash)
         return
       }
-      pendingHash = null
+      surfaceState.pendingHash = null
       try {
         if (win.location.hash !== hash) win.location.hash = hash
       } catch {
@@ -337,7 +339,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
 
   const fallbackLoad = (hash: string): void => {
     if (disposed || frame === undefined) return // never drive a detached frame
-    if (pendingHash === hash) pendingHash = null
+    if (surfaceState.pendingHash === hash) surfaceState.pendingHash = null
     // Guard against the never-loaded frame: `frame.src` is '' before showFrame
     // ran, and `'' + '#title'` resolves against the DSH page URL, which loads
     // the GUI into the iframe (v0.22.3).
@@ -544,10 +546,10 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       if (frameWikiKnown && (frameWiki ?? '') !== resolved) {
         // 要换库：hash 必须等 frame 真的指到那个库之后再落。自己发起这次刷新
         // ——调用方可能只是换了 hook（焦点库），刷新也可能来自别的入口。
-        wikiSwitchPending = true
+        surfaceState.wikiSwitchPending = true
         void doRefresh()
       }
-      pendingHash = `#${encodeURIComponent(title)}`
+      surfaceState.pendingHash = `#${encodeURIComponent(title)}`
       if (!started) {
         started = true
         void doRefresh()

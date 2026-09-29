@@ -733,7 +733,9 @@ test('回复流卡片「在 TW 打开」必须带上是哪个库（作者 2026-0
   assert.match(panel, /surface\.openTiddler\(title, wiki\)/, '中央面板也要拿到目标库（否则又回落到焦点库）')
   // ③ 内核：换库要先换、再跳 hash —— 否则 hash 落进旧文档，随后整页重载把它吞掉。
   assert.match(frame, /wikiSwitchPending/, '内核必须有「换库进行中」的状态')
-  assert.match(frame, /if \(wikiSwitchPending\) return/, '换库未完成时 applyPendingHash 必须等待（不然导航会静默丢失）')
+  // v0.30.39：判据从「钉变量名」改成「钉语义」—— wikiSwitchPending 现在住在 surfaceState 上，
+  // `(?:\w+\.)?` 让断言只要求「换库未完成时返回」这件事成立，不再锁定它住在哪。
+  assert.match(frame, /if \((?:\w+\.)?wikiSwitchPending\) return/, '换库未完成时 applyPendingHash 必须等待（不然导航会静默丢失）')
   // ④ 裸 `/tw/#标题` 的链接（Agent 正文、渲染片段）跟随所在卡片 / 汇总面板的库。
   assert.match(views, /closest\('\[data-dsh-tw-wiki\]'\)/, '拦截器必须从所在卡片取库（裸路径 = 默认库别名，照它走会开错库）')
   assert.match(views, /'data-dsh-tw-wiki': wikiId/, '工具卡根节点必须带上本会话的库')
