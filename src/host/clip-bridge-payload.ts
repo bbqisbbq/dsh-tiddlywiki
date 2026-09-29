@@ -16,15 +16,38 @@ import type { ClipPayload } from './clip-bridge.ts'
 /**
  * Pick a collision-free tiddler title: `base`, then `base（2）…（20）` while an
  * existing tiddler holds the name (so re-clipping the same page never
- * overwrites the previous clip), then a timestamp fallback.
+ * overwrites the previous clip), then a **millisecond-stamped** fallback.
+ *
+ * v0.30.21 — the fallback used to be second-granularity
+ * (`toISOString().slice(0, 19)`), so clipping the SAME page twice inside one
+ * second produced the SAME title for both. That is not a corner case: falling
+ * through to this branch means the page already has 20+ clips, i.e. the user is
+ * re-clipping it in bulk — exactly when two clips land in the same second
+ * (a double-clicked bookmarklet, or one the browser runs twice). The second clip
+ * would then collide with the note written moments earlier.
+ *
+ * Now the stamp carries milliseconds AND every candidate is still probed through
+ * `exists` (we never assume a name is free). `now` is injectable so the
+ * regression test can pin one instant and still observe two distinct titles.
  */
-export async function resolveClipTitle(exists: (title: string) => Promise<boolean>, base: string): Promise<string> {
+export async function resolveClipTitle(
+  exists: (title: string) => Promise<boolean>,
+  base: string,
+  now: () => number = Date.now,
+): Promise<string> {
   if (!(await exists(base))) return base
   for (let i = 2; i <= 20; i++) {
     const candidate = `${base}（${i}）`
     if (!(await exists(candidate))) return candidate
   }
-  return `${base}（${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}）`
+  const stamp = new Date(now()).toISOString().slice(0, 23).replace(/[T:]/g, '-')
+  let candidate = `${base}（${stamp}）`
+  // 同一毫秒内再撞（连点、或书签被跑了两遍）时继续加序号 —— 每一轮都真的问一次
+  // `exists`，绝不因为「时间戳不同了」就假设名字空着。
+  for (let i = 0; i < 100 && (await exists(candidate)); i++) {
+    candidate = `${base}（${stamp}-${i}）`
+  }
+  return candidate
 }
 
 /** Build the markdown tiddler for ONE TEXT-ONLY clip (no images). */

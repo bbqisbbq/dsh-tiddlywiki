@@ -91,6 +91,25 @@ await test('resolveClipTitle dedupes with（n）suffix then timestamp', async ()
   assert.equal(await resolveClipTitle(exists, 'B'), 'B')
 })
 
+await test('resolveClipTitle：同一毫秒内连剪两次也必须拿到两个不同的标题（v0.30.21）', async () => {
+  // 走到时间戳分支意味着这一页已经有 20+ 篇剪藏 —— 用户正在**批量重剪**，
+  // 于是「同一秒内剪两次」（连点书签 / 书签被执行两遍）是真实场景而不是边角。
+  // 旧实现只精确到**秒**，两次会算出同一个标题，第二次撞上刚写下的那篇。
+  const taken = new Set(['A'])
+  for (let i = 2; i <= 20; i++) taken.add(`A（${i}）`)
+  const exists = async (t) => taken.has(t)
+  const now = () => Date.parse('2026-09-29T10:00:00.123Z') // 同一毫秒
+  const first = await resolveClipTitle(exists, 'A', now)
+  taken.add(first) // 第一次剪藏真的落盘了
+  const second = await resolveClipTitle(exists, 'A', now)
+  taken.add(second)
+  const third = await resolveClipTitle(exists, 'A', now)
+  assert.notEqual(first, second, '同一毫秒内的两次剪藏拿到同一个标题（第二次会撞上刚写下的那篇）')
+  assert.notEqual(second, third, '第三次剪藏又撞了')
+  assert.match(first, /^A（\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.\d{3}）$/, '唯一名必须精确到毫秒，不能只到秒')
+  assert.match(second, /^A（\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.\d{3}-\d+）$/, '同一毫秒的第二次必须带序号')
+})
+
 await test('buildClipTiddler produces expected markdown + fields', () => {
   const t = buildClipTiddler({ title: 'A', url: 'https://x', text: '  sel  ', tag: 'clip', source: 'bookmarklet', at: '2026-09-09T08:00:00.000Z' })
   assert.equal(t.type, 'text/markdown')
