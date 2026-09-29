@@ -11,7 +11,8 @@
 import { createRequire } from 'node:module'
 import { readFile, writeFile, readdir, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { TiddlyWebClient } from './tw-api.ts'
+import type { Tiddler, TiddlyWebClient } from './tw-api.ts'
+import { buildWriteTiddler } from './write-policy.ts'
 
 /** One bundled plugin/theme from the catalog. */
 export interface CatalogEntry {
@@ -457,14 +458,18 @@ export async function pinLanguageTiddler(
   desired: string,
   log?: (message: string, err?: unknown) => void,
 ): Promise<boolean> {
-  let existing: { text?: string } | undefined
+  let existing: Tiddler | undefined
   try {
     existing = await client.get('$:/language')
   } catch (err) {
     log?.('reading $:/language failed — writing it anyway', err)
   }
   if (existing !== undefined && existing.text === desired) return false
-  await client.put({ title: '$:/language', text: desired, type: 'text/plain', tags: [] })
+  // v0.30.30：已经 get 过了，就走共享写策略 —— 手拼 body（{title, text, type, tags: []}）
+  // 会丢掉这条目的自定义字段（铁律 #2）。显式 fields.type 保住 text/plain；
+  // $:/language 是系统条目，buildWriteTiddler 不会给它补 agent-written。
+  const { tiddler } = buildWriteTiddler('$:/language', desired, { existing, fields: { type: 'text/plain' } })
+  await client.put(tiddler)
   return true
 }
 

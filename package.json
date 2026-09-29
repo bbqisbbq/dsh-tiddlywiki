@@ -1,7 +1,7 @@
 {
   "name": "dsh-tiddlywiki",
   "description": "把 TiddlyWiki 5 变成你和 Agent 共用的本地文档中心（纯文本 + git）：你在 DSH 界面里阅读、写作、记日记，Agent 用 15 个 tiddlywiki_* 工具读写同一批笔记；每条笔记都是你能读、能改、能审计、能随时带走的文件——不是自动记忆插件，不做后台抓取。可选一键发布到微信公众号草稿箱。 Turn TiddlyWiki 5 into a document center you and your agent share, in plain text under git — a knowledge base you can read, edit, audit and take with you, not an auto-memory plugin. Mounts via the official dsh plugin system; no DSH source changes.",
-  "version": "0.30.29",
+  "version": "0.30.30",
   "type": "module",
   "keywords": [
     "dsh",
