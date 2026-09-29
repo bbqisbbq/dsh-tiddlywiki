@@ -12,11 +12,40 @@
 import type { PanelState } from './state.ts'
 import { fetchUiConfig, subscribeUiConfig } from './ui-config.ts'
 import { fetchStatus } from './status-cache.ts'
-import { resolveFocusWiki, setFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
+import { resolveFocusWiki, setFocusWiki, subscribeFocusWiki, type FocusableWiki } from './wiki-focus.ts'
 import { applyWikiIcon } from './wiki-icon.ts'
 
 /** Stable data attribute identifying this entry row. */
 export const ENTRY_SELECTOR = '[data-dsh-tw-entry]'
+
+/** What a click on an entry row does — see {@link resolveEntryClick}. */
+export type EntryClickAction = 'open' | 'close' | 'switch'
+
+/**
+ * Decide what clicking an entry row should do (v0.28.13).
+ *
+ * 症状（作者 2026-09-29 报障）：「左侧多 wiki 入口，有时候要点击两次才能切换到对应的库」。
+ * 根因：点行**一律** `state.toggle()` —— 面板开着 A 时点 B，`setFocusWiki(B)` 确实把焦点
+ * 换过去了（内核也开始换库），但同一击里的 toggle 又把面板关掉；用户看到的只是"面板没了"，
+ * 得再点一次才看到 B。开着面板时点另一个库，用户要的是**切换**，不是"关面板"。
+ *
+ * 判定表：
+ *  - 面板关着            → `open`（点哪个库就开哪个库）；
+ *  - 面板开着 && 就是这个库 → `close`（入口同时也是开关，再点一次收起）；
+ *  - 面板开着 && 是别的库   → `switch`（只切焦点库，面板保持打开）；
+ *  - 单库那一行（`wikiId === undefined`）逐字保留原来的 toggle 语义。
+ */
+export function resolveEntryClick(input: {
+  open: boolean
+  /** 这一行绑定的库；`undefined` = 单库模式那唯一一行。 */
+  wikiId: string | undefined
+  /** 面板此刻**实际显示**的库（见 `mountSidebarEntry` 的 `shownWiki`）。 */
+  shown: string | undefined
+}): EntryClickAction {
+  if (!input.open) return 'open'
+  if (input.wikiId === undefined) return 'close'
+  return input.wikiId === input.shown ? 'close' : 'switch'
+}
 
 
 /** Family entries from sibling plugins, kept in a stable relative order. */
@@ -47,15 +76,43 @@ function newSessionButton(root: HTMLElement): HTMLButtonElement | undefined {
   return buttons.find(button => !button.matches(ENTRY_SELECTOR) && /新会话|新建会话|new session/i.test(button.textContent ?? ''))
 }
 
+/** What a row needs from its owner: the shared panel state and "which wiki is on screen". */
+export interface EntryHooks {
+  state: PanelState
+  /** The wiki the panel is displaying right now (`resolveEntryClick` needs it). */
+  shownWiki: () => string | undefined
+}
+
+/**
+ * Run one entry-row click: decide, move the focus wiki, then open/close the panel.
+ *
+ * 顺序是本函数唯一容易写错的地方：`shownWiki()` 必须在 `setFocusWiki()` **之前**求值。
+ * 反过来的话，刚切过去的那个库会被 `resolveEntryClick` 当成"面板此刻显示的就是它"，
+ * 于是判成 `close` —— 又变回"点两次才能切库"。
+ *
+ * @returns the action that was taken (the guards assert on it).
+ */
+export function applyEntryClick(hooks: EntryHooks, wikiId: string | undefined): EntryClickAction {
+  const action = resolveEntryClick({ open: hooks.state.isOpen(), wikiId, shown: hooks.shownWiki() })
+  // 多库：先把这个库设为「焦点库」，面板随后加载它自己的 /tw/<id>/。
+  if (wikiId !== undefined) setFocusWiki(wikiId)
+  // 'open' 与 'switch' 都保持/变成打开：'switch' 时面板本来就开着，openPanel() 是空操作，
+  // 换库由焦点订阅驱动内核重载（tw-frame.ts），所以**绝不能**在这里 toggle —— 那正是
+  // 「点两次才能切库」的成因（v0.28.13）。
+  if (action === 'close') hooks.state.closePanel()
+  else hooks.state.openPanel()
+  return action
+}
+
 /**
  * Build one entry row (a detached button; inserted once the shell is up).
  *
  * `wikiId` is optional and only used in multi-wiki mode: clicking the row focuses
- * that knowledge base before toggling the panel, so the row a user clicks is the
+ * that knowledge base before showing the panel, so the row a user clicks is the
  * wiki they get. Single-wiki installs pass nothing and behave exactly as before.
  */
 function createEntry(
-  state: PanelState,
+  hooks: EntryHooks,
   label: string,
   wikiId?: string,
   icon?: string,
@@ -73,11 +130,7 @@ function createEntry(
   labelEl.className = 'dsh-tw-entry-label'
   labelEl.textContent = label
   entry.append(iconEl, labelEl)
-  entry.addEventListener('click', () => {
-    // 多库：先把这个库设为「焦点库」，面板随后加载它自己的 /tw/<id>/。
-    if (wikiId !== undefined) setFocusWiki(wikiId)
-    state.toggle()
-  })
+  entry.addEventListener('click', () => { applyEntryClick(hooks, wikiId) })
   return { entry, labelEl, iconEl }
 }
 
@@ -117,7 +170,19 @@ function placeEntry(root: HTMLElement, entry: HTMLButtonElement): boolean {
 export function mountSidebarEntry(state: PanelState): () => void {
   /** 多库：每个**在运行**的库一个入口行，用自己的显示名（作者 2026-09-28 要求）。 */
   const rows = new Map<string, { entry: HTMLButtonElement; labelEl: HTMLSpanElement; iconEl: HTMLSpanElement }>()
-  const { entry, labelEl, iconEl } = createEntry(state, 'TiddlyWiki')
+  /**
+   * `/status` 最近一次给出的「在运行库」与默认库（v0.28.13）。
+   *
+   * 点击一个入口行时要判断「面板此刻显示的是哪个库」，才能区分"切换"与"关面板"
+   * （见 `resolveEntryClick`）——判定必须与面板/内核用**同一套解析**：
+   * 记忆值 → 默认库 → 第一个可用库（`resolveFocusWiki`）。
+   */
+  let runningWikis: FocusableWiki[] = []
+  let defaultWikiId: string | undefined
+  /** 面板此刻显示的那个库。 */
+  const shownWiki = (): string | undefined => resolveFocusWiki(runningWikis, defaultWikiId)
+  const entryHooks: EntryHooks = { state, shownWiki }
+  const { entry, labelEl, iconEl } = createEntry(entryHooks, 'TiddlyWiki')
   rows.set('', { entry, labelEl, iconEl })
   let disposed = false
   /**
@@ -149,6 +214,9 @@ export function mountSidebarEntry(state: PanelState): () => void {
     if (disposed) return
     const list = Array.isArray(payload?.wikis) ? payload.wikis : []
     const running = list.filter((w) => w.running)
+    // 点击判定与高亮都要用同一份名册（v0.28.13）：存下来，`shownWiki()` 据此解析。
+    runningWikis = running
+    defaultWikiId = payload?.defaultId
     // 单库：不建额外行，标签仍归 ui.sidebarLabel 管。
     if (running.length <= 1) {
       for (const [key, row] of rows) {
@@ -172,15 +240,15 @@ export function mountSidebarEntry(state: PanelState): () => void {
     for (const w of running) {
       let row = rows.get(w.id)
       if (row === undefined) {
-        row = createEntry(state, w.label, w.id, w.icon)
+        row = createEntry(entryHooks, w.label, w.id, w.icon)
         rows.set(w.id, row)
       }
       row.labelEl.textContent = w.label
       // 图标每次同步（v0.28.4）：在设置页改完图标，10s 内的轮询就会把它换过来。
       applyWikiIcon(row.iconEl, w.icon)
       row.entry.setAttribute('aria-label', `TiddlyWiki 知识库：${w.label}`)
-      // 当前焦点库高亮
-      const focused = resolveFocusWiki(running, payload?.defaultId) === w.id
+      // 当前焦点库高亮（与点击判定同源：`shownWiki()`，不会出现"高亮的行点一下反而关掉面板"）
+      const focused = shownWiki() === w.id
       if (focused) row.entry.dataset.focus = 'true'
       else delete row.entry.dataset.focus
     }
@@ -273,12 +341,15 @@ export function mountSidebarEntry(state: PanelState): () => void {
    * wiki — the focused one. Highlighting every row made it look like all three
    * were open (作者报障). The row the user clicked becomes the focus, and that is
    * the row that lights up.
+   *
+   * v0.28.13: the resolver is the SAME one the click handler uses (`shownWiki`),
+   * so "which row is lit" and "which row closes the panel when clicked" can never
+   * disagree. The old call passed `undefined` as the default id, which made the
+   * highlight fall back to the FIRST running row instead of the actual default
+   * wiki whenever no focus had been stored yet.
    */
   const syncActive = (): void => {
-    const focus = resolveFocusWiki(
-      activeRows().map((el) => ({ id: el.dataset.wiki ?? '' })).filter((w) => w.id.length > 0),
-      undefined,
-    )
+    const focus = shownWiki()
     for (const el of activeRows()) {
       const id = el.dataset.wiki
       // 单库默认行没有 data-wiki：它就是唯一那个库，面板开着时它就该亮。

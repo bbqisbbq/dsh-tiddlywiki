@@ -47,9 +47,30 @@ console.log('load() called with id =', captured.id)
 
 const module = { exports: {} }
 const required = []
+/**
+ * React 的最小替身。**必须覆盖 bundle 在模块作用域真的用到的那些 API**：
+ * `tool-views.ts` 在模块作用域 `React.createContext(...)`（v0.28.13 复核时发现），
+ * 而这里少了它 → 这个「catch module-scope reference errors」的守门自那次改动起
+ * 一直抛 `c.createContext is not a function`，等于长期空转（真红，没人看）。
+ * 所以 stub 要跟着走：漏一个 API 具体来说就是漏一次检查。
+ */
+const reactStub = {
+  createElement: () => ({}),
+  createContext: () => ({ Provider: 'Provider', Consumer: 'Consumer' }),
+  useContext: () => undefined,
+  useState: () => [],
+  useEffect: noop,
+  useLayoutEffect: noop,
+  useMemo: (fn) => fn(),
+  useCallback: (fn) => fn,
+  useRef: () => ({ current: null }),
+  forwardRef: (fn) => fn,
+  memo: (fn) => fn,
+  Fragment: 'Fragment',
+}
 const require = (name) => {
   required.push(name)
-  if (name === 'react') return { createElement: () => ({}), useState: () => [], useEffect: noop, useRef: () => ({ current: null }), Fragment: 'Fragment' }
+  if (name === 'react') return reactStub
   throw new Error('unexpected require: ' + name)
 }
 const result = captured.factory(require)

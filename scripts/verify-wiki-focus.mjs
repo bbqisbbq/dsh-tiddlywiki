@@ -33,6 +33,9 @@ globalThis.location = { protocol: 'http:', origin: 'http://localhost' }
 
 const { twProxyFor, resolveTwUrl, withWikiQuery } = await import(pathToFileURL(path.join(repoRoot, 'src/client/endpoints.ts')).href)
 const { getFocusWiki, resolveFocusWiki, setFocusWiki, subscribeFocusWiki } = await import(pathToFileURL(path.join(repoRoot, 'src/client/wiki-focus.ts')).href)
+// 侧边栏入口行的点击判定与副作用（纯函数 + 真 PanelState，v0.28.13）——真源码，不是正则猜。
+const { resolveEntryClick, applyEntryClick } = await import(pathToFileURL(path.join(repoRoot, 'src/client/sidebar-entry.ts')).href)
+const { PanelState } = await import(pathToFileURL(path.join(repoRoot, 'src/client/state.ts')).href)
 
 let failures = 0
 function test(name, fn) {
@@ -705,6 +708,105 @@ test('「默认库」不得作为选项名出现：默认的那个库要用它�
   // 单库模式那个单选与确认框同样直呼其名。
   assert.match(files.settingsWikis, /单库（只跑 \$\{defaultName\}）/, '「单库」模式标签必须写出默认库的名字')
   assert.match(files.settingsWikis, /除 \$\{defaultName\} 外的知识库会被停掉/, '切单库的确认文案必须写出默认库的名字')
+})
+
+test('侧边栏多库入口：点另一个库 = 切换，不是关面板（作者 2026-09-29 报障「要点击两次才能切库」）', () => {
+  // 症状原文：「左侧多 wiki 入口，有时候感觉要点击两次才能切换到对应的库」。
+  // 根因：入口行的点击**一律**走 `state.toggle()` —— 面板开着 A 时点 B，`setFocusWiki(B)`
+  // 确实把焦点换过去了（内核也开始换库），但**同一击**里的 toggle 又把面板关掉：用户看到的
+  // 只是"面板没了"，得再点一次才看到 B。开着面板时点另一个库，用户要的是切换，不是关面板。
+  //
+  // 判定表直接跑真源码（纯函数，Node 里能验 —— 比"源码里有某个字符串"强得多）：
+  assert.equal(resolveEntryClick({ open: false, wikiId: 'b', shown: 'a' }), 'open', '面板关着时点哪个库就开哪个库')
+  assert.equal(
+    resolveEntryClick({ open: true, wikiId: 'b', shown: 'a' }),
+    'switch',
+    '面板开着 A 时点 B 必须是「切换」（面板保持打开）—— 判成 close 就是本次报障',
+  )
+  assert.equal(resolveEntryClick({ open: true, wikiId: 'a', shown: 'a' }), 'close', '点当前显示的那个库 = 收起（入口同时也是开关）')
+  // 焦点还没显式设过时 shown 解析成**默认库**（不是"第一行"）：点默认库那行同样收起。
+  assert.equal(resolveEntryClick({ open: true, wikiId: 'work', shown: 'work' }), 'close')
+  // 名册还没到 / 解析不出时：只有"就是同一个 id"才算收起，别的一律切换（保守但不会误关面板）。
+  assert.equal(resolveEntryClick({ open: true, wikiId: 'a', shown: undefined }), 'switch')
+  // 单库那一行没有 wikiId：逐字保留原来的 toggle 语义 —— 单库安装行为不变。
+  assert.equal(resolveEntryClick({ open: true, wikiId: undefined, shown: undefined }), 'close', '单库：开着再点 = 收起')
+  assert.equal(resolveEntryClick({ open: false, wikiId: undefined, shown: undefined }), 'open', '单库：关着点 = 打开')
+
+  const sidebar = readFileSync(path.join(repoRoot, 'src/client/sidebar-entry.ts'), 'utf8')
+  // 点击处理必须走这个判定（三处入参都要在）。
+  assert.match(
+    sidebar,
+    /resolveEntryClick\(\{ open: hooks\.state\.isOpen\(\), wikiId, shown: hooks\.shownWiki\(\) \}\)/,
+    '点击入口行必须走共享判定 resolveEntryClick',
+  )
+  // 顺序：判定必须在 setFocusWiki **之前**。反过来的话，刚切过去的库会被当成"面板此刻
+  // 显示的就是它" → 判成 close → 又回到"点两次才能切库"（纯文本断言抓不到，靠行为断言）。
+  const sideCode = sidebar.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '')
+  const decideAt = sideCode.indexOf('resolveEntryClick({ open: hooks.state.isOpen()')
+  const focusAt = sideCode.indexOf('setFocusWiki(wikiId)')
+  assert.ok(decideAt > 0 && focusAt > decideAt, '判定必须在 setFocusWiki 之前求值（顺序反了就永远判成 close）')
+  // 反向断言：入口行不得再无条件 toggle —— 那正是「点两次才能切库」的成因。
+  // ⚠️ 必须**先剥掉注释**再断言：这段历史的说明本来就该提到 `state.toggle()`
+  //（本仓库最该警惕的假绿就是"用注释里的词去判断代码行为"，反之亦然）。
+  assert.ok(
+    !/\.toggle\(\)/.test(sideCode),
+    '入口行不得再无条件 toggle()（面板开着时点另一个库会先把它关掉 = 要点两次才能切库）',
+  )
+  // 高亮与点击判定必须**同源**：都是 shownWiki()。两处各算一套就会出现
+  // 「高亮的那一行点一下反而把面板关掉 / 没高亮的那行点一下变成关闭」。
+  assert.match(sidebar, /const focus = shownWiki\(\)/, '高亮必须用同一个解析（shownWiki）')
+  assert.match(
+    sidebar,
+    /const shownWiki = \(\): string \| undefined => resolveFocusWiki\(runningWikis, defaultWikiId\)/,
+    'shownWiki 必须把默认库一起交给 resolveFocusWiki —— 旧实现传 undefined，焦点未设时会高亮第一行而不是默认库',
+  )
+  assert.match(sidebar, /defaultWikiId = payload\?\.defaultId/, '名册里的默认库必须存下来供点击判定用')
+  assert.match(sidebar, /runningWikis = running/, '在运行名册必须存下来供点击判定用')
+})
+
+test('侧边栏多库入口（行为级）：面板开着时点另一个库，面板必须保持打开且焦点已切过去', () => {
+  // 上面那条断的是"判定表"，这条断的是**真副作用**：用真的 PanelState + 真的焦点存储
+  // （setFocusWiki 会写 localStorage），走的是线上同一个 applyEntryClick。
+  setFocusWiki('a')
+  const roster = [{ id: 'a' }, { id: 'b' }]
+  const state = new PanelState()
+  const shown = () => resolveFocusWiki(roster, 'a')
+  state.openPanel()
+
+  // ① 本次报障的场景：面板开着 A，点 B —— 面板必须还是开着的（旧实现这里变成 false）。
+  assert.equal(applyEntryClick({ state, shownWiki: shown }, 'b'), 'switch')
+  assert.equal(state.isOpen(), true, '点另一个库把面板关掉了 = 「要点击两次才能切库」')
+  assert.equal(getFocusWiki(), 'b', '焦点必须已经切到 B（内核据此重载 /tw/b/）')
+
+  // ② 再点一次"当前显示的那个库" = 收起（入口也是开关）。
+  assert.equal(applyEntryClick({ state, shownWiki: shown }, 'b'), 'close')
+  assert.equal(state.isOpen(), false)
+  assert.equal(getFocusWiki(), 'b', '收起面板不该改焦点')
+
+  // ③ 关着的时候点任意库 = 打开它。
+  assert.equal(applyEntryClick({ state, shownWiki: shown }, 'a'), 'open')
+  assert.equal(state.isOpen(), true)
+  assert.equal(getFocusWiki(), 'a')
+
+  // ④ 单库那一行（没有 wikiId）：焦点不动，纯粹开关（单库安装行为逐字不变）。
+  const before = getFocusWiki()
+  assert.equal(applyEntryClick({ state, shownWiki: shown }, undefined), 'close')
+  assert.equal(state.isOpen(), false)
+  assert.equal(applyEntryClick({ state, shownWiki: shown }, undefined), 'open')
+  assert.equal(state.isOpen(), true)
+  assert.equal(getFocusWiki(), before, '单库那一行不得碰焦点库')
+
+  // ⑤ 面板开着、焦点库就是默认库（记忆值已被清空）时点默认库那一行 = 收起，
+  //    不能因为"焦点没显式设过"就误判成切换（那会让用户按不上面板）。
+  setFocusWiki(undefined)
+  const state2 = new PanelState()
+  const shown2 = () => resolveFocusWiki(roster, 'a')
+  state2.openPanel()
+  assert.equal(applyEntryClick({ state: state2, shownWiki: shown2 }, 'a'), 'close', '焦点未设过时，默认库那一行就是"当前显示的那个库"')
+  assert.equal(state2.isOpen(), false)
+  // 反过来：真正的另一个库仍然要判成切换。
+  assert.equal(applyEntryClick({ state: state2, shownWiki: shown2 }, 'b'), 'open', '面板已关，点 B = 打开 B')
+  assert.equal(state2.isOpen(), true)
 })
 
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)
