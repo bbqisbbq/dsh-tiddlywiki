@@ -15,6 +15,31 @@
  * - `revision`（GET 的 changeCount）是唯一「刚 PUT 还没落盘」时也存在的并发
  *   令牌——那种条目没有 `modified`，两个令牌都支持。
  *
+ * ── 本策略的**例外清单**（v0.30.31，逐调用点核实过；判据是「这次 PUT 的 body
+ *    是天生的还是手拼的」，**不是**文件名或行数）─────────────────────────
+ *
+ * ⚠️ 先澄清一个**曾经被误报**的口径：`const { tiddler } = buildWriteTiddler(…)`
+ * 之后跟一句 `client.put(tiddler)` **就是本策略本身**（规则要求的就是「走
+ * buildWriteTiddler」），它**不是**绕过。审计里一度把它算成「绕过」，于是
+ * 「21 个文件绕过共享写策略」这个数字里有一大半是假的。
+ *
+ * 允许**手拼 body**的只有两类：
+ *
+ * (1) **我们完全拥有内容的条目**——读一遍没有信息量，因为内容由我们现算：
+ *     · `seed-util.ts` 的 seed marker（一次性的「已提供过」JSON 记录）
+ *     · `session-summary.ts` 的 `$:/temp/…` 会话汇总（volatile、随时重算）
+ *     · 剪藏写入（`src/index-clip.ts`）与 seed 家族的内置内容（模板自带 tags，
+ *       且「强制覆盖」已在设置页与文档里声明）
+ *
+ * (2) **flUSh 探针**（`seeds-flush.ts`）：它唯一的用途是**给一次写入计时**、
+ *     再轮询内容是否落盘。改成「读-改-写」会引入额外往返并改变时序语义 ——
+ *     这条不是"偷懒"，是**必须**裸写。
+ *
+ * 其余任何「手拼 `{title, text, type, tags}` 后 PUT」都是缺陷形态：TW 的 PUT
+ * 是整体替换，会静默丢掉自定义字段（`$:/language` 就曾如此 —— v0.30.30 改成
+ * 走本策略）。要改的判据是：**这个 body 是不是基于某条已存在的用户条目改写
+ * 的？** 是 ⇒ 必须先 `get` 再 `buildWriteTiddler()`。
+ *
  * @module dsh-tiddlywiki/host/write-policy
  */
 import type { Tiddler } from './tw-api.ts'
