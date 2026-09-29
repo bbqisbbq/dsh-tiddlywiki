@@ -9,6 +9,13 @@
  * `wechatRunner` · `wikiSummaries`（最后一个用于「多库模式下拒绝公众号发布」——
  * 它写的是 TW 侧那一个库，多库下会静默投错库）。
  *
+ * v0.30.17：三条路由补上 `refuseStoppedTarget`（第二个参数，与 `createNoteRoutes`
+ * 的 helper 同一个形状）。此前它们是**唯一**不吃「已登记但没在跑 → 503 点名那个库」
+ * 的 `?wiki=` 路由，而 `wechatConfig(req)` / `wechatReady(req)` 都是**按请求上那个库**
+ * 取值的 —— 于是设置页写着「正在配置 books」、公众号的就绪/配置却来自**默认库**，
+ * 而且看起来一切正常。位置刻意放在 `guardWechat` **之后**：先认证与开关、再判目标
+ * （`verify-wechat-publish.mjs` 钉死了「先判方法+同源、再判开关/token」的相邻性）。
+ *
  * @module dsh-tiddlywiki/host/routes-wechat
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -22,7 +29,11 @@ import type { RouteDeps } from './routes.ts'
 
 /** 这三个 handler 真正用到的 deps 成员（不是整个 RouteDeps）。 */
 export type WechatRouteDeps = Pick<RouteDeps, 'getClient' | 'wechatConfig' | 'wechatReady' | 'wechatRunner' | 'wikiSummaries'>
-export function createWechatRoutes(deps: WechatRouteDeps) {
+export function createWechatRoutes(
+  deps: WechatRouteDeps,
+  /** routes.ts 的闭包 helper：目标库已登记但没在跑时回 503 并点名它。 */
+  refuseStoppedTarget: (req: IncomingMessage, res: ServerResponse) => boolean,
+) {
   const guardWechat = (req: IncomingMessage, res: ServerResponse): boolean => {
     const config = deps.wechatConfig(req)
     if (!config.enabled) {
@@ -48,6 +59,7 @@ export function createWechatRoutes(deps: WechatRouteDeps) {
     try {
       if (rejectNonRead(req, res)) return
       if (!guardWechat(req, res)) return
+      if (refuseStoppedTarget(req, res)) return
       const ready = await deps.wechatReady(req)
       json(res, {
         ok: true,
@@ -86,6 +98,7 @@ export function createWechatRoutes(deps: WechatRouteDeps) {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
       if (!guardWechat(req, res)) return
+      if (refuseStoppedTarget(req, res)) return
       // v0.29.0: the publish chain cannot express WHICH knowledge base it means.
       //
       // The adapter is a separate local process handed ONE base URL (`--dsn`)
@@ -191,6 +204,7 @@ export function createWechatRoutes(deps: WechatRouteDeps) {
     try {
       if (rejectNonRead(req, res)) return
       if (!guardWechat(req, res)) return
+      if (refuseStoppedTarget(req, res)) return
       const runner = deps.wechatRunner()
       if (runner === undefined) {
         json(res, { ok: false, error: 'publish runner unavailable' }, 503)

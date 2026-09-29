@@ -530,6 +530,15 @@ await test('routes 模块族：三条路由都过 guardHandler，写路由声明
     assert.ok(src.includes(`\${ROUTE_PREFIX}${p}\`, handler: guardHandler(`), `${p} 必须经 guardHandler 注册`)
   }
   assert.ok(src.includes("if (rejectCrossSiteWrite(req, res, ['POST'])) return\n      if (!guardWechat(req, res)) return"), '/wechat/publish 必须先判方法+同源，再判功能开关/token')
+  // v0.30.17：三条路由都必须拒「已登记但没在跑」的目标库，且**紧跟在 guardWechat 之后**
+  // （先认证/开关、再判目标）。此前它们是**唯一**漏掉这条的 `?wiki=` 路由，而
+  // `wechatConfig(req)` / `wechatReady(req)` 都是**按请求上那个库**取值的 —— 症状是
+  // 「设置页写着正在配置 books，公众号的就绪/配置却来自默认库」，而且看起来一切正常。
+  assert.equal(
+    (src.match(/if \(!guardWechat\(req, res\)\) return\n      if \(refuseStoppedTarget\(req, res\)\) return/g) ?? []).length,
+    3,
+    '三条 /wechat 路由都必须紧跟 guardWechat 之后拒「已登记但没在跑」的目标库（503 并点名那个库）',
+  )
   assert.ok(src.includes("const got = req.headers['x-wechat-publish-token']"), 'token 头名必须与 TW 按钮一致')
   assert.ok(src.includes('req.socket.localPort'), 'dsn 必须由请求端口推导（opencli 从本机回连）')
 })

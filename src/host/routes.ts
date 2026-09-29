@@ -646,7 +646,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     wechatConfig: deps.wechatConfig,
     wechatReady: deps.wechatReady,
     wechatRunner: deps.wechatRunner,
-    wikiSummaries: deps.wikiSummaries })
+    wikiSummaries: deps.wikiSummaries }, refuseStoppedTarget)
 
 
   // v0.30.10：笔记读写那六条路由搬进 routes-note.ts（纯搬迁 + 工厂化）。只把它真正
