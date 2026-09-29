@@ -18,6 +18,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { sanitizeTwFragment } from '../lib/index.js'
+import { readFamily } from './lib/source-family.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 let failures = 0
@@ -154,9 +155,10 @@ test('host 路由调用净化器', () => {
   // v0.28.8：`/render`（连同它的净化调用）搬进了 routes-tw-proxy.ts，所以这里读
   // **两个**文件而不是只读 routes.ts —— 断言的是「宿主侧存在净化调用」这条规则，
   // 不是「它在哪个文件里」。只钉死一个路径的话，一次纯搬迁就会让这条守门假红。
-  const sources = ['src/host/routes.ts', 'src/host/routes-tw-proxy.ts']
-    .map((file) => fs.readFileSync(path.join(repoRoot, file), 'utf8'))
-    .join('\n')
+  // v0.30.8：改成读 **routes 模块族**（`routes.ts` + `routes-*.ts`）。断言的是
+  // 「宿主侧存在净化调用」这条规则，不是「它在哪个文件里」；继续钉死文件名的话，
+  // 每次把 /render 搬进更细的模块都会让这条守门假红（v0.28.8 已经踩过一次）。
+  const sources = readFamily(repoRoot, 'src/host/routes')
   assert.ok(/sanitizeTwFragment\(/.test(sources), '宿主渲染路由必须在返回渲染片段前调用 sanitizeTwFragment()')
 })
 

@@ -91,7 +91,11 @@ await test('drainThenStop：排干的 await 必须出现在 stop 的 await 之�
 })
 
 // ── 2. 源码级：每个 restart 调用点都必须在 drainThenStop 里 ──────────────────
-for (const rel of ['src/host/routes.ts', 'src/host/admin.ts']) {
+// v0.30.8：改成按**模块族**遍历（routes.ts + routes-*.ts、admin.ts + admin-*.ts）。
+// 规则是「这一整片区域里没有任何裸 restart」；钉死单个文件的话，把 /sync 或
+// /restart 的 handler 搬进更细的模块就会**静默丢掉覆盖**（restarts 变成 0 时旧写法
+// 才报错——而它搬到别的文件里时连那声错都没有）。
+for (const rel of ['src/host/routes', 'src/host/admin']) {
   await test(`${rel}：每个 deps.server(req)?.restart() 都必须经由 drainThenStop`, () => {
     const src = sourceWithoutComments(rel)
     const restarts = count(src, 'deps.server(req)?.restart()')
