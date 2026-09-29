@@ -113,6 +113,19 @@ export interface TwFrameSkin {
   error: string
 }
 
+/**
+ * Which knowledge base a link belongs to (v0.28.11).
+ *
+ *   - `string`    —— 该库的 id；
+ *   - `null`      —— **明确**要默认库（卡片/列表行说得出自己来自哪个库，
+ *                    默认库就是 `undefined` 那个语义的显式说法）；
+ *   - `undefined` —— 未指定：跟随该 surface 的 `wikiId` hook（当前焦点库）。
+ *
+ * 三者必须分得开：从前 `undefined` 既表示"默认库"又表示"未指定"，于是多库下
+ * 点卡片上的「在 TW 打开」永远落在**最后一次打开的库**上（作者 2026-09-29 报障）。
+ */
+export type TwWikiTarget = string | null | undefined
+
 /** A TW iframe surface: DOM + lifecycle, shared by every embedding surface. */
 export interface TwFrameSurface {
   /**
@@ -130,8 +143,15 @@ export interface TwFrameSurface {
    * already carries a TW URL is ever revealed.
    */
   setVisible(visible: boolean): void
-  /** Open a tiddler by title; false when this surface cannot serve it. */
-  openTiddler(title: string): boolean
+  /**
+   * Open a tiddler by title; false when this surface cannot serve it.
+   *
+   * `wiki` (v0.28.11) names the knowledge base the link belongs to — see
+   * `TwWikiTarget`. When it differs from the wiki this frame is showing, the
+   * frame reloads at `/tw/<id>/` FIRST and only then navigates (otherwise the
+   * hash lands in the outgoing document and the reload swallows it).
+   */
+  openTiddler(title: string, wiki?: TwWikiTarget): boolean
   /** Tear down listeners/timers/theme sync and remove the view from the DOM. */
   dispose(): void
 }
@@ -163,6 +183,20 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
   let refreshAttempts = 0
   let frameLoaded = false
   let pendingHash: string | null = null
+  /**
+   * Which wiki the iframe currently points at, and whether a switch to another
+   * one is still in flight (v0.28.11).
+   *
+   * A link names the wiki it belongs to; when that differs from the wiki the
+   * frame is showing, the frame must RELOAD at `/tw/<id>/` BEFORE the hash is
+   * applied. Applying it first puts the hash in the outgoing document (wrong
+   * wiki, or "找不到条目"), and the reload that follows clears `pendingHash`,
+   * so the navigation is silently lost. `wikiSwitchPending` is what makes the
+   * hash wait; `showFrame()` clears it once the refresh has run.
+   */
+  let frameWiki: string | undefined
+  let frameWikiKnown = false
+  let wikiSwitchPending = false
   let themeSyncDispose: (() => void) | undefined
 
   /** Cancel the pending bounded retry (a new refresh supersedes it). */
@@ -203,13 +237,15 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     errorArea.append(p)
   }
 
-  const showFrame = (url: string): void => {
+  const showFrame = (url: string, wiki: string | undefined): void => {
     if (frame === undefined || errorArea === undefined) return
     errorArea.hidden = true
     // Only reveal the frame while the surface is on screen: doRefresh() can
     // still be in flight after the surface was hidden, and an unconditional
     // `hidden = false` would pop a closed surface back into view.
     frame.hidden = !visible
+    frameWiki = wiki
+    frameWikiKnown = true
     // Set the src only when the url changed, so an editor never loses unsaved
     // state on a status refresh.
     if (frame.dataset.loaded !== url) {
@@ -217,6 +253,10 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       frameLoaded = false
       frame.src = url
     }
+    // 换库这一步到此为止（url 没变也算了结：单库模式下两个 id 解析出同一条裸路径）。
+    // 迟到的 hash 请求现在才允许落地 —— src 真的换了就等 load 事件再调一次。
+    wikiSwitchPending = false
+    if (pendingHash !== null) applyPendingHash()
   }
 
   /**
@@ -235,6 +275,8 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    */
   const applyPendingHash = (): void => {
     if (pendingHash === null || frame === undefined || !frameLoaded) return
+    // 换库还没完成：此刻写 hash 只会落进**正在被替换**的那份文档。
+    if (wikiSwitchPending) return
     const hash = pendingHash
     const win = frame.contentWindow
     if (win === null) {
@@ -331,9 +373,9 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
         // WHICH knowledge base (v0.28.0): the focused one in multi mode, else the
         // bare path (= the default wiki, exactly as before).
         const bases = twProxyFor(payload.mode, hooks.wikiId?.(), payload.twProxy, payload.twProxyAbsolute)
-        showFrame(resolveTwUrl(bases.relative, bases.absolute))
+        showFrame(resolveTwUrl(bases.relative, bases.absolute), hooks.wikiId?.())
       } else if (typeof payload.url === 'string') {
-        showFrame(payload.url)
+        showFrame(payload.url, hooks.wikiId?.())
       } else {
         showError('服务未返回编辑器地址')
       }
@@ -437,8 +479,18 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
         refreshAttempts = 0
       }
     },
-    openTiddler(title: string): boolean {
+    openTiddler(title: string, wiki?: TwWikiTarget): boolean {
       if (disposed || !visible) return false
+      // `null` = 明确的默认库；字符串 = 那个库；`undefined` = 未指定（跟随 hook，
+      // 也就是当前焦点库）。三者的区别见 TwWikiTarget 的注释。
+      const wanted: string | null = wiki === null ? '' : wiki === undefined ? null : wiki
+      const resolved = wanted === null ? (hooks.wikiId?.() ?? '') : wanted
+      if (frameWikiKnown && (frameWiki ?? '') !== resolved) {
+        // 要换库：hash 必须等 frame 真的指到那个库之后再落。自己发起这次刷新
+        // ——调用方可能只是换了 hook（焦点库），刷新也可能来自别的入口。
+        wikiSwitchPending = true
+        void doRefresh()
+      }
       pendingHash = `#${encodeURIComponent(title)}`
       if (!started) {
         started = true
@@ -466,8 +518,9 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
 export interface TwFrameController {
   /** Reflect the surface's visibility; loads lazily on the first show. */
   setVisible(visible: boolean): void
-  /** Open a tiddler by title; false when this controller cannot serve it. */
-  openTiddler(title: string): boolean
+  /** Open a tiddler by title (and optionally its knowledge base); false when
+   *  this controller cannot serve it. */
+  openTiddler(title: string, wiki?: TwWikiTarget): boolean
   dispose(): void
 }
 
@@ -491,9 +544,9 @@ const liveFrames = new Set<TwFrameController>()
  * A controller answers false while hidden or disposed, so the center overlay
  * only opens when no visible side TW tab can take the link.
  */
-export function openTiddlerInLiveTab(title: string): boolean {
+export function openTiddlerInLiveTab(title: string, wiki?: TwWikiTarget): boolean {
   for (const controller of liveFrames) {
-    if (controller.openTiddler(title)) return true
+    if (controller.openTiddler(title, wiki)) return true
   }
   return false
 }
@@ -540,8 +593,8 @@ export function createTwFrameController(host: HTMLElement, signal: AbortSignal):
     setVisible(visible: boolean): void {
       surface.setVisible(visible)
     },
-    openTiddler(title: string): boolean {
-      return surface.openTiddler(title)
+    openTiddler(title: string, wiki?: TwWikiTarget): boolean {
+      return surface.openTiddler(title, wiki)
     },
     dispose(): void {
       if (disposed) return

@@ -131,7 +131,9 @@ await test('客户端接线：frame 与快速笔记弹窗都走 resolveTwUrl', (
   // v0.28.0：先经 twProxyFor(mode, wikiId, …) 得到**本库**的基址（相对与绝对都带 id），
   // 再交给 resolveTwUrl 决定用相对还是宿主的绝对基址。两步都不能少：
   assert.match(frame, /const bases = twProxyFor\(payload\.mode, hooks\.wikiId\?\.\(\), payload\.twProxy, payload\.twProxyAbsolute\)/)
-  assert.match(frame, /showFrame\(resolveTwUrl\(bases\.relative, bases\.absolute\)\)/)
+  // v0.28.11：showFrame 多了一个「这个地址是哪个库的」参数（换库时序要用它），
+  // 所以断言不再钉死右括号——关键是两个基址都进了 resolveTwUrl。
+  assert.match(frame, /showFrame\(resolveTwUrl\(bases\.relative, bases\.absolute\), hooks\.wikiId\?\.\(\)\)/)
   assert.match(frame, /import \{ RESTART_ENDPOINT, resolveTwUrl, twProxyFor \} from '\.\/endpoints\.ts'/)
   const note = readSrc('src/client/note-widget')
   // v0.28.0：快速笔记弹窗同样先经 twProxyFor 得到**本卡片目标库**的基址（写入与随后打开的

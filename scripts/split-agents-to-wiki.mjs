@@ -75,7 +75,7 @@ const NOTES = [
     sources: ['## 1.'],
     intro: '> 来源：原 `AGENTS.md` §1 的**完整版**（含每个版本的演进说明）。\n'
       + '> 当前值/速查见 `AGENTS.md` §2 的精简表；本笔记保留全量以便追溯「为什么是这样」。\n'
-      + '> 版本演进史本身也可以直接查 git log / README「版本记录」。\n',
+      + '> 版本演进史本身也可以直接查 git log / `docs/CHANGELOG.md`（README 自 v0.28.11 起不再放版本记录）。\n',
   },
   {
     title: 'dsh-tiddlywiki 开发·发布流程与维护规则',

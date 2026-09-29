@@ -119,5 +119,13 @@ npm publish    # 版本号在 package.json；文件白名单见 files 字段
 
 `tiddlywiki` 依赖体较大（含全部语言包/插件）。
 
+### 发布时要动的地方（完整清单见 AGENTS.md §4）
+
+1. `package.json` 的 `version`；
+2. **本仓库的 `docs/CHANGELOG.md` 顶部**新增一条 `- **vX.Y.Z**（日期）：…` —— 版本历史只住在这里，README 不再放逐版本条目（`scripts/verify-version-consistency.mjs` 会把「README 又长出版本条目」判红）；
+3. `AGENTS.md` §2 速查表的版本行（同一个 commit 里改）。
+
+三处版本号必须一致，由 `npm run verify:static` 里的版本守门盯着。
+
 ---
 

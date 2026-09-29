@@ -21,6 +21,14 @@ import { alignDockEntry } from './dock-align.ts'
 import { isEditorPopupOpen, isEditorPopupBlank, closeEditorPopup } from './editor-popup.ts'
 
 /**
+ * Session-store reader the shell supplies on session-scoped slots (v0.28.8).
+ * Re-declared structurally here (no SDK import): the selector needs it to tell
+ * a BLANK session from an active one, and it must travel through this entry
+ * because the slot hands props to the ENTRY, not to the child it renders.
+ */
+type SessionStoreReader = (selector: (state: unknown) => unknown) => unknown
+
+/**
  * Build the dock entry component bound to one note-widget handle. Called once
  * per client mount; the returned component is what the slot renders.
  *
@@ -37,9 +45,9 @@ import { isEditorPopupOpen, isEditorPopupBlank, closeEditorPopup } from './edito
  */
 export function createQuickNoteDock(
   note: NoteWidgetHandle,
-  scope?: (props: { sessionId?: string }) => React.ReactElement | null,
-): (props: { sessionId?: string }) => React.ReactElement {
-  return function QuickNoteDock(props: { sessionId?: string }) {
+  scope?: (props: { sessionId?: string; useSessions?: SessionStoreReader }) => React.ReactElement | null,
+): (props: { sessionId?: string; useSessions?: SessionStoreReader }) => React.ReactElement {
+  return function QuickNoteDock(props: { sessionId?: string; useSessions?: SessionStoreReader }) {
     const [open, setOpen] = React.useState(false)
     // 点击行为由 ui.quickNoteMode 决定：native=直达 TW 原生编辑页（弹窗）；
     // card=Markdown 卡片。null = 配置尚未加载（点击时按配置实时分发）。
@@ -82,8 +90,13 @@ export function createQuickNoteDock(
       // 知识库选择器排在按钮**前面**（同一行、同一基线）。它的 sessionId 必须
       // 从本条目透传下去 —— 槽位的 scope=session，props 是发给**条目组件**的，
       // 子元素不会自动拿到（v0.28.7：漏了这一步选择器会永远读不到会话 id）。
+      // useSessions（v0.28.11）同理：选择器要靠它认出「空白会话」，而空白/活动
+      // 两种状态下选择器该待在哪儿是不同的（见 scope-seat.ts）。
       // scope 为 undefined 时（单库安装）什么都不渲染，DOM 与以前逐字相同。
-      scope?.({ ...(props.sessionId !== undefined ? { sessionId: props.sessionId } : {}) }) ?? null,
+      scope?.({
+        ...(props.sessionId !== undefined ? { sessionId: props.sessionId } : {}),
+        ...(props.useSessions !== undefined ? { useSessions: props.useSessions } : {}),
+      }) ?? null,
       React.createElement(
         'button',
         {

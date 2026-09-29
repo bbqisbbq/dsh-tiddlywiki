@@ -361,7 +361,14 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
 
   return React.createElement(
     'div',
-    { className: 'dsh-tw-summary', 'data-dsh-tw-summary': 'true' },
+    {
+      className: 'dsh-tw-summary',
+      'data-dsh-tw-summary': 'true',
+      // 片段里的裸 `/tw/#标题` 链接由全局拦截器接管；把本会话作用域的库挂在根上，
+      // 拦截器才能把它们开在**这个**库里（v0.28.11，见 tool-views.ts 的拦截器）。
+      // wikiId 为 undefined 时不渲染该属性，DOM 与以前逐字相同。
+      'data-dsh-tw-wiki': wikiId,
+    },
     React.createElement(
       'div',
       { className: 'dsh-tw-summary-bar' },

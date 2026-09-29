@@ -24,6 +24,8 @@ import { fetchStatus } from './status-cache.ts'
 import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
 // 切库后要立刻失效其它界面的作用域缓存（v0.28.8，见 wiki-scope.ts）。
 import { invalidateSessionWikiId } from './wiki-scope.ts'
+// 空白会话那一格（selector.context）是否已经拿着选择器（v0.28.11）。
+import { isBlankSeatMounted, subscribeBlankSeat } from './scope-seat.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
 
@@ -74,6 +76,19 @@ function isBlankSession(props: DockProps): boolean {
 }
 
 /**
+ * React binding for the blank-seat ownership flag (v0.28.11).
+ *
+ * The flag is written by `mountScopeSeat()` (possibly BEFORE this component
+ * mounts, e.g. a re-render after the seat appeared), so the initial state must
+ * be read, not assumed false — and the subscription keeps it live.
+ */
+function useBlankSeatMounted(): boolean {
+  const [mounted, setMounted] = React.useState<boolean>(() => isBlankSeatMounted())
+  React.useEffect(() => subscribeBlankSeat(() => { setMounted(isBlankSeatMounted()) }), [])
+  return mounted
+}
+
+/**
  * 会话级知识库选择器（v0.28.0）。
  *
  * 它**不是**一个独立的 dock 条目，而是渲染在快速笔记那一行**里面**的元素
@@ -89,6 +104,7 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
     const sessionId = typeof props.sessionId === 'string' && props.sessionId.length > 0 ? props.sessionId : undefined
     // Hooks must run unconditionally — read blankness before any early return.
     const blank = isBlankSession(props)
+    const blankSeat = useBlankSeatMounted()
     const [wikis, setWikis] = React.useState<WikiOption[]>([])
     const [scope, setScope] = React.useState('')
     const [note, setNote] = React.useState<string | undefined>(undefined)
@@ -124,6 +140,11 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
     // blankOnly（v0.28.8）：这一挂载点只在「新会话」阶段显示，避免与会话内
     // quick-note 行里的同一个选择器重复出现（见 WikiScopeDockOptions 的说明）。
     if (blankOnly && !blank) return null
+    // 让位（v0.28.11）：新会话里 selector.context 那一格已经拿着选择器了，dock 里
+    // 这一个（与快速笔记同一行）必须消失——作者 2026-09-29 报障「有两个知识库选择」。
+    // 反向也成立：本机 shell 没有那一格时 blankSeat 恒为 false，这里照旧渲染，
+    // 空白会话里仍有唯一一个选择器。
+    if (!blankOnly && blank && blankSeat) return null
 
     const apply = (next: string): void => {
       setBusy(true)

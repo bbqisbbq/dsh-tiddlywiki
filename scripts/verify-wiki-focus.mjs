@@ -153,28 +153,42 @@ test('会话选择器：与快速笔记**同一行**（v0.28.7 合并；作者�
   //  sessionId 这个字段存在，不再钉死整个 interface 的字面写法。）
   assert.match(dockSrc, /sessionId\?: string/, '选择器组件的 props 必须含 sessionId（该槽位 scope=session）')
   const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
-  assert.match(quick, /scope\?: \(props: \{ sessionId\?: string \}\)/, '快速笔记条目必须接受 scope（同一行渲染）')
+  assert.match(quick, /scope\?: \(props: \{ sessionId\?: string; useSessions\?: SessionStoreReader \}\)/, '快速笔记条目必须接受 scope（同一行渲染），并透传 useSessions（v0.28.11：选择器靠它认出空白会话）')
   assert.match(quick, /sessionId: props\.sessionId/, '条目必须把 sessionId 透传给 scope（否则选择器拿不到会话）')
+  assert.match(quick, /useSessions: props\.useSessions/, '条目必须把 useSessions 透传给 scope（否则 dock 里的选择器认不出空白会话，让位不了 → 一屏两个）')
 })
 
-test('新会话（空白会话）的知识库选择器：走 selector.context，且不与 dock 重复（v0.28.8，需求 9）', () => {
+test('新会话（空白会话）的知识库选择器：走 selector.context，且**不许**再往 dock 挂第二个（v0.28.11，作者报障「有两个」）', () => {
   // 需求原文：「新会话时像 dsh-client-ui-git-graph 这个插件在模式选择后面增加个知识库选择」。
   // 参考实现用的是 `conversation.input.selector.context`（模式/预设选择器旁边那一格），
-  // 并且**声明感知 + 超时回落**——因为不是每个 shell 都声明这个洞，裸 register 会抛。
+  // 并且**声明感知**——因为不是每个 shell 都声明这个洞，裸 register 会抛。
+  //
+  // v0.28.8 的回落是「往 dock 再注册一个 blank-only 条目」，而 dock 里**本来就有**
+  // 同一个选择器（快速笔记那一行的 scope 子元素，v0.28.7）。本机 shell 恰好不声明
+  // selector.context（app.asar 里连这个字符串都没有 → 回落是常态），于是新会话里
+  // 两个选择器同时渲染：一个和快速笔记同一行、一个独占一行（作者 2026-09-29 报障）。
+  // 正确做法：dock 那个就是**唯一**的家，context 那一格是空白会话的升级位；谁在
+  // 用由 scope-seat 的 blankSeat 标记协调。
   const seat = readFileSync(path.join(repoRoot, 'src/client/scope-seat.ts'), 'utf8')
   const indexSrc = readFileSync(path.join(repoRoot, 'src/client/index.ts'), 'utf8')
   const dockSrc = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
 
   assert.match(seat, /conversation\.input\.selector\.context/, '必须优先用 selector.context —— 那才是「模式选择后面」')
-  assert.match(seat, /conversation\.input\.dock/, '本机 shell 未声明 selector.context 时必须能回落到 dock')
-  // 两个座位都必须经 inject（声明感知）；裸 register 到未声明的槽位会抛。
+  // 声明感知：裸 register 到未声明的槽位会抛。
   assert.match(seat, /slots\.inject\(SELECTOR_CONTEXT_SLOT/, 'selector.context 必须经 inject 注册（声明感知）')
-  assert.match(seat, /slots\.inject\(INPUT_DOCK_SLOT/, 'dock 回落同样必须经 inject')
+  // 反向：**不许**再出现「回落注册 dock 条目」这条路（它就是重复的来源）。
+  // 判据只在代码上，不在注释上 —— 这个模块的说明必须能解释这段历史。
+  const seatCode = seat.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '')
+  assert.ok(!/conversation\.input\.dock|INPUT_DOCK_SLOT/.test(seatCode), '不得再回落注册 dock 条目 —— dock 里已经有同一个选择器，两个同时渲染就是「新会话两个知识库选择」')
+  assert.ok(!/fallbackToDock|CONTEXT_FALLBACK_MS/.test(seatCode), '回落计时器必须一起删掉（留着它迟早又会挂出第二个条目）')
+  assert.match(indexSrc, /createWikiScopeDock\(\{ blankOnly: true \}\)/, 'context 那一格的组件必须 blankOnly（否则活动会话里会多出第二个选择器）')
   assert.match(indexSrc, /mountScopeSeat\(/, 'index.ts 必须真的挂上这个座位')
-  // 「回落时不许重复渲染」：dock 里已经有 quick-note 行带的选择器，所以这条挂载
-  // 必须是 blankOnly —— 否则同一个选择器会在 dock 里出现两次。
-  assert.match(indexSrc, /createWikiScopeDock\(\{ blankOnly: true \}\)/, '回落挂载必须是 blankOnly，避免与 quick-note 行里的选择器重复')
-  assert.match(dockSrc, /blankOnly/, '选择器组件必须支持 blankOnly')
+
+  // 让位协议：context 那一格挂上了 → dock 里的选择器在空白会话必须返回 null。
+  assert.match(seat, /setBlankSeatMounted\(true\)/, 'context 那一格挂上时必须发布 blankSeat 标记')
+  assert.match(seat, /setBlankSeatMounted\(false\)/, '注册失败 / dispose 时必须把标记交还（否则空白会话会一个选择器都没有）')
+  assert.match(dockSrc, /isBlankSeatMounted/, 'dock 里的选择器必须查这个标记')
+  assert.match(dockSrc, /if \(!blankOnly && blank && blankSeat\) return null/, '空白会话里让位的判据必须同时含「非 blankOnly」「会话是空白」「那一格在挂着」三个条件')
   // 空白会话判定：从 session store 读 blank，且拿不到时保守当作「非空白」。
   assert.match(dockSrc, /useSessions/, '必须能从 session store 读 blank 标记')
   assert.match(dockSrc, /isBlankSession/, '空白会话判定必须收敛到一个函数里')
@@ -622,6 +636,33 @@ test('设置页分页：多库时按「总览/本库配置/全局」分开，且
   assert.match(settings, /const showGlobal = !multi \|\| activeTab === 'global'/, '单库必须始终渲染全局配置')
   // 点「配置」要跳到「本库配置」，否则那次点击看起来没反应。
   assert.match(settings, /if \(!configuring\) activeTab = 'library'/, '点「配置」应切到「本库配置」页')
+})
+
+test('回复流卡片「在 TW 打开」必须带上是哪个库（作者 2026-09-29 报障：跳到最后打开的库）', () => {
+  // 症状：多库下点卡片上的「在 TW 打开」（或卡片正文 / 列表行里的链接），面板打开的
+  // 是**最后一次看过的那个库**。
+  // 根因：卡片把会话作用域（wikiId）塞进了 openTiddler 的事件 detail，但 panel 的
+  // 事件处理只读了 title —— 面板与右栏都按**焦点库**加载 `/tw/<id>/`，链接的库被整个
+  // 丢掉。附带问题：`undefined` 当时既是"默认库"又是"未指定"，根本区分不开。
+  const panel = readFileSync(path.join(repoRoot, 'src/client/panel.ts'), 'utf8')
+  const views = readFileSync(path.join(repoRoot, 'src/client/tool-views.ts'), 'utf8')
+  const summary = readFileSync(path.join(repoRoot, 'src/client/session-summary.ts'), 'utf8')
+  const frame = readFileSync(path.join(repoRoot, 'src/client/tw-frame.ts'), 'utf8')
+
+  // ① 卡片必须说得出"我来自哪个库"：undefined（默认库）要显式传 null，不能省略。
+  assert.match(views, /openTiddler\(title, wikiId === undefined \? null : wikiId\)/, '卡片/列表行必须把「默认库」显式传成 null（省略 = 未指定 → 面板留在焦点库上）')
+  // ② panel 必须真的读出来，并把焦点库切过去（两个 TW 界面都按焦点库加载）。
+  assert.match(panel, /detail\?\.wiki === null/, '必须区分「明确默认库」（null）与「未指定」')
+  assert.match(panel, /if \(target !== getFocusWiki\(\)\) setFocusWiki\(target\)/, '链接自带库时必须先把焦点库切过去')
+  assert.match(panel, /openTiddlerInLiveTab\(title, wiki\)/, '右栏 TW tab 也要拿到目标库')
+  assert.match(panel, /surface\.openTiddler\(title, wiki\)/, '中央面板也要拿到目标库（否则又回落到焦点库）')
+  // ③ 内核：换库要先换、再跳 hash —— 否则 hash 落进旧文档，随后整页重载把它吞掉。
+  assert.match(frame, /wikiSwitchPending/, '内核必须有「换库进行中」的状态')
+  assert.match(frame, /if \(wikiSwitchPending\) return/, '换库未完成时 applyPendingHash 必须等待（不然导航会静默丢失）')
+  // ④ 裸 `/tw/#标题` 的链接（Agent 正文、渲染片段）跟随所在卡片 / 汇总面板的库。
+  assert.match(views, /closest\('\[data-dsh-tw-wiki\]'\)/, '拦截器必须从所在卡片取库（裸路径 = 默认库别名，照它走会开错库）')
+  assert.match(views, /'data-dsh-tw-wiki': wikiId/, '工具卡根节点必须带上本会话的库')
+  assert.match(summary, /'data-dsh-tw-wiki': wikiId/, '会话汇总面板同样要带（它的片段里也是裸链接）')
 })
 
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)

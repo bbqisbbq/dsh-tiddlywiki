@@ -343,6 +343,55 @@ await test('同源就绪：走 location.hash（不整页重载）', async () => 
   surface.dispose()
 })
 
+await test('换库：目标库 ≠ 当前库时必须先换库、再把 hash 落到新文档（v0.28.11）', async () => {
+  // 症状（作者 2026-09-29 报障）：多库下点回复流卡片上的「在 TW 打开」，面板跳到
+  // **最后一次打开的库**。修法有两半：panel 把链接自带的库切进焦点库（源码级断言在
+  // verify-wiki-focus.mjs），内核这一半是——换库必须先整页换到 `/tw/<id>/`，hash 要
+  // 等新文档就绪才落；先落 hash 会被随后的整页重载连同 pendingHash 一起吞掉。
+  invalidateStatus()
+  requests = []
+  statusMode = 'ok'
+  let focus = 'books'
+  statusPayload = {
+    ok: true,
+    status: 'running',
+    twProxy: '/dsh-tiddlywiki/tw/',
+    mode: 'multi',
+    defaultId: 'books',
+    wikis: [{ id: 'books' }, { id: 'work' }],
+  }
+  const BOOKS = 'http://127.0.0.1:3080/dsh-tiddlywiki/tw/books/'
+  const WORK = 'http://127.0.0.1:3080/dsh-tiddlywiki/tw/work/'
+  const surface = createTwFrameSurface(SKIN, { wikiId: () => focus })
+  const view = surface.build()
+  const frame = view.children[0].children[0]
+  const firstDoc = { $tw: {}, location: { hash: '' } }
+  frame.contentWindow = firstDoc
+  surface.setVisible(true)
+  await settle()
+  frame.fire('load')
+  assert.equal(frame.dataset.loaded, BOOKS, '先按焦点库载入 books')
+
+  // 用户点了来自 work 的卡片：panel 先 setFocusWiki('work')，再把目标库一起传进来。
+  focus = 'work'
+  assert.equal(surface.openTiddler('某条目', 'work'), true, '可见时内核应接受请求')
+  assert.equal(firstDoc.location.hash, '', '换库未完成时不得把 hash 写进正在被替换的旧文档')
+  await settle()
+  assert.equal(frame.dataset.loaded, WORK, '必须先整页换到目标库')
+  assert.equal(frame.srcAssignments.at(-1), WORK, '换库 = 换 src（一个 iframe 不能同时装两个编辑器）')
+
+  // 新文档就绪 → 迟到的 hash 现在落地。
+  const nextDoc = { $tw: {}, location: { hash: '' } }
+  frame.contentWindow = nextDoc
+  frame.fire('load')
+  assert.equal(
+    nextDoc.location.hash,
+    `#${encodeURIComponent('某条目')}`,
+    'hash 必须在换库之后落到新文档上（否则导航静默丢失，用户停在库首页）',
+  )
+  surface.dispose()
+})
+
 await test('跨源/未就绪：兜底整页加载 = dataset.loaded 基准 + hash', async () => {
   const { surface, frame } = await readySurface({ contentWindow: null })
   const before = frame.srcAssignments.length

@@ -29,8 +29,8 @@
 import type { PanelState } from './state.ts'
 import { ENTRY_SELECTOR } from './sidebar-entry.ts'
 // 事件名与 frame 生命周期助手都只有一份，住在 tw-frame.ts（内核）。
-import { ACTIVATE_EVENT, createTwFrameSurface, openTiddlerInLiveTab, type TwFrameSkin } from './tw-frame.ts'
-import { getFocusWiki } from './wiki-focus.ts'
+import { ACTIVATE_EVENT, createTwFrameSurface, openTiddlerInLiveTab, type TwFrameSkin, type TwWikiTarget } from './tw-frame.ts'
+import { getFocusWiki, setFocusWiki } from './wiki-focus.ts'
 
 /**
  * Center-column targets, most-specific shell generation first. The official
@@ -89,17 +89,20 @@ const OPEN_TIDDLER_EVENT = 'dsh-tw-open-tiddler'
 /**
  * Ask the mounted panel to open `title` in the TW native page.
  *
- * `wikiId` (v0.28.8) names the knowledge base the link belongs to. In multi
- * mode the panel must load `/tw/<id>/` and focus that wiki — without it the
- * panel would show the default wiki while the card came from another one. Omit
- * for the default wiki (single-wiki installs: every call, as before).
+ * `wiki` (v0.28.11) names the knowledge base the link belongs to — see
+ * `TwWikiTarget` for the three-way distinction. The panel/rightbar load
+ * `/tw/<id>/` according to the GUI's FOCUS wiki, so a link that knows its wiki
+ * must also move the focus there; without that, multi-wiki installs opened the
+ * tiddler in whichever wiki was opened last (the reported bug).
  */
-export function openTiddler(title: string, wikiId?: string): void {
+export function openTiddler(title: string, wiki?: TwWikiTarget): void {
   if (typeof document === 'undefined') return
   if (typeof title !== 'string' || title.length === 0) return
-  document.dispatchEvent(new CustomEvent(OPEN_TIDDLER_EVENT, {
-    detail: typeof wikiId === 'string' && wikiId.length > 0 ? { title, wikiId } : { title },
-  }))
+  const detail: { title: string; wiki?: string | null } = { title }
+  // 只在"说得清"时带上 wiki：省略 = 未指定（跟随焦点库），null = 明确要默认库。
+  if (wiki === null) detail.wiki = null
+  else if (typeof wiki === 'string' && wiki.length > 0) detail.wiki = wiki
+  document.dispatchEvent(new CustomEvent(OPEN_TIDDLER_EVENT, { detail }))
 }
 
 /**
@@ -190,16 +193,27 @@ export function mountPanel(state: PanelState): () => void {
   }
 
   const onOpenTiddler = (event: Event): void => {
-    const detail = (event as CustomEvent).detail as { title?: unknown } | undefined
+    const detail = (event as CustomEvent).detail as { title?: unknown; wiki?: unknown } | undefined
     const title = typeof detail?.title === 'string' && detail.title.length > 0 ? detail.title : ''
     if (title.length === 0) return
+    // 链接自带的知识库（v0.28.11）：null = 明确要默认库；字符串 = 该库；
+    // 未给出 = 未指定（Agent 正文里的裸 /tw/#标题 → 跟随当前焦点库）。
+    const wiki: TwWikiTarget = detail?.wiki === null
+      ? null
+      : typeof detail?.wiki === 'string' && detail.wiki.length > 0 ? detail.wiki : undefined
+    // 先切「焦点库」再路由：两个 TW 界面都按焦点库加载 `/tw/<id>/`，不切就等于
+    // 打开**上一次**看过的那个库（作者 2026-09-29 报障）。
+    if (wiki !== undefined) {
+      const target = wiki === null ? undefined : wiki
+      if (target !== getFocusWiki()) setFocusWiki(target)
+    }
     // 侧边栏（rightbar）的 TW tab 可见时，链接直接在那里打开（与聊天并排）；
     // 否则退回中央面板。互斥由 tw-frame.ts 共享的 dsh-panel-activate 协议保证。
-    if (openTiddlerInLiveTab(title)) return
+    if (openTiddlerInLiveTab(title, wiki)) return
     // 顺序有意义：applyActive 由 openPanel() 同步触发，先把内核切到可见，
     // openTiddler() 才会被内核接受（否则内核以 visible=false 拒绝，链接丢失）。
     state.openPanel()
-    surface.openTiddler(title)
+    surface.openTiddler(title, wiki)
   }
 
   const applyActive = (): void => {

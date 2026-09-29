@@ -208,8 +208,10 @@ function openTw(title: string, wikiId?: string): (event: React.MouseEvent) => vo
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
     event.preventDefault()
     event.stopPropagation()
-    // wikiId 透传（v0.28.8）：多库时把面板焦点切到该库，否则会打开默认库。
-    openTiddler(title, wikiId)
+    // 卡片**知道**自己来自哪个库（会话作用域，v0.28.8）：`undefined` 在这里是
+    // 「默认库」的确切答案，必须传 null——省略就退化成「未指定」，多库下面板会
+    // 留在当前焦点库上（作者 2026-09-29 报障：点开跳到最后打开的库）。
+    openTiddler(title, wikiId === undefined ? null : wikiId)
   }
 }
 
@@ -261,7 +263,13 @@ function ToolCardShell(props: {
     : null
   return React.createElement(
     'div',
-    { className: 'dsh-tw-toolcard' },
+    {
+      className: 'dsh-tw-toolcard',
+      // 卡片正文里的原生链接（Agent 写的裸 `/tw/#标题`）由全局拦截器接管；拦截器
+      // 需要一个「这张卡来自哪个库」的答案，所以把作用域挂到卡片根上（v0.28.11）。
+      // wikiId 为 undefined（默认库/单库）时不渲染该属性，DOM 与以前逐字相同。
+      'data-dsh-tw-wiki': wikiId,
+    },
     head,
     meta,
     React.createElement('div', { className: 'dsh-tw-toolcard-body' }, props.children),
@@ -865,6 +873,10 @@ export function registerToolViews(slots: {
  * and giving them its own `target="_blank"` + `openExternalLink` onClick). Both
  * must be matched, otherwise the click falls through to DSH's external-link
  * handler and the note opens in a new browser tab instead of the TW panel.
+ *
+ * The knowledge base comes from the LINK when it names one (`/tw/<id>/`), else
+ * from the enclosing card's `data-dsh-tw-wiki` (v0.28.11) — a bare `/tw/` is
+ * the default-wiki alias, and following it would open the wrong library.
  */
 export function installWikiLinkInterceptor(): () => void {
   const onDocumentClick = (event: MouseEvent): void => {
@@ -885,14 +897,17 @@ export function installWikiLinkInterceptor(): () => void {
     // Matching only the bare form would send a multi-wiki click to DSH's
     // external-link handler — i.e. a new browser tab instead of the TW panel.
     let title: string | null = null
-    let wikiId: string | undefined
+    let wiki: string | undefined
     try {
       const url = new URL(href, window.location.origin)
       if (url.origin === window.location.origin && url.hash.length > 1) {
         const parsed = matchTwProxyPath(url.pathname)
         if (parsed !== null) {
           title = url.hash.substring(1)
-          wikiId = parsed
+          // 裸 `/tw/` 解析出 undefined = 「链接没写库」（Agent 正文里的
+          // `[标题](/dsh-tiddlywiki/tw/#标题)` 就是这样），下面再拿所在卡片的
+          // 作用域补上；`/tw/<id>/` 则是明确答案。
+          wiki = parsed
         }
       }
     } catch {
@@ -906,7 +921,16 @@ export function installWikiLinkInterceptor(): () => void {
     } catch {
       /* keep the raw hash when decoding fails */
     }
-    openTiddler(title, wikiId)
+    // 没写库的链接跟随**所在卡片**的库（v0.28.11）：卡片正文是原生片段，里面的
+    // 链接一律是裸路径（render bundle 只认 `/tw/#$uri_encoded$`），照裸路径走就等于
+    // 「默认库」，会把已作用域到别的库的卡片开到默认库去（打不开或打开同名条目）。
+    // 卡片外（助手正文里的链接）仍按未指定处理：没有可信答案时跟随焦点库最好。
+    if (wiki === undefined) {
+      const card = anchor.closest('[data-dsh-tw-wiki]')
+      const attr = card?.getAttribute('data-dsh-tw-wiki')
+      if (typeof attr === 'string' && attr.length > 0) wiki = attr
+    }
+    openTiddler(title, wiki)
   }
   document.addEventListener('click', onDocumentClick, true)
   return () => document.removeEventListener('click', onDocumentClick, true)
