@@ -17,7 +17,7 @@
 | `tiddlywiki_delete` | 删除（幂等）。默认**软删除**进 `$:/dsh-tiddlywiki/trash/`，`permanent=true` 才真删；支持 `expectedModified`/`expectedRevision`/`force` 乐观并发（读后被改动则拒绝，不把人类的新改动丢进回收站） |
 | `tiddlywiki_trash` | 回收站：`action=list\|restore\|empty`（索引读不到或损坏时显式报错，绝不把回收站当空的重建） |
 | `tiddlywiki_backlinks` | 反向链接：谁用 `[[标题]]`/`{{标题}}` 引用了它、谁把它当标签 |
-| `tiddlywiki_attach` | 把**本机文件或公网 http(s) 地址**存成二进制附件（图片/PDF/…），可嵌入某篇笔记；URL 走 SSRF 守卫；**同名 tiddler 已存在时默认拒绝**（避免静默覆盖笔记），确认覆盖要传 `force: true`（tags/自定义字段仍保留） |
+| `tiddlywiki_attach` | 把**本机文件或公网 http(s) 地址**存成附件（图片/PDF/… 等二进制存 **`type` + base64 正文**；`text/markdown`·`text/plain`·`application/json` 等**文本**存 `type` + **纯文本正文**，这样 TW 才渲染得出来、也才搜得到 —— v0.30.22），可嵌入某篇笔记；URL 走 SSRF 守卫；**同名 tiddler 已存在时默认拒绝**（避免静默覆盖笔记），确认覆盖要传 `force: true`（tags/自定义字段仍保留） |
 | `tiddlywiki_lint` | 知识库体检（**只读**）：垃圾标签 / 死链 / 空笔记 / 缺内容类型的类 Markdown 笔记 / **时效性内容**（`valid-until`·`review-after` 过期，以及「版本号或 done 标签 + 长期未改动」的**候选**，`staleAfterDays` 可调） |
 | `tiddlywiki_git_sync` | `action: pull\|push\|sync` —— **作用于所有配了 `git.remote` 的库**（v0.30.5）：多库各自独立仓库时逐仓库同步、**每个仓库只跑一次**（多库共用一个工作树时不会重复 pull/commit/push），一个仓库冲突不影响其余；回执逐仓库标注「哪个库 @ 哪个仓库」，没配 remote 的库被列出来而不是静默略过 |
 | `tiddlywiki_git_resolve` | pull 冲突后按 tiddler 二选一（`keep-local\|keep-remote`） |
