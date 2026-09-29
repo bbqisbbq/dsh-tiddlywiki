@@ -27,6 +27,7 @@
  * @module dsh-tiddlywiki/client/tw-frame
  */
 import { t } from './i18n.ts'
+import { createHashNavigator } from './tw-frame-hash.ts'
 import { resolveTwUrl, twProxyFor } from './endpoints.ts'
 import { fetchStatus, type StatusPayload } from './status-cache.ts'
 import { getFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
@@ -286,68 +287,13 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    * fall back to a full reload with the hash, which TW processes at startup.
    * A newer open request supersedes an in-flight wait.
    */
-  const applyPendingHash = (): void => {
-    if (surfaceState.pendingHash === null || frame === undefined || !surfaceState.frameLoaded) return
-    // 换库还没完成：此刻写 hash 只会落进**正在被替换**的那份文档。
-    if (surfaceState.wikiSwitchPending) return
-    const hash = surfaceState.pendingHash
-    const win = frame.contentWindow
-    if (win === null) {
-      fallbackLoad(hash)
-      return
-    }
-    const tryOnce = (attempt: number): void => {
-      if (disposed) return // unmounted: do not keep waiting or touch the frame
-      if (surfaceState.pendingHash !== hash) return // superseded by a newer request
-      // Cross-origin frame (v0.26.7): on the DSH desktop app the TW frame is
-      // loaded from the host's loopback HTTP origin — the only way TW's
-      // TiddlyWeb sync adaptor will load there — which makes it a different
-      // origin than the DSH page. Reading `$tw` inside it raises SecurityError,
-      // so we cannot watch for TW's boot: go straight to the full
-      // reload-with-hash fallback (TW honours the hash at startup).
-      let frameIsTw = false
-      try {
-        const frameTw = win as { $tw?: unknown }
-        frameIsTw = typeof frameTw.$tw === 'object' && frameTw.$tw !== null
-      } catch {
-        fallbackLoad(hash)
-        return
-      }
-      if (!frameIsTw) {
-        if (attempt < 40) {
-          // Tracked so dispose() cancels the chain (v0.19.1 — the untracked
-          // 40×150ms retry kept the iframe/closure alive after unmount).
-          const timer = window.setTimeout(() => {
-            surfaceState.hashWaitTimers.delete(timer)
-            tryOnce(attempt + 1)
-          }, 150)
-          surfaceState.hashWaitTimers.add(timer)
-          return
-        }
-        fallbackLoad(hash)
-        return
-      }
-      surfaceState.pendingHash = null
-      try {
-        if (win.location.hash !== hash) win.location.hash = hash
-      } catch {
-        fallbackLoad(hash)
-      }
-    }
-    tryOnce(0)
-  }
-
-  const fallbackLoad = (hash: string): void => {
-    if (disposed || frame === undefined) return // never drive a detached frame
-    if (surfaceState.pendingHash === hash) surfaceState.pendingHash = null
-    // Guard against the never-loaded frame: `frame.src` is '' before showFrame
-    // ran, and `'' + '#title'` resolves against the DSH page URL, which loads
-    // the GUI into the iframe (v0.22.3).
-    const base = loadableFrameUrl(frame.dataset)
-    if (base === null) return
-    const next = `${base.split('#')[0]}${hash}`
-    if (frame.src !== next) frame.src = next
-  }
+  // v0.30.40：hash 导航抽进 `tw-frame-hash.ts`（纯搬迁；只读状态用访问器传，避免碰同名接口属性）。
+  const { applyPendingHash } = createHashNavigator({
+    surfaceState,
+    getFrame: () => frame,
+    isDisposed: () => disposed,
+    isWikiSwitchPending: () => surfaceState.wikiSwitchPending,
+  })
 
   const doRefresh = async (): Promise<void> => {
     clearRetry()

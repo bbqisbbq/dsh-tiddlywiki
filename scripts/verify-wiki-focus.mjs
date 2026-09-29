@@ -722,7 +722,9 @@ test('回复流卡片「在 TW 打开」必须带上是哪个库（作者 2026-0
   // 所以按族读 —— 断言的是「卡片说得出自己来自哪个库」这条规则，不是它在哪个文件里。
   const views = readFamily(repoRoot, 'src/client/tool-views')
   const summary = readFileSync(path.join(repoRoot, 'src/client/session-summary.ts'), 'utf8')
+  // v0.30.40：hash 导航抽进了 tw-frame-hash.ts，内核那半段的断言必须把两个族成员一起读
   const frame = readFileSync(path.join(repoRoot, 'src/client/tw-frame.ts'), 'utf8')
+    + readFileSync(path.join(repoRoot, 'src/client/tw-frame-hash.ts'), 'utf8')
 
   // ① 卡片必须说得出"我来自哪个库"：undefined（默认库）要显式传 null，不能省略。
   assert.match(views, /openTiddler\(title, wikiId === undefined \? null : wikiId\)/, '卡片/列表行必须把「默认库」显式传成 null（省略 = 未指定 → 面板留在焦点库上）')
@@ -732,10 +734,10 @@ test('回复流卡片「在 TW 打开」必须带上是哪个库（作者 2026-0
   assert.match(panel, /openTiddlerInLiveTab\(title, wiki\)/, '右栏 TW tab 也要拿到目标库')
   assert.match(panel, /surface\.openTiddler\(title, wiki\)/, '中央面板也要拿到目标库（否则又回落到焦点库）')
   // ③ 内核：换库要先换、再跳 hash —— 否则 hash 落进旧文档，随后整页重载把它吞掉。
-  assert.match(frame, /wikiSwitchPending/, '内核必须有「换库进行中」的状态')
+  assert.match(frame, /[Ww]ikiSwitchPending/, '内核必须有「换库进行中」的状态（v0.30.40 起是访问器形式）')
   // v0.30.39：判据从「钉变量名」改成「钉语义」—— wikiSwitchPending 现在住在 surfaceState 上，
   // `(?:\w+\.)?` 让断言只要求「换库未完成时返回」这件事成立，不再锁定它住在哪。
-  assert.match(frame, /if \((?:\w+\.)?wikiSwitchPending\) return/, '换库未完成时 applyPendingHash 必须等待（不然导航会静默丢失）')
+  assert.match(frame, /if \(.*[Ww]ikiSwitchPending.*\) return/, '换库未完成时 applyPendingHash 必须等待（不然导航会静默丢失）')
   // ④ 裸 `/tw/#标题` 的链接（Agent 正文、渲染片段）跟随所在卡片 / 汇总面板的库。
   assert.match(views, /closest\('\[data-dsh-tw-wiki\]'\)/, '拦截器必须从所在卡片取库（裸路径 = 默认库别名，照它走会开错库）')
   assert.match(views, /'data-dsh-tw-wiki': wikiId/, '工具卡根节点必须带上本会话的库')
