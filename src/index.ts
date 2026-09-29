@@ -21,7 +21,7 @@
 import type { IncomingMessage } from 'node:http'
 import { AutoCommitter, GitFace } from './host/git.ts'
 import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
-import { ConfigStore, DARK_PALETTE_DEFAULT, type PluginConfigShape } from './host/config.ts'
+import { ConfigStore, type PluginConfigShape } from './host/config.ts'
 import { registerAdminRoutes, resolveTwRoot, type AdminDeps, type AdminWikisApplyResult, type AdminWikisView } from './host/admin.ts'
 import { checkAllSeeds, runSeedById, removeSeedById } from './host/seeds.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
@@ -52,13 +52,15 @@ import {
   type WikiEntry,
   type WikiRegistry,
 } from './host/wiki-registry.ts'
-import { READY_TIMEOUT_DEFAULT_MS } from './host/ready-policy.ts'
 import { ANON_USERNAME, PATH_PREFIX, TW_PROXY_PATH, TW_PROXY_PREFIX, WikiServer, proxyBaseFor } from './host/wiki.ts'
 import { dshHomePath, defineTool } from './sdk.ts'
 // v0.28.8：apply() 太大，按「自洽的子面」拆到 index-*.ts（模块族，readFamily 读取，
 // 守门脚本因此不必钉单个文件名）。index.ts 仍是唯一的插件入口，也仍然拥有全部
 // 可变状态（farm / 控制文件缓存 / switching / disposed），子模块只拿到显式的 deps。
 import { createWikiViews, proxyBaseForEntry, restartAffectedWikis, resolveWikiRoot } from './index-wikis.ts'
+// v0.30.42：配置面（形状 / 默认值 / 合并）整体搬走 —— `apply()` 里剩的全是
+// 「顺序即语义」的装配阶段，配置解析不在其中（它是纯函数）。
+import { resolveConfig, type ResolvedConfig, type TiddlywikiConfig } from './index-config.ts'
 import { createMutationLock } from './host/mutation-lock.ts'
 import { createGitLayer } from './index-git.ts'
 import { createPromptSurface, createServerTuning } from './index-prompt.ts'
@@ -253,42 +255,6 @@ export type { WikiServerOptions, WikiStatusView } from './host/wiki.ts'
 // （打包版 Electron 宿主下 process.execPath 是 Electron 二进制，起不了 TW）。
 export { resolveNodeExecutable } from './host/wiki.ts'
 
-/** Plugin config (design doc §13). Defaults are applied in apply().
- *  Mirrors PluginConfigShape (src/host/config.ts) — the cordis `config:` block;
- *  keep the two shapes in lockstep when adding a config field. */
-export interface TiddlywikiConfig {
-  wikiRoot?: string
-  wiki?: string
-  port?: number
-  git?: { autoCommit?: boolean; debounceMs?: number; remote?: string; branch?: string }
-  note?: {
-    tag?: string
-    /**
-     * 自动给 **Agent 新建**的笔记打工作区标记（默认 true，v0.24.0；v0.25.0 补上
-     * 这里漏掉的字段——它与 PluginConfigShape/DEFAULTS 三处形状必须同步）。
-     */
-    workspaceMark?: boolean
-  }
-  /** 本地剪藏桥（书签小工具）：见 host/clip-bridge.ts 与 seed-clip-bridge.ts 文档。 */
-  bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
-  /** 注入给每个会话的系统提示词（v0.21.0，见 host/prompt.ts）。 */
-  prompt?: { enabled?: boolean; mode?: 'slim' | 'full'; extra?: string; override?: string }
-  /** TW 子进程启动策略（v0.22.5，见 host/ready-policy.ts）：软就绪窗口 ms。 */
-  startup?: { readyTimeoutMs?: number }
-  /**
-   * 可选功能：微信公众号发布（v0.23.0，**默认关闭**）。该能力需额外安装
-   * opencli + Browser Bridge 浏览器扩展（见 docs/wechat-publish-setup.md），
-   * 插件本体不含它；关闭时不影响任何其他功能。
-   * v0.23.3 起 `command`/`adapter`/`token`/`dsn` 服务于 TW 工具栏「发布到公众号」
-   * 按钮（见 host/wechat-publish.ts）。
-   */
-  wechat?: { enabled?: boolean; command?: string; token?: string; adapter?: 'publish-note' | 'publish-note-imgs'; dsn?: string; endpoint?: string }
-  ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
-  /** 启动时自动启用的 TW 语言代码（如 "zh-Hans"），也受配置 tiddler 覆盖。 */
-  uiLanguage?: string
-  auth?: { username?: string; password?: string }
-}
-
 /** Structural host context (subset of the dsh host + cordis surfaces). */
 export interface HostCtx {
   tools: { register(tool: unknown): () => void }
@@ -306,30 +272,6 @@ export interface HostCtx {
   [key: string]: unknown
 }
 
-/** Resolved plugin config (defaults merged with the `config:` block). */
-interface ResolvedConfig {
-  wikiRoot: string
-  wiki: string
-  port: number
-  git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
-  note: { tag: string; workspaceMark: boolean }
-  bridge: { enabled: boolean; port: number; token: string; tag: string; wiki: string }
-  ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
-  startup: { readyTimeoutMs: number }
-  /**
-   * 可选功能：微信公众号发布（v0.23.0）。默认 `enabled: false`——该能力需要额外
-   * 安装（opencli + 浏览器扩展，见 docs/wechat-publish-setup.md），插件本体不含它。
-   * 关闭时不注入发布相关提示词、不写两个 gated seed，`/wechat/*` 三条路由也一律
-   * 403（v0.23.3）。`command`/`adapter`/`token`/`dsn` 供 TW 工具栏按钮使用。
-   */
-  wechat: { enabled: boolean; command: string; token: string; adapter: 'publish-note' | 'publish-note-imgs'; dsn: string }
-  uiLanguage: string
-  auth: { username?: string; password?: string }
-}
-
-/** 剪藏桥默认端口（与 seed 文档书签代码里的地址保持一致）。 */
-export const CLIP_BRIDGE_DEFAULT_PORT = 8618
-
 /**
  * Official plugin whose parser every note this plugin writes depends on
  * (`text/markdown`). `--init server` does NOT include it — see ensurePlugin().
@@ -339,21 +281,17 @@ export const CLIP_BRIDGE_DEFAULT_PORT = 8618
  */
 export { MARKDOWN_PLUGIN } from './host/wiki-instance.ts'
 
-const DEFAULTS: ResolvedConfig = {
-  wikiRoot: '',
-  wiki: 'main',
-  port: 0,
-  git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
-  note: { tag: 'inbox', workspaceMark: true },
-  bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip', wiki: '' },
-  ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
-  startup: { readyTimeoutMs: READY_TIMEOUT_DEFAULT_MS },
-  // 可选功能默认关闭（v0.23.0）：需额外安装 opencli + 浏览器扩展才可用。
-  // v0.23.3：command/adapter/token/dsn 是 TW 工具栏「发布到公众号」按钮的旋钮。
-  wechat: { enabled: false, command: 'opencli', token: '', adapter: 'publish-note', dsn: '' },
-  uiLanguage: '',
-  auth: { username: '', password: '' },
-}
+/*
+ * 配置面（v0.30.42）整体搬进 `index-config.ts`：形状 `TiddlywikiConfig`、
+ * 解析后形状 `ResolvedConfig`、`CLIP_BRIDGE_DEFAULT_PORT`、`DEFAULTS` 与
+ * `resolveConfig()`。这里是**纯**合并（无 ctx、无副作用、无顺序），所以能离开
+ * 入口而不动 `apply()` 里那些「顺序本身就是语义」的装配段。
+ * 只把**本来就是公共面**的两个名字再导出（`TiddlywikiConfig` /
+ * `CLIP_BRIDGE_DEFAULT_PORT`）；`DEFAULTS` / `ResolvedConfig` / `resolveConfig`
+ * 以前不是公开导出，搬迁不顺手扩大 barrel。
+ */
+export { CLIP_BRIDGE_DEFAULT_PORT } from './index-config.ts'
+export type { TiddlywikiConfig } from './index-config.ts'
 
 /** Config tiddler steering TW's frontend API base (tiddlywebadaptor). */
 export { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './host/config.ts'
@@ -396,26 +334,7 @@ export { resolveWikiRoot }
  * @param rawConfig - the plugin row's `config:` block (Cordis second arg).
  */
 export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
-  const config: ResolvedConfig = {
-    wikiRoot: resolveWikiRoot(rawConfig),
-    wiki: rawConfig.wiki ?? DEFAULTS.wiki,
-    port: rawConfig.port ?? DEFAULTS.port,
-    git: { ...DEFAULTS.git, ...(rawConfig.git ?? {}) },
-    note: { ...DEFAULTS.note, ...(rawConfig.note ?? {}) },
-    bridge: { ...DEFAULTS.bridge, ...(rawConfig.bridge ?? {}) },
-    ui: {
-      ...DEFAULTS.ui,
-      ...(rawConfig.ui ?? {}),
-      // Merge nested ui.* groups explicitly so defaults stay required (a plain
-      // spread of the lax cordis shape would widen them to optional).
-      sendToAgent: { ...DEFAULTS.ui.sendToAgent, ...(rawConfig.ui?.sendToAgent ?? {}) },
-      allArticles: { ...DEFAULTS.ui.allArticles, ...(rawConfig.ui?.allArticles ?? {}) },
-    },
-    uiLanguage: typeof rawConfig.uiLanguage === 'string' ? rawConfig.uiLanguage.trim() : DEFAULTS.uiLanguage,
-    auth: { ...DEFAULTS.auth, ...(rawConfig.auth ?? {}) },
-    startup: { ...DEFAULTS.startup, ...(rawConfig.startup ?? {}) },
-    wechat: { ...DEFAULTS.wechat, ...(rawConfig.wechat ?? {}) },
-  }
+  const config: ResolvedConfig = resolveConfig(rawConfig)
   // ── The knowledge-base farm ────────────────────────────────────────────────
   // v0.28.0 split this into three parts, so each has exactly ONE implementation:
   //   host/wiki-instance.ts  ONE wiki's runtime (child + REST client + config +

@@ -42,7 +42,10 @@ import {
 import type { WikiFarm } from './host/wiki-farm.ts'
 import type { WikiInstance } from './host/wiki-instance.ts'
 import { proxyBaseFor } from './host/wiki.ts'
-import type { TiddlywikiConfig } from './index.ts'
+// v0.30.42：`TiddlywikiConfig` 的形状现在归 index-config.ts 所有（它才是配置面）。
+// 改成从那儿取——`index.ts → index-config.ts → index-wikis.ts` 仍是单向的
+// （这条只有 `import type`，编译后不产生运行期边）。
+import type { TiddlywikiConfig } from './index-config.ts'
 
 /**
  * Resolve the DEFAULT wikiRoot: explicit config (env-expanded) else
