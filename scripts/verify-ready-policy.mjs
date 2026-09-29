@@ -189,5 +189,37 @@ await test('配置链路：config.ts / index.ts / wiki-instance.ts / settings-pa
   assert.ok(/startup\.readyTimeoutMs/.test(client), '设置页必须提供该字段（否则只能手改 cordis 配置）')
 })
 
+await test('就绪窗口的「唯一来源」：宿主夹取表引用常量，设置页表单被钉在同样的数字上', () => {
+  const policy = read('src/host/ready-policy.ts')
+  const num = (n) => Number(String(n).replace(/_/g, ''))
+  const constOf = (name) => {
+    const m = new RegExp(`export const ${name} = ([\\d_]+)`).exec(policy)
+    assert.ok(m !== null, `ready-policy.ts 里找不到 ${name}`)
+    return num(m[1])
+  }
+  const min = constOf('READY_TIMEOUT_MIN_MS')
+  const max = constOf('READY_TIMEOUT_MAX_MS')
+  const def = constOf('READY_TIMEOUT_DEFAULT_MS')
+
+  // ① 宿主的「夹取表」必须**引用常量**。原先它又写了一遍 [5_000, 600_000]：
+  //    改一处忘一处时，症状正是本仓库反复记录的「设置页显示值 ≠ 真正生效值」。
+  const config = read('src/host/config.ts')
+  const range = /'startup\.readyTimeoutMs':\s*\[([^\]]+)\]/.exec(config)
+  assert.ok(range !== null, 'config.ts 的 NUMBER_CONFIG_RANGES 里必须有 startup.readyTimeoutMs')
+  assert.match(range[1], /READY_TIMEOUT_MIN_MS/, '下界必须引用 READY_TIMEOUT_MIN_MS，不得写死数字')
+  assert.match(range[1], /READY_TIMEOUT_MAX_MS/, '上界必须引用 READY_TIMEOUT_MAX_MS，不得写死数字')
+
+  // ② 设置页表单进不了 host 模块（client bundle 与 host 分开构建），只能自己写数字
+  //    —— 那就把它钉在**与宿主常量数值相等**上：只改宿主不改表单，这条立刻红。
+  const form = read('src/client/settings-page-config.ts')
+  const field = /'startup\.readyTimeoutMs'[\s\S]{0,400}?min:\s*([\d_]+),\s*max:\s*([\d_]+)/.exec(form)
+  assert.ok(field !== null, '设置页必须有 startup.readyTimeoutMs 数值字段（带 min/max）')
+  assert.equal(num(field[1]), min, `设置页 min=${num(field[1])} ≠ 宿主 READY_TIMEOUT_MIN_MS=${min}`)
+  assert.equal(num(field[2]), max, `设置页 max=${num(field[2])} ≠ 宿主 READY_TIMEOUT_MAX_MS=${max}`)
+  const fallback = /\?\s*startup\.readyTimeoutMs\s*:\s*([\d_]+)/.exec(form)
+  assert.ok(fallback !== null, '设置页必须给出该字段的默认回显值（用于渲染时还没有配置的情况）')
+  assert.equal(num(fallback[1]), def, `设置页默认回显=${num(fallback[1])} ≠ 宿主 READY_TIMEOUT_DEFAULT_MS=${def}`)
+})
+
 console.log(failures === 0 ? '\nREADY POLICY CHECKS OK' : `\nREADY POLICY CHECKS FAILED (${failures})`)
 process.exit(failures === 0 ? 0 : 1)

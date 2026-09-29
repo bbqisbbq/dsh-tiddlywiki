@@ -12,6 +12,11 @@
  * @module dsh-tiddlywiki/host/config
  */
 import type { TiddlyWebClient } from './tw-api.ts'
+// v0.30.15：就绪窗口的上下界只有一份权威实现（`ready-policy.ts` 的导出常量）。
+// 这里原先又抄了一遍 `[5_000, 600_000]`，而客户端表单里还有第三份 —— 三份数字分别
+// 决定「宿主怎么夹」「表单允许填什么」，一旦有人只改一处，症状就是那个被反复记录的
+// 「设置页显示的值 ≠ 真正生效的值」。宿主这一侧现在不可能再漂（下面直接用常量）。
+import { READY_TIMEOUT_MAX_MS, READY_TIMEOUT_MIN_MS } from './ready-policy.ts'
 
 /** Config tiddler (JSON string) where the settings page stores overrides. */
 export const CONFIG_TIDDLER = '$:/plugins/dsh-tiddlywiki/config'
@@ -246,7 +251,7 @@ export class ConfigPatchError extends Error {
 const NUMBER_CONFIG_RANGES: Record<string, readonly [number, number]> = {
   'bridge.port': [1, 65_535],
   'git.debounceMs': [0, 3_600_000],
-  'startup.readyTimeoutMs': [5_000, 600_000],
+  'startup.readyTimeoutMs': [READY_TIMEOUT_MIN_MS, READY_TIMEOUT_MAX_MS],
   'ui.allArticles.pageSize': [1, 200],
 }
 
