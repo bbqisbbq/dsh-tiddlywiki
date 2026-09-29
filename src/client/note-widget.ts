@@ -42,6 +42,10 @@
  *                           plus「重置即定型」(v0.30.44). It OWNS `draftTimer` /
  *                           `persistedSignature`; the card only reads/writes them
  *                           through the handle it returns.
+ *   - note-widget-save.ts   the two write-out paths: 「保存」(POST /note) and
+ *                           「✏️ 在 TW 中编辑」/ Ctrl+Enter (POST /edit). It OWNS the
+ *                           in-flight `saving` flag (v0.30.45); `postEditAndOpen`
+ *                           stays in the card because openNative() shares it.
  *
  * @module dsh-tiddlywiki/client/note-widget
  */
@@ -49,13 +53,14 @@ import { t } from './i18n.ts'
 import { toast } from './toast.ts'
 import { openEditorPopup, isEditorPopupOpen, isEditorPopupBlank } from './editor-popup.ts'
 import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
-import { EDIT_ENDPOINT, NOTE_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
+import { EDIT_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
 import { buildTagEditor } from './note-widget-tags.ts'
 import { uploadInto } from './note-widget-upload.ts'
 import { createRecentPicker } from './note-widget-recent.ts'
 import { createNoteScope } from './note-widget-scope.ts'
 import { installCardDrag, positionCard } from './note-widget-placement.ts'
 import { createDraftAutosave } from './note-widget-autosave.ts'
+import { createNoteSave } from './note-widget-save.ts'
 import { adoptDraft, clearDraft, fetchDefaultTag, loadDraft, timestampTitle } from './note-widget-draft.ts'
 
 /**
@@ -438,91 +443,24 @@ export function createNoteWidget(): NoteWidgetHandle {
     // note-widget-autosave.ts 的 `resetForNewNote()` 里 —— 它与 `draftTimer` /
     // `persistedSignature` 是同一个不变量，所以一起搬走。
 
-    const saveDone = (): void => {
-      clearDraft()
-      hideDraftBanner()
-      // 这份内容已经进 wiki 了：同内容不再回写成草稿（v0.19.1），token 也失效。
-      autosave.markPersisted(titleInput.value.trim(), editor.getValue(), tagEditor.getTags())
-      loadedToken = null
-      autosave.resetForNewNote()
-      close()
-    }
-
-    // In-flight guard: the save button is disabled while saving, but Ctrl+Enter
-    // from the editor keymap is not — a second POST within the same second
-    // would carry the same timestamp title and silently overwrite the first.
-    let saving = false
-    doSave = async (): Promise<void> => {
-      if (saving) return
-      const text = editor.getValue().trim()
-      if (text.length === 0) {
-        toast(t('note.saveEmpty'))
-        return
-      }
-      // 「写入」选中的那个库没在跑：host 现在会拒绝（而不是写进默认库），
-      // 所以先说清楚，别让用户写完一整段才发现（v0.29.0）。
-      const stopped = scope.stoppedTarget()
-      if (stopped !== undefined) {
-        toast(t('note.saveTargetStopped', { label: stopped.label }))
-        return
-      }
-      saving = true
-      saveBtn.disabled = true
-      saveBtn.textContent = t('note.saving')
-      try {
-        const title = titleInput.value.trim()
-        const body: Record<string, unknown> = { title, tags: tagEditor.getTags(), text }
-        // Echo the token of the note loaded from 「🕘 最近」 (v0.19.1): if a human
-        // edited it in the embedded TW editor meanwhile, the host answers 409 and
-        // we refuse instead of silently overwriting their change.
-        if (loadedToken !== null && loadedToken.title === title) {
-          if (loadedToken.modified !== undefined) body.expectedModified = loadedToken.modified
-          if (loadedToken.revision !== undefined) body.expectedRevision = loadedToken.revision
-        }
-        const res = await fetch(wikiQuery(NOTE_ENDPOINT), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(10_000),
-        })
-        const payload = (await res.json().catch(() => null)) as { ok?: boolean; title?: string; error?: string; conflict?: boolean } | null
-        if (!res.ok || payload?.ok !== true) {
-          if (res.status === 409 || payload?.conflict === true) {
-            toast(t('note.saveConflict'))
-            return
-          }
-          toast(t('note.saveFailed', { message: payload?.error ?? `HTTP ${res.status}` }))
-          return
-        }
-        saveDone()
-        toast(t('note.saved', { title: payload.title ?? titleInput.value }))
-      } catch (err) {
-        toast(t('note.saveFailed', { message: err instanceof Error ? err.message : String(err) }))
-      } finally {
-        saving = false
-        saveBtn.disabled = false
-        saveBtn.textContent = t('note.save')
-      }
-    }
-
-    saveBtn.addEventListener('click', () => { void doSave?.() })
-
-    /** Save (if non-empty) and open the tiddler in TW's native editor. */
-    const doEdit = async (): Promise<void> => {
-      const title = titleInput.value.trim().length > 0 ? titleInput.value.trim() : timestampTitle()
-      const text = editor.getValue()
-      const tags = tagEditor.getTags()
-      editBtn.disabled = true
-      editBtn.textContent = t('note.opening')
-      try {
-        await postEditAndOpen(title, text, tags)
-      } finally {
-        editBtn.disabled = false
-        editBtn.textContent = t('note.editInTw')
-      }
-    }
-
-    editBtn.addEventListener('click', () => { void doEdit() })
+    // 保存 / 「在 TW 中编辑」整组（`saveDone` · `saving` · `doSave` · `doEdit`）现在住在
+    // note-widget-save.ts（v0.30.45）：`build()` 里别的部分都是建 DOM 与接线，只有这一组
+    // 真的"说话"（发请求 / 读回执 / 弹 toast / 改按钮状态）。`postEditAndOpen` 与
+    // `loadedToken` 刻意留在卡片里 —— 前者 native 路径也调用，后者「🕘 最近」picker 要写。
+    const save = createNoteSave({
+      getUi: () => ui,
+      autosave,
+      stoppedTarget: scope.stoppedTarget,
+      getLoadedToken: () => loadedToken,
+      clearLoadedToken: () => { loadedToken = null },
+      wikiQuery,
+      postEditAndOpen,
+      close,
+    })
+    // 编辑器键位绑的是上面那个 `doSave` 变量，实现到这里才拿得到。
+    doSave = save.doSave
+    saveBtn.addEventListener('click', () => { void save.doSave() })
+    editBtn.addEventListener('click', () => { void save.doEdit() })
     closeBtn.addEventListener('click', close)
 
     // ── 自由拖动（按住标题栏拖动整张卡片；✕ 仍是唯一关闭方式）──────────

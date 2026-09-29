@@ -30,6 +30,22 @@ const catalogText = () => fs.readdirSync(path.join(repoRoot, 'src/client'))
   .join('\n')
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
+/**
+ * 源码去掉**注释**（v0.30.45）。
+ *
+ * 有几条断言用 `indexOf('某段代码')` 定位函数体、再在其后的一段窗口里找另一个符号。
+ * 这个手法在**代码**上可靠，但模块头注释常常**逐字引用**那句签名（解释"为什么这一行
+ * 不许改名"）—— raw 文本里 `indexOf` 会先命中那句注释，**断言于是被自己的文档满足**。
+ * v0.30.45 实测过一次真事故：把被断言的函数改名、甚至删掉整个「目标库没在跑就拒绝」
+ * 分支，守门都照样绿（假绿），是反向验证抓出来的。
+ *
+ * 顺序承重：**先剥行注释、再剥块注释** —— 反过来会让行注释里的 `/xxx/*` 被当成块注释
+ * 的开头，一路吞掉后面的真实代码（v0.30.14 在 `verify-client-i18n` 里踩过同一个坑）。
+ * 前面那个 `(^|[^:'"\\])` 是为了不把 `https://` 里的 `//` 当注释。
+ */
+const stripComments = (src) =>
+  src.replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1').replace(/\/\*[\s\S]*?\*\//g, '')
+
 /** Minimal localStorage so the focus store can be imported in Node. */
 const store = new Map()
 globalThis.window = {
@@ -332,7 +348,11 @@ test('快速笔记：整张卡片（标签/最近/草稿/附件/保存/弹窗）
  * guard noticing.
  */
 test('快速笔记 native 路径：必须先解析目标库，再写（v0.29.0）', () => {
-  const note = readFamily(repoRoot, 'src/client/note-widget')
+  // ⚠️ 这一组的五条断言全部跑在**剥掉注释**的源码上（v0.30.45）：下面那条 `doSave`
+  // 判据用的是 `indexOf(签名)` + 900 字符窗口，而 note-widget-save.ts 的模块头注释
+  // 逐字引用了那句签名、还在同一段里提到 `stoppedTarget()` —— raw 文本下断言会被注释
+  // 满足。反向验证实测：改名 / 删掉整个拒绝分支都照样绿（假绿），所以必须剥注释。
+  const note = stripComments(readFamily(repoRoot, 'src/client/note-widget'))
   // 解析必须是**独立函数**（老代码整段塞在 build() 里，native 路径永远拿不到）
   assert.match(note, /const ensureTarget = \(\): Promise<void> => \{/, '目标库解析必须是独立函数（build 之外）')
   assert.ok(
