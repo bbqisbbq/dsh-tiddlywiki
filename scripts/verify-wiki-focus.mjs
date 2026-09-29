@@ -311,7 +311,7 @@ test('快速笔记：整张卡片（标签/最近/草稿/附件/保存/弹窗）
   assert.ok(tagCallAt > 0, '找不到 buildTagEditor 的调用点')
   assert.match(note.slice(tagCallAt, tagCallAt + 160), /wikiQuery/, '调用点必须把 wikiQuery 交给标签编辑器（漏传 = 建议列表来自默认库）')
   // 弹窗编辑器必须落在同一个库（写入 A、编辑器打开 B 是"看起来成功了"的失败）
-  // v0.30.42：目标库状态在 note-widget-scope.ts 里，前两个参数改从那里取 —— 钉语义。
+  // v0.30.41：目标库状态在 note-widget-scope.ts 里，前两个参数改从那里取 —— 钉语义。
   assert.match(note, /twProxyFor\([^,]+, [^,]+, payload\.twUrl, payload\.twUrlAbsolute\)/)
   // 单库安装：名册 ≤1 时连选择器都不显示，targetWiki 保持 undefined
   assert.match(note, /if \(roster\.length <= 1\)/, '必须有单库分支（不显示选择器、targetWiki 保持 undefined）')
@@ -342,7 +342,7 @@ test('快速笔记 native 路径：必须先解析目标库，再写（v0.29.0�
   const nativeAt = note.indexOf('async openNative() {')
   assert.ok(nativeAt > 0, '找不到 openNative')
   const nativeBody = note.slice(nativeAt, note.indexOf('isOpen()', nativeAt))
-  // v0.30.42：解析入口搬进 note-widget-scope.ts ⇒ 调用点长成 `scope.ensureTarget()`。
+  // v0.30.41：解析入口搬进 note-widget-scope.ts ⇒ 调用点长成 `scope.ensureTarget()`。
   // 判据钉的是**顺序**（先解析、再写），不是这个函数住在哪个对象上。
   const ensureAt = nativeBody.search(/await (?:scope\.)?ensureTarget\(\)/)
   const postAt = nativeBody.indexOf('await postEditAndOpen(')
@@ -788,7 +788,7 @@ test('「默认库」不得作为选项名出现：默认的那个库要用它�
 
   // 快速笔记卡片：那个 value='' 的占位选项必须已经删掉；默认库只标身份，不改名。
   assert.ok(!/fallback\.textContent = '默认库'/.test(files.noteWidget), '快速笔记卡片不得再有名为「默认库」的选项')
-  // v0.30.42：默认库 id 现在从 note-widget-scope.ts 取（`scope.getDefaultWikiId()`），
+  // v0.30.41：默认库 id 现在从 note-widget-scope.ts 取（`scope.getDefaultWikiId()`），
   // 所以判据钉「默认库那一项拿到的是目录里的身份标记」，不再钉那个变量名。
   assert.match(files.noteWidget, /const mark = item\.id === [^?]*\? t\('note\.defaultMark'\)/, '卡片里的默认库同样只加身份标记（文案来自目录）')
 

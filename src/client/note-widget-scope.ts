@@ -1,7 +1,7 @@
 /**
  * Quick-note card: WHICH knowledge base the card works on (v0.28.0 需求 R7 / v0.29.0).
  *
- * Extracted from `note-widget.ts` (v0.30.42) with the `tw-frame-hash.ts` recipe.
+ * Extracted from `note-widget.ts` (v0.30.41) with the `tw-frame-hash.ts` recipe.
  * This is the card's **state-and-resolution** half: the roster, the focused wiki
  * the card follows, and the "target is stopped" verdict. The **DOM half** of the
  * 「写入」 selector deliberately stays in note-widget.ts — painting a `<select>` is

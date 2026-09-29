@@ -166,7 +166,7 @@ await test('客户端接线：frame 与快速笔记弹窗都走 resolveTwUrl', (
   // v0.28.0：快速笔记弹窗同样先经 twProxyFor 得到**本卡片目标库**的基址（写入与随后打开的
   // 编辑器必须落在同一个库，否则是"写进 A、编辑器打开 B（空的）"），再交给 resolveTwUrl
   // 决定相对还是宿主绝对基址。
-  // v0.30.42：目标库状态搬进了 note-widget-scope.ts，前两个参数不再是裸变量名。
+  // v0.30.41：目标库状态搬进了 note-widget-scope.ts，前两个参数不再是裸变量名。
   // 判据钉语义 —— twProxyFor 的前两个参数必须来自**这张卡片的目标库**，后两个是 host 回的 URL。
   assert.match(note, /const bases = twProxyFor\([^,]+, [^,]+, payload\.twUrl, payload\.twUrlAbsolute\)/)
   assert.match(note, /resolveTwUrl\(bases\.relative, bases\.absolute\)/)

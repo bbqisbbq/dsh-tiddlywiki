@@ -333,6 +333,34 @@ await test('note-widget：保存/丢弃后重置必须取消防抖并记录已�
   )
 })
 
+// v0.30.43：把「卡片摆在哪 + 怎么拖」搬进 note-widget-placement.ts 之后补的守门。
+// 判据钉**语义**，不钉文件排版：① 每次 open 都必须按当前锚点重新定位（拖过的位置
+// 按设计**不跨 open 保留**，谁改成"记住位置"就是改了行为）；② 拖动接线**只有一份
+// 实现** —— 手势状态与指针事件不得回到卡片里（family 读会把模块拼进来、分不出谁
+// 实现的，所以这一条按精确路径单独读卡片本体）。
+await test('note-widget：每次 open 都重新定位，拖动接线只有一份实现', () => {
+  // ⚠️ 签名末尾**不带** `{`：bodyOf 自己会跳到函数体的第一个花括号，签名里带上
+  // `{` 会让它从那里往后找**内层**的块，取到的就不是整个 open()。
+  const openBody = bodyOf(noteWidget, 'async open(anchor?: HTMLElement) ')
+  assert.match(
+    openBody,
+    /positionCard\(ui\.root, ui\.card, anchor\)/,
+    'open() 必须用当前锚点重新定位卡片（拖过的位置不跨 open 保留）',
+  )
+  assert.match(noteWidget, /installCardDrag\(\{ root, card, head, closeBtn \}\)/, '拖动必须经 note-widget-placement.ts 安装')
+  const cardOnly = fs
+    .readFileSync(path.join(repoRoot, 'src/client/note-widget.ts'), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
+    .join('\n')
+  assert.ok(
+    !/setPointerCapture|pointerdown|dragState/.test(cardOnly),
+    '拖动的手势状态与指针事件不得回到卡片里（「一份实现」的判据）',
+  )
+  const placement = read('src/client/note-widget-placement.ts')
+  assert.match(placement, /setPointerCapture/, '拖动必须仍然用 pointer capture（否则指针一离开标题栏就断）')
+})
+
 console.log('v0.23.5 —— 生命周期 / 进程守卫（源码级：这些坑都死过一次）')
 
 // #6 fs.watch 的 'error' 是异步事件，外层 try/catch 接不住；Node 在没有 error

@@ -33,9 +33,11 @@
  *   - note-widget-recent.ts the 「最近」picker (dropdown + load-into-editor,
  *                           v0.30.41: its open-state moved with it)
  *   - note-widget-scope.ts  WHICH wiki the card works on: roster + focus-follow
- *                           + "target is stopped" (v0.30.42). The DOM half of the
+ *                           + "target is stopped" (v0.30.41). The DOM half of the
  *                           「写入」 selector stays here and is registered through
  *                           `scope.setSyncDom()`.
+ *   - note-widget-placement.ts WHERE the card sits + dragging by its title bar
+ *                           (v0.30.43: pure DOM, zero card state — see its header)
  *
  * @module dsh-tiddlywiki/client/note-widget
  */
@@ -48,6 +50,7 @@ import { buildTagEditor } from './note-widget-tags.ts'
 import { uploadInto } from './note-widget-upload.ts'
 import { createRecentPicker } from './note-widget-recent.ts'
 import { createNoteScope } from './note-widget-scope.ts'
+import { installCardDrag, positionCard } from './note-widget-placement.ts'
 import { DRAFT_DEBOUNCE_MS, adoptDraft, clearDraft, draftSignature, fetchDefaultTag, loadDraft, persistDraft, timestampTitle } from './note-widget-draft.ts'
 
 /**
@@ -108,7 +111,7 @@ export function createNoteWidget(): NoteWidgetHandle {
   /**
    * WHICH knowledge base this card works on (v0.28.0 需求 R7 / v0.29.0).
    *
-   * The state and the resolution now live in note-widget-scope.ts (v0.30.42);
+   * The state and the resolution now live in note-widget-scope.ts (v0.30.41);
    * the card keeps the DOM half of the 「写入」 selector and registers it through
    * `scope.setSyncDom()`. `wikiQuery` stays the single way to build a URL — every
    * call of the card must be scoped together (标签建议 / 最近 / 草稿 / 附件 / 保存 /
@@ -141,39 +144,6 @@ export function createNoteWidget(): NoteWidgetHandle {
     try {
       window.dispatchEvent(new CustomEvent(NOTE_STATE_EVENT, { detail: { open } }))
     } catch { /* event dispatch is best-effort */ }
-  }
-
-  /**
-   * Place the card: with an anchor (the input-dock button) it pops up right
-   * ABOVE the anchor, horizontally centered on it and clamped inside the
-   * viewport; without one it returns to the default bottom-right corner.
-   * The card is `position: fixed`, so switching between left/top and
-   * right/bottom positioning is a matter of which inline offsets are set.
-   */
-  const positionCard = (anchor?: HTMLElement): void => {
-    if (ui === undefined) return
-    const root = ui.root
-    const card = ui.card
-    if (anchor !== undefined) {
-      const rect = anchor.getBoundingClientRect()
-      const cardW = card.offsetWidth || 340
-      const cardH = card.offsetHeight || 260
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      const gap = 10
-      const left = Math.min(Math.max(rect.left + rect.width / 2 - cardW / 2, 8), Math.max(8, vw - cardW - 8))
-      const bottomRaw = vh - rect.top + gap
-      const bottom = Math.min(Math.max(8, bottomRaw), Math.max(8, vh - cardH - 8))
-      root.style.right = 'auto'
-      root.style.top = 'auto'
-      root.style.left = `${left}px`
-      root.style.bottom = `${bottom}px`
-    } else {
-      root.style.right = '24px'
-      root.style.bottom = '88px'
-      root.style.left = 'auto'
-      root.style.top = 'auto'
-    }
   }
 
   /**
@@ -629,46 +599,9 @@ export function createNoteWidget(): NoteWidgetHandle {
     closeBtn.addEventListener('click', close)
 
     // ── 自由拖动（按住标题栏拖动整张卡片；✕ 仍是唯一关闭方式）──────────
-    // Pointer events + setPointerCapture: the head keeps receiving moves even
-    // when the pointer leaves it. Dragging switches the card from the default
-    // right/bottom anchoring to explicit left/top, clamped to the viewport.
-    let dragState: { startX: number; startY: number; origLeft: number; origTop: number; moved: boolean } | null = null
-    const applyDrag = (left: number, top: number): void => {
-      const vw = window.innerWidth
-      const vh = window.innerHeight
-      const cardW = card.offsetWidth || 340
-      const cardH = card.offsetHeight || 260
-      const x = Math.min(Math.max(left, 8), Math.max(8, vw - cardW - 8))
-      const y = Math.min(Math.max(top, 8), Math.max(8, vh - cardH - 8))
-      root.style.right = 'auto'
-      root.style.bottom = 'auto'
-      root.style.left = `${x}px`
-      root.style.top = `${y}px`
-    }
-    head.addEventListener('pointerdown', (event) => {
-      if (closeBtn.contains(event.target as Node)) return
-      event.preventDefault()
-      const rect = root.getBoundingClientRect()
-      dragState = { startX: event.clientX, startY: event.clientY, origLeft: rect.left, origTop: rect.top, moved: false }
-      try { head.setPointerCapture(event.pointerId) } catch { /* capture unavailable */ }
-      head.classList.add('dsh-tw-note-head-dragging')
-    })
-    head.addEventListener('pointermove', (event) => {
-      if (dragState === null) return
-      const dx = event.clientX - dragState.startX
-      const dy = event.clientY - dragState.startY
-      if (!dragState.moved && Math.abs(dx) < 4 && Math.abs(dy) < 4) return
-      dragState.moved = true
-      applyDrag(dragState.origLeft + dx, dragState.origTop + dy)
-    })
-    const endDrag = (event: PointerEvent): void => {
-      if (dragState === null) return
-      try { head.releasePointerCapture(event.pointerId) } catch { /* already released */ }
-      dragState = null
-      head.classList.remove('dsh-tw-note-head-dragging')
-    }
-    head.addEventListener('pointerup', endDrag)
-    head.addEventListener('pointercancel', endDrag)
+    // v0.30.43：整段搬进 note-widget-placement.ts —— 它只碰 DOM（root/card/head/
+    // closeBtn）与**自己私有的**手势状态，所以一个访问器都不用传。
+    installCardDrag({ root, card, head, closeBtn })
 
     // 快速笔记弹窗只允许「手动点关闭按钮（✕）」关闭：刻意移除「点击卡片外部
     // 即收起」的监听（用户反馈会误关、丢失正在编辑的内容）。草稿仍会防抖
@@ -700,7 +633,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       ui.root.hidden = false
       // With an anchor (input-dock button) the card pops up right above it;
       // without one it sits in the default bottom-right corner.
-      positionCard(anchor)
+      positionCard(ui.root, ui.card, anchor)
       emitState(true)
       const hit = loadDraft()
       const draft = hit?.draft ?? null
