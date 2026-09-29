@@ -157,7 +157,11 @@ await test('客户端接线：frame 与快速笔记弹窗都走 resolveTwUrl', (
     !/showFrame\((?:bases\.(?:relative|absolute)|payload\.twProxy)/.test(frame),
     'showFrame 不得直接吃裸基址：非 http(s) 文档（桌面版 dsh-app:）必须换成宿主的绝对 http 基址，否则 TW 没有同步器',
   )
-  assert.match(frame, /import \{ RESTART_ENDPOINT, resolveTwUrl, twProxyFor \} from '\.\/endpoints\.ts'/)
+  // v0.30.28：`requestRestart` 搬进了 tw-frame-api.ts（公共 API 层），于是这里不再是
+  // 唯一那一行字面量。判据改成「族里**从 endpoints.ts 取到了**这两个必需符号」，
+  // 并单独钉住 RESTART_ENDPOINT 仍在族内（它跟着 requestRestart 走，不许悄悄消失）。
+  assert.match(frame, /import \{[^}]*\bresolveTwUrl\b[^}]*\btwProxyFor\b[^}]*\} from '\.\/endpoints\.ts'/)
+  assert.match(frame, /import \{[^}]*\bRESTART_ENDPOINT\b[^}]*\} from '\.\/endpoints\.ts'/)
   const note = readSrc('src/client/note-widget')
   // v0.28.0：快速笔记弹窗同样先经 twProxyFor 得到**本卡片目标库**的基址（写入与随后打开的
   // 编辑器必须落在同一个库，否则是"写进 A、编辑器打开 B（空的）"），再交给 resolveTwUrl

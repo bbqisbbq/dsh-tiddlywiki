@@ -26,101 +26,17 @@
  *
  * @module dsh-tiddlywiki/client/tw-frame
  */
-import * as React from 'react'
 import { t } from './i18n.ts'
-import { RESTART_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
+import { resolveTwUrl, twProxyFor } from './endpoints.ts'
 import { fetchStatus, type StatusPayload } from './status-cache.ts'
 import { getFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
 import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
 /** Cross-plugin activation event; detail is the activating panel name. */
-export const ACTIVATE_EVENT = 'dsh-panel-activate'
-/** The "知识库" FAB's reload event; side frames reload with the center one. */
-export const PANEL_RELOAD_EVENT = 'dsh-tw-panel-reload'
-
-/**
- * Ask every mounted TW surface to reload the document it is already showing
- * (v0.30.14).
- *
- * The event exists since v0.22.4, but until now only the FAB's 「重新载入」 item
- * fired it — every path that restarts the TW child *in place* left the open
- * panel rendering the pre-restart document, whose tiddlers may not even exist
- * any more. The named call is what those paths use instead of hand-rolling a
- * `new CustomEvent(...)` and hoping the event name is spelled the same.
- *
- * What a surface does is its own business (see `onReloadRequest`): a frame that
- * never loaded a TW URL is left untouched, and a frame that did is re-assigned
- * the SAME url so TW re-reads the wiki from scratch.
- */
-export function reloadTwSurfaces(): void {
-  document.dispatchEvent(new CustomEvent(PANEL_RELOAD_EVENT))
-}
-
-/**
- * Tab chip / + menu / guide copy default (label refreshed from `/status` ui.tabLabel).
- *
- * v0.30.13: the fallback is resolved LAZILY in `getTabLabel()` — a module-level
- * `t(...)` would freeze whichever language happened to be cached when the bundle
- * loaded, and a language change would never show up on this surface.
- */
-let tabLabel: string | undefined
-
-/** Update the shared surface label from the live config (ui.tabLabel). */
-export function setTabLabel(label: string | undefined): void {
-  const trimmed = typeof label === 'string' ? label.trim() : ''
-  if (trimmed.length > 0) tabLabel = trimmed
-}
-
-/** Current shared surface label (ui.tabLabel, default 「知识库」/「Knowledge base」). */
-export function getTabLabel(): string {
-  return tabLabel ?? t('frame.tabLabelDefault')
-}
-
-/** POST /restart; `false` on any failure. Shared by both TW surfaces (v0.22.3). */
-export async function requestRestart(): Promise<boolean> {
-  try {
-    const res = await fetch(RESTART_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(8_000) })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-/** The shared surface glyph: a wiki page with a TiddlyWiki-style "T". */
-export function TwTabIcon({ size = 16, className }: { size?: number; className?: string }): React.ReactElement {
-  return React.createElement(
-    'svg',
-    { width: size, height: size, className, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
-    React.createElement('path', { d: 'M4 2.5h8a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z' }),
-    React.createElement('path', { d: 'M6 6h4M6 8.5h2.5' }),
-  )
-}
-
-/**
- * The last URL a TW surface actually assigned to its iframe, or null when the
- * frame never loaded one. Both surfaces cache it in `iframe.dataset.loaded`
- * (only `showFrame` writes it), which keeps "is this frame pointing at the TW
- * proxy?" answerable without trusting `src` — see `loadableFrameUrl`.
- */
-export interface FrameLoadedState {
-  loaded?: string
-}
-
-/**
- * Non-empty `dataset.loaded`, or null when the frame has no real URL yet
- * (v0.22.3). NEVER read `iframe.src` for this: for an iframe whose `src`
- * attribute was never assigned the property returns the EMBEDDING page's URL,
- * and assigning it back to `src` makes the DSH GUI load itself inside the
- * iframe (a second DSH instance: duplicate FAB, duplicated global listeners,
- * blank white page). Every full-reload path must refuse to touch a frame that
- * has no loaded TW URL.
- */
-export function loadableFrameUrl(dataset: FrameLoadedState): string | null {
-  const loaded = dataset.loaded
-  return loaded === undefined || loaded.length === 0 ? null : loaded
-}
-
-/* ────────────────────────── the shared frame kernel ─────────────────────── */
+import { getTabLabel, setTabLabel, requestRestart, loadableFrameUrl, PANEL_RELOAD_EVENT } from './tw-frame-api.ts'
+// v0.30.28：公共 API 搬进 	w-frame-api.ts（纯搬迁），这里原样再导出，外部导入路径不变。
+export { reloadTwSurfaces, setTabLabel, getTabLabel, requestRestart, TwTabIcon, loadableFrameUrl, ACTIVATE_EVENT, PANEL_RELOAD_EVENT } from './tw-frame-api.ts'
+export type { FrameLoadedState } from './tw-frame-api.ts'
 
 /** Per-surface skin: the class names (and inline style) a surface wears. */
 export interface TwFrameSkin {
@@ -437,7 +353,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     if (payload.ui !== undefined) {
       // Shared surface label + theme config: both are module-level, so any
       // surface that polls keeps them fresh for every other surface.
-      setTabLabel(payload.ui.tabLabel ?? tabLabel)
+      setTabLabel(payload.ui.tabLabel ?? getTabLabel())
       setThemeSyncConfig({
         enabled: payload.ui.followDshTheme !== false,
         darkPalette: payload.ui.darkPalette,
@@ -683,7 +599,7 @@ export function openTiddlerInLiveTab(title: string, wiki?: TwWikiTarget): boolea
  */
 export function warmTabLabel(): void {
   void fetchStatus().then((payload) => {
-    if (payload?.ui !== undefined) setTabLabel(payload.ui.tabLabel ?? tabLabel)
+    if (payload?.ui !== undefined) setTabLabel(payload.ui.tabLabel ?? getTabLabel())
   })
 }
 
