@@ -73,8 +73,16 @@ export interface SessionRouteDeps {
  * renders all three. `set` persists a choice, or clears it with `undefined`.
  */
 export interface SessionScopeFace {
-  /** Current choice + what it resolves to (and why, when it cannot serve). */
-  get: (sessionId: string) => { scope?: string; resolved?: { id: string; label: string }; reason?: string }
+  /**
+   * Current choice + what it resolves to (and why, when it cannot serve).
+   *
+   * `mode` is the registry mode (v0.29.0): without it a client cannot tell
+   * "`resolved` is the answer because there is only one wiki" (single install →
+   * keep the old DOM) from "`resolved` is the DEFAULT wiki this session's tools
+   * actually act on" (multi → its links must open THAT wiki, not whichever one
+   * the GUI happens to be focused on).
+   */
+  get: (sessionId: string) => { scope?: string; resolved?: { id: string; label: string }; reason?: string; mode?: string }
   /** Point the session at a wiki, or clear the choice with `undefined`. */
   set: (sessionId: string, wikiId: string | undefined) => Promise<void>
 }

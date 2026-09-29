@@ -101,20 +101,65 @@ export function wikiIdFromRequest(req: { url?: string | undefined }): string | u
 /**
  * Which runtime does this request target?
  *
- *   `?wiki=<id>` naming a RUNNING wiki → that one
- *   anything else (no selector, unknown id, wiki not running)
- *                                       → the farm's default runtime
+ *   `?wiki=<id>` naming a RUNNING wiki                    → that one
+ *   `?wiki=<id>` naming a REGISTERED wiki that is STOPPED  → UNDEFINED (refuse)
+ *   no selector, or an UNKNOWN id                          → the farm's default
  *
- * An unknown id falls back instead of 404ing on purpose: the selector comes
- * from links the user may have bookmarked, and a stale one must not strand them
- * on a broken editor. It also means `?wiki=` can never be used to reach a wiki
- * that is not running — starting one is an explicit action, not a side effect
- * of a GET.
+ * TWO FALLBACKS, TWO DIFFERENT REASONS (v0.29.0)
+ * ----------------------------------------------
+ * An UNKNOWN id falls back instead of 404ing on purpose: the selector comes from
+ * links the user may have bookmarked, and a stale one must not strand them on a
+ * broken editor. It also means `?wiki=` can never be used to START a wiki —
+ * starting one is an explicit action, not a side effect of a GET.
+ *
+ * A REGISTERED but not-running id must NOT fall back. It used to, and the
+ * failure was silent and destructive: the settings page ("正在配置：books")
+ * wrote the books patch into the DEFAULT wiki's config tiddler, the quick-note
+ * card listed stopped wikis and then saved into the default one, and
+ * `/admin/info?wiki=<stopped>` rewrote the default wiki's `tiddlywiki.info`.
+ * The named wiki is unambiguously known here, so there is nothing to guess:
+ * callers get `undefined` and answer 503 with the wiki named (see
+ * `stoppedWikiFromRequest` for the message). This is the same answer the
+ * `/tw/<id>/` proxy already gave (it resolves LAST, exactly so a named-but-
+ * stopped wiki cannot be proxied to whoever happens to be the default).
  */
 export function targetRuntimeFor<T extends WikiRuntime>(farm: WikiFarm<T> | undefined, req: { url?: string | undefined }): T | undefined {
+  if (farm === undefined) return undefined
   const id = wikiIdFromRequest(req)
-  if (id === undefined) return farm?.defaultRuntime()
-  return farm?.runtime(id) ?? farm?.defaultRuntime()
+  if (id === undefined) return farm.defaultRuntime()
+  const runtime = farm.runtime(id)
+  if (runtime !== undefined) return runtime
+  // Registered but stopped → refuse (never act on a different knowledge base).
+  if (farm.registry.wikis.some((entry) => entry.id === id)) return undefined
+  return farm.defaultRuntime()
+}
+
+/**
+ * The REGISTERED wiki a request names which is not running — the reason a
+ * request-scoped target resolved to `undefined` (v0.29.0).
+ *
+ * Exists so every 503 can NAME the knowledge base and tell the user what to do,
+ * instead of the generic "wiki service is not running" that made the old silent
+ * fallback look like a success. Returns `undefined` when the request names no
+ * wiki, names a running one, or names an unknown id (that last case still falls
+ * back to the default by design — see `targetRuntimeFor`).
+ */
+export function stoppedWikiFromRequest<T extends WikiRuntime>(farm: WikiFarm<T> | undefined, req: { url?: string | undefined }): WikiEntry | undefined {
+  if (farm === undefined) return undefined
+  const id = wikiIdFromRequest(req)
+  if (id === undefined) return undefined
+  if (farm.runtime(id) !== undefined) return undefined
+  return farm.registry.wikis.find((entry) => entry.id === id)
+}
+
+/**
+ * The sentence every refusal carries (v0.29.0).
+ *
+ * Exported so the host wiring and the verification harness cannot drift apart on
+ * what a user reads — the guard asserts this text appears in the 503 body.
+ */
+export function stoppedWikiMessage(entry: WikiEntry): string {
+  return `知识库「${entry.label}」当前没有运行：先在「知识库」菜单里启动它再试`
 }
 
 /**

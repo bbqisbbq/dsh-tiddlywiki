@@ -610,6 +610,19 @@ const CORS_HEADERS: Record<string, string> = {
 export class ClipBridge {
   private server: Server | undefined
   private boundPort = 0
+  /**
+   * 剪藏请求的串行队列（v0.29.0）。
+   *
+   * WHY: the note title is chosen with a check-then-write
+   * (`resolveClipTitle(deps.exists, …)`), so two clips of the same page in flight
+   * — a double bookmarklet click, or two tabs — both see "X is free" and the
+   * second PUT silently replaces the first note (leaving the first note's image
+   * tiddlers orphaned). TW's REST has no compare-and-set, so the cross-process
+   * race cannot be closed; the same-process one can, and that IS the common case:
+   * serialize `/clip` handling here. The second request then resolves the title
+   * AFTER the first landed and picks 「X 2」.
+   */
+  private clipChain: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly deps: ClipBridgeDeps) {}
 
@@ -622,7 +635,12 @@ export class ClipBridge {
   start(port: number): Promise<void> {
     if (this.server !== undefined) return Promise.resolve()
     const server = createServer((req, res) => {
-      void this.handle(req, res).catch((err: unknown) => {
+      // 串行执行（v0.29.0）：标题解析是"先查后写"，并发时第二次会覆盖第一次
+      // （见 clipChain 的注释）。队列本身必须永远保持 resolved，否则一次失败
+      // 会把后续所有剪藏请求一起卡住。
+      const run = this.clipChain.then(() => this.handle(req, res))
+      this.clipChain = run.then(() => undefined, () => undefined)
+      run.catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err)
         this.deps.log?.(`request failed: ${message}`)
         if (!res.headersSent) {

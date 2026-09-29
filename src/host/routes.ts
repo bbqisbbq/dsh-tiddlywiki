@@ -196,6 +196,17 @@ export interface RouteDeps {
   /** Absolute folder of the targeted wiki. */
   getWikiPath: (req: IncomingMessage) => string
   /**
+   * Why this request names a knowledge base that cannot serve it (v0.29.0).
+   *
+   * Returns an actionable sentence when `?wiki=<id>` names a REGISTERED but
+   * STOPPED wiki, `undefined` otherwise (no selector / running / unknown id).
+   * Routes that already 503 on a missing client use it to NAME the wiki; the
+   * ones whose accessors have a harmless-looking fallback (config, wiki path,
+   * seed status) MUST check it first, or they answer with ANOTHER wiki's data —
+   * the silent-wrong-wiki class this hook exists to close.
+   */
+  targetProblem?: (req: IncomingMessage) => string | undefined
+  /**
    * After a pull moved HEAD: restart the running wikis whose content actually
    * changed, and report their ids (v0.28.0). `changedFiles` are
    * repository-relative paths, so a shared repository can restart exactly the
@@ -572,8 +583,33 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    */
   const twProxyAbsoluteBase = (req: IncomingMessage): string | undefined => absoluteHostBase(req.headers.host, TW_PROXY_PATH)
 
+  /**
+   * 503 when `?wiki=<id>` names a REGISTERED but STOPPED knowledge base (v0.29.0).
+   *
+   * Before this, such a request fell through to the DEFAULT wiki — the settings
+   * page said 「正在配置：books」 and then synced/restarted/uploaded into the work
+   * wiki, silently. `deps.targetProblem` is the single place that knows the
+   * difference between "unknown id" (still falls back: stale bookmark) and
+   * "known but not running" (must refuse), so every route that can act asks it.
+   */
+  const refuseStoppedTarget = (req: IncomingMessage, res: ServerResponse): boolean => {
+    const problem = deps.targetProblem?.(req)
+    if (problem === undefined) return false
+    json(res, { ok: false, error: problem }, 503)
+    return true
+  }
+
+  /**
+   * The 503 body for "no running wiki behind this request": names the wiki when
+   * the request asked for one that is stopped, otherwise the historical text.
+   */
+  const notRunning = (req: IncomingMessage): string => deps.targetProblem?.(req) ?? 'wiki service is not running'
+
   const handleStatus = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectNonRead(req, res)) return
+    // A `?wiki=` that names a stopped wiki must not answer with ANOTHER wiki's
+    // path/git/note defaults (the settings page's 状态 row reads exactly this).
+    if (refuseStoppedTarget(req, res)) return
     const view = deps.server(req)?.status() ?? { status: 'stopped' as const, wikiPath: deps.getWikiPath(req), logs: [] }
     const gitSummary = await cachedGitStatus(req)
     json(res, {
@@ -656,7 +692,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       }
       const client = deps.getClient(req)
       if (client === undefined) {
-        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        json(res, { ok: false, error: notRunning(req) }, 503)
         return
       }
       const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
@@ -700,7 +736,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       const body = JSON.parse(await readBody(req)) as { title?: unknown; tag?: unknown; tags?: unknown; text?: unknown; expectedModified?: unknown; expectedRevision?: unknown; force?: unknown }
       const client = deps.getClient(req)
       if (client === undefined) {
-        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        json(res, { ok: false, error: notRunning(req) }, 503)
         return
       }
       const title = typeof body.title === 'string' && body.title.trim().length > 0 ? body.title.trim() : timestampTitle()
@@ -738,7 +774,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     if (rejectNonRead(req, res)) return
     const client = deps.getClient(req)
     if (client === undefined) {
-      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      json(res, { ok: false, error: notRunning(req) }, 503)
       return
     }
     try {
@@ -767,7 +803,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     if (rejectNonRead(req, res)) return
     const client = deps.getClient(req)
     if (client === undefined) {
-      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      json(res, { ok: false, error: notRunning(req) }, 503)
       return
     }
     try {
@@ -800,7 +836,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     if (rejectNonRead(req, res)) return
     const client = deps.getClient(req)
     if (client === undefined) {
-      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      json(res, { ok: false, error: notRunning(req) }, 503)
       return
     }
     try {
@@ -861,7 +897,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     if (rejectNonRead(req, res)) return
     const client = deps.getClient(req)
     if (client === undefined) {
-      json(res, { ok: false, error: 'wiki service is not running' }, 503)
+      json(res, { ok: false, error: notRunning(req) }, 503)
       return
     }
     try {
@@ -923,6 +959,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   const handleRestart = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      // Sync is a repository/folder operation on the target wiki's path: without
+      // this check a stopped `?wiki=` would pull+commit+push the DEFAULT repo.
+      if (refuseStoppedTarget(req, res)) return
       if (!beginMutation('restart')) {
         json(res, { ok: false, error: '另一个重启/同步正在进行中，请稍候' }, 429)
         return
@@ -955,6 +994,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
    *  UI reflects the pulled files instead of looking stale. */
   const handleSync = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (rejectCrossSiteWrite(req, res, ['POST'])) return
+    // Same reason as /restart: the folder comes from the target, and a stopped
+    // `?wiki=` used to fall back to the DEFAULT wiki's repository.
+    if (refuseStoppedTarget(req, res)) return
     if (!beginMutation('sync')) {
       json(res, { ok: false, error: '另一个重启/同步正在进行中，请稍候' }, 429)
       return
@@ -1048,6 +1090,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   const handleUpload = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      if (refuseStoppedTarget(req, res)) return
       const buf = await readBodyBuffer(req)
       // Name comes from ?name= (URL-encoded) or the X-Filename header.
       const url = new URL(req.url ?? '/', 'http://127.0.0.1')

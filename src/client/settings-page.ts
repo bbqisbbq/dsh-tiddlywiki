@@ -105,6 +105,14 @@ function mountSettingsPage(container: HTMLElement): () => void {
    * 守门：`scripts/verify-plugin-runtime.mjs` 的「未碰过 ≠ 空集合」一节。
    */
   const catalogPending: CatalogPending = {}
+  /**
+   * 这份「未应用勾选」属于哪个库（v0.29.0）。
+   *
+   * 它是**要写进那个库 `tiddlywiki.info` 的清单**，所以只在同一个库内有意义：
+   * 在 A 库勾了几个插件、再点 B 库的「配置」，此前会把 A 的期望集合显示成 B 的，
+   * 点「应用」就把 A 的插件清单写进 B（并重启 B）。切库即作废。
+   */
+  let catalogScope: string | undefined
   /** 首屏是否已成功渲染过内容：决定占位提示与失败时能不能清 body。 */
   let rendered = false
   /**
@@ -137,7 +145,16 @@ function mountSettingsPage(container: HTMLElement): () => void {
       loadError.hidden = true
       loadError.replaceChildren()
       renderStatus(statusRow, state, refresh)
-      renderMain(body, state, refresh, () => disposed, configState, catalogPending, rosterMode)
+      renderMain(body, state, refresh, () => disposed, configState, catalogPending, rosterMode, () => {
+        // 库作用域变了：上一个库的「未应用勾选」立刻作废（见 catalogScope）。
+        if (catalogScope !== editingWiki) {
+          delete catalogPending.plugins
+          delete catalogPending.themes
+          delete catalogPending.languages
+          delete catalogPending.themeActive
+          catalogScope = editingWiki
+        }
+      })
     } catch (err) {
       if (disposed) return
       // 不再 body.replaceChildren() / statusRow.replaceChildren()：那会把已经渲染出来的
@@ -190,7 +207,10 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
     sync.textContent = '同步中…'
     void (async () => {
       try {
-        const res = await fetch(SYNC_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
+        // ⚠️ 必须带作用域（v0.29.0）：这两个按钮在同一行显示的是**正在配置的那个库**
+        // 的 git 概览/TW 状态，却不带 `?wiki=` —— 于是作用域条写着「正在配置：books」，
+        // 点下去 pull/commit/push（或重启）的是**默认库**，而且看起来一切正常。
+        const res = await fetch(withWiki(SYNC_ENDPOINT), { method: 'POST', signal: AbortSignal.timeout(120_000) })
         const payload = (await res.json().catch(() => null)) as SyncResultPayload | null
         const result = describeSyncResult(payload, res.status)
         toast(result.ok ? `同步完成：${result.message}` : `同步失败：${result.message}`)
@@ -213,7 +233,7 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
         // 120s 是显式的：宿主 /admin/restart 会等 TW 就绪才回包，软窗口默认 60s
         // （大知识库冷启动更久，v0.22.5 记录过 44s+），而 fetchJson 默认只给 15s ——
         // 于是宿主重启成功、前端却报「重启失败」。同一原因也命中过知识库切换。
-        await fetchJson(RESTART_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(120_000) })
+        await fetchJson(withWiki(RESTART_ENDPOINT), { method: 'POST', signal: AbortSignal.timeout(120_000) })
         toast('TW 已重启')
       } catch (err) {
         toast(`重启失败：${err instanceof Error ? err.message : String(err)}`)
@@ -321,8 +341,11 @@ function renderPickLibraryHint(body: HTMLElement): void {
     '插件管理（自带官方插件）/ 主题管理 / 语言管理 / 初始化，都是**按知识库**生效的。请先在「总览」里点某个库的「配置」，这里才会显示它们。'))
 }
 
-function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState, catalogPending: CatalogPending, rosterMode?: string): void {
+function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise<void>, isDisposed: () => boolean, configState: ConfigRenderState, catalogPending: CatalogPending, rosterMode?: string, dropCatalogPendingOnScopeChange?: () => void): void {
   body.replaceChildren()
+  // 库作用域变了 → 先作废上一个库的「未应用勾选」（v0.29.0），再渲染任何东西：
+  // 否则渲染出来的复选框是 A 库的期望集合，而页面说的是 B 库（点应用就写错库）。
+  dropCatalogPendingOnScopeChange?.()
   // Loud, above everything else: an unparseable config tiddler means the config
   // block below shows DEFAULTS that are not actually in effect, and saving is
   // refused until it is fixed (v0.23.4 — that is how a user's prompt.extra /
@@ -336,19 +359,28 @@ function renderMain(body: HTMLElement, state: AdminState, refresh: () => Promise
   // a field (v0.20.0). The host element is re-appended as-is, so its inputs and
   // their pending values survive.
   const signature = JSON.stringify(state.config ?? {})
-  const serverChanged = configState.host !== undefined && configState.signature !== signature
+  // 库作用域也是「要不要重建」的一部分（v0.29.0）：两个库的配置内容可能**逐字相同**，
+  // 只比 config 就会把上一个库的表单（连同它的未保存改动）留给新库，保存时写错库。
+  const scopeChanged = configState.wiki !== editingWiki
+  const serverChanged = configState.host !== undefined && (scopeChanged || configState.signature !== signature)
   // 有未保存改动时**不重建**（v0.25.0）：重建会静默丢掉用户刚敲的内容（典型触发
   // 路径：另一个标签页保存了配置，或语言管理顺带写 uiLanguage → 本页 refresh()）。
   // 保留旧表单 + 显式提示，用户可以选择保存（覆盖别处的改动）或自己改回来。
+  // 例外：切库（scopeChanged）时那条提示是错的 —— 用户要的就是另一个库的表单，
+  // 上一个库的脏值本来就不该带过去。
   const dirty = configState.isDirty?.() === true
-  if (serverChanged && dirty) {
+  if (serverChanged && dirty && !scopeChanged) {
     body.append(makeErrorBanner('⚠️ 服务器上的配置在别处被改动过（另一个标签页保存 / 语言管理等），当前表单仍是旧值：直接点「保存配置」会以本页内容覆盖那些改动。'))
   }
-  if (configState.host === undefined || (serverChanged && !dirty)) {
+  // 重建的三种情况（v0.29.0：把"切库"单独加进来，但**不能**顺手改掉 v0.25.0 的保护）：
+  //   ① 还没有表单；② 用户切了库（他就是要另一个库的表单，旧库的脏值不该带过去）；
+  //   ③ 服务器变了且表单没有未保存改动。离开 ③ 的后半句就会静默丢掉用户刚敲的内容。
+  if (configState.host === undefined || scopeChanged || (serverChanged && !dirty)) {
     const host = make('div', 'dsh-tw-settings-confighost')
     renderConfigSection(host, state.config ?? {}, refresh, configState, rosterMode, isDisposed)
     configState.host = host
     configState.signature = signature
+    configState.wiki = editingWiki
   }
   // Tab 栏 + 作用域条（v0.28.8）：多库时页面按「总览 / 本库配置 / 全局」分开，
   // 并在最上方 sticky 地说明正在配置哪个库、随时可以退出。单库两者都不渲染，

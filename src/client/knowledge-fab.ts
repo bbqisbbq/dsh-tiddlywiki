@@ -145,8 +145,40 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     renderTip()
   }
 
+  /** Snapshot `build()` rendered from — lets the click path notice a stale menu. */
+  let currentFlags: UiFlags | undefined
+  let currentRoster: FabRoster | undefined
+
+  /** 名册是否变过（新增 / 移除 / 改名 / 启停库）。 */
+  const rosterChanged = (before: FabRoster, after: FabRoster): boolean => {
+    if (before.mode !== after.mode || before.defaultId !== after.defaultId) return true
+    if (before.wikis.length !== after.wikis.length) return true
+    return before.wikis.some((wiki, i) => {
+      const next = after.wikis[i]
+      return next === undefined || next.id !== wiki.id || next.label !== wiki.label || next.running !== wiki.running
+    })
+  }
+
+  /** 打开菜单 —— 点击路径与「名册变了，先重建再打开」共用这一份。 */
+  const openMenuNow = (): void => {
+    if (menu === undefined) return
+    menuOpen = true
+    menu.hidden = false
+    // 每次打开都重画一次选中标记（v0.28.3）：切库可能发生在菜单关着的时候
+    // （侧边栏入口、快速笔记卡片），不重画就会显示上一次的选中项。
+    repaintWikiMenu?.()
+    renderDot()
+    void refreshTwStatus()
+  }
+
   const build = (flags: UiFlags, roster: FabRoster): void => {
     if (disposed) return
+    currentFlags = flags
+    currentRoster = roster
+    // 重建路径会再次调用 build()：旧的 document 监听必须先摘掉（同一个函数引用，
+    // 重复 add 会让菜单外的每一次点击都多跑一遍处理器）。
+    document.removeEventListener('click', onDocumentClick, true)
+    root?.remove()
     root = document.createElement('div')
     root.className = 'dsh-tw-fab-wrap'
 
@@ -305,15 +337,21 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     dot.dataset.state = sync.getState().state
     fabBtn.append(icon, dot)
     fabBtn.addEventListener('click', () => {
-      if (menu === undefined) return
       if (menuOpen) { closeMenu(); return }
-      menuOpen = true
-      menu.hidden = false
-      // 每次打开都重画一次选中标记（v0.28.3）：切库可能发生在菜单关着的时候
-      // （侧边栏入口、快速笔记卡片），不重画就会显示上一次的选中项。
-      repaintWikiMenu?.()
-      renderDot()
-      void refreshTwStatus()
+      // 名册可能在界面开着的时候变（新增 / 移除 / 改名 / 启停库）。
+      // v0.29.0：打开前对一次账，变了就整块重建 —— 此前只在挂载时读一次，
+      // 于是菜单里少一个库 / 高亮错行，点已移除的那一项还会把面板指到
+      // `/tw/<gone>/`（侧边栏入口是每 10s 重读 /status 的，只有这里不会）。
+      void (async () => {
+        const fresh = await fetchRoster().catch(() => undefined)
+        if (disposed) return
+        if (fresh !== undefined && currentRoster !== undefined && currentFlags !== undefined && rosterChanged(currentRoster, fresh)) {
+          build(currentFlags, fresh)
+          openMenuNow()
+          return
+        }
+        openMenuNow()
+      })()
     })
 
     root.append(menu, fabBtn)

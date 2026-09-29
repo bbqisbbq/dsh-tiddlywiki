@@ -141,11 +141,49 @@ await test('src/host/wiki-instance.ts：drainStop / restart 必须经由 drainTh
     'restart 必须把 this.server.restart() 交给 drainThenStop',
   )
   // 启动自举路径：排干必须真的存在，且在它自己的 restart 之前。
+  // （v0.29.0：自举改走 this.restart()，它内部就是 drainThenStop；断言跟着改。）
   const flushAt = src.indexOf('flushPendingWrites(seedClient')
-  const restartAt = src.indexOf('if (!this.disposed) await this.server.restart()')
+  const restartAt = src.indexOf('if (!this.disposed) await this.restart()')
   assert.ok(flushAt >= 0, '启动自举路径必须调用 flushPendingWrites(seedClient, …)')
-  assert.ok(restartAt >= 0, '启动自举路径找不到 server.restart()（断言失效）')
+  assert.ok(restartAt >= 0, '启动自举路径找不到 this.restart()（断言失效）')
   assert.ok(flushAt < restartAt, '自举路径的排干必须出现在 restart 之前')
+})
+
+/**
+ * v0.29.0 — THE ABOVE WAS A BLIND SPOT, and this is the fix.
+ *
+ * The old check used `indexOf(...)`, i.e. it only ever looked at the FIRST
+ * `this.server.restart()` in the file. Two more sites existed on the bootstrap
+ * path (`pluginAdded` and the uiLanguage branch) and both were bare calls, so a
+ * restart could kill TW with the seed writes still queued — the exact loss rule
+ * #1 exists to prevent — while this script stayed green.
+ *
+ * The rule is now stated the only way it cannot drift: EVERY call site is
+ * enumerated, and each must sit inside a `drainThenStop({ … stop: () => … })`
+ * callback. `dispose()` is the one documented exception (it must not drain).
+ */
+await test('src/host/wiki-instance.ts：数**全部**调用点，不许再有一处裸 restart/stop', () => {
+  const src = sourceWithoutComments('src/host/wiki-instance.ts')
+  const restartCalls = [...src.matchAll(/this\.server\.restart\(\)/g)]
+  // v0.29.0 起只应剩 drainThenStop 里那**一处**（自举路径全部改走 this.restart()）。
+  assert.ok(restartCalls.length >= 1, '一处 server.restart() 都没有，断言可能失效')
+  for (const call of restartCalls) {
+    const before = src.slice(Math.max(0, call.index - 32), call.index)
+    assert.ok(
+      /stop: \(\) =>\s*$/.test(before),
+      `第 ${call.index} 字符处的 this.server.restart() 不在 drainThenStop 的 stop 回调里（裸重启会丢队列里的写入）`,
+    )
+  }
+  const disposeAt = src.indexOf('async dispose(): Promise<void> {')
+  assert.ok(disposeAt >= 0, '找不到 dispose()（断言失效）')
+  for (const call of [...src.matchAll(/this\.server\.stop\(\)/g)]) {
+    const before = src.slice(Math.max(0, call.index - 32), call.index)
+    const drained = /stop: \(\) =>\s*$/.test(before)
+    assert.ok(
+      drained || call.index > disposeAt,
+      `第 ${call.index} 字符处的 this.server.stop() 既不在 drainThenStop 里、也不在 dispose() 里`,
+    )
+  }
 })
 
 // ── 3. 行为级：桩 client 真跑一遍 ────────────────────────────────────────────

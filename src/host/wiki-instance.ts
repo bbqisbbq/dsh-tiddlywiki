@@ -482,11 +482,18 @@ export class WikiInstance {
       // stale snapshot loses every write still queued (v0.19.0).
       const drained = await flushPendingWrites(seedClient, this.tiddlersDir)
       if (!drained) this.log('seed writes may not have been flushed before restart')
-      if (!this.disposed) await this.server.restart()
+      // v0.29.0: `this.restart()` (drainThenStop) rather than a bare
+      // `server.restart()` — see the pluginAdded branch below for why the boot
+      // path may no longer contain a single un-drained restart.
+      if (!this.disposed) await this.restart()
     } else if (pluginAdded) {
       // tiddlywiki.info is written directly by us (no TW flush to wait for),
-      // but TW only loads the plugin at boot.
-      if (!this.disposed) await this.server.restart()
+      // but TW only loads the plugin at boot. The SEEDS that just ran DID go
+      // through TW's REST API, though, so their writes may still sit in the
+      // syncer queue — restart via `this.restart()`, which drains first
+      // (v0.29.0: this used to be a bare `server.restart()`, i.e. the one
+      // restart path outside `drainThenStop()` that rule #1 forbids).
+      if (!this.disposed) await this.restart()
     }
     // Apply the configured UI language (e.g. "zh-Hans"): enable the bundled
     // language plugin in tiddlywiki.info.languages + restart once so TW loads
@@ -496,7 +503,9 @@ export class WikiInstance {
       try {
         const code = uiLang.trim()
         const changed = await ensureLanguage(this.wikiPath, this.options.twRoot(), code)
-        if (changed && !this.disposed) await this.server.restart()
+        // Same drain rule as above (v0.29.0): enabling a language plugin means a
+        // restart, and a restart with a non-empty syncer queue loses writes.
+        if (changed && !this.disposed) await this.restart()
         // Pin the active language tiddler so TW's UI actually switches.
         // v0.24.2: conditional — an identical body still rewrites
         // `$__language.txt.meta`'s created/modified on EVERY startup, and two
@@ -526,7 +535,11 @@ export class WikiInstance {
     try {
       await this.server.start()
       if (this.disposed) {
-        await this.server.stop().catch(() => undefined)
+        // Route the abort through drainStop() too (v0.29.0): the child is fresh
+        // here so there is nothing meaningful to flush, but keeping a SINGLE
+        // stop path is what lets the guard script assert "no bare stop/restart
+        // anywhere in this file" instead of maintaining an allow-list.
+        await this.drainStop().catch(() => undefined)
         return
       }
       await this.config.load(this.client())

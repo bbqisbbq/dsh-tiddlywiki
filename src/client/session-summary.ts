@@ -44,7 +44,7 @@ import { GET_ENDPOINT, SESSION_SUMMARY_ENDPOINT as SUMMARY_ENDPOINT, withWikiQue
 import { fetchRenderFragment } from './render-fetch.ts'
 // 本会话作用域的知识库（v0.28.8）：汇总必须落在同一个库，否则标题条目在库里、
 // 渲染却去默认库找 → 一直「条目不存在」（见 wiki-scope.ts）。
-import { resolveSessionWikiId } from './wiki-scope.ts'
+import { resolveSessionWikiId, subscribeSessionWikiId } from './wiki-scope.ts'
 import { getTabLabel, setTabLabel } from './tw-frame.ts'
 
 /** conversation.view 槽位注册 id（模块私有，v0.22.8：只有本文件的 mount 用）。 */
@@ -312,6 +312,24 @@ function SessionSummaryView(props: SessionSummaryViewProps): React.ReactElement 
       window.clearInterval(timer)
     }
   }, [summaryTitle, generate])
+
+  /**
+   * 会话作用域一变就重生成（v0.29.0）。
+   *
+   * 为什么必须订阅而不是等下一轮：汇总缓存的是**某个库**的成品，还有 3 分钟的按时间
+   * 刷新节拍；选择器切库时只清了 scope 缓存，所以此前切库后最多三分钟仍显示旧库的内容
+   * 与旧库链接（`data-dsh-tw-wiki` 也是旧的）——正是这个模块存在的理由的反面。
+   * 手动刷新会清零失败额度，这里同样清零：换了库就是一次全新的生成。
+   */
+  React.useEffect(() => {
+    return subscribeSessionWikiId((changed) => {
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return
+      if (changed !== undefined && changed !== sessionId) return
+      failuresRef.current = 0
+      lastGeneratedRef.current = 0
+      void generate()
+    })
+  }, [sessionId, generate])
 
   // 一次性 focus 请求直接确认（本视图无可聚焦子目标，避免 shell 挂起）。
   React.useEffect(() => {

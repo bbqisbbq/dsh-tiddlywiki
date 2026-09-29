@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -224,6 +224,19 @@ try {
   await test('工具回执：无 client 时用 reason 报错，而不是含糊的"服务未运行"', async () => {
     const tool = register({ ambiguous: false, reason: '知识库「书籍」当前没有运行，请先在界面上启动它再试' })
     await assert.rejects(() => tool.execute({ title: 'Note' }, { agent: { id: 's1' } }), /书籍.*没有运行/)
+  })
+  await test('写：读不出来（非 ENOENT）必须中止，不许当成"没有文件"整份重写', async () => {
+    // v0.29.0：以前 `.catch(() => '')` 把 EACCES/EBUSY/并发 tmp+rename 竞态全都
+    // 收敛成空串，接着这份"读-改-写"会重写整个 sessions.json —— 其它会话的作用域
+    // 一起没了。用一个**目录**冒充文件即可稳定触发非 ENOENT 的读失败。
+    const dirAsFile = join(scratch, 'scope-is-a-directory')
+    await mkdir(dirAsFile, { recursive: true })
+    await assert.rejects(
+      () => setSessionScope('s-loss', 'books', dirAsFile),
+      (err) => err !== null && typeof err === 'object' && err.code !== 'ENOENT',
+    )
+    const stats = await stat(dirAsFile)
+    assert.equal(stats.isDirectory(), true, '拒绝写入后必须原样保留那个路径（没被改成文件）')
   })
 } finally {
   await rm(scratch, { recursive: true, force: true })

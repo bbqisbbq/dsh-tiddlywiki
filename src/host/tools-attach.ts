@@ -29,7 +29,7 @@ export function attachTool(env: ToolEnv) {
   // ── tiddlywiki_attach ────────────────────────────────────────────────────
   return defineTool({
     name: 'tiddlywiki_attach',
-    description: '把一个本机文件或公网 http(s) 地址存成 wiki 的二进制附件 tiddler（图片 / PDF / 压缩包等，type + base64 正文，随 wiki 进 git）。可选把附件嵌入/链接进某篇笔记。这是 agent 唯一能写入二进制附件的途径。',
+    description: '把一个本机文件或公网 http(s) 地址存成 wiki 的二进制附件 tiddler（图片 / PDF / 压缩包等，type + base64 正文，随 wiki 进 git）。可选把附件嵌入/链接进某篇笔记。**同名已有条目默认拒绝写入**（避免静默覆盖既有笔记；确认要覆盖才传 `force: true`，tags 与自定义字段仍会保留）。这是 agent 唯一能写入二进制附件的途径。',
     parameters: {
       title: { type: 'string', description: '附件 tiddler 标题（同时决定其在 wiki 里的名字）', required: true },
       path: { type: 'string', description: '本机绝对路径（与 url 二选一）' },

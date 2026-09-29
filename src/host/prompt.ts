@@ -180,29 +180,48 @@ export function escapePromptBraces(text: string): string {
   return text.replace(/\{(?=\{)/g, '{\u200B')
 }
 
-/** Governance block: how to write without clobbering human edits. */
-const WRITE_RULES = `### 写入与并发
-- 覆盖或删除已有笔记前先 \`tiddlywiki_get\` 读一次，把读到的 \`modified\`（或 \`revision\`）作为 \`expectedModified\`（或 \`expectedRevision\`）传回去；若期间有人（在 TW 编辑器里）改过，写入会被拒绝并告诉你当前值——此时重新读一遍再决定，**不要用 \`force\` 硬覆盖**。\`tiddlywiki_attach\` 对同名已有条目默认拒绝写入，理由相同（要覆盖得显式 \`force: true\`）。
-- 纯增量内容（日志、批注、清单）优先用 \`tiddlywiki_append\`，不必读全文。
-- 覆盖既有条目时**不传 \`tags\` 就保留原有标签、自定义字段与内容类型**（只改正文）；显式传 \`tags\` 才整体替换标签，要改内容类型用 \`fields.type\`。
-- 内容类型：新笔记默认写成 Markdown（工具自动补 \`text/markdown\`，\`$:/\` 系统条目除外）；覆盖或追加既有条目时保留它原有的 \`type\`。要写 TW 原生 wikitext 才显式传 \`fields: {"type":"text/vnd.tiddlywiki"}\`。⚠️ \`fields.type\` 是 TW 的**内容类型**保留字段，业务分类请放 \`tags\`。`
+/**
+ * Governance block: how to write without clobbering human edits.
+ *
+ * v0.29.0 — TRIMMED TO THE PART THE SCHEMAS CANNOT SAY.
+ *
+ * This block used to restate `tiddlywiki_put` / `append` / `batch_put` / `attach`
+ * nearly sentence for sentence: tags/fields/type preservation, `tags: []` meaning
+ * "clear", the markdown default for new notes, `fields.type` being TW's content
+ * type. All of that is ALREADY in those tools' descriptions — which the model
+ * receives on every request — and this section's own intro tells it that the
+ * schemas are the contract. Two copies of one rule is not redundancy insurance,
+ * it is a second thing to keep in sync (the exact drift that v0.21.0 removed).
+ *
+ * What is left is the one thing no schema states: after a refused write, read
+ * again instead of forcing. `scripts/verify-prompt.mjs` now asserts the delegated
+ * rules on the SCHEMA side, so deleting them here can never lose them silently.
+ */
+const WRITE_RULES = `### 写入约定
+- 覆盖或删除已有笔记前先 \`tiddlywiki_get\` 读一次，并把读到的 \`expectedModified\`（或 \`expectedRevision\`）传回去；被拒绝说明刚有人（在 TW 编辑器里）改过——**重读一遍再决定，不要用 \`force\` 硬覆盖**。`
 
 /** Governance block: the three-step git discipline + conflict recovery. */
-const SYNC_RULES = `### 同步纪律（三条）
-1. 开工先 pull：\`tiddlywiki_git_sync action=pull\`（rebase + autostash；真冲突会自动 abort 并报冲突文件）。
-2. 收工 commit + push：\`tiddlywiki_git_sync action=sync\`（pull → commit → push）。
-3. 插件会自动防抖 commit（默认 60s），需要立刻同步时用上面的工具。
-pull 冲突后：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep-local\`（保留本地）或 \`strategy=keep-remote\`（改用远端版本），再重新 pull/sync 整合其余改动。`
+const SYNC_RULES = `### 同步纪律
+- 开工先 \`tiddlywiki_git_sync action=pull\`，收工 \`action=sync\`（插件另会防抖自动 commit，默认 60s）。
+- pull 冲突：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep-local\`（保留本地）或 \`keep-remote\`，再重新 pull/sync 整合其余改动。`
 
-/** Governance block: knowledge-base conventions (tags, memory, links). */
+/**
+ * Governance block: knowledge-base conventions (tags, memory, links).
+ *
+ * v0.29.0 — the 「工作区标记自动打」 bullet and the 「检索先窄后宽 / 多词 AND」
+ * bullet were REMOVED here because `tiddlywiki_put` and `tiddlywiki_search` already
+ * document them verbatim (see verify-prompt.mjs, which now asserts them on the
+ * schema side). What stays is what only this section can say: what a note IS for
+ * (long-term memory), the todo convention, time-boxing/supersession fields, the
+ * `human-edited` counterpart to the automatic `agent-written`, and the clickable
+ * link format.
+ */
 const NOTE_RULES = `### 笔记约定
 - wiki 是长期记忆：会议纪要、决策记录、调研笔记、随手的想法都存成独立 tiddler（tag 用 inbox/meeting/decision 等便于检索）。
-- **值得做但不在当前范围内的想法**：用 \`tiddlywiki_put\` 写成独立 tiddler、打 \`todo\`，正文简述来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
-- **工作区标记自动打**：新建笔记自动带 \`ws/<项目名>\` 标签与 \`workspace\` 字段（取自会话工作目录），**不要手动再加**；只有内容显然属于**另一个**项目时才显式写 \`workspace\` 字段。
-- **检索先窄后宽**：\`tiddlywiki_search\` 先在工作区内查、没命中才自动扩到全库，回执写明实际范围——**「工作区内 0 条」不等于库里没有**。查询按空白切词、**全部词命中**才算（AND）。
-- **阶段性内容标时效**：会过期的笔记（版本记录 / 部署步骤 / 排期 / 临时方案 / 一次性口令）写时带 \`valid-until: YYYY-MM-DD\`（硬过期）或 \`review-after: YYYY-MM-DD\`（该复查）；被取代时写 \`superseded-by: [[新笔记]]\` 并打 \`superseded\` 标签、**保留旧笔记**。**淘汰只由人决定**，不要自行删除。
+- **值得做但不在当前范围内的想法**：写成独立 tiddler、打 \`todo\`，正文简述来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
+- **阶段性内容标时效**：会过期的笔记带 \`valid-until: YYYY-MM-DD\`（硬过期）或 \`review-after: YYYY-MM-DD\`（该复查）；被取代时写 \`superseded-by: [[新笔记]]\` 并打 \`superseded\` 标签、**保留旧笔记**。**淘汰只由人决定**，不要自行删除。
 - \`agent-written\` 由工具自动补打，别手动加或删；人类编辑过 Agent 笔记后补 \`human-edited\`。
-- **引用笔记用可点击链接**：\`[标题](/dsh-tiddlywiki/tw/#标题)\`（空格等特殊字符做 URL 编码；中文可直写）。点击会打开中央 TW 面板并跳转，优先用它代替纯文本标题。`
+- **引用笔记用可点击链接**：\`[标题](/dsh-tiddlywiki/tw/#标题)\`（空格等特殊字符做 URL 编码；中文可直写）。点它会打开中央 TW 面板并跳转，优先用它代替纯文本标题。`
 
 /**
  * Publish-metadata rule, appended ONLY when `wechat.enabled` is on (v0.23.0).
@@ -233,11 +252,20 @@ export function toolSignatureLines(tools: readonly PromptToolSummary[], bullet =
   })
 }
 
-/** Heading + a one-line capability pointer (slim intro). */
+/**
+ * Heading + a one-line capability pointer (slim intro).
+ *
+ * v0.29.0 — the hand-written CATEGORY LIST ("检索/读写/批量/增量追加/重命名…") is
+ * gone. Only the COUNT was derived from the live registry, so adding or renaming a
+ * tool silently made that sentence wrong, and `verify-prompt.mjs` could not see it
+ * (it asserts there is no signature catalogue, not that this list is current). The
+ * tools themselves are described in full by their schemas, which the model always
+ * has; a second, unmaintainable summary of them is exactly what v0.21.0 removed.
+ */
 function slimIntro(count: number): string {
   return `## TiddlyWiki 持久知识库
 
-本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。插件提供 ${count} 个 \`tiddlywiki_*\` 工具：检索/读写/批量/增量追加/重命名/删除与回收站/反向链接/附件/体检/git 同步与冲突解决。**参数与返回契约以各工具 schema 的 description 为准**，本段只补充 schema 表达不了的约定。`
+本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。插件提供 ${count} 个 \`tiddlywiki_*\` 工具：**参数与返回契约以各工具 schema 的 description 为准**，本段只补充 schema 表达不了的约定。`
 }
 
 /** Heading + the generated signature catalogue (full intro). */

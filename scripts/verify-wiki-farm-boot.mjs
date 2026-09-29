@@ -20,7 +20,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ConfigStore, GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, applyWikiAction, entryPath, proxyBaseFor, registerAdminRoutes, registerRoutes, resolveAgentScope, resolveTwRoot, targetRuntimeFor, writeRegistry } from '../lib/index.js'
+import { ConfigStore, GitFace, TW_PROXY_PREFIX, TiddlyWebClient, WikiFarm, WikiInstance, applyWikiAction, entryPath, proxyBaseFor, registerAdminRoutes, registerRoutes, resolveAgentScope, resolveTwRoot, stoppedWikiFromRequest, stoppedWikiMessage, targetRuntimeFor, writeRegistry } from '../lib/index.js'
 import { createRouteServer } from './lib/tw-harness.mjs'
 
 let failures = 0
@@ -210,6 +210,12 @@ try {
       noteDefaults: () => ({ tag: 'inbox' }),
       uiDefaults: () => WikiInstance.uiDefaultsFrom(base),
       getWikiPath: (req) => targetRuntimeFor(farm, req)?.path ?? '',
+      // 与 index.ts 同一份实现与同一句回绝文案（v0.29.0）：让"已登记但没在跑"的
+      // ?wiki= 拒绝请求，而不是落到默认库上。测试里再抄一份正好是这份仓库最贵的漂移。
+      targetProblem: (req) => {
+        const entry = stoppedWikiFromRequest(farm, req)
+        return entry === undefined ? undefined : stoppedWikiMessage(entry)
+      },
     },
   )
   const harness = createRouteServer(registered)
@@ -251,6 +257,31 @@ try {
     assert.equal(payload.wikiPath, farm.runtime('c').path, '?wiki=c 必须把请求指向 C')
     const fallback = await (await fetch(`${baseUrl}/dsh-tiddlywiki/status?wiki=nope`)).json()
     assert.equal(fallback.wikiPath, farm.runtime('b').path, '未知 id 必须回落默认库，而不是 404')
+  })
+
+  await test('?wiki=<已登记但未运行> 必须拒绝，不许静默作用到默认库（v0.29.0）', async () => {
+    // A 是已登记、但没在跑的库（见下面名册断言 a.running === false）。
+    // 修复前这种请求会落在 farm 的默认运行时上：设置页写着「正在配置：A」却改的是
+    // 默认库的 config，快速笔记列出未运行的库却写进默认库 —— 而且看起来一切正常。
+    for (const path of ['/status', '/tags', '/get?title=x']) {
+      const sep = path.includes('?') ? '&' : '?'
+      const res = await fetch(`${baseUrl}/dsh-tiddlywiki${path}${sep}wiki=a`)
+      const body = await res.text()
+      assert.equal(res.status, 503, `${path}?wiki=<未运行> 必须 503（实际 ${res.status}）`)
+      assert.ok(body.includes('没有运行'), `${path}?wiki=<未运行> 的错误必须点名"没有运行"：${body.slice(0, 120)}`)
+    }
+    // 写路由同样（这是最要紧的一条：写进别的库是不可见的数据损失）。
+    const note = await fetch(`${baseUrl}/dsh-tiddlywiki/note?wiki=a`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'ProbeStopped', text: 'x' }),
+    })
+    assert.equal(note.status, 503, '向未运行的库写笔记必须 503，绝不能落到默认库')
+    await note.arrayBuffer()
+    // 未知 id 仍然回落默认库（老书签不能 404）—— 这条**不变**，上面那条不能把它一起改掉。
+    const unknown = await fetch(`${baseUrl}/dsh-tiddlywiki/status?wiki=nope`)
+    assert.equal(unknown.status, 200, '未知 id 仍须回落默认库（老书签）')
+    await unknown.arrayBuffer()
   })
 
   await test('/status 回传知识库名册（GUI 选择器与设置页靠它）', async () => {
@@ -317,6 +348,10 @@ try {
       server: (req) => targetRuntimeFor(farm, req)?.server,
       getClient: (req) => targetRuntimeFor(farm, req)?.client(),
       getWikiPath: (req) => targetRuntimeFor(farm, req)?.path ?? '',
+      targetProblem: (req) => {
+        const entry = stoppedWikiFromRequest(farm, req)
+        return entry === undefined ? undefined : stoppedWikiMessage(entry)
+      },
       twRoot: resolveTwRoot,
       config: () => idleStore,
       wikis: wikisFace,
@@ -340,6 +375,21 @@ try {
       seeds: { checkAll: async () => [], run: async () => [], remove: async () => [] },
     },
   )
+
+  await test('管理路由：?wiki=<已登记但未运行> 必须拒绝（设置页作用域那条路，v0.29.0）', async () => {
+    // 这一条必须**在 registerAdminRoutes 之后**跑（上面那批 /status //tags /get 的用例
+    // 跑得比它早，那时 /admin/* 还没注册 —— 探它会拿到 404 而不是 503）。
+    const state = await fetch(`${baseUrl}/dsh-tiddlywiki/admin/state?wiki=a`)
+    assert.equal(state.status, 503, 'GET /admin/state 对未运行的库必须 503（否则设置页显示的是默认库的数据）')
+    assert.ok((await state.text()).includes('没有运行'))
+    const save = await fetch(`${baseUrl}/dsh-tiddlywiki/admin/config?wiki=a`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ note: { tag: 'x' } }),
+    })
+    assert.equal(save.status, 503, 'POST /admin/config 对未运行的库必须 503（否则配置写进默认库）')
+    await save.arrayBuffer()
+  })
 
   await test('/admin/wikis：GET 把控制文件里的清单整份吐出来', async () => {
     const res = await fetch(`${baseUrl}/dsh-tiddlywiki/admin/wikis`)

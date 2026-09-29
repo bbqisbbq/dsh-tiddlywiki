@@ -36,7 +36,7 @@ import {
   type WikiLocation,
 } from './host/wiki-location.ts'
 import { WikiInstance } from './host/wiki-instance.ts'
-import { WikiFarm, resolveAgentScope, targetRuntimeFor } from './host/wiki-farm.ts'
+import { WikiFarm, resolveAgentScope, stoppedWikiFromRequest, stoppedWikiMessage, targetRuntimeFor } from './host/wiki-farm.ts'
 import { defaultSessionScopeFile, isSafeSessionId, readSessionScopes, setSessionScope } from './host/session-scope.ts'
 import { installSplitSkill } from './host/skill-install.ts'
 import {
@@ -201,7 +201,7 @@ export {
 } from './host/wiki-registry.ts'
 export { WikiInstance, type WikiInstanceBase, type WikiInstanceOptions } from './host/wiki-instance.ts'
 export { isInsidePath, pathComparisonKey } from './host/path-key.ts'
-export { WikiFarm, targetRuntimeFor, wikiIdFromRequest, resolveAgentScope, type AgentScope, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
+export { WikiFarm, targetRuntimeFor, stoppedWikiFromRequest, stoppedWikiMessage, wikiIdFromRequest, resolveAgentScope, type AgentScope, type FarmChange, type WikiFarmOptions, type WikiRuntime } from './host/wiki-farm.ts'
 export {
   SESSION_SCOPE_MAX_AGE_MS,
   SESSION_SCOPE_VERSION,
@@ -771,6 +771,19 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
      * selector (and an unknown id falls back instead of 404ing).
      */
     const target = (req: IncomingMessage): WikiInstance | undefined => targetRuntimeFor(farm, req)
+    /**
+     * Why this request cannot be served (v0.29.0): set when `?wiki=<id>` names a
+     * REGISTERED but STOPPED knowledge base. `targetRuntimeFor` deliberately
+     * returns undefined for that case instead of falling back to the default wiki
+     * (an unknown id still falls back — a stale bookmark must not 404), so every
+     * route that either 503s on a missing client or has a harmless-looking
+     * fallback (config / wiki path / prompt / status) can say WHICH wiki is down
+     * and what to do, instead of quietly acting on a different one.
+     */
+    const targetProblem = (req: IncomingMessage): string | undefined => {
+      const entry = stoppedWikiFromRequest(farm, req)
+      return entry === undefined ? undefined : stoppedWikiMessage(entry)
+    }
     const fallbackUi = WikiInstance.uiDefaultsFrom(config)
     const fallbackWechat = normalizeWechatConfig(config.wechat)
     /** Used only while nothing runs: base defaults, no wiki tiddler to read. */
@@ -811,6 +824,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       noteDefaults: (req) => ({ tag: target(req)?.noteTag() ?? config.note.tag }),
       uiDefaults: (req) => target(req)?.uiDefaults() ?? fallbackUi,
       getWikiPath: (req) => target(req)?.path ?? defaultPath(),
+      targetProblem,
       // Same helper as the agent tool (one implementation, two callers): a pull
       // can change several knowledge bases that share one repository.
       restartAffected: (_req, dir, changedFiles) => restartAffectedWikis({ farm: () => farm, repoRootOf: (d) => repos.repoRootOf(d) }, dir, changedFiles),
@@ -827,6 +841,11 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
             ...(scopeId !== undefined ? { scope: scopeId } : {}),
             ...(resolution.entry !== undefined ? { resolved: { id: resolution.entry.id, label: resolution.entry.label } } : {}),
             ...(resolution.reason !== undefined ? { reason: resolution.reason } : {}),
+            // v0.29.0: the client needs to know whether "resolved" is a real
+            // answer (multi: this session's tools act on THAT wiki, so its cards'
+            // links must open it) or just the single install's only wiki (keep
+            // the pre-multi DOM, which renders no wiki attribute at all).
+            mode: farm?.registry.mode ?? 'single',
           }
         },
         set: async (sessionId: string, wikiId: string | undefined) => {
@@ -870,6 +889,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       server: (req) => target(req)?.server,
       getClient: (req) => target(req)?.client(),
       getWikiPath: (req) => target(req)?.path ?? defaultPath(),
+      targetProblem,
       twRoot: resolveTwRoot,
       config: (req) => target(req)?.config ?? idleConfig,
       // A settings-page save may change prompt.*: re-register the section (no

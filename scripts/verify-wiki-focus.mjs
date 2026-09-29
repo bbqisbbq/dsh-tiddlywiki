@@ -208,10 +208,11 @@ test('快速笔记：单库模式不得露出「写入」选择器（作者 2026
   // 修法已升级为**一条全局兜底**（v0.28.5）：见下面那条「hidden 必须真的隐藏」。
   // 这里只保留「组件侧也要兜一层」这一半（不依赖 CSS 是否正确加载）。
   // 组件侧兜底：单库时除了 hidden 还要禁用并直接 display:none
-  // （不用跨行大正则——文件里 `if (roster.length <= 1)` 只有这一处）
-  const guardAt = note.indexOf('if (roster.length <= 1)')
-  assert.ok(guardAt > 0, '组件必须有单库分支')
-  const guardBlock = note.slice(guardAt, guardAt + 320)
+  // （v0.29.0：目标库解析搬出了 build()，于是文件里有两处 `roster.length <= 1`
+  //  —— 带花括号的那一处才是画 DOM 的分支，`return` 那一处是解析时的提前退出）
+  const guardAt = note.indexOf('if (roster.length <= 1) {')
+  assert.ok(guardAt > 0, '组件必须有单库分支（画 DOM 的那个）')
+  const guardBlock = note.slice(guardAt, guardAt + 400)
   assert.ok(guardBlock.includes("wikiField.style.display = 'none'"), '单库时组件也要直接隐藏（不只靠 hidden 属性）')
   assert.ok(guardBlock.includes('wikiSelect.disabled = true'), '单库时选择器必须被禁用')
 })
@@ -267,6 +268,11 @@ test('设置页：配置作用域必须显式（per-wiki 请求都要带 ?wiki=�
   assert.match(settings, /withWiki\(CONFIG_ENDPOINT\)/)
   assert.match(settings, /withWiki\(PROMPT_ENDPOINT\)/)
   assert.match(settings, /配置作用域/, '页面必须说清这一块在编辑哪个库')
+  // v0.29.0：状态行那两个按钮此前**漏了**作用域 —— 同一行显示的是正在配置的那个库的
+  // git/TW 状态，点下去 pull/commit/push（或重启）的却是默认库，而且看起来一切正常。
+  // 修复前这里也全绿（清单里没有 SYNC/RESTART），所以这两条是补上的真判据。
+  assert.match(settings, /fetch\(withWiki\(SYNC_ENDPOINT\)/, '「同步」按钮必须带 ?wiki=（否则同步的是默认库的仓库）')
+  assert.match(settings, /fetchJson\(withWiki\(RESTART_ENDPOINT\)/, '「重启 TW」按钮必须带 ?wiki=（否则重启的是默认库）')
 })
 
 test('withWikiQuery：指向某个库时拼 ?wiki=，没有目标时逐字不变', () => {
@@ -287,11 +293,51 @@ test('快速笔记：整张卡片（标签/最近/草稿/附件/保存/弹窗）
   // 标签建议走 buildTagEditor 的 wikiQuery 回调（按 URL 记忆，换库自动重读）
   assert.match(note, /wikiQuery\?\.\(TAGS_ENDPOINT\)/)
   assert.match(note, /tagsPromiseKey !== url/, '标签列表的记忆必须以 URL 为键，否则换库后还在用旧库的标签')
+  // ⚠️ v0.29.0：上面那句曾经是**假绿** —— 它匹配的是 helper 里的实现，而唯一的调用点
+  // 根本没传 `wikiQuery`，于是多库下标签建议一直来自默认库。判据必须落在**调用点**上。
+  const tagCallAt = note.indexOf('buildTagEditor({')
+  assert.ok(tagCallAt > 0, '找不到 buildTagEditor 的调用点')
+  assert.match(note.slice(tagCallAt, tagCallAt + 160), /wikiQuery/, '调用点必须把 wikiQuery 交给标签编辑器（漏传 = 建议列表来自默认库）')
   // 弹窗编辑器必须落在同一个库（写入 A、编辑器打开 B 是"看起来成功了"的失败）
   assert.match(note, /twProxyFor\(rosterMode, targetWiki, payload\.twUrl, payload\.twUrlAbsolute\)/)
   // 单库安装：名册 ≤1 时连选择器都不显示，targetWiki 保持 undefined
   assert.match(note, /if \(roster\.length <= 1\)/, '必须有单库分支（不显示选择器、targetWiki 保持 undefined）')
   assert.match(note, /targetPicked/, '卡片里显式选过之后不得再被焦点库带走')
+})
+
+/**
+ * v0.29.0 — the DEFAULT click path never built the card.
+ *
+ * `openNative()` (ui.quickNoteMode = native, which IS the default) posts /edit and
+ * opens the TW popup without ever calling `build()`, and the whole roster/target
+ * resolution used to live inside `build()` — so `targetWiki` stayed undefined and
+ * `rosterMode` stayed 'single': every quick note went into the DEFAULT wiki with
+ * the default wiki's editor, while the user was reading another one. Silent.
+ *
+ * These assertions pin the ORDER (resolve → refuse-if-stopped → write) on both
+ * entry paths, which is the part a future refactor can undo without any other
+ * guard noticing.
+ */
+test('快速笔记 native 路径：必须先解析目标库，再写（v0.29.0）', () => {
+  const note = readFamily(repoRoot, 'src/client/note-widget')
+  // 解析必须是**独立函数**（老代码整段塞在 build() 里，native 路径永远拿不到）
+  assert.match(note, /const ensureTarget = \(\): Promise<void> => \{/, '目标库解析必须是独立函数（build 之外）')
+  assert.ok(
+    !/const build = [\s\S]{0,4000}?fetchStatus\(\)\.then\([\s\S]{0,400}?rosterMode = /.test(note.slice(note.indexOf('const build ='), note.indexOf('const build =') + 5000)),
+    '名册解析不得再埋在 build() 里（那正是 native 路径写错库的成因）',
+  )
+  const nativeAt = note.indexOf('async openNative() {')
+  assert.ok(nativeAt > 0, '找不到 openNative')
+  const nativeBody = note.slice(nativeAt, note.indexOf('isOpen()', nativeAt))
+  const ensureAt = nativeBody.indexOf('await ensureTarget()')
+  const postAt = nativeBody.indexOf('await postEditAndOpen(')
+  assert.ok(ensureAt > 0, 'native 路径必须先 await ensureTarget()')
+  assert.ok(postAt > ensureAt, '解析必须发生在写入/打开编辑器之前')
+  assert.match(nativeBody, /stoppedTarget\(\)/, 'native 路径必须拒绝「目标库没在运行」（而不是写进默认库）')
+  // 卡片保存路径同样：host 现在会 503，客户端也别等用户写完才说。
+  const saveAt = note.indexOf('doSave = async (): Promise<void> => {')
+  assert.ok(saveAt > 0, '找不到 doSave')
+  assert.match(note.slice(saveAt, saveAt + 900), /stoppedTarget\(\)/, '卡片保存同样要拒绝未运行的目标库')
 })
 
 test('侧边栏入口：每个在运行的库一个入口，用自己的显示名（作者 2026-09-28 要求）', () => {
@@ -668,6 +714,16 @@ test('回复流卡片「在 TW 打开」必须带上是哪个库（作者 2026-0
   assert.match(views, /closest\('\[data-dsh-tw-wiki\]'\)/, '拦截器必须从所在卡片取库（裸路径 = 默认库别名，照它走会开错库）')
   assert.match(views, /'data-dsh-tw-wiki': wikiId/, '工具卡根节点必须带上本会话的库')
   assert.match(summary, /'data-dsh-tw-wiki': wikiId/, '会话汇总面板同样要带（它的片段里也是裸链接）')
+  // ⑤ v0.29.0：**没有显式作用域**时也要能说出那个库 —— 多库下 host 是按"默认库"服务该
+  // 会话的，卡片显示的就是它的内容，片段里的裸链接必须开它，而不是跟着 GUI 焦点跑。
+  // 判据必须落在 resolveSessionWikiId 的解析上（此前只读 payload.scope，于是这种情况
+  // 等于"未指定"，v0.28.11 那类报障只修了一半）。
+  const scope = readFileSync(path.join(repoRoot, 'src/client/wiki-scope.ts'), 'utf8')
+  assert.match(scope, /payload\?\.mode === 'multi'/, '多库时"没有显式作用域"必须解析成 host 实际服务的那个库')
+  assert.match(scope, /payload\?\.resolved\?\.id/, '必须用 host 回传的 resolved.id（而不是自己猜）')
+  // ⑥ v0.29.0：切库要立刻重生成会话汇总（它缓存了成品 + 3 分钟节拍，只清 scope 缓存不够）。
+  assert.match(summary, /subscribeSessionWikiId\(/, '会话汇总必须订阅作用域变化')
+  assert.match(scope, /export function subscribeSessionWikiId/, '作用域模块必须提供订阅出口')
 })
 
 test('「默认库」不得作为选项名出现：默认的那个库要用它自己的显示名（作者 2026-09-29）', () => {
@@ -700,7 +756,7 @@ test('「默认库」不得作为选项名出现：默认的那个库要用它�
 
   // 快速笔记卡片：那个 value='' 的占位选项必须已经删掉；默认库只标身份，不改名。
   assert.ok(!/fallback\.textContent = '默认库'/.test(files.noteWidget), '快速笔记卡片不得再有名为「默认库」的选项')
-  assert.match(files.noteWidget, /const mark = item\.id === defaultId \? '（默认）' : ''/, '卡片里的默认库同样只加身份标记')
+  assert.match(files.noteWidget, /const mark = item\.id === default(Wiki)?Id \? '（默认）' : ''/, '卡片里的默认库同样只加身份标记')
 
   // 设置页剪藏目标：空值那一项改名成默认库的显示名，且默认库不得在同一个下拉里出现两次。
   assert.match(files.settingsConfig, /placeholder\.textContent = `\$\{defaultLabel\}（默认）`/, '剪藏目标下拉里空值那一项必须改名成默认库的显示名')
@@ -757,11 +813,18 @@ test('侧边栏多库入口：点另一个库 = 切换，不是关面板（作�
   assert.match(sidebar, /const focus = shownWiki\(\)/, '高亮必须用同一个解析（shownWiki）')
   assert.match(
     sidebar,
-    /const shownWiki = \(\): string \| undefined => resolveFocusWiki\(runningWikis, defaultWikiId\)/,
+    /const shownWiki = \(\): string \| undefined => resolveFocusWiki\(rosterAll, defaultWikiId\)/,
     'shownWiki 必须把默认库一起交给 resolveFocusWiki —— 旧实现传 undefined，焦点未设时会高亮第一行而不是默认库',
   )
   assert.match(sidebar, /defaultWikiId = payload\?\.defaultId/, '名册里的默认库必须存下来供点击判定用')
-  assert.match(sidebar, /runningWikis = running/, '在运行名册必须存下来供点击判定用')
+  // v0.29.0：解析必须用**完整名册**（含未运行的库），与面板/内核同源。用"在运行的那些"
+  // 时，焦点库只是没在跑（还没起来 / 刚被停）就会回落到默认库 —— 高亮行 ≠ 面板显示的库，
+  // 点那一行还会被判成"切换"而不是收起（v0.28.13 修的是同一判定链上的另一个来源）。
+  assert.match(sidebar, /rosterAll = list/, 'shownWiki 必须按完整名册解析（不只是"在运行的"）')
+  assert.ok(
+    !/resolveFocusWiki\(runningWikis/.test(sidebar),
+    'shownWiki 不得再用"在运行的名册"解析（焦点库没在跑时会高亮错行）',
+  )
 })
 
 test('侧边栏多库入口（行为级）：面板开着时点另一个库，面板必须保持打开且焦点已切过去', () => {

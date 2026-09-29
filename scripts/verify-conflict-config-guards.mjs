@@ -337,12 +337,38 @@ await test('ConfigStore.set：JSON 合法但不是对象（数组）同样拒绝
   assert.equal(client.puts.length, 0)
 })
 
-await test('ConfigStore.set：瞬时读失败仍走「合并到缓存」（回归，别把这条也拒了）', async () => {
+/**
+ * v0.29.0 — this case used to assert the OPPOSITE, and the old assertion was the
+ * hole: `new ConfigStore({})` + a throwing read + `set()` merged the patch onto
+ * the empty placeholder and PUT it. If the user's real tiddler could not be read
+ * (wiki restarting, timeout) that write persisted a config holding ONLY the one
+ * key — the v0.23.4 wipe through the other door. Rule #3: a read failure is not
+ * an absence, so the save is refused and the user retries.
+ */
+await test('ConfigStore.set：从未确认过存量 + 读失败 → 拒绝写入（v0.29.0 反转旧行为）', async () => {
   const client = makeClient('throw')
   const store = new ConfigStore({})
-  await store.set(client, { note: { tag: 'x' } })
-  assert.equal(client.puts.length, 1, '读失败不该阻止写入')
+  await assert.rejects(
+    () => store.set(client, { note: { tag: 'x' } }),
+    (err) => err instanceof ConfigUnreadableError && err.message.includes('读不出配置 tiddler'),
+  )
+  assert.equal(client.puts.length, 0, '无法确认存量时绝不能 PUT（那会把其余配置写成残版）')
+  assert.ok(store.parseError().includes('$:/plugins/dsh-tiddlywiki/config'), '错误信息要点名 tiddler')
+})
+
+await test('ConfigStore.set：**读到过**配置之后的瞬时读失败仍走「合并到缓存」', async () => {
+  // 这一条才是旧断言真正想守的东西：缓存来自一次成功的读取，它就代表用户的存量，
+  // 此时读失败不该阻止保存（否则 TW 一抖动用户就存不了设置）。
+  const store = new ConfigStore({})
+  await store.load(makeClient('ok'))          // 成功确认过：note.tag = kept
+  assert.equal(store.parseError(), undefined)
+  const flaky = makeClient('throw')
+  await store.set(flaky, { note: { tag: 'x' } })
+  assert.equal(flaky.puts.length, 1, '读失败不该阻止写入（缓存是我们确认过的）')
   assert.equal(store.get().note?.tag, 'x')
+  const written = JSON.parse(flaky.puts[0].text)
+  assert.equal(written.wechat, undefined, '这条不该凭空多出键')
+  assert.equal(written.note.tag, 'x')
 })
 
 await test('ConfigStore.set：正常配置合并写入，且保留 created', async () => {

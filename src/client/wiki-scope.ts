@@ -43,12 +43,22 @@ interface ScopeEntry { wikiId: string | undefined; at: number }
 const cache = new Map<string, ScopeEntry>()
 /** In-flight reads, so a card grid mounting at once makes ONE request. */
 const pending = new Map<string, Promise<string | undefined>>()
+/** Scope-invalidation subscribers (v0.29.0) — see invalidateSessionWikiId. */
+const scopeListeners = new Set<(sessionId?: string) => void>()
 
 /**
  * The wiki id this session is scoped to, or `undefined` for the default wiki.
  *
- * Never throws: a failed request resolves to `undefined` (the default), which is
- * the same thing the host does when nothing is scoped.
+ * v0.29.0 — "the default wiki" is now named explicitly in MULTI mode. When a
+ * session has no explicit scope, the host still serves its `tiddlywiki_*` calls
+ * from the registry default; the reply-stream card therefore shows THAT wiki's
+ * content, and its links must open THAT wiki. Previously this returned
+ * `undefined` for "no explicit scope", so with the session on the default wiki
+ * and the GUI focused on another one, a link inside the card (and inside the
+ * 「知识库」tab) opened the FOCUSED wiki — the v0.28.11 report, only half fixed
+ * (the card's own 「在 TW 打开」 button was already correct because it passes the
+ * resolved default). Single mode keeps returning `undefined`, so its DOM and
+ * URLs are byte-identical to what they were before multi-wiki.
  */
 export async function resolveSessionWikiId(sessionId: string | undefined): Promise<string | undefined> {
   if (typeof sessionId !== 'string' || sessionId.length === 0) return undefined
@@ -64,8 +74,11 @@ export async function resolveSessionWikiId(sessionId: string | undefined): Promi
         { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
       )
       if (!res.ok) return undefined
-      const payload = (await res.json().catch(() => null)) as { scope?: unknown } | null
-      return typeof payload?.scope === 'string' && payload.scope.length > 0 ? payload.scope : undefined
+      const payload = (await res.json().catch(() => null)) as { scope?: unknown; resolved?: { id?: unknown }; mode?: unknown } | null
+      if (typeof payload?.scope === 'string' && payload.scope.length > 0) return payload.scope
+      const resolvedId = payload?.resolved?.id
+      if (payload?.mode === 'multi' && typeof resolvedId === 'string' && resolvedId.length > 0) return resolvedId
+      return undefined
     } catch {
       return undefined
     } finally {
@@ -85,14 +98,26 @@ export async function resolveSessionWikiId(sessionId: string | undefined): Promi
  * so the cards rendered next reflect the new knowledge base instead of waiting
  * out the TTL — a stale entry here is the same "card shows another wiki's data"
  * bug this module exists to fix.
+ *
+ * v0.29.0 also NOTIFIES subscribers: invalidating the id is enough for a card
+ * that re-renders anyway, but the 「知识库」 tab caches a whole generated summary
+ * for 3 minutes (`session-summary.ts`), so without a signal it kept showing the
+ * previous wiki's notes (and its `data-dsh-tw-wiki`) after a switch.
  */
 export function invalidateSessionWikiId(sessionId?: string): void {
   if (typeof sessionId === 'string' && sessionId.length > 0) cache.delete(sessionId)
   else cache.clear()
+  const id = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined
+  for (const listener of [...scopeListeners]) listener(id)
 }
 
-/** Test/teardown hook: forget everything, including in-flight reads. */
-export function resetSessionWikiIdCache(): void {
-  cache.clear()
-  pending.clear()
+/**
+ * Subscribe to scope invalidations (one arg = the session, `undefined` = all).
+ *
+ * Returns the unsubscribe function; callers are React effects, so they must
+ * clean up on unmount like every other listener in this half.
+ */
+export function subscribeSessionWikiId(listener: (sessionId?: string) => void): () => void {
+  scopeListeners.add(listener)
+  return () => { scopeListeners.delete(listener) }
 }

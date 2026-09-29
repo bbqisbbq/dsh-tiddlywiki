@@ -110,13 +110,8 @@ export function setEditingWiki(id: string | undefined): void {
  */
 export type SettingsTab = 'overview' | 'library' | 'global'
 
-/** 当前 Tab。模块级（与 editingWiki 同级）：切换 Tab 不重建配置表单。 */
+/** 当前 Tab（模块级，与 editingWiki 同级）：切换 Tab 不重建配置表单。 */
 export let activeTab: SettingsTab = 'overview'
-
-/** Read the current tab (the scope bar / render order use it). */
-export function currentTab(): SettingsTab {
-  return activeTab
-}
 
 /** Switch the tab WITHOUT re-rendering (callers `refresh()` themselves). */
 export function setActiveTab(tab: SettingsTab): void {

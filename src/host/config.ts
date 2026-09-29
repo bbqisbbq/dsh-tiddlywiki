@@ -207,6 +207,25 @@ export function describeUnreadableConfig(): string {
     + '为避免抹掉其它设置，本次保存已被拒绝。请先修好该 tiddler（或删除它、回落到 cordis config 块）再保存。'
 }
 
+/**
+ * Same refusal, different cause (v0.29.0): the tiddler could not be READ at all
+ * and we have never managed to read it — so we do not know what it contains.
+ *
+ * This is the v0.23.4 wipe through the other door. `set()` re-reads the tiddler
+ * specifically so a transient startup failure cannot cost the user's other
+ * overrides; that protection only exists when the re-read SUCCEEDS. When both
+ * reads failed and the cache is still the empty placeholder, merging a one-key
+ * patch onto it and writing persists a config tiddler containing ONLY that key —
+ * silently dropping `prompt.extra`, `git.remote`, every `ui.*` switch.
+ *
+ * Rule #3 ("a read failure is not an absence") applied to a read-modify-write:
+ * the honest answer is to refuse and let the user retry.
+ */
+export function describeUnconfirmedConfig(): string {
+  return `读不出配置 tiddler ${CONFIG_TIDDLER}（TiddlyWiki 正在重启或超时），因此无法确认里面还有哪些设置。`
+    + '为避免只写入本次改动、抹掉其余设置，本次保存已中止，请稍后重试。'
+}
+
 /** A settings-page patch that cannot be accepted (v0.25.0) — mapped to HTTP 400. */
 export class ConfigPatchError extends Error {
   constructor(message: string) {
@@ -315,6 +334,13 @@ export function normalizeConfigPatch(input: unknown): PluginConfigShape {
  */
 export class ConfigStore {
   private overrides: PluginConfigShape = {}
+  /**
+   * True once this store has successfully DETERMINED the stored overrides
+   * (v0.29.0): either the tiddler parsed, or it was absent (404 = no overrides).
+   * A failed read leaves it false, which is what makes `set()` refuse to merge
+   * onto an empty cache it cannot vouch for — see describeUnconfirmedConfig().
+   */
+  private loaded = false
   /** Set when the stored tiddler exists but cannot be parsed (v0.23.4). */
   private lastParseError: string | undefined
 
@@ -361,9 +387,13 @@ export class ConfigStore {
       console.warn('[dsh-tiddlywiki] config tiddler unreadable, keeping cached overrides:', err instanceof Error ? err.message : err)
       return
     }
-    if (tiddler === undefined) {
+    // `== null` covers a client that answers `null` for "no such tiddler" as well
+    // as the documented 404 → undefined (v0.29.0: `null.text` used to throw and be
+    // reported as "unparseable config", which is a different problem entirely).
+    if (tiddler == null) {
       this.overrides = {}
       this.lastParseError = undefined
+      this.loaded = true
       return
     }
     const raw = typeof tiddler.text === 'string' ? tiddler.text : ''
@@ -372,6 +402,7 @@ export class ConfigStore {
       if (!isPlainObject(parsed)) throw new Error('config tiddler is not a JSON object')
       this.overrides = parsed as PluginConfigShape
       this.lastParseError = undefined
+      this.loaded = true
     } catch {
       // Malformed/unparseable: keep the cache (never revert to the base) and
       // remember WHY so the UI can say it out loud.
@@ -400,24 +431,35 @@ export class ConfigStore {
     let storedText: string | undefined
     try {
       const tiddler = await client.get(CONFIG_TIDDLER)
-      if (tiddler !== undefined && typeof tiddler.text === 'string') {
+      // `!= null` (not `!== undefined`): a client that answers `null` for "no such
+      // tiddler" means exactly that — absent, so writing only this patch loses
+      // nothing. Only a THROWN read is "unconfirmed" (v0.29.0).
+      if (tiddler != null && typeof tiddler.text === 'string') {
         storedText = tiddler.text
         const parsed = JSON.parse(tiddler.text) as unknown
         if (!isPlainObject(parsed)) throw new Error('config tiddler is not a JSON object')
         stored = parsed as PluginConfigShape
       }
-      if (tiddler !== undefined && typeof tiddler.created === 'string' && tiddler.created.trim().length > 0) {
+      if (tiddler != null && typeof tiddler.created === 'string' && tiddler.created.trim().length > 0) {
         existingCreated = tiddler.created
       }
     } catch (err) {
       // Read succeeded (we have the raw text) but the content is unusable:
-      // refuse — writing would drop every key the caller did not send. A READ
-      // failure (no raw text) keeps the old "merge onto the cache" behaviour.
+      // refuse — writing would drop every key the caller did not send.
       if (storedText !== undefined) {
         this.lastParseError = describeUnreadableConfig()
         throw new ConfigUnreadableError(describeUnreadableConfig(), storedText)
       }
-      // Unreadable config tiddler → merge onto the in-memory cache.
+      // The read FAILED and this store never confirmed what is stored (v0.29.0):
+      // the cache is still the empty placeholder, so merging onto it would persist
+      // a config tiddler holding ONLY this patch — every other override gone.
+      // Refuse; a retry after the wiki settles is cheap, the loss is not.
+      if (!this.loaded) {
+        this.lastParseError = describeUnconfirmedConfig()
+        throw new ConfigUnreadableError(describeUnconfirmedConfig(), '')
+      }
+      // Read failure with a cache we DO trust (it came from a successful read):
+      // keep the old "merge onto the cache" behaviour.
       void err
     }
     const merged = deepMerge(stored, patch) as PluginConfigShape

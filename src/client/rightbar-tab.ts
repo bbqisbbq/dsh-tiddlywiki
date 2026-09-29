@@ -87,6 +87,11 @@ function TwRightbarTabBody(props: RightbarTabBodyProps): React.ReactElement {
     if (host === null) return
     const controller = createTwFrameController(host, tab.signal)
     controllerRef.current = controller
+    // 创建即应用一次可见性（v0.29.0）：如果 tab 记录被换掉（id/signal 变）而
+    // `visible` 仍是 true，下面的 effect 不会再跑（依赖没变），新控制器就永远
+    // 停在 `started = false` / iframe 隐藏 —— 右侧栏那块 tab 是空白的，直到用户
+    // 手动收起再展开。这里同步应用一次，两个 effect 谁先跑都不影响结果。
+    controller.setVisible(tab.visible)
     return () => {
       controller.dispose()
       controllerRef.current = null

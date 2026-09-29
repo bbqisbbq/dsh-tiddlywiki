@@ -592,7 +592,9 @@ function BatchCard(props: { toolName: string; args: Record<string, unknown> }): 
     .filter((t): t is string => t !== null && t.length > 0)
     .map((title) => ({ title }))
   // 批量写入的标题在挂载时失效缓存（effect 阶段，见 useInvalidateBodies）。
-  useInvalidateBodies(rows.map((row) => row.title))
+  // wikiId 必须带上（v0.29.0）：缓存键是 `wikiId\0title`，只按标题清会留下
+  // `A\0X`，之后同一篇的读取卡还能拿回被覆盖前的旧正文。
+  useInvalidateBodies(rows.map((row) => row.title), useScopedWikiId())
   return React.createElement(ListCard, {
     toolName: props.toolName,
     title: '批量写入',
@@ -657,7 +659,8 @@ function GitCard(props: { toolName: string; text: string }): React.ReactElement 
 
 function DeleteCard(props: { toolName: string; title: string; text: string }): React.ReactElement {
   // 删除后同标题的缓存必须失效，否则紧跟着的读取卡会拿旧正文（effect 阶段执行）。
-  useInvalidateBodies([props.title])
+  // 同样必须带 wikiId（v0.29.0，理由见 BatchCard）。
+  useInvalidateBodies([props.title], useScopedWikiId())
   const body = props.title.length > 0
     ? React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, `已删除 tiddler「${props.title}」`)
     : React.createElement('pre', { className: 'dsh-tw-toolcard-fallback' }, props.text || '（已删除）')

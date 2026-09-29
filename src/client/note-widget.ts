@@ -119,9 +119,65 @@ export function createNoteWidget(): NoteWidgetHandle {
   let rosterMode = 'single'
   /** The knowledge-base roster (empty in single mode / before /status lands). */
   let roster: Array<{ id: string; label: string; running: boolean }> = []
+  /** The registry default (its display name carries the 「（默认）」 mark). */
+  let defaultWikiId: string | undefined
   /** 焦点库订阅（dispose 需回收）。 */
   let focusOff: (() => void) | undefined
   const wikiQuery = (url: string): string => withWikiQuery(url, targetWiki)
+  /**
+   * DOM half of `ensureTarget()`: repaint the 「写入」 selector from `roster`.
+   *
+   * A no-op until the Markdown card has been built — which is exactly why the
+   * roster resolution can live OUTSIDE `build()` (v0.29.0). The native path
+   * never builds the card, so it gets no selector but must still get the wiki.
+   */
+  let syncTargetDom: () => void = () => {}
+  /**
+   * Resolve WHICH knowledge base this card works on, ONCE, for BOTH entry paths.
+   *
+   * v0.29.0. This lookup used to live inside `build()`, so only the Markdown card
+   * (`open()`) ever learned the roster. The DEFAULT click path is `openNative()`
+   * (直达 TW 原生编辑器), which never builds the card — `targetWiki` therefore
+   * stayed undefined and `rosterMode` stayed `'single'`, and every quick note was
+   * written into the **default** wiki and opened in the default wiki's editor
+   * while the user was reading another one. The 「写入」 selector that was
+   * supposed to make that impossible never appeared either, because it is part of
+   * the card. Silent, and only reachable in a multi-wiki install.
+   */
+  let targetPromise: Promise<void> | undefined
+  const ensureTarget = (): Promise<void> => {
+    targetPromise ??= fetchStatus().then((payload) => {
+      if (disposed) return
+      rosterMode = typeof payload?.mode === 'string' ? payload.mode : 'single'
+      roster = (Array.isArray(payload?.wikis) ? payload.wikis : []).map((item) => ({ id: item.id, label: item.label, running: item.running }))
+      // 单库：`targetWiki` 保持 undefined = 逐字与升级前相同的行为。
+      if (roster.length <= 1) return
+      defaultWikiId = typeof payload?.defaultId === 'string' ? payload.defaultId : undefined
+      const followFocus = (): void => {
+        if (!targetPicked) targetWiki = resolveFocusWiki(roster, defaultWikiId)
+      }
+      followFocus()
+      // 未在本卡片里手动选过时，跟随 GUI 的焦点库（你在看哪个库，笔记就进哪个库）。
+      focusOff ??= subscribeFocusWiki(() => {
+        followFocus()
+        syncTargetDom()
+      })
+      syncTargetDom()
+    })
+    return targetPromise
+  }
+  /**
+   * The resolved target, when it is known AND not running.
+   *
+   * `/note` / `/edit` refuse a stopped wiki instead of writing into the default
+   * one (v0.29.0), so the honest answer is to say so BEFORE the user writes a
+   * paragraph — the card has `wikiHint` for that, the native path has only us.
+   */
+  const stoppedTarget = (): { id: string; label: string } | undefined => {
+    if (targetWiki === undefined) return undefined
+    const item = roster.find((entry) => entry.id === targetWiki)
+    return item !== undefined && !item.running ? item : undefined
+  }
   let draftTimer: number | undefined
   let recentOpen = false
   /**
@@ -448,7 +504,10 @@ export function createNoteWidget(): NoteWidgetHandle {
     titleInput.className = 'dsh-tw-note-title'
     titleInput.placeholder = '标题（默认时间戳）'
     titleInput.setAttribute('aria-label', '笔记标题（默认时间戳）')
-    const tagEditor = buildTagEditor({ onChange: scheduleDraft })
+    // 标签建议必须来自**同一张卡片写入的那个库**（v0.29.0）：helper 一直支持
+    // `wikiQuery`，但这里漏传了，于是多库下建议列表来自默认库——点一个建议就把
+    // 一个只存在于别处的标签写进目标库。上传那两处一直是传的（见下）。
+    const tagEditor = buildTagEditor({ onChange: scheduleDraft, wikiQuery })
     fields.append(titleInput, tagEditor.el)
 
     // ── 目标知识库（v0.28.0，R7）────────────────────────────────────────────
@@ -488,16 +547,12 @@ export function createNoteWidget(): NoteWidgetHandle {
     })
 
     /**
-     * Read the roster and decide the card's default target (v0.28.0).
-     *
-     * Before this resolves, `targetWiki` is undefined = the plain endpoints, and
-     * with `roster.length <= 1` it STAYS undefined — a single-wiki install keeps
-     * byte-identical behaviour and never sees the selector.
+     * Paint the selector (+ the "not running" hint) from the resolved roster.
+     * `ensureTarget()` may have resolved BEFORE this card existed (the native path
+     * resolves it too), in which case it already called the no-op stub — so build()
+     * calls it once more here to catch up.
      */
-    void fetchStatus().then((payload) => {
-      if (disposed) return
-      rosterMode = typeof payload?.mode === 'string' ? payload.mode : 'single'
-      roster = (Array.isArray(payload?.wikis) ? payload.wikis : []).map((item) => ({ id: item.id, label: item.label, running: item.running }))
+    syncTargetDom = (): void => {
       // 单库：连选择器都不该存在。这里**还有一个**兜底 —— 除 `hidden` 外把 select 禁用、
       // 标签也藏掉，因为"能看见一个没有选项的下拉"比"什么都不显示"糟得多（v0.28.1 修）。
       if (roster.length <= 1) {
@@ -508,11 +563,6 @@ export function createNoteWidget(): NoteWidgetHandle {
       }
       wikiField.style.display = ''
       wikiSelect.disabled = false
-      const defaultId = typeof payload?.defaultId === 'string' ? payload.defaultId : undefined
-      const followFocus = (): void => {
-        if (!targetPicked) targetWiki = resolveFocusWiki(roster, defaultId)
-      }
-      followFocus()
       // 「默认库」不再作为选项出现（作者 2026-09-29 报障）：那个位置就是**被设为默认的那个
       // 库本身**，用它自己的显示名，只加「（默认）」作为身份标记。原来那个 `value=''` 的
       // 占位项其实是多余的 —— 清单里本来就有这个库，选中它写进去的就是它。
@@ -520,7 +570,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         ...roster.map((item) => {
           const option = document.createElement('option')
           option.value = item.id
-          const mark = item.id === defaultId ? '（默认）' : ''
+          const mark = item.id === defaultWikiId ? '（默认）' : ''
           option.textContent = item.running ? `${item.label}${mark}` : `${item.label}${mark}（未运行）`
           return option
         }),
@@ -528,13 +578,8 @@ export function createNoteWidget(): NoteWidgetHandle {
       wikiSelect.value = targetWiki ?? ''
       wikiField.hidden = false
       markStopped()
-      // 未在本卡片里手动选过时，跟随 GUI 的焦点库（你在看哪个库，笔记就进哪个库）。
-      focusOff = subscribeFocusWiki(() => {
-        followFocus()
-        wikiSelect.value = targetWiki ?? ''
-        markStopped()
-      })
-    })
+    }
+    void ensureTarget().then(() => syncTargetDom())
     titleInput.addEventListener('input', scheduleDraft)
 
     // Mod-Enter save routes through doSave, which is assigned below (the editor
@@ -673,6 +718,13 @@ export function createNoteWidget(): NoteWidgetHandle {
       const text = editor.getValue().trim()
       if (text.length === 0) {
         toast('内容为空，未保存')
+        return
+      }
+      // 「写入」选中的那个库没在跑：host 现在会拒绝（而不是写进默认库），
+      // 所以先说清楚，别让用户写完一整段才发现（v0.29.0）。
+      const stopped = stoppedTarget()
+      if (stopped !== undefined) {
+        toast(`「${stopped.label}」当前没在运行：先在右下角「知识库」菜单里打开它，或改「写入」目标`)
         return
       }
       saving = true
@@ -854,6 +906,14 @@ export function createNoteWidget(): NoteWidgetHandle {
       if (isEditorPopupOpen() && !isEditorPopupBlank()) return
       nativeOpening = true
       try {
+        // v0.29.0: 必须先解析目标库 —— 这条路径不建卡片，此前因此**永远**写进默认库。
+        await ensureTarget()
+        if (disposed) return
+        const stopped = stoppedTarget()
+        if (stopped !== undefined) {
+          toast(`「${stopped.label}」当前没在运行：先在右下角「知识库」菜单里打开它，再记这条笔记`)
+          return
+        }
         const hit = loadDraft()
         const hasDraft = hit !== null && (hit.draft.text.trim().length > 0 || hit.draft.title.trim().length > 0)
         const title = hasDraft && hit.draft.title.trim().length > 0 ? hit.draft.title.trim() : timestampTitle()

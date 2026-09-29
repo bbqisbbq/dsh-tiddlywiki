@@ -145,7 +145,22 @@ export async function writeSessionScopes(state: SessionScopeState, file: string 
 export async function setSessionScope(sessionId: string, wikiId: string | undefined, file: string = defaultSessionScopeFile()): Promise<void> {
   if (!isSafeSessionId(sessionId)) throw new Error(`会话 id 非法：${JSON.stringify(sessionId)}`)
   if (wikiId !== undefined && !isSafeWikiId(wikiId)) throw new Error(`知识库 id 非法：${JSON.stringify(wikiId)}`)
-  const existing = await readFile(file, 'utf8').catch(() => '')
+  /**
+   * 读失败 ≠ 没有文件（铁律 #3）。
+   *
+   * Only ENOENT may be treated as "no scope file yet". Any other error
+   * (EACCES/EBUSY, a Windows file lock, or losing the race against a concurrent
+   * `writeSessionScopes` tmp+rename) used to collapse into `''` — and because the
+   * next lines are a read-modify-WRITE of the whole file, that silently dropped
+   * every OTHER session's knowledge-base scope. Throwing keeps the file intact
+   * and surfaces the failure to the selector instead.
+   */
+  let existing = ''
+  try {
+    existing = await readFile(file, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err
+  }
   const parsed = existing.length > 0 ? (parseState(existing).state ?? { version: SESSION_SCOPE_VERSION, sessions: {} }) : { version: SESSION_SCOPE_VERSION, sessions: {} }
   const pruned = pruneScopes(parsed, Date.now())
   if (wikiId === undefined) delete pruned.sessions[sessionId]

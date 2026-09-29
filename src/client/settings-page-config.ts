@@ -44,6 +44,15 @@ export interface ConfigField {
  *  inputs (and never discards the user's unsaved edits). */
 export interface ConfigRenderState {
   signature?: string
+  /**
+   * The knowledge base this form was built for (v0.29.0).
+   *
+   * `signature` alone was not enough: two wikis can hold IDENTICAL config JSON, so
+   * switching 「配置」 from one to the other looked like "nothing changed" and kept
+   * the previous wiki's form — including its unsaved edits — which the next 保存配置
+   * then wrote into the NEW wiki (with a misleading 「配置在别处被改动过」 banner).
+   */
+  wiki?: string
   host?: HTMLElement
   /**
    * 最近一次保存失败的文案。保存失败后要 refresh()（顶部可能因此出现 configError

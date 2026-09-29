@@ -49,13 +49,17 @@ function test(name, fn) {
 }
 
 // Register the real toolset against a stub registry: this is the same call the
-// plugin makes at startup, so the summaries are the model-facing truth.
-const tools = (() => {
-  const ctx = { tools: { register: () => () => {} } }
-  const deps = { scope: () => ({ client: undefined, ambiguous: false }), git: {}, wikiPath: () => '', autoCommit: () => {} }
-  registerTiddlywikiTools(ctx, deps)
-  return tiddlywikiToolSummary()
-})()
+// plugin makes at startup, so the summaries are the model-facing truth. The FULL
+// definitions are kept too (v0.29.0): the rules the prompt section deliberately
+// delegates to the schemas must be asserted against them, so "trimmed here" can
+// never quietly become "gone everywhere".
+const toolDefs = []
+const ctx = { tools: { register: (def) => { toolDefs.push(def); return () => {} } } }
+const deps = { scope: () => ({ client: undefined, ambiguous: false }), git: {}, wikiPath: () => '', autoCommit: () => {} }
+registerTiddlywikiTools(ctx, deps)
+const tools = tiddlywikiToolSummary()
+/** Everything the model receives from the tool schemas, as one searchable text. */
+const schemaText = JSON.stringify(toolDefs)
 
 const slim = buildPromptText({ mode: 'slim', tools })
 const full = buildPromptText({ mode: 'full', tools })
@@ -63,8 +67,14 @@ const full = buildPromptText({ mode: 'full', tools })
 /**
  * slim 正文字符预算（见下面「slim 有长度预算」用例的长注释）。
  * 单点定义：wechat 开关那条断言也必须用同一个数字，否则改一处漏一处。
+ *
+ * 2100 → 1200（v0.29.0）：这一版把与工具 description 逐字重复的句子删掉了
+ * （写入/并发 4 条 → 1 条；工作区标记与「检索先窄后宽/AND」两条交还给
+ * `put`/`search` 的 schema），实测正文 939 字符。预算跟着腰斩是**故意的**：
+ * 它现在守的是"别再长回工具手册"，而不是给冗余留额度。被删掉的规则由下面的
+ * 「委派的规则必须在 schema 里」用例逐条反向守住 —— 从提示词里删不等于丢了。
  */
-const SLIM_BUDGET = 2100
+const SLIM_BUDGET = 1200
 
 test('默认形态是 slim 且与 section 名一致', () => {
   assert.equal(DEFAULT_PROMPT_MODE, 'slim', 'v0.21.0 起默认应为 slim')
@@ -96,15 +106,49 @@ test('slim 不含参数清单（无第二份可漂移的 schema 副本）', () =
 })
 
 test('slim 有长度预算（防止再次膨胀成工具手册）', () => {
-  // 1800 → 2100（v0.24.0）：本条新增了三条**用户要求**的治理规则
-  // （自动工作区标记 / 检索先窄后宽 / 阶段性内容标时效），正文从 1949 起跳。
+  // 1800 → 2100（v0.24.0）→ 1200（v0.29.0，见 SLIM_BUDGET 的注释）。
   // 预算的作用只是「别偷偷长回工具手册」——真正的守门是上面两条
   // 「slim 不含参数清单」+ 下面「关键约定必须在场」：谁想把 15 个工具的签名
   // 抄回来，签名断言先红，光靠预算也藏不住（一份签名目录 ≫ 300 字符）。
-  // 因此这里只做**窄幅**上调；下一次要动它时请先证明规则不是冗余。
+  // 因此这里只做**窄幅**调整；下一次要动它时请先证明规则不是冗余。
   const limit = SLIM_BUDGET
   assert.ok(slim.length <= limit, `slim 已 ${slim.length} 字符，超出预算 ${limit}`)
   assert.ok(slim.length < full.length, 'full 必须比 slim 长（否则说明模式没生效）')
+})
+
+/**
+ * v0.29.0 — THE OTHER HALF OF THE TRIM.
+ *
+ * The slim prompt no longer restates what `tiddlywiki_put` / `append` /
+ * `batch_put` / `attach` / `search` already document (the model gets those schemas
+ * on every request anyway, and the section's own intro says they are the
+ * contract). That is only safe if the rules really ARE there — so this asserts
+ * each delegated rule against the LIVE schemas. Deleting it from both places (the
+ * failure mode a plain "the prompt must contain X" test cannot catch once the
+ * test is relaxed) turns this red.
+ */
+test('委派给 schema 的规则必须在工具 description 里（从提示词删 ≠ 丢了）', () => {
+  const delegated = [
+    ['工作区标签自动打', 'ws/<项目名>'],
+    ['工作区字段', '`workspace` 字段'],
+    ['检索先窄后宽', '先在该工作区内检索'],
+    ['查询多词 AND', '所有词都必须命中'],
+    ['tags: [] = 清空标签', '清空全部标签'],
+    ['覆盖时保留原有 type/tags/字段', '原样保留'],
+    ['新笔记默认 Markdown', 'text/markdown'],
+    ['fields.type 是内容类型保留字段', '内容类型'],
+    ['attach 同名默认拒绝覆盖', '默认拒绝写入'],
+    ['增量内容优先 append', '增量写入'],
+  ]
+  for (const [what, needle] of delegated) {
+    assert.ok(
+      schemaText.includes(needle),
+      `「${what}」既不在注入提示词里、也不在工具 schema 里（期望 schema 含「${needle}」）—— 这条规则真的丢了`,
+    )
+  }
+  // 反向：这些句子**不该**再出现在 slim 里（出现了说明去重没做完）。
+  assert.ok(!slim.includes('ws/<项目名>'), 'slim 不该再复述工作区标记（已在 put 的 schema 里）')
+  assert.ok(!slim.includes('先在工作区内查'), 'slim 不该再复述先窄后宽（已在 search 的 schema 里）')
 })
 
 test('可选功能默认不打扰：不进提示词（v0.23.0）', () => {
@@ -158,19 +202,18 @@ test('两种形态都保留治理约定块', () => {
   }
 })
 
-test('三条新治理规则必须在场（v0.24.0：工作区标记 / 先窄后宽 / 时效标注）', () => {
-  // 这几条是用户明确要求写进注入提示词的；文本一旦被改写掉就是静默失效，
-  // 所以逐条断言，同时把它们与 slim 预算上调绑定（预算不是白给的）。
+test('提示词必须留住的约定（v0.24.0 立、v0.29.0 收敛到"只有它能说"的那些）', () => {
+  // v0.29.0：这份清单**只剩** schema 表达不了的东西。工作区标记 / 先窄后宽 /
+  // 多词 AND 三条已随去重移出（它们逐字住在 put / search 的 description 里，
+  // 由下一条用例反向守住）。
   const needles = [
-    ['工作区标记', 'ws/<项目名>'],
-    ['工作区标记字段', 'workspace` 字段'],
-    ['先窄后宽', '先在工作区内查'],
-    ['先窄后宽的回执口径', '「工作区内 0 条」不等于库里没有'],
-    ['多词 AND 口径', '全部词命中'],
     ['硬过期字段', 'valid-until'],
     ['复查字段', 'review-after'],
     ['被取代字段', 'superseded-by'],
     ['淘汰权归属（只由人决定）', '淘汰只由人决定'],
+    ['同步时机（开工 pull）', 'tiddlywiki_git_sync action=pull'],
+    ['人类编辑标记', 'human-edited'],
+    ['并发令牌的后续动作', '重读一遍再决定'],
   ]
   for (const [what, needle] of needles) {
     assert.ok(slim.includes(needle), `slim 缺少「${what}」：${needle}`)
@@ -268,7 +311,7 @@ test('多库作用域横幅（v0.28.0）：单库逐字节不变，多库必须�
   assert.match(scopeBanner({ ...MULTI, reason: '知识库「工作」当前没有运行，请先在界面上启动它再试' }), /请先在界面上启动它/)
 
   // 多库的文本仍必须有界——它每个会话都要注入一次。
-  assert.ok(composed.length <= 2600, `多库注入文本过长：${composed.length} 字符（预算 2600）`)
+  assert.ok(composed.length <= 1800, `多库注入文本过长：${composed.length} 字符（预算 1800）`)
 })
 
 if (failures > 0) {

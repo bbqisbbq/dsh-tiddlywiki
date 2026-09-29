@@ -177,10 +177,19 @@ export function mountSidebarEntry(state: PanelState): () => void {
    * （见 `resolveEntryClick`）——判定必须与面板/内核用**同一套解析**：
    * 记忆值 → 默认库 → 第一个可用库（`resolveFocusWiki`）。
    */
-  let runningWikis: FocusableWiki[] = []
+  /** 完整名册（含未运行的库）——只用于解析"面板此刻显示哪个库"（v0.29.0）。 */
+  let rosterAll: FocusableWiki[] = []
   let defaultWikiId: string | undefined
-  /** 面板此刻显示的那个库。 */
-  const shownWiki = (): string | undefined => resolveFocusWiki(runningWikis, defaultWikiId)
+  /**
+   * 面板此刻显示的那个库。
+   *
+   * v0.29.0：必须按**完整名册**（含未运行的库）解析，与面板/内核同源 —— 内核用的就是
+   * 记住的那个 id 本身（`panel.ts` 的 `getFocusWiki`），只有名册里真的没有它才回落。
+   * 此前用的是"在运行的那些"，于是焦点库只是**没在跑**（还没起来 / 刚被停）时这里会
+   * 回落到默认库：高亮的那一行 ≠ 面板显示的库，而点那一行会被判成"切换"而不是收起
+   * （v0.28.13 修的是"点两次"的主观感受，这条是同一判定链上的第二个来源）。
+   */
+  const shownWiki = (): string | undefined => resolveFocusWiki(rosterAll, defaultWikiId)
   const entryHooks: EntryHooks = { state, shownWiki }
   const { entry, labelEl, iconEl } = createEntry(entryHooks, 'TiddlyWiki')
   rows.set('', { entry, labelEl, iconEl })
@@ -215,7 +224,8 @@ export function mountSidebarEntry(state: PanelState): () => void {
     const list = Array.isArray(payload?.wikis) ? payload.wikis : []
     const running = list.filter((w) => w.running)
     // 点击判定与高亮都要用同一份名册（v0.28.13）：存下来，`shownWiki()` 据此解析。
-    runningWikis = running
+    // 行只给"在运行"的库建（见函数头），但"显示的是哪个库"要按完整名册判断（v0.29.0）。
+    rosterAll = list
     defaultWikiId = payload?.defaultId
     // 单库：不建额外行，标签仍归 ui.sidebarLabel 管。
     if (running.length <= 1) {

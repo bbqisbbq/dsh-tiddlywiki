@@ -36,6 +36,17 @@ export interface AdminDeps {
    */
   config: (req: IncomingMessage) => ConfigStore
   /**
+   * Why this request names a knowledge base that cannot serve it (v0.29.0):
+   * `?wiki=<id>` naming a REGISTERED but STOPPED wiki returns an actionable
+   * sentence, everything else `undefined`.
+   *
+   * The settings page is the worst offender for the silent-wrong-wiki class
+   * (its status row and config form are built from `/admin/state`, which would
+   * otherwise answer with the DEFAULT wiki's path/git/config while the scope bar
+   * says 「正在配置：books」), so the wiki-scoped admin handlers check this FIRST.
+   */
+  targetProblem?: (req: IncomingMessage) => string | undefined
+  /**
    * Called after a successful settings-page save (v0.21.0). The plugin rebuilds
    * its system-prompt section here, so a prompt.* edit applies to the running
    * session from its next model step — without restarting dsh web.
@@ -138,9 +149,33 @@ export type AdminWikisApplyResult =
   | { ok: false; error: string }
 
 export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: AdminDeps): () => void {
+  /**
+   * 503 when `?wiki=<id>` names a REGISTERED but STOPPED knowledge base (v0.29.0).
+   *
+   * The settings page is where this used to hurt most: the scope bar said
+   * 「正在配置：books」 while `/admin/state` answered with the DEFAULT wiki's
+   * path/git/`tiddlywiki.info` and `/admin/config` wrote the books patch into the
+   * default wiki's config tiddler. Every wiki-scoped handler asks this FIRST,
+   * because `deps.config` / `deps.getWikiPath` have harmless-looking fallbacks
+   * that only ASK for the wrong-answer bug when the target is known-but-stopped.
+   */
+  const refuseStoppedTarget = (req: IncomingMessage, res: ServerResponse): boolean => {
+    const problem = deps.targetProblem?.(req)
+    if (problem === undefined) return false
+    json(res, { ok: false, error: problem }, 503)
+    return true
+  }
+
+  /** The 503 body for "no running wiki behind this request", wiki named if known. */
+  const notRunning = (req: IncomingMessage): string => deps.targetProblem?.(req) ?? 'wiki service is not running'
+
   const handleState = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectNonRead(req, res)) return
+      // `/admin/state` is the settings page's whole view of "the wiki I am
+      // configuring": answering with the default wiki's path/git/config while the
+      // scope bar names another one is the silent-wrong-wiki bug (v0.29.0).
+      if (refuseStoppedTarget(req, res)) return
       const wikiPath = deps.getWikiPath(req)
       const [info, catalog] = await Promise.all([readWikiInfo(wikiPath), bundledCatalog(deps.twRoot())])
       let git: unknown = null
@@ -183,6 +218,9 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
   const handleInfo = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
+      // 插件/主题/语言写的是该库的 tiddlywiki.info：目标库没在跑就必须拒绝，
+      // 否则会把 A 库的清单写进**默认库**的文件（v0.29.0）。
+      if (refuseStoppedTarget(req, res)) return
       const body = JSON.parse(await readBody(req)) as { plugins?: unknown; themes?: unknown; themeActive?: unknown; languages?: unknown }
       const wikiPath = deps.getWikiPath(req)
       // A read failure must NEVER be turned into "the wiki has no plugins":
@@ -324,7 +362,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       const body = JSON.parse(await readBody(req)) as unknown
       const client = deps.getClient(req)
       if (client === undefined) {
-        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        json(res, { ok: false, error: notRunning(req) }, 503)
         return
       }
       // Validate/normalise BEFORE merging (v0.25.0): the raw body used to be
@@ -387,7 +425,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       if (rejectNonRead(req, res)) return
       const client = deps.getClient(req)
       if (client === undefined) {
-        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        json(res, { ok: false, error: notRunning(req) }, 503)
         return
       }
       const items = await deps.seeds.checkAll(client)
@@ -410,7 +448,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       const force = body.force === true
       const client = deps.getClient(req)
       if (client === undefined) {
-        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        json(res, { ok: false, error: notRunning(req) }, 503)
         return
       }
       const seedStartedAt = Date.now()
@@ -465,7 +503,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       const id = typeof body.id === 'string' && body.id.trim().length > 0 ? body.id.trim() : undefined
       const client = deps.getClient(req)
       if (client === undefined) {
-        json(res, { ok: false, error: 'wiki service is not running' }, 503)
+        json(res, { ok: false, error: notRunning(req) }, 503)
         return
       }
       const results = await deps.seeds.remove(client, id)
@@ -492,6 +530,9 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
    */
   const handlePrompt = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
+      // 提示词是**按库**存的（每库一份 prompt.*）：目标库没在跑时给出基座默认，
+      // 等于把「预览」变成另一个库的文本（v0.29.0）。
+      if (refuseStoppedTarget(req, res)) return
       const draft = (req.method ?? 'GET').toUpperCase() === 'POST'
       if (draft) {
         if (rejectCrossSiteWrite(req, res, ['POST'])) return
