@@ -58,8 +58,6 @@ export interface GitLayerDeps {
   defaultPath: () => string
   /** The multi-wiki control file (a registry write may be needed here). */
   registryFile: () => string
-  /** Teardown-aware (v0.23.5): a reapply must not re-arm after dispose. */
-  isDisposed: () => boolean
 }
 
 export interface GitLayer {

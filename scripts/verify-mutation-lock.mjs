@@ -62,7 +62,19 @@ test('createMutationLock：两个实例互不影响（提醒「必须共享同�
 
 const routes = readFamily(repoRoot, 'src/host/routes')
 const admin = readFamily(repoRoot, 'src/host/admin')
-const index = readFamily(repoRoot, 'src/index')
+/**
+ * The `src/index` FAMILY, comment-stripped.
+ *
+ * ⚠️ The strip is load-bearing, not cosmetic (v0.30.48): the count below says
+ * 「`createMutationLock()` exactly once」, and a module header that merely
+ * EXPLAINS the rule ("the caller builds the one lock — `createMutationLock()`")
+ * would otherwise be counted as a second call site. Same failure mode as the
+ * v0.30.45 false green: text assertions over un-stripped source are satisfied
+ * by documentation. Order matters — line comments first (v0.30.14).
+ */
+const stripComments = (src) =>
+  src.replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1').replace(/\/\*[\s\S]*?\*\//g, '')
+const index = stripComments(readFamily(repoRoot, 'src/index'))
 
 test('routes 侧用注入的共享锁（并保留自己的兜底）', () => {
   assert.match(routes, /deps\.mutationLock \?\? createMutationLock\(\)/, 'routes 必须优先用注入的锁；缺省才自建（harness 兜底）')
@@ -79,10 +91,14 @@ test('admin 侧：/admin/restart 与 seeds-run 都拿锁并在 finally 释放', 
 })
 
 test('index.ts：整插件**只建一把**，两侧拿到的是同一个', () => {
+  // v0.30.48: the two Deps objects moved into `index-routes.ts` (a pure
+  // assembly-stage split), so the count must be taken over the whole FAMILY —
+  // and it must still be exactly ONE, wherever it is built. That is the
+  // invariant (one lock, shared); which file writes the line is layout.
   const created = index.match(/createMutationLock\(\)/g) ?? []
   assert.equal(created.length, 1, `createMutationLock() 必须只调用一次（实际 ${created.length} 次 —— 两次就是两把锁，共享失效）`)
-  const passed = index.match(/^\s*mutationLock,\s*$/gm) ?? []
-  assert.ok(passed.length >= 2, `必须同时传给 routes 与 admin 两侧的 deps（实际 ${passed.length} 处）`)
+  const passed = index.match(/^\s*mutationLock(?:,|:.*,)\s*$/gm) ?? []
+  assert.ok(passed.length >= 3, `必须同时传给 routes 与 admin 两侧（并作为 entry → stage 的参数传下去）；实际 ${passed.length} 处`)
 })
 
 test('锁的实现只此一份（没有第二份手写的 begin/end 组合）', () => {

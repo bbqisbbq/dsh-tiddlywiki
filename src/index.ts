@@ -18,37 +18,29 @@
  *
  * @module dsh-tiddlywiki
  */
-import type { IncomingMessage } from 'node:http'
 import { AutoCommitter, GitFace } from './host/git.ts'
-import { registerRoutes, type AgentPresetsFace, type PermissionPresetsFace, type SessionControllerFace, type SessionPersistenceFace, type SessionsFace, type SessionQueryFace, type WebServerFace, type WorkspaceRegistryFace } from './host/routes.ts'
-import { ConfigStore, type PluginConfigShape } from './host/config.ts'
-import { registerAdminRoutes, resolveTwRoot, type AdminDeps, type AdminWikisApplyResult, type AdminWikisView } from './host/admin.ts'
-import { checkAllSeeds, runSeedById, removeSeedById } from './host/seeds.ts'
+import { type SessionsFace, type WebServerFace } from './host/routes.ts'
+import { type PluginConfigShape } from './host/config.ts'
+import { resolveTwRoot } from './host/admin.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
-import { WechatPublishRunner, checkWechatReady, normalizeWechatConfig } from './host/wechat-publish.ts'
-import { registerTiddlywikiTools, tiddlywikiToolSummary, type ToolsDeps, type ToolScope } from './host/tools.ts'
-import { describePrompt, type PromptConfig } from './host/prompt.ts'
+import { WechatPublishRunner } from './host/wechat-publish.ts'
+import { registerTiddlywikiTools, type ToolsDeps, type ToolScope } from './host/tools.ts'
 import {
   defaultLocationStateFile,
   locationPath,
   readLocationState,
-  writeLocationState,
   type WikiLocation,
 } from './host/wiki-location.ts'
 import { WikiInstance } from './host/wiki-instance.ts'
-import { WikiFarm, resolveAgentScope, stoppedWikiFromRequest, stoppedWikiMessage, targetRuntimeFor } from './host/wiki-farm.ts'
-import { defaultSessionScopeFile, isSafeSessionId, readSessionScopes, setSessionScope } from './host/session-scope.ts'
+import { WikiFarm, resolveAgentScope, targetRuntimeFor } from './host/wiki-farm.ts'
+import { defaultSessionScopeFile, readSessionScopes } from './host/session-scope.ts'
 import { installSplitSkill } from './host/skill-install.ts'
 import {
   DEFAULT_WIKI_ID,
   DEFAULT_WIKI_MODE,
-  applyWikiAction,
-  defaultEntry,
   defaultRegistryFile,
-  entryPath,
   readRegistry,
   singleEntryRegistry,
-  writeRegistry,
   type WikiEntry,
   type WikiRegistry,
 } from './host/wiki-registry.ts'
@@ -63,6 +55,7 @@ import { createWikiViews, proxyBaseForEntry, restartAffectedWikis, resolveWikiRo
 import { resolveConfig, type ResolvedConfig, type TiddlywikiConfig } from './index-config.ts'
 import { createMutationLock } from './host/mutation-lock.ts'
 import { createGitLayer } from './index-git.ts'
+import { createRouteStage } from './index-routes.ts'
 import { createPromptSurface, createServerTuning } from './index-prompt.ts'
 import { createClipSurface } from './index-clip.ts'
 
@@ -169,7 +162,6 @@ export {
   locationPath,
   normalizeLocation,
   readLocationState,
-  writeLocationState,
   LOCATION_STATE_VERSION,
   type WikiLocation,
   type WikiLocationInfo,
@@ -371,7 +363,6 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     noteConfig: () => config.note,
     defaultPath: () => wikiViews.defaultPath(),
     registryFile: () => registryFile,
-    isDisposed: () => disposed,
   })
   const { repos, gitTargets, teardownCommitter, reapplyGitConfig, effectiveWorkspaceMark, effectiveBridge, effectiveWechat } = gitLayer
 
@@ -656,179 +647,38 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     isDisposed: () => disposed,
     applyPrompt,
   })
-  const { defaultPath, defaultCurrentLocation, locationInfo, switchWikiLocation, resetWikiLocation, buildWikisView } = wikiViews
+  const { defaultPath, defaultCurrentLocation } = wikiViews
 
-  // Routes + settings-panel admin surface (lazy webServer).
+  // Routes + settings-panel admin surface (lazy webServer). v0.30.48: the whole
+  // assembly stage (the two Deps objects + both route tables) lives in
+  // index-routes.ts; the entry point keeps ownership of `disposed` and builds
+  // the ONE mutation lock, and hands both in. Registration still happens HERE,
+  // at the position it always had — nothing about the lifecycle order moved.
   ctx.inject(['webServer'], (webCtx: HostCtx) => {
     const ws = (webCtx as unknown as { webServer: WebServerFace }).webServer
-    // sessionController is a core host service; read it LAZILY per request (via
-    // the plugin root ctx) because it may be registered after webServer, and the
-    // agent routes must work whenever a request actually arrives.
-    const getSessionController = (): SessionControllerFace | undefined =>
-      ctx.get('sessionController') as SessionControllerFace | undefined
-    const getWorkspaceRegistry = (): WorkspaceRegistryFace | undefined =>
-      ctx.get('workspaceRegistry') as WorkspaceRegistryFace | undefined
-    // agentPresets (工作模式 roster) + sessionPersistence (per-session preset
-    // badges) are also core host services — resolve them lazily like the above.
-    const getAgentPresets = (): AgentPresetsFace | undefined =>
-      ctx.get('agentPresets') as AgentPresetsFace | undefined
-    const getSessionPersistence = (): SessionPersistenceFace | undefined =>
-      ctx.get('sessionPersistence') as SessionPersistenceFace | undefined
-    // permissionPresets (权限 preset roster for the picker + applying the
-    // chosen permission to new sessions) and the `sessions` in-memory store
-    // (the created live session handed to permissionPresets.set) are core host
-    // services — resolve them lazily like the ones above.
-    const getPermissionPresets = (): PermissionPresetsFace | undefined =>
-      ctx.get('permissionPresets') as PermissionPresetsFace | undefined
-    const getSessions = (): SessionsFace | undefined =>
-      ctx.get('sessions') as SessionsFace | undefined
-    // sessionQuery (会话日志查询，供「知识库」Tab 判定「本会话相关笔记」) 也是核心
-    // host 服务 —— 可选注入（本部署存在），懒解析。
-    const getSessionQuery = (): SessionQueryFace | undefined =>
-      ctx.get('sessionQuery') as SessionQueryFace | undefined
-    // v0.28.0: the request decides WHICH wiki. M1b-2b resolves every request to
-    // the farm's DEFAULT runtime (the wiki this plugin has always served); the
-    // `?wiki=<id>` selector arrives with the per-wiki GUI (M5). Every accessor
-    // falls back to the cordis BASE when nothing is running, so a stopped farm
-    // degrades to "base defaults + 503 on writes" instead of throwing.
-    /**
-     * Which wiki does this request target? `?wiki=<id>` (a running wiki), else
-     * the farm's default — resolved by the SHARED helper in host/wiki-farm.ts,
-     * so the host wiring and the verification harness cannot disagree about the
-     * selector (and an unknown id falls back instead of 404ing).
-     */
-    const target = (req: IncomingMessage): WikiInstance | undefined => targetRuntimeFor(farm, req)
-    /**
-     * Why this request cannot be served (v0.29.0): set when `?wiki=<id>` names a
-     * REGISTERED but STOPPED knowledge base. `targetRuntimeFor` deliberately
-     * returns undefined for that case instead of falling back to the default wiki
-     * (an unknown id still falls back — a stale bookmark must not 404), so every
-     * route that either 503s on a missing client or has a harmless-looking
-     * fallback (config / wiki path / prompt / status) can say WHICH wiki is down
-     * and what to do, instead of quietly acting on a different one.
-     */
-    const targetProblem = (req: IncomingMessage): string | undefined => {
-      const entry = stoppedWikiFromRequest(farm, req)
-      return entry === undefined ? undefined : stoppedWikiMessage(entry)
-    }
-    const fallbackUi = WikiInstance.uiDefaultsFrom(config)
-    const fallbackWechat = normalizeWechatConfig(config.wechat)
-    /** Used only while nothing runs: base defaults, no wiki tiddler to read. */
-    const idleConfig = new ConfigStore(baseShape)
-    // ONE mutation lock for the whole plugin (v0.30.12): /restart, /sync,
-  // /admin/restart and the seed restart all stop the TW child — before this,
-  // the admin half had no lock at all and could race the others.
-  const mutationLock = createMutationLock()
-  const disposeRoutes = registerRoutes({ webServer: ws }, {
-      mutationLock,
-      server: (req) => target(req)?.server,
-      // The roster the GUI selector + the settings page read. It reports what
-      // the FARM serves right now (in single mode that is the one synthesized
-      // entry); the control file's full candidate list is the admin route's job.
-      wikiSummaries: (req) => {
-        const registry = farm?.registry
-        return {
-          mode: registry?.mode ?? 'single',
-          defaultId: registry?.defaultId ?? DEFAULT_WIKI_ID,
-          items: (registry?.wikis ?? []).map((entry) => {
-            const runtime = farm?.runtime(entry.id)
-            return {
-              id: entry.id,
-              label: entry.label,
-              status: runtime?.server.status().status ?? 'stopped',
-              agentVisible: entry.agentVisible,
-              autostart: entry.autostart,
-              running: runtime !== undefined,
-              path: entryPath(entry),
-              // 每库图标（v0.28.4）：侧边栏入口与设置页选择器共用这个来源。
-              icon: entry.icon,
-            }
-          }),
-        }
-      },
-      // The `/tw/<id>/…` form: the proxy resolves the child by NAME (it cannot
-      // use `target()`, whose `?wiki=` would be lost inside the iframe).
-      serverById: (id) => farm?.runtime(id)?.server,
-      wikiIds: () => farm?.registry.wikis.map((entry) => entry.id) ?? [],
-      getClient: (req) => target(req)?.client(),
+    const routeStage = createRouteStage({
+      webServer: ws,
+      get: (name) => ctx.get(name),
       git,
-      autoCommit: (req) => target(req)?.touchAutoCommit(),
-      noteDefaults: (req) => ({ tag: target(req)?.noteTag() ?? config.note.tag }),
-      uiDefaults: (req) => target(req)?.uiDefaults() ?? fallbackUi,
-      langOf: (req) => target(req)?.uiLanguage() ?? (typeof baseShape.uiLanguage === 'string' && baseShape.uiLanguage.trim().length > 0 ? baseShape.uiLanguage.trim() : 'zh'),
-      getWikiPath: (req) => target(req)?.path ?? defaultPath(),
-      targetProblem,
-      // Same helper as the agent tool (one implementation, two callers): a pull
-      // can change several knowledge bases that share one repository.
-      restartAffected: (_req, dir, changedFiles) => restartAffectedWikis({ farm: () => farm, repoRootOf: (d) => repos.repoRootOf(d) }, dir, changedFiles),
-      // The composer's per-session selector (v0.28.0). Reading is a Map lookup;
-      // writing persists to session-scope.ts AND starts the wiki on demand — the
-      // tools resolve the scope SYNCHRONOUSLY and never start anything, so the
-      // selection itself has to bring the wiki up, or the very next tool call
-      // would have to refuse.
-      sessionScope: {
-        get: (sessionId: string) => {
-          const resolution = resolveAgentScope(farm, sessionScopes, sessionId)
-          const scopeId = sessionScopes[sessionId]
-          return {
-            ...(scopeId !== undefined ? { scope: scopeId } : {}),
-            ...(resolution.entry !== undefined ? { resolved: { id: resolution.entry.id, label: resolution.entry.label } } : {}),
-            ...(resolution.reason !== undefined ? { reason: resolution.reason } : {}),
-            // v0.29.0: the client needs to know whether "resolved" is a real
-            // answer (multi: this session's tools act on THAT wiki, so its cards'
-            // links must open it) or just the single install's only wiki (keep
-            // the pre-multi DOM, which renders no wiki attribute at all).
-            mode: farm?.registry.mode ?? 'single',
-          }
-        },
-        set: async (sessionId: string, wikiId: string | undefined) => {
-          if (!isSafeSessionId(sessionId)) throw new Error('会话 id 非法')
-          if (wikiId !== undefined) {
-            const entry = farm?.registry.wikis.find((item) => item.id === wikiId)
-            if (entry === undefined) throw new Error(`知识库「${wikiId}」不在清单里`)
-            // `agentVisible: false` means "the agent never reaches this one"; a
-            // selector that allowed it would contradict the setting silently.
-            if (!entry.agentVisible) throw new Error(`知识库「${entry.label}」对 Agent 隐身，不能作为会话作用域`)
-            if (farm !== undefined && farm.runtime(entry.id) === undefined) await farm.startEntry(entry)
-          }
-          await setSessionScope(sessionId, wikiId, sessionScopeFile)
-          const next = { ...sessionScopes }
-          if (wikiId === undefined) delete next[sessionId]
-          else next[sessionId] = wikiId
-          sessionScopes = next
-        },
+      repos,
+      getFarm: () => farm,
+      defaultPath,
+      defaultCurrentLocation,
+      controlRegistryNow,
+      setControlRegistry: (registry) => {
+        controlRegistry = registry
+        controlSource = 'file'
+        controlWarnings = []
+        controlError = undefined
       },
-      getSessionController,
-      getWorkspaceRegistry,
-      getAgentPresets,
-      getSessionPersistence,
-      getPermissionPresets,
-      getSessions,
-      getSessionQuery,
-      sendToAgentEnabled: (req) => target(req)?.sendToAgent().enabled ?? config.ui.sendToAgent.enabled,
-      sendToAgentToken: (req) => target(req)?.sendToAgent().token ?? (config.ui.sendToAgent.token ?? ''),
-      // 公众号发布（v0.23.3，可选功能）：config 每请求重读（开关/adapter/token
-      // 保存即生效，且每个知识库各有一份）；就绪探测每次都真跑一次
-      // `opencli --version`（几百毫秒），只在按钮预检与每次起任务前发生，
-      // 不做缓存以免装完 adapter 还要等 TTL。
-      wechatConfig: (req) => target(req)?.wechatConfig() ?? fallbackWechat,
-      wechatRunner: () => wechatRunner,
-      wechatReady: async (req) => {
-        const cfg = target(req)?.wechatConfig() ?? fallbackWechat
-        return checkWechatReady({ enabled: cfg.enabled, command: cfg.command })
-      },
-    })
-    const adminDeps: AdminDeps = {
-      mutationLock,
-      server: (req) => target(req)?.server,
-      getClient: (req) => target(req)?.client(),
-      getWikiPath: (req) => target(req)?.path ?? defaultPath(),
-      targetProblem,
-      twRoot: resolveTwRoot,
-      config: (req) => target(req)?.config ?? idleConfig,
-      // A settings-page save may change prompt.*: re-register the section (no
-      // dsh web restart) and expose the built text for the preview panel.
-      // startup.readyTimeoutMs is re-applied here too (next start/restart).
+      getSessionScopes: () => sessionScopes,
+      setSessionScopes: (next) => { sessionScopes = next },
+      sessionScopeFile,
+      registryFile,
+      locationStateFile,
+      baseShape,
+      config,
+      wikiViews,
       onConfigChanged: () => {
         applyPrompt()
         applyServerTuning()
@@ -836,94 +686,13 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
         // reapplyGitConfig: enabled/debounceMs/remote used to need a dsh web restart.
         void reapplyGitConfig()
       },
-      // No draft → the SAVED config of the TARGETED wiki (what is injected right
-      // now); with a draft → the settings form's unsaved values (v0.22.7),
-      // through the same builder.
-      getPrompt: (draft, req) =>
-        describePrompt(draft ?? ((target(req)?.eff() ?? baseShape).prompt ?? {}) as PromptConfig, tiddlywikiToolSummary()),
-      // Runtime wiki location (v0.22.0): read the current folder + how it was
-      // decided, switch to another one, or drop back to the cordis default.
-      wiki: {
-        info: locationInfo,
-        switch: switchWikiLocation,
-        reset: resetWikiLocation,
-      },
-      // The knowledge-base LIST (v0.28.0): `info` reports the CONTROL FILE; every
-      // action is validated by the pure `applyWikiAction` and persisted BEFORE
-      // the farm reconciles — the file is the user's intent, and a reconcile
-      // failure is reported per wiki instead of silently discarding the edit.
-      wikis: {
-        info: async (): Promise<AdminWikisView> => buildWikisView(),
-        apply: async (body: unknown): Promise<AdminWikisApplyResult> => {
-          if (disposed) return { ok: false, error: '插件正在卸载，已取消修改' }
-          // RUNTIME actions first (v0.28.0): `start`/`stop` do not change the list,
-          // they change what is running. They live here rather than in the pure
-          // `applyWikiAction` because they touch processes, not configuration —
-          // and the GUI needs them: opening a wiki's panel must be able to bring
-          // a stopped knowledge base up.
-          const runtimeAction = (body as { action?: unknown } | null)?.action
-          if (runtimeAction === 'start' || runtimeAction === 'stop') {
-            if (farm === undefined) return { ok: false, error: '插件尚未就绪，请稍后再试' }
-            const id = (body as { id?: unknown }).id
-            const entry = typeof id === 'string' ? farm.registry.wikis.find((item) => item.id === id.trim().toLowerCase()) : undefined
-            if (entry === undefined) return { ok: false, error: `知识库「${String(id)}」不在清单里` }
-            const change = { started: [] as string[], stopped: [] as string[], updated: [] as string[], running: farm.runningIds(), errors: [] as Array<{ id: string; message: string }> }
-            if (runtimeAction === 'start') {
-              if (farm.runtime(entry.id) === undefined) {
-                await farm.startEntry(entry)
-                change.started.push(entry.id)
-              }
-            } else {
-              await farm.stopEntry(entry.id)
-              change.stopped.push(entry.id)
-            }
-            change.running = farm.runningIds()
-            return { ok: true, info: buildWikisView(), change }
-          }
-          const action = applyWikiAction(controlRegistryNow(), body)
-          if (action.registry === undefined) return { ok: false, error: action.error ?? '动作被拒绝' }
-          const registry = action.registry
-          try {
-            await writeRegistry(registry, registryFile)
-          } catch (err) {
-            return { ok: false, error: `清单写入失败：${err instanceof Error ? err.message : String(err)}` }
-          }
-          controlRegistry = registry
-          controlSource = 'file'
-          controlWarnings = []
-          controlError = undefined
-          // Reconcile. multi → the farm runs the whole list. single → it must
-          // keep serving the ONE wiki the legacy pointer names, so the
-          // synthesized run-registry is used and the pointer is kept in step
-          // (otherwise a restart in single mode would land somewhere else).
-          const single = defaultEntry(registry)
-          const runRegistry = registry.mode === 'multi'
-            ? registry
-            : singleEntryRegistry(single === undefined ? defaultCurrentLocation() : { root: single.root, name: single.name }, DEFAULT_WIKI_ID, 'single')
-          const change = farm === undefined
-            ? { started: [], stopped: [], updated: [], running: [], errors: [] }
-            : await farm.apply(runRegistry)
-          if (registry.mode === 'single' && single !== undefined) {
-            await writeLocationState({ root: single.root, name: single.name }, locationStateFile).catch(() => undefined)
-          }
-          return { ok: true, info: buildWikisView(), change }
-        },
-      },
-      seeds: {
-        // Tool summaries feed the GENERATED seed content (the doc note's tool
-        // list, v0.22.0) — pass them everywhere the registry can be re-run.
-        checkAll: async (c) => checkAllSeeds({ client: c, tools: tiddlywikiToolSummary() }),
-        run: async (c, id, force) => runSeedById({ client: c, tools: tiddlywikiToolSummary() }, id, force),
-        remove: async (c, id) => removeSeedById({ client: c }, id),
-      },
-    }
-    const disposeAdmin = registerAdminRoutes({ webServer: ws }, adminDeps)
-    return () => {
-      disposeRoutes()
-      disposeAdmin()
-    }
+      effectivePromptFor: (req) => ((req === undefined ? undefined : targetRuntimeFor(farm, req)?.eff()) ?? baseShape).prompt ?? {},
+      mutationLock: createMutationLock(),
+      wechatRunner,
+      isDisposed: () => disposed,
+    })
+    return () => routeStage.dispose()
   })
-
   // Teardown: everything reversible (R6 — hot reload must not leak).
   // The disposer RETURNS its promise: cordis fiber.dispose() awaits effect
   // disposers, and dsh web's shutdown controller awaits fiber.dispose() with a
