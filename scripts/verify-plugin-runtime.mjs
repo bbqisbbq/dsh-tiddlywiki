@@ -96,6 +96,8 @@ console.log('接线 —— host 回传 + 客户端如实渲染')
 
 const adminSrc = await readFamily(repoRoot, 'src/host/admin')
 const pageSrc = await readFamily(repoRoot, 'src/client/settings-page')
+// v0.30.14：这些文案改由 i18n 目录（zh 分片）提供，所以措辞断言读目录。
+const settingsCatalogSrc = await readFile(join(repoRoot, 'src/client/i18n-settings.ts'), 'utf8')
 
 await test('/admin/state 回传 runtimePlugins（由 scanWikiRuntimePlugins 得出）', () => {
   assert.match(adminSrc, /const runtimePlugins = await scanWikiRuntimePlugins\(wikiPath\)/, 'handleState 必须调用扫描')
@@ -107,13 +109,19 @@ await test('客户端把 runtimePlugins 传进 catalog 区块', () => {
 })
 
 await test('插件行显示两种错位徽标（TW 内已禁用 / wiki 内已装）', () => {
-  assert.match(pageSrc, /'TW 内已禁用'/, '必须有「TW 内已禁用」徽标')
-  assert.match(pageSrc, /'wiki 内已装'/, '必须有「wiki 内已装」徽标')
+  // v0.30.14：文案走 i18n 目录，所以源码里断言的是**取值点**（键名），
+  // 而 zh 分片负责「说的还是那句话」——只断言中文的话，一次 i18n 转换就会让
+  // 这条守门假红，而它真正想守的是「两种错位状态都必须有徽标」。
+  assert.match(pageSrc, /t\('settings\.plugin\.badgeDisabled'\)/, '必须有「TW 内已禁用」徽标')
+  assert.match(pageSrc, /t\('settings\.plugin\.badgeInstalled'\)/, '必须有「wiki 内已装」徽标')
   assert.match(pageSrc, /disabledTitles\.has\(plugin\.title\)/, '徽标必须按标题匹配禁用集合')
+  assert.match(settingsCatalogSrc, /'settings\.plugin\.badgeDisabled':\s*'TW 内已禁用'/, 'zh 分片里「TW 内已禁用」的措辞不见了')
+  assert.match(settingsCatalogSrc, /'settings\.plugin\.badgeInstalled':\s*'wiki 内已装'/, 'zh 分片里「wiki 内已装」的措辞不见了')
 })
 
 await test('只读小节「wiki 内插件」在场，且 null 时不渲染', () => {
-  assert.match(pageSrc, /'wiki 内插件（经 TW 原生安装，只读）'/, '必须只读列出 wiki 内插件')
+  assert.match(pageSrc, /t\('settings\.wikiPlugins\.title'\)/, '必须只读列出 wiki 内插件')
+  assert.match(settingsCatalogSrc, /'settings\.wikiPlugins\.title':\s*'wiki 内插件（经 TW 原生安装，只读）'/, 'zh 分片里只读小节的标题措辞不见了')
   assert.match(pageSrc, /if \(runtimePlugins != null\) \{/, '扫描失败（null）必须隐藏，而不是显示空')
 })
 

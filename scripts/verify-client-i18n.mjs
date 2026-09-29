@@ -136,21 +136,18 @@ test('目录里没有从未使用的键（死条目）', () => {
 })
 
 /**
- * Files whose conversion has NOT been done yet (v0.30.6 lands the LAYER + the
- * gate; the per-file conversion is tracked here and must only ever SHRINK).
+ * Files whose conversion has NOT been done yet (v0.30.6 landed the LAYER + the
+ * gate; each following round converted files and shrank this list).
  *
- * Why a list instead of "just leave the rule failing": a permanently red gate is
- * a gate nobody reads (v0.28.13's lesson). Instead the rule below is enforced
- * everywhere EXCEPT these files, and two extra assertions make the list
- * self-cleaning: every listed file must still HAVE unconverted Chinese, and the
- * moment a file is converted it must be REMOVED from the list (the run goes red
- * with the file's name, so the list cannot rot silently).
+ * v0.30.14: the list is **EMPTY** — every user-visible Chinese literal under
+ * `src/client/` now goes through `t()`. The mechanism stays on purpose, because
+ * the next surface someone adds must not be able to slip Chinese copy past the
+ * gate: a file may only be listed here while it still HAS unconverted Chinese
+ * (the self-cleaning assertion below enforces that), and the list must never
+ * grow again — if it ever does, the fix is to convert that file in the same
+ * commit, not to park it here.
  */
-const PENDING_CONVERSION = [
-  'settings-page-catalog.ts',
-  'settings-page-config.ts',
-  'tool-views.ts',
-]
+const PENDING_CONVERSION = []
 
 /** CJK literals in `file` that are NOT inside a `t(...)` call. */
 function unconvertedLiterals(file) {
@@ -180,9 +177,18 @@ test('PENDING 清单不得包含不存在的文件（改名/删除时要同步�
   assert.deepEqual(ghost, [], `PENDING_CONVERSION 里有仓库里不存在的文件：${ghost.join(', ')}`)
 })
 
-/** Remove comments so their Chinese prose does not count as user-visible copy. */
+/** Remove comments so their Chinese prose does not count as user-visible copy.
+ *
+ * ⚠️ 两步的**顺序是有意的，而且真踩过两次**（v0.30.14）：先剥行注释，再剥块注释。
+ * 反过来的话，行注释里出现「块注释起始符」（`/` 紧跟 `*`，例如 `/wechat/` 后面跟一个
+ * `*` 这种路径写法）会被当成块注释的开头，一路吞到下一个「块注释结束符」（`*` 紧跟
+ * `/`）—— 那中间的**真实代码**全部从视野里消失，于是「悬空键」与「死键」两条规则对它
+ * 变成瞎的（真实误报：14 个正常键被判成「从未使用」）。先剥 `//` 只会删掉那一行的
+ * 尾巴，不会凭空造出一个没人配对的起始符。
+ * 已知残留边界：**字符串字面量里**的起始符仍可能吞掉后面的代码 —— 非 i18n 的客户端
+ * 源码里不要写这种值（i18n 分片本身被本守门跳过，不受影响）。 */
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1')
+  return source.replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1').replace(/\/\*[\s\S]*?\*\//g, '')
 }
 
 /**

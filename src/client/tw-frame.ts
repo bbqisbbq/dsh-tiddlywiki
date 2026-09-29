@@ -39,6 +39,24 @@ export const ACTIVATE_EVENT = 'dsh-panel-activate'
 export const PANEL_RELOAD_EVENT = 'dsh-tw-panel-reload'
 
 /**
+ * Ask every mounted TW surface to reload the document it is already showing
+ * (v0.30.14).
+ *
+ * The event exists since v0.22.4, but until now only the FAB's 「重新载入」 item
+ * fired it — every path that restarts the TW child *in place* left the open
+ * panel rendering the pre-restart document, whose tiddlers may not even exist
+ * any more. The named call is what those paths use instead of hand-rolling a
+ * `new CustomEvent(...)` and hoping the event name is spelled the same.
+ *
+ * What a surface does is its own business (see `onReloadRequest`): a frame that
+ * never loaded a TW URL is left untouched, and a frame that did is re-assigned
+ * the SAME url so TW re-reads the wiki from scratch.
+ */
+export function reloadTwSurfaces(): void {
+  document.dispatchEvent(new CustomEvent(PANEL_RELOAD_EVENT))
+}
+
+/**
  * Tab chip / + menu / guide copy default (label refreshed from `/status` ui.tabLabel).
  *
  * v0.30.13: the fallback is resolved LAZILY in `getTabLabel()` — a module-level

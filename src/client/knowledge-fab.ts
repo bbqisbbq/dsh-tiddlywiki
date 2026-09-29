@@ -20,7 +20,7 @@ import { t } from './i18n.ts'
 import type { PanelState } from './state.ts'
 import type { NoteWidgetHandle } from './note-widget.ts'
 import type { SyncController } from './sync-button.ts'
-import { PANEL_RELOAD_EVENT } from './tw-frame.ts'
+import { reloadTwSurfaces } from './tw-frame.ts'
 import { ROUTE_PREFIX } from './endpoints.ts'
 import { resolveFocusWiki, setFocusWiki, subscribeFocusWiki } from './wiki-focus.ts'
 
@@ -312,7 +312,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
       reload.textContent = t('chrome.fabReload')
       reload.addEventListener('click', () => {
         closeMenu()
-        document.dispatchEvent(new CustomEvent(PANEL_RELOAD_EVENT))
+        reloadTwSurfaces()
         void refreshTwStatus()
       })
       menu.append(reload)

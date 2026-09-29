@@ -11,6 +11,7 @@
  */
 import { toast } from './toast.ts'
 import { make } from './dom.ts'
+import { t } from './i18n.ts'
 import {
   ADMIN_INFO_ENDPOINT as INFO_ENDPOINT,
   ADMIN_SEEDS_ENDPOINT as SEEDS_ENDPOINT,
@@ -18,6 +19,10 @@ import {
   ADMIN_SEEDS_RUN_ENDPOINT as SEEDS_RUN_ENDPOINT,
 } from './endpoints.ts'
 import { fetchJson, withWiki } from './settings-page-runtime.ts'
+// v0.30.14: 三个「应用…（重启 TW）」按钮同样会就地重启 TW 子进程，所以它们也必须在
+// 成功之后让面板重载 —— 与状态行的「重启 TW」按钮同一条理由（作者 2026-09-29）。
+import { invalidateStatus } from './status-cache.ts'
+import { reloadTwSurfaces } from './tw-frame.ts'
 
 /** One bundled plugin/theme/language, as the host catalog reports it. */
 export interface CatalogEntry {
@@ -118,13 +123,13 @@ export function renderCatalogSection(
 
   // ── plugins ──────────────────────────────────────────────────────────────
   const pluginSection = make('section', 'dsh-tw-settings-section')
-  pluginSection.append(make('h3', 'dsh-tw-settings-h', '插件管理（自带官方插件）'))
-  const pluginHint = make('div', 'dsh-tw-settings-muted', '勾选 = 写入 tiddlywiki.info 的启动安装清单（离线、与引擎版本配套），应用后重启 TW。这里只管引擎自带插件；在 TW 控制面板里安装/禁用/卸载的插件见下方「wiki 内插件」。')
+  pluginSection.append(make('h3', 'dsh-tw-settings-h', t('settings.plugin.title')))
+  const pluginHint = make('div', 'dsh-tw-settings-muted', t('settings.plugin.hint'))
   pluginSection.append(pluginHint)
   const search = make('input', 'dsh-tw-settings-input dsh-tw-settings-search')
-  search.placeholder = '搜索插件…'
+  search.placeholder = t('settings.plugin.searchPlaceholder')
   const listWrap = make('div', 'dsh-tw-settings-list')
-  const applyPlugins = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '应用插件（重启 TW）')
+  const applyPlugins = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', t('settings.plugin.apply'))
   applyPlugins.type = 'button'
   /**
    * 没碰过勾选时禁用「应用」（v0.26.1）：`pending.plugins === undefined` = 跟随服务器，
@@ -160,14 +165,14 @@ export function renderCatalogSection(
       // 判据取**服务器集合**而不是 desiredPlugins()：徽标描述的是当前事实，
       // 不该随「还没应用的勾选」抖动（v0.26.1）。
       if (runtimePlugins != null && disabledTitles.has(plugin.title)) {
-        const badge = make('span', 'dsh-tw-settings-chip', 'TW 内已禁用')
+        const badge = make('span', 'dsh-tw-settings-chip', t('settings.plugin.badgeDisabled'))
         badge.dataset.state = 'disabled'
-        badge.title = '该插件在 tiddlywiki.info 里，但已在 TW 控制面板被禁用（$:/config/Plugins/Disabled）——去 TW 面板重新启用'
+        badge.title = t('settings.plugin.badgeDisabledTitle')
         label.append(badge)
       } else if (runtimePlugins != null && !serverPlugins.includes(plugin.name) && wikiTitles.has(plugin.title)) {
-        const badge = make('span', 'dsh-tw-settings-chip', 'wiki 内已装')
+        const badge = make('span', 'dsh-tw-settings-chip', t('settings.plugin.badgeInstalled'))
         badge.dataset.state = 'update'
-        badge.title = '不在启动清单，但 wiki 里存在同名插件 tiddler（经 TW 原生安装），TW 运行时已在用'
+        badge.title = t('settings.plugin.badgeInstalledTitle')
         label.append(badge)
       }
       label.append(desc)
@@ -183,10 +188,12 @@ export function renderCatalogSection(
         await fetchJson(withWiki(INFO_ENDPOINT), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ plugins: [...desiredPlugins()] }) })
         // 应用成功才清 pending：之后重新跟随服务器（TW 重启后 info 会给出真实集合）。
         pending.plugins = undefined
-        toast('插件已应用，TW 已重启')
+        toast(t('settings.plugin.applied'))
+        reloadTwSurfaces()
+        invalidateStatus()
         void refresh()
       } catch (err) {
-        toast(`应用失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('settings.catalog.applyFailed', { message: err instanceof Error ? err.message : String(err) }))
         syncApplyPlugins()
       }
     })()
@@ -205,12 +212,12 @@ export function renderCatalogSection(
     const externals = (runtimePlugins.wikiPlugins ?? []).filter((p) => !catalogTitles.has(p.title) || disabledTitles.has(p.title))
     if (externals.length > 0) {
       const wikiSection = make('section', 'dsh-tw-settings-section')
-      wikiSection.append(make('h3', 'dsh-tw-settings-h', 'wiki 内插件（经 TW 原生安装，只读）'))
+      wikiSection.append(make('h3', 'dsh-tw-settings-h', t('settings.wikiPlugins.title')))
       wikiSection.append(
         make(
           'div',
           'dsh-tw-settings-muted',
-          '下列插件以 tiddler 形式随 wiki 文件保存（TW 控制面板 → 插件 安装/导入），不受上面勾选影响。启用 / 禁用 / 卸载请到 TW 控制面板操作。',
+          t('settings.wikiPlugins.hint'),
         ),
       )
       const wikiWrap = make('div', 'dsh-tw-settings-list')
@@ -220,9 +227,9 @@ export function renderCatalogSection(
         name.title = plugin.title
         row.append(name)
         if (disabledTitles.has(plugin.title)) {
-          const badge = make('span', 'dsh-tw-settings-chip', '已禁用')
+          const badge = make('span', 'dsh-tw-settings-chip', t('settings.wikiPlugins.disabled'))
           badge.dataset.state = 'disabled'
-          badge.title = '该插件已在 TW 控制面板被禁用'
+          badge.title = t('settings.wikiPlugins.disabledTitle')
           row.append(badge)
         } else if (plugin.version) {
           const ver = make('span', 'dsh-tw-settings-chip', `v${plugin.version}`)
@@ -246,13 +253,13 @@ export function renderCatalogSection(
   // loaded set on apply). The host computes the dependency closure (heavier →
   // vanilla+snowwhite+heavier) and writes $:/theme.
   const themeSection = make('section', 'dsh-tw-settings-section')
-  themeSection.append(make('h3', 'dsh-tw-settings-h', '主题管理（自带主题）'))
-  const themeHint = make('div', 'dsh-tw-settings-muted', '「加载」= TW 里可用的主题（可多选，依赖链自动带上，如 heavier 会带 snowwhite+vanilla）；「活动」= 当前视觉主题（单选，自动加入加载集）。应用后重启 TW。')
+  themeSection.append(make('h3', 'dsh-tw-settings-h', t('settings.themes.title')))
+  const themeHint = make('div', 'dsh-tw-settings-muted', t('settings.themes.hint'))
   const themeHead = make('div', 'dsh-tw-settings-row dsh-tw-settings-head')
   themeHead.append(
-    make('span', 'dsh-tw-settings-col', '加载'),
-    make('span', 'dsh-tw-settings-col', '活动'),
-    make('span', 'dsh-tw-settings-name', '主题'),
+    make('span', 'dsh-tw-settings-col', t('settings.themes.colLoad')),
+    make('span', 'dsh-tw-settings-col', t('settings.themes.colActive')),
+    make('span', 'dsh-tw-settings-name', t('settings.themes.colTheme')),
   )
   const themeList = info?.themes ?? []
   // The ACTIVE theme comes from the host (`$:/theme`, v0.22.3). Deriving it from
@@ -268,7 +275,7 @@ export function renderCatalogSection(
       : lastLoadedTheme ?? 'tiddlywiki/vanilla'
   /** 活动主题同样走 pending：单选按钮的未应用选择也要活过 refresh（见 CatalogPending）。 */
   const activeThemeName = (): string => pending.themeActive ?? serverActiveThemeName
-  const applyThemes = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '应用主题（重启 TW）')
+  const applyThemes = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', t('settings.themes.apply'))
   applyThemes.type = 'button'
   /**
    * 没碰过主题的任何控件时禁用「应用」（v0.26.1，同插件管理）：`pending.* === undefined`
@@ -282,7 +289,7 @@ export function renderCatalogSection(
     const load = make('input', 'dsh-tw-settings-check')
     load.type = 'checkbox'
     load.checked = desiredThemes().has(theme.name)
-    load.title = '加载该主题'
+    load.title = t('settings.themes.loadTitle')
     load.addEventListener('change', () => {
       const next = desiredThemes()
       if (load.checked) next.add(theme.name)
@@ -294,7 +301,7 @@ export function renderCatalogSection(
     act.type = 'radio'
     act.name = 'dsh-tw-active-theme'
     act.checked = theme.name === activeThemeName()
-    act.title = '设为活动主题'
+    act.title = t('settings.themes.activeTitle')
     act.addEventListener('change', () => {
       if (act.checked) pending.themeActive = theme.name
       syncApplyThemes()
@@ -319,10 +326,12 @@ export function renderCatalogSection(
         // 应用成功才清 pending（同插件管理）。
         pending.themes = undefined
         pending.themeActive = undefined
-        toast('主题已应用，TW 已重启')
+        toast(t('settings.themes.applied'))
+        reloadTwSurfaces()
+        invalidateStatus()
         void refresh()
       } catch (err) {
-        toast(`应用失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('settings.catalog.applyFailed', { message: err instanceof Error ? err.message : String(err) }))
         syncApplyThemes()
       }
     })()
@@ -333,10 +342,10 @@ export function renderCatalogSection(
 
   // ── languages (bundled, offline — enable → restart TW) ──────────────────
   const langSection = make('section', 'dsh-tw-settings-section')
-  langSection.append(make('h3', 'dsh-tw-settings-h', '语言管理（自带官方语言包）'))
-  const langHint = make('div', 'dsh-tw-settings-muted', '勾选启用语言插件并重启 TW；如中文请选 zh-Hans（简体）或 zh-CN。')
+  langSection.append(make('h3', 'dsh-tw-settings-h', t('settings.langs.title')))
+  const langHint = make('div', 'dsh-tw-settings-muted', t('settings.langs.hint'))
   const langWrap = make('div', 'dsh-tw-settings-list')
-  const applyLangs = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '应用语言（重启 TW）')
+  const applyLangs = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', t('settings.langs.apply'))
   applyLangs.type = 'button'
   /** 没碰过语言勾选时禁用「应用」（v0.26.1，同插件管理）：未碰过 ≠ 期望集合为空。 */
   const syncApplyLangs = (): void => {
@@ -367,10 +376,12 @@ export function renderCatalogSection(
       try {
         await fetchJson(withWiki(INFO_ENDPOINT), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ languages: [...desiredLanguages()] }) })
         pending.languages = undefined
-        toast('语言已应用，TW 已重启')
+        toast(t('settings.langs.applied'))
+        reloadTwSurfaces()
+        invalidateStatus()
         void refresh()
       } catch (err) {
-        toast(`应用失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('settings.catalog.applyFailed', { message: err instanceof Error ? err.message : String(err) }))
         syncApplyLangs()
       }
     })()
@@ -391,8 +402,8 @@ export function renderCatalogSection(
  */
 export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean): void {
   const section = make('section', 'dsh-tw-settings-section')
-  section.append(make('h3', 'dsh-tw-settings-h', '初始化（一次性预置）'))
-  const hint = make('div', 'dsh-tw-settings-muted', '这些是插件与 dsh 联动、需要在 wiki 里预置的 tiddler/配置。「发送给 Agent 按钮」和「TW 前端 API 基址」是功能必需项，启动时自动写入（只写缺失，不覆盖你的改动）；其余为可选项，默认不自动写入、也不会强绑定——需要时点「重新初始化」写入，不想要了可随时「反初始化」移除。')
+  section.append(make('h3', 'dsh-tw-settings-h', t('settings.seeds.title')))
+  const hint = make('div', 'dsh-tw-settings-muted', t('settings.seeds.hint'))
   const wrap = make('div', 'dsh-tw-settings-list')
   const statusLine = make('div', 'dsh-tw-settings-muted')
 
@@ -403,7 +414,7 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
     try {
       const data = await fetchJson<{ ok?: boolean; items?: SeedItem[]; error?: string }>(withWiki(SEEDS_ENDPOINT))
       if (isDisposed()) return
-      if (data.ok !== true || !Array.isArray(data.items)) throw new Error(data.error ?? '获取失败')
+      if (data.ok !== true || !Array.isArray(data.items)) throw new Error(data.error ?? t('settings.seeds.fetchFailed'))
       wrap.replaceChildren()
       let presentCount = 0
       let removableCount = 0
@@ -412,7 +423,7 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
         if (item.removable) removableCount += 1
         const dot = make('span', 'dsh-tw-settings-chip', item.present ? '✓' : '✗')
         dot.dataset.state = item.present ? 'ok' : 'missing'
-        dot.title = item.present ? '已存在' : '缺失'
+        dot.title = item.present ? t('settings.seeds.present') : t('settings.seeds.missing')
         const title = make('span', 'dsh-tw-settings-name', item.title)
         title.title = item.id
         const desc = make('span', 'dsh-tw-settings-muted', item.detail ?? item.description)
@@ -420,33 +431,33 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
         // BUILT-IN moved on and whether the user edited their copy — and warn
         // before a 「重新初始化」 overwrites local edits.
         const updateChip = item.updateAvailable === true
-          ? make('span', 'dsh-tw-settings-chip', '⬆ 有更新')
+          ? make('span', 'dsh-tw-settings-chip', t('settings.seeds.updateChip'))
           : undefined
         if (updateChip !== undefined) {
           updateChip.dataset.state = 'update'
-          updateChip.title = '内置内容在本 wiki 预置之后更新过，可点「重新初始化」取用'
+          updateChip.title = t('settings.seeds.updateTitle')
         }
         const modifiedChip = item.userModified === true
-          ? make('span', 'dsh-tw-settings-chip', '✏️ 本地已修改')
+          ? make('span', 'dsh-tw-settings-chip', t('settings.seeds.modifiedChip'))
           : undefined
         if (modifiedChip !== undefined) {
           modifiedChip.dataset.state = 'missing'
-          modifiedChip.title = '这篇是你的内容：重新初始化会覆盖它'
+          modifiedChip.title = t('settings.seeds.modifiedTitle')
         }
-        const btn = make('button', 'dsh-tw-settings-btn', item.updateAvailable === true ? '更新到内置版本' : '重新初始化')
+        const btn = make('button', 'dsh-tw-settings-btn', item.updateAvailable === true ? t('settings.seeds.updateToBuiltin') : t('settings.seeds.reinit'))
         btn.type = 'button'
-        btn.title = `强制重写「${item.title}」的内置内容（会覆盖当前 tiddler）`
+        btn.title = t('settings.seeds.rewriteTitle', { title: item.title })
         btn.addEventListener('click', () => {
           if (item.updateAvailable === true) {
             const warning = item.userModified === true
-              ? `「${item.title}」有你的本地修改，更新会覆盖它。`
+              ? t('settings.seeds.overwriteModified', { title: item.title })
               : item.userModified === undefined
-                ? `无法确认「${item.title}」是否被你编辑过（旧格式标记），更新可能覆盖你的改动。`
+                ? t('settings.seeds.overwriteUnknown', { title: item.title })
                 : ''
-            if (!window.confirm(`${warning}${warning.length > 0 ? '\n\n' : ''}用内置版本覆盖？`)) return
+            if (!window.confirm(t('settings.seeds.overwriteConfirm', { warning: warning.length > 0 ? `${warning}\n\n` : '' }))) return
           }
           btn.disabled = true
-          btn.textContent = '执行中…'
+          btn.textContent = t('settings.seeds.running')
           void (async () => {
             try {
               const res = await fetch(withWiki(SEEDS_RUN_ENDPOINT), {
@@ -457,16 +468,16 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
               })
               const payload = (await res.json().catch(() => null)) as { ok?: boolean; results?: Array<{ id?: string; detail?: string; error?: string }>; error?: string } | null
               if (!res.ok || payload?.ok !== true) {
-                toast(`重新初始化失败：${payload?.error ?? payload?.results?.[0]?.error ?? `HTTP ${res.status}`}`)
+                toast(t('settings.seeds.reinitFailed', { message: payload?.error ?? payload?.results?.[0]?.error ?? `HTTP ${res.status}` }))
               } else {
-                toast(`已重新初始化「${item.title}」`)
+                toast(t('settings.seeds.reinitDone', { title: item.title }))
               }
               void load()
             } catch (err) {
-              toast(`重新初始化失败：${err instanceof Error ? err.message : String(err)}`)
+              toast(t('settings.seeds.reinitFailed', { message: err instanceof Error ? err.message : String(err) }))
             } finally {
               btn.disabled = false
-              btn.textContent = item.updateAvailable === true ? '更新到内置版本' : '重新初始化'
+              btn.textContent = item.updateAvailable === true ? t('settings.seeds.updateToBuiltin') : t('settings.seeds.reinit')
             }
           })()
         })
@@ -476,13 +487,13 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
         if (modifiedChip !== undefined) row.append(modifiedChip)
         row.append(desc, btn)
         if (item.removable) {
-          const rm = make('button', 'dsh-tw-settings-btn dsh-tw-settings-danger', '反初始化')
+          const rm = make('button', 'dsh-tw-settings-btn dsh-tw-settings-danger', t('settings.seeds.remove'))
           rm.type = 'button'
-          rm.title = `移除「${item.title}」写入的 tiddler 与 marker（恢复未初始化状态）`
+          rm.title = t('settings.seeds.removeTitle', { title: item.title })
           rm.addEventListener('click', () => {
-            if (!window.confirm(`确定反初始化「${item.title}」？将删除它写入的 tiddler（含其一次性 marker），需要时可用「重新初始化」恢复。`)) return
+            if (!window.confirm(t('settings.seeds.removeConfirm', { title: item.title }))) return
             rm.disabled = true
-            rm.textContent = '移除中…'
+            rm.textContent = t('settings.seeds.removing')
             void (async () => {
               try {
                 const res = await fetch(withWiki(SEEDS_REMOVE_ENDPOINT), {
@@ -493,16 +504,16 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
                 })
                 const payload = (await res.json().catch(() => null)) as { ok?: boolean; results?: Array<{ id?: string; detail?: string; error?: string }>; error?: string } | null
                 if (!res.ok || payload?.ok !== true) {
-                  toast(`反初始化失败：${payload?.error ?? payload?.results?.[0]?.error ?? `HTTP ${res.status}`}`)
+                  toast(t('settings.seeds.removeFailed', { message: payload?.error ?? payload?.results?.[0]?.error ?? `HTTP ${res.status}` }))
                 } else {
-                  toast(`已反初始化「${item.title}」`)
+                  toast(t('settings.seeds.removeDone', { title: item.title }))
                 }
                 void load()
               } catch (err) {
-                toast(`反初始化失败：${err instanceof Error ? err.message : String(err)}`)
+                toast(t('settings.seeds.removeFailed', { message: err instanceof Error ? err.message : String(err) }))
               } finally {
                 rm.disabled = false
-                rm.textContent = '反初始化'
+                rm.textContent = t('settings.seeds.remove')
               }
             })()
           })
@@ -510,19 +521,19 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
         }
         wrap.append(row)
       }
-      statusLine.textContent = `共 ${data.items.length} 项，${presentCount} 项已就绪；可移除 ${removableCount} 项`
+      statusLine.textContent = t('settings.seeds.statusLine', { total: data.items.length, present: presentCount, removable: removableCount })
     } catch (err) {
       if (isDisposed()) return
-      statusLine.textContent = `加载初始化状态失败：${err instanceof Error ? err.message : String(err)}`
+      statusLine.textContent = t('settings.seeds.loadStatusFailed', { message: err instanceof Error ? err.message : String(err) })
     }
   }
 
-  const runAll = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', '全部重新初始化')
+  const runAll = make('button', 'dsh-tw-settings-btn dsh-tw-settings-primary', t('settings.seeds.runAll'))
   runAll.type = 'button'
-  runAll.title = '强制重写所有一次性预置内容（含可选 seed，会覆盖当前 tiddler/配置）'
+  runAll.title = t('settings.seeds.runAllTitle')
   runAll.addEventListener('click', () => {
     runAll.disabled = true
-    runAll.textContent = '执行中…'
+    runAll.textContent = t('settings.seeds.running')
     void (async () => {
       try {
         const res = await fetch(withWiki(SEEDS_RUN_ENDPOINT), {
@@ -532,25 +543,25 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
           signal: AbortSignal.timeout(60_000),
         })
         const payload = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null
-        if (!res.ok || payload?.ok !== true) toast(`重新初始化失败：${payload?.error ?? `HTTP ${res.status}`}`)
-        else toast('全部已重新初始化')
+        if (!res.ok || payload?.ok !== true) toast(t('settings.seeds.reinitFailed', { message: payload?.error ?? `HTTP ${res.status}` }))
+        else toast(t('settings.seeds.allReinitDone'))
         void load()
       } catch (err) {
-        toast(`重新初始化失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('settings.seeds.reinitFailed', { message: err instanceof Error ? err.message : String(err) }))
       } finally {
         runAll.disabled = false
-        runAll.textContent = '全部重新初始化'
+        runAll.textContent = t('settings.seeds.runAll')
       }
     })()
   })
 
-  const removeAll = make('button', 'dsh-tw-settings-btn dsh-tw-settings-danger', '全部反初始化')
+  const removeAll = make('button', 'dsh-tw-settings-btn dsh-tw-settings-danger', t('settings.seeds.removeAll'))
   removeAll.type = 'button'
-  removeAll.title = '移除所有可选 seed 写入的 tiddler 与 marker（功能必需项保留）'
+  removeAll.title = t('settings.seeds.removeAllTitle')
   removeAll.addEventListener('click', () => {
-    if (!window.confirm('确定全部反初始化？将删除所有可选 seed 写入的 tiddler（含一次性 marker）。功能必需项（发送给 Agent 按钮 / TW 前端 API 基址）会保留。')) return
+    if (!window.confirm(t('settings.seeds.removeAllConfirm'))) return
     removeAll.disabled = true
-    removeAll.textContent = '移除中…'
+    removeAll.textContent = t('settings.seeds.removing')
     void (async () => {
       try {
         const res = await fetch(withWiki(SEEDS_REMOVE_ENDPOINT), {
@@ -560,14 +571,14 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
           signal: AbortSignal.timeout(60_000),
         })
         const payload = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null
-        if (!res.ok || payload?.ok !== true) toast(`反初始化失败：${payload?.error ?? `HTTP ${res.status}`}`)
-        else toast('全部可选 seed 已反初始化')
+        if (!res.ok || payload?.ok !== true) toast(t('settings.seeds.removeFailed', { message: payload?.error ?? `HTTP ${res.status}` }))
+        else toast(t('settings.seeds.allRemoved'))
         void load()
       } catch (err) {
-        toast(`反初始化失败：${err instanceof Error ? err.message : String(err)}`)
+        toast(t('settings.seeds.removeFailed', { message: err instanceof Error ? err.message : String(err) }))
       } finally {
         removeAll.disabled = false
-        removeAll.textContent = '全部反初始化'
+        removeAll.textContent = t('settings.seeds.removeAll')
       }
     })()
   })

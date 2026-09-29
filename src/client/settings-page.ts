@@ -34,6 +34,10 @@ import * as React from 'react'
 import { toast } from './toast.ts'
 import { make } from './dom.ts'
 import { t } from './i18n.ts'
+// v0.30.14: 重启 TW 之后顺手让面板重载（见 reloadTwSurfaces 的说明），并丢掉旧的
+// /status 探针缓存 —— 否则 FAB 的状态徽标还会拿重启前那份 payload。
+import { invalidateStatus } from './status-cache.ts'
+import { reloadTwSurfaces } from './tw-frame.ts'
 import {
   ADMIN_RESTART_ENDPOINT as RESTART_ENDPOINT,
   ADMIN_STATE_ENDPOINT as STATE_ENDPOINT,
@@ -244,6 +248,13 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
         // 于是宿主重启成功、前端却报「重启失败」。同一原因也命中过知识库切换。
         await fetchJson(withWiki(RESTART_ENDPOINT), { method: 'POST', signal: AbortSignal.timeout(120_000) })
         toast(t('settings.restarted'))
+        // 重启成功后顺手重载面板（作者 2026-09-29 要求）：TW 换了一个子进程，而中央
+        // 面板 / 右栏那个 iframe 里仍是重启前那份文档 —— 它引用的条目现在可能已经不存在，
+        // FAB 菜单里那个「重新载入」也就成了用户必须自己知道要点的隐藏开关。
+        // reloadTwSurfaces() 让每个真的载入过 TW 的面板重新拉一次同一 URL（没载入过的
+        // 一律不动，见 tw-frame.ts 的 loadableFrameUrl）。
+        reloadTwSurfaces()
+        invalidateStatus()
       } catch (err) {
         toast(t('settings.restartFailed', { message: err instanceof Error ? err.message : String(err) }))
       } finally {

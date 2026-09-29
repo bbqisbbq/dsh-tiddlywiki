@@ -13,8 +13,10 @@
  *   2. TOOL_LABELS 覆盖每个 key；
  *   3. `tool-views.ts` 的 `WORKSPACE_TAG_PREFIX` 字面量与 `src/host/workspace.ts`
  *      的常量一致（否则卡片回传的工作区 id 会对不上）；
- *   4. SearchCard 仍然把 `workspace` 回传给 `/search`，且「工作区/缩小范围」这两个
- *      回执措辞在两侧都还在（改了文案就要同步改解析，这条断言负责当场报错）。
+ *   4. SearchCard 仍然把 `workspace` 回传给 `/search`，且 host 的中文回执措辞
+ *      「已在工作区 …」还在（改了文案就要同步改解析，这条断言负责当场报错）。
+ *      v0.30.14：卡片自己显示的那句话搬进了 i18n 目录（按语言取值），所以断言
+ *      分开管两件事 —— 解析盯源码，措辞盯 `i18n-card.ts` 的 zh 分片。
  *
  *   node scripts/verify-tool-views.mjs
  *
@@ -85,7 +87,16 @@ test('客户端 WORKSPACE_TAG_PREFIX 与 host/workspace.ts 一致', () => {
 test('SearchCard 会把工作区范围回传给 /search（卡片与工具结果一致）', () => {
   assert.ok(/params\.set\('workspace', workspace\)/.test(viewsSrc), 'SearchCard 必须把 workspace 参数发给 /search')
   assert.ok(/receiptWorkspace\(props\.text\)/.test(viewsSrc), 'SearchCard 必须从模型可见回执里解析工作区名')
-  assert.ok(viewsSrc.includes('工作区') && viewsSrc.includes('缩小范围'), '解析依赖的「工作区…缩小范围」措辞不见了：改了 host 文案就要同步改这里')
+  // v0.30.14：卡片把「已在工作区 … 内缩小范围」这句话交给了 i18n 目录（按语言取值），
+  // 所以这条断言拆成两半 —— **解析**只依赖 host 回执里的「工作区」二字（留在源码里），
+  // **措辞**则必须能在 zh 分片里找到（不然英文界面下会把 host 的中文抄一遍，
+  // 或者中文界面下悄悄换了说法而 host 回执没跟着改）。
+  assert.ok(viewsSrc.includes('工作区'), '解析依赖的「工作区 ws/<id>」措辞不见了：改了 host 文案就要同步改解析')
+  const cardCatalog = fs.readFileSync(path.join(root, 'src/client/i18n-card.ts'), 'utf8')
+  assert.ok(
+    cardCatalog.includes('已在工作区 {prefix}{id} 内缩小范围') && cardCatalog.includes('工作区 {prefix}{id} 内 0 条，已扩大到全库'),
+    '检索卡片的两条作用域说明必须留在 src/client/i18n-card.ts 的 zh 分片里（它们与 host 回执是同一套说法）',
+  )
   assert.ok(toolsSrc.includes('已在工作区 ${WORKSPACE_TAG_PREFIX}'), 'host 侧的工作区回执措辞变了，客户端解析会失效')
 })
 

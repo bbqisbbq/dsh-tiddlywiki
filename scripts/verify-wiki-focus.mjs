@@ -643,7 +643,16 @@ test('「侧边栏 TW 入口显示名称」只在单库模式出现（作者 202
   }
   const multiBranch = settings.slice(bodyStart, i - 1)
   assert.ok(!/textField\(/.test(multiBranch), 'multi 分支里不得渲染该文本字段（那样多库仍会看到假配置项）')
-  assert.match(multiBranch, /知识库列表/, 'multi 分支要说明去哪儿改显示名，而不是留空')
+  // v0.30.14：那句话搬进了 i18n 目录（按语言取值），所以断言拆成两半 —— multi 分支
+  // 必须**调用**那条文案，而「去哪儿改显示名」这个实质说法留在 zh 分片里（只断言
+  // 源码里有没有中文的话，一次 i18n 转换就会让这条守门假红，而它想守的是「别说空话」）。
+  assert.match(multiBranch, /t\('config\.ui\.multiWikiSidebarHint'\)/, 'multi 分支要说明去哪儿改显示名（走 config.ui.multiWikiSidebarHint），而不是留空')
+  const configCatalog = readFileSync(path.join(repoRoot, 'src/client/i18n-config.ts'), 'utf8')
+  assert.match(
+    configCatalog,
+    /'config\.ui\.multiWikiSidebarHint':\s*'[^']*知识库列表/,
+    'config.ui.multiWikiSidebarHint 必须说清去「知识库列表」改每个库的显示名',
+  )
   // else 分支必须真的渲染字段（别把两边都写成跳过）
   const afterBranch = settings.slice(i, i + 400)
   assert.match(afterBranch, /textField\('ui\.sidebarLabel'/, '单库分支必须仍然渲染该字段')
@@ -709,7 +718,9 @@ test('回复流卡片「在 TW 打开」必须带上是哪个库（作者 2026-0
   // 事件处理只读了 title —— 面板与右栏都按**焦点库**加载 `/tw/<id>/`，链接的库被整个
   // 丢掉。附带问题：`undefined` 当时既是"默认库"又是"未指定"，根本区分不开。
   const panel = readFileSync(path.join(repoRoot, 'src/client/panel.ts'), 'utf8')
-  const views = readFileSync(path.join(repoRoot, 'src/client/tool-views.ts'), 'utf8')
+  // v0.30.14：回复流卡片拆成了模块族（`tool-views.ts` + `tool-views-*.ts`），
+  // 所以按族读 —— 断言的是「卡片说得出自己来自哪个库」这条规则，不是它在哪个文件里。
+  const views = readFamily(repoRoot, 'src/client/tool-views')
   const summary = readFileSync(path.join(repoRoot, 'src/client/session-summary.ts'), 'utf8')
   const frame = readFileSync(path.join(repoRoot, 'src/client/tw-frame.ts'), 'utf8')
 

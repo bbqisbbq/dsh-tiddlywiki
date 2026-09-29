@@ -163,9 +163,12 @@ test('host 路由调用净化器', () => {
 })
 
 test('客户端不再直连未净化的 /tw/render', () => {
-  for (const file of ['src/client/tool-views.ts', 'src/client/session-summary.ts']) {
-    const src = fs.readFileSync(path.join(repoRoot, file), 'utf8')
-    assert.ok(!src.includes("'/dsh-tiddlywiki/tw/render'"), `${file} 不应再直接 POST /dsh-tiddlywiki/tw/render（要过 host 净化路由）`)
+  // v0.30.14：改读**模块族**（`tool-views.ts` + `tool-views-*.ts`）—— 断言的是
+  // 「客户端不存在直连 TW 原始 /tw/render 的字符串」这条规则，不是它在哪个文件里；
+  // 继续钉死文件名的话，下一次纯搬迁就会让这条守门假红（v0.30.8 已经踩过一次）。
+  for (const base of ['src/client/tool-views', 'src/client/session-summary']) {
+    const src = readFamily(repoRoot, base)
+    assert.ok(!src.includes("'/dsh-tiddlywiki/tw/render'"), `${base}.ts 不应再直接 POST /dsh-tiddlywiki/tw/render（要过 host 净化路由）`)
   }
 })
 
@@ -180,13 +183,21 @@ test('每个 dangerouslySetInnerHTML 所在文件都走净化端点', () => {
     // module — the point of the guard is "never TW's raw /tw/render", and
     // render-fetch.ts is asserted below to keep using RENDER_ENDPOINT.
     assert.ok(
-      /RENDER_ENDPOINT/.test(src) || /from '\.\/render-fetch\.ts'/.test(src),
+      /RENDER_ENDPOINT/.test(src) || /from '\.\/render-fetch\.ts'/.test(src) || /from '\.\/tool-views-fetch\.ts'/.test(src),
       `${file} 用了 dangerouslySetInnerHTML，但既没引用 RENDER_ENDPOINT 也没用 render-fetch.ts 的共享实现`,
     )
   }
 })
 
 test('共享渲染实现只认 host 的 RENDER_ENDPOINT', () => {
+  // v0.30.14：回复流卡片的取数搬进了 `tool-views-fetch.ts`，它只把请求转给
+  // render-fetch.ts —— 那条转发必须存在，否则上面「每个注入点都走净化端点」的
+  // 豁免就变成了空头支票（一个中间层可以悄悄换成 TW 的原始 /tw/render）。
+  const familyFetch = fs.readFileSync(path.join(repoRoot, 'src/client/tool-views-fetch.ts'), 'utf8')
+  assert.ok(
+    /import \{ fetchRenderFragment \} from '\.\/render-fetch\.ts'/.test(familyFetch),
+    'tool-views-fetch.ts 必须经 render-fetch.ts 取渲染片段（不得自己直连路由）',
+  )
   const src = fs.readFileSync(path.join(repoRoot, 'src/client/render-fetch.ts'), 'utf8')
   assert.ok(/RENDER_ENDPOINT/.test(src), 'render-fetch.ts 必须 POST host 的 RENDER_ENDPOINT')
   assert.ok(/'x-requested-with': 'TiddlyWiki'/.test(src), 'render-fetch.ts 必须带 TW 的 CSRF 头（缺了整条链路 403）')
@@ -197,8 +208,9 @@ test('共享渲染实现只认 host 的 RENDER_ENDPOINT', () => {
 
 // v0.19.4: /tags 的大 payload 是「先下载上千条再丢掉」——工具卡必须带 limit。
 test('标签工具卡请求 /tags 时必须带 limit', () => {
-  const src = fs.readFileSync(path.join(repoRoot, 'src/client/tool-views.ts'), 'utf8')
-  assert.ok(/TAGS_ENDPOINT\}\?limit=/.test(src), 'tool-views.ts 的 TagsCard 必须请求 `${TAGS_ENDPOINT}?limit=…`（否则大 wiki 会全量下载标签）')
+  // v0.30.14：按模块族读（TagsCard 搬进了 `tool-views-misc.ts`）。
+  const src = readFamily(repoRoot, 'src/client/tool-views')
+  assert.ok(/TAGS_ENDPOINT\}\?limit=/.test(src), 'tool-views 族的 TagsCard 必须请求 `${TAGS_ENDPOINT}?limit=…`（否则大 wiki 会全量下载标签）')
 })
 
 console.log(failures === 0 ? '\nRENDER SANITIZER OK' : `\nRENDER SANITIZER FAILED (${failures})`)
