@@ -18,6 +18,11 @@ node scripts/verify-clip-bridge.mjs   # 剪藏桥 headless 验收（含 SSRF 守
 node scripts/verify-seeds-admin.mjs   # /admin/seeds 状态与 run 的 E2E
 node scripts/verify-prompt.mjs        # 注入提示词守门（slim 无参数清单 / full 与工具注册表逐项一致 / 治理约定不丢）
 node scripts/verify-wiki-switch.mjs   # 运行时切换知识库 E2E（真起 TW：切换 / 回滚 / 指针文件 / 非法输入，v0.22.0）
+
+# ── 手动（浏览器）守门：需要本机 Chrome/Edge + puppeteer-core，**不在任何链里**（CI 上只会打 SKIP，故不进 verify）──
+node scripts/verify-theme-browser.mjs         # DSH 主题 → TW palette 适配（临时 wiki + headless；含 racy boot 窗口的同步器守卫）
+node scripts/verify-clip-bridge-browser.mjs   # 剪藏桥 seed 文档里的**可拖拽书签锚点**是否挺过 TW 渲染（href 未被改写）
+node scripts/verify-menubar-theme.mjs         # menubar 跟随激活调色板；⚠️ 需 `TW_URL` 指向**你自己**运行中的 wiki（**无默认值** —— 内置作者地址会改到别人的库）
 ```
 
 > 📦 从 **npm 包**安装的用户拿到的是 `lib/` + `src/` + `docs/` + `skills/` + `tools/` + `cordis.patch.yml` + README/LICENSE（`scripts/` 不在发布包里，避免把构建脚本塞进依赖树）——想跑上面的验收脚本请用 git 仓库：`git clone https://github.com/bbqisbbq/dsh-tiddlywiki && npm install`。
