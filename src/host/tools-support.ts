@@ -70,7 +70,7 @@ export interface ToolsDeps {
    * wikis may share one repository, so "the pull changed something" is NOT the
    * same question as "this wiki needs a restart".
    */
-  restartAffected?: (dir: string, changedFiles: readonly string[]) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
+  restartAffected?: (dir: string, changedFiles: readonly string[] | undefined | undefined) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
   /**
    * Every registered knowledge base that COULD be git-synced (v0.30.5), with
    * its repository root and effective `git.remote`. Absent in headless contexts

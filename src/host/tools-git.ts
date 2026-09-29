@@ -99,11 +99,11 @@ async function syncOneRepo(
    * The drain itself lives inside each instance's `restart()` (`drainThenStop`),
    * so this path cannot skip it.
    */
-  const restartIfChanged = async (pulled: { changed?: boolean; changedFiles?: string[] }): Promise<Partial<SyncRepoResult>> => {
+  const restartIfChanged = async (pulled: { changed?: boolean; changedFiles?: string[]; changedFilesUnknown?: boolean }): Promise<Partial<SyncRepoResult>> => {
     if (pulled.changed !== true) return {}
     if (deps.restartAffected === undefined) return {}
     try {
-      const outcome = await deps.restartAffected(group.dir, pulled.changedFiles ?? [])
+      const outcome = await deps.restartAffected(group.dir, pulled.changedFilesUnknown === true ? undefined : pulled.changedFiles ?? [])
       return {
         ...(outcome.restarted.length > 0 ? { restarted: outcome.restarted } : {}),
         ...(outcome.failed.length > 0 ? { restartFailed: outcome.failed } : {}),

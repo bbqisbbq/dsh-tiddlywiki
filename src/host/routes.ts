@@ -222,7 +222,7 @@ export interface RouteDeps {
    * repository-relative paths, so a shared repository can restart exactly the
    * affected knowledge bases. Absent in headless contexts (no restart).
    */
-  restartAffected?: (req: IncomingMessage, dir: string, changedFiles: readonly string[]) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
+  restartAffected?: (req: IncomingMessage, dir: string, changedFiles: readonly string[] | undefined | undefined) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
   /** Optional DSH sessionController service (agent-send routes only); resolved
    *  lazily per request because it may register after webServer appears. */
   getSessionController: () => SessionControllerFace | undefined
@@ -569,7 +569,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           // `WikiInstance.restart()`). Restarting "the wiki this request came
           // from" would miss the one that actually changed when several share a
           // repository — and would interrupt a wiki nothing happened to.
-          const outcome = await deps.restartAffected(req, dir, pulled.changedFiles ?? [])
+          const outcome = await deps.restartAffected(req, dir, pulled.changedFilesUnknown === true ? undefined : pulled.changedFiles ?? [])
           restarted = outcome.restarted.length > 0
           if (outcome.restarted.length > 0) restartedWikis = outcome.restarted
           if (outcome.failed.length > 0) restartError = outcome.failed.map((item) => `${item.id}: ${item.message}`).join('; ')

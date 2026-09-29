@@ -569,7 +569,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // restart (rule #1); here we only pick the right targets — several knowledge
     // bases may share one repository, so "something changed" is NOT the same
     // question as "this wiki is stale".
-    restartAffected: async (dir: string, changedFiles: readonly string[]) => restartAffectedWikis({ farm: () => farm, repoRootOf: (d) => repos.repoRootOf(d) }, dir, changedFiles),
+    restartAffected: async (dir: string, changedFiles: readonly string[] | undefined | undefined) => restartAffectedWikis({ farm: () => farm, repoRootOf: (d) => repos.repoRootOf(d) }, dir, changedFiles),
     // Workspace (project) marking for agent-created notes (v0.24.0): a tool call
     // carries its session id, and the session header carries the cwd — so the
     // plugin can tag new notes with the project all by itself instead of asking

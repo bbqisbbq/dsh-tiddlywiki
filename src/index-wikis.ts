@@ -318,7 +318,7 @@ export function createWikiViews(deps: WikiViewsDeps): WikiViews {
 export async function restartAffectedWikis(
   deps: { farm: FarmGetter; repoRootOf: (dir: string) => Promise<string | undefined> },
   dir: string,
-  changedFiles: readonly string[],
+  changedFiles: readonly string[] | undefined,
 ): Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }> {
   const farm = deps.farm()
   if (farm === undefined) return { restarted: [], failed: [] }

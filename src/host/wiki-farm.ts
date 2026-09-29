@@ -263,7 +263,24 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
    * pull from restarting — and interrupting whoever is editing — a wiki nothing
    * happened to.
    */
-  affectedBy(repoRoot: string, changedFiles: readonly string[]): T[] {
+  affectedBy(repoRoot: string, changedFiles: readonly string[] | undefined | undefined): T[] {
+    // `undefined` = **不知道**哪些文件变了（diff 算不出来，v0.30.36）。这时必须
+    // **保守重启该仓库下的全部库**：宁可多重启一个（只是多一次 TW 重启），也不能
+    // 静默陈旧 —— 用户面前的 TW 是内存副本，磁盘被 pull 改过而没重启，就会一直
+    // 显示旧内容，而回执说同步成功。
+    //
+    // ⚠️ 谓词的**方向**：受影响 = 文件落在库目录**里面**，所以正常分支写
+    // `isInsidePath(runtime.path, filePath)`（第一个参数是容器）。"全部库"要用
+    // 反方向的 `isInsidePath(repoRoot, runtime.path)` —— **不能**拿一个假文件名
+    // （例如 `.`）去套正常分支，那样问的是「repoRoot 是否在某个库目录里」，
+    // 方向反了，同仓多库里更深的那些库不会重启。
+    if (changedFiles === undefined) {
+      const all: T[] = []
+      for (const runtime of this.runtimes.values()) {
+        if (isInsidePath(repoRoot, runtime.path)) all.push(runtime)
+      }
+      return all
+    }
     if (changedFiles.length === 0) return []
     const affected: T[] = []
     for (const runtime of this.runtimes.values()) {
