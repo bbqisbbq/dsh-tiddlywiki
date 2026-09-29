@@ -58,12 +58,21 @@ export function defaultSessionScopeFile(): string {
  * Session ids reach here from HTTP (the GUI selector) and are used as JSON keys,
  * so they are validated rather than trusted. The charset mirrors the one the
  * session-summary route already enforces.
+ *
+ * ⚠️ 与下面那个 `isSafeWikiId` **看着像重复，但故意不同** —— 别合并：
+ *   · 会话 id 由 **DSH 生成**（够不着的上游），实测允许大写与 `:`；
+ *   · wiki id 是**我们自己**造的 slug，只允许小写。
+ * 合并的两种后果都是真故障：按 wiki 的规则收紧 ⇒ 拒掉合法会话 id（作用域静默丢失）；
+ * 按会话的规则放宽 ⇒ 放行非法库 id（写进 `wikis.json` 后由 registry 兜底，但报错点离现场很远）。
+ * 第二轮审计把这两条记成「sessionId 正则 ×2（冗余）」，是**假阳性**。
  */
 export function isSafeSessionId(id: unknown): id is string {
   return typeof id === 'string' && /^[A-Za-z0-9._:-]{1,120}$/.test(id)
 }
 
-/** Is this a usable wiki id? (Shape only — the registry decides existence.) */
+/** Is this a usable wiki id? (Shape only — the registry decides existence.)
+ *
+ *  ⚠️ 与上面的 `isSafeSessionId` 不是同一件事，理由见那里的注释。 */
 function isSafeWikiId(id: unknown): id is string {
   return typeof id === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(id)
 }
