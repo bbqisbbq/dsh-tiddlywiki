@@ -122,10 +122,11 @@ try {
       .map((dir) => dir.split(/[\\/]/).pop())
     assert.deepEqual(affected, ['personal'], 'personal 变了 → 只该重启 personal')
 
-    // 用不上的 range 一律空数组，而不是抛错。
+    // **三态**（v0.30.35）：`[]` = 问了、答案是「没有变化」；`undefined` = 问了、但**答不出来**。     // 两者绝不能合并 —— 下游拿 `[]` 去 affectedBy() 会得出「一个库都不受影响」，     // 于是「HEAD 动了但 diff 失败」被当成「没变化」⇒ 不重启任何库 ⇒ TW 里还是旧内容，     // 而回执说同步成功。这几行断言就是那个语义边界的守门。
     assert.deepEqual(await repo.filesChangedBetween(shared, '', second), [])
     assert.deepEqual(await repo.filesChangedBetween(shared, first, first), [])
-    assert.deepEqual(await repo.filesChangedBetween(shared, 'deadbeef', second), [])
+    assert.equal(await repo.filesChangedBetween(shared, 'deadbeef', second), undefined, '无法解析的 ref ⇒ undefined（问了，但答不出来）——不许退化成空数组')
+    assert.notDeepEqual(await repo.filesChangedBetween(shared, 'deadbeef', second), [], '⇒ 与「没有变化」必须可区分')
   })
 
   // ── RepoCommitters：一个仓库一个 committer ──────────────────────────────────

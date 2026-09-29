@@ -201,10 +201,13 @@ export class GitFace {
    * something" is not the same question as "THIS wiki's content changed".
    * Returns [] for an unusable range (no commits yet, unknown ref).
    */
-  async filesChangedBetween(dir: string, from: string, to: string): Promise<string[]> {
+  async filesChangedBetween(dir: string, from: string, to: string): Promise<string[] | undefined> {
     if (from.length === 0 || to.length === 0 || from === to) return []
     const r = await this.exec(['diff', '--name-only', from, to], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
-    if (!r.ok) return []
+    // ⚠️ `undefined` ≠ `[]`（v0.30.35）：`[]` 是「真的没有文件变化」，`undefined` 是
+    // 「diff 算不出来」。此前两者都返回 `[]`，于是「HEAD 动了但 diff 失败」会被下游
+    // 当成「没有变化」⇒ 一个库都不重启 ⇒ TW 内存里还是旧内容，而回执说同步成功。
+    if (!r.ok) return undefined
     return r.stdout.split('\n').map((line) => line.trim()).filter((line) => line.length > 0)
   }
 
@@ -283,11 +286,11 @@ export class GitFace {
    *  `changedFiles` (v0.28.0) says WHICH paths moved, so a caller serving
    *  several wikis out of one repository can restart only the affected ones.
    *  Serialized against `commit()` (index.lock). */
-  pull(dir: string): Promise<GitActionResult & { changed?: boolean; changedFiles?: string[] }> {
+  pull(dir: string): Promise<GitActionResult & { changed?: boolean; changedFiles?: string[]; changedFilesUnknown?: boolean }> {
     return this.withLock(() => this.pullUnlocked(dir))
   }
 
-  private async pullUnlocked(dir: string): Promise<GitActionResult & { changed?: boolean; changedFiles?: string[] }> {
+  private async pullUnlocked(dir: string): Promise<GitActionResult & { changed?: boolean; changedFiles?: string[]; changedFilesUnknown?: boolean }> {
     const before = await this.exec(['rev-parse', 'HEAD'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
     const beforeHead = before.ok ? before.stdout.trim() : ''
     // Did a rebase already exist BEFORE we ran? (v0.23.5)
@@ -305,6 +308,17 @@ export class GitFace {
       const changed = beforeHead.length > 0 && beforeHead !== afterHead
       if (!changed) return { ok: true, message: r.stdout.trim() || 'pull ok' }
       const changedFiles = await this.filesChangedBetween(dir, beforeHead, afterHead)
+      // 「未知」必须与「无变化」分开：下游据 `changedFiles` 决定重启哪些库。
+      // 完整的保守重启（未知 ⇒ 该仓库下全部库）需要动 `restartAffected` 的签名链
+      // （见 wiki 缺陷笔记），本版先做到**不再沉默**：显式给标记 + 在回执里警告。
+      if (changedFiles === undefined) {
+        return {
+          ok: true,
+          message: `${r.stdout.trim() || 'pull ok'}（⚠️ 已拉取到新提交，但无法确定哪些文件变化 —— 没有自动重启任何知识库，请手动重载 TW 面板）`,
+          changed: true,
+          changedFilesUnknown: true,
+        }
+      }
       return {
         ok: true,
         message: r.stdout.trim() || 'pull ok',
