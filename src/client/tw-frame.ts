@@ -134,9 +134,24 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    */
   let lastStatus: StatusPayload | undefined
   /** In-flight hash-readiness retry timers (cancelled by dispose, v0.19.1). */
-  const hashWaitTimers = new Set<number>()
+  /**
+   * 这个 surface 的**可变状态**（v0.30.38 起集中放这里）。
+   *
+   * 目的不是"好看"，而是让「把某一块抽成模块」成为可能：闭包里散落的 let/const
+   * 一旦集中成一个对象，抽取时就只需传**一个** `surfaceState`，而不是六七个访问器
+   * （v0.30.37 的结论：按访问器硬抽只会造出一个又宽又漏的接口，比原样更难读）。
+   *
+   * 目前只收两个**没有守门引用**的状态；`pendingHash` / `wikiSwitchPending` 另算 ——
+   * 它们被 4 + 2 处源码级守门按文本钉着，改名要同时把那些断言的判据从
+   * 「钉变量名」改成「钉语义」。
+   */
+  const surfaceState = {
+    /** 等 TW 启动的重试定时器；`dispose()` 必须能取消整条链（v0.19.1）。 */
+    hashWaitTimers: new Set<number>(),
+    /** iframe 是否已经 load 过（`showFrame` 之后才为真）。 */
+    frameLoaded: false,
+  }
   let refreshAttempts = 0
-  let frameLoaded = false
   let pendingHash: string | null = null
   /**
    * Which wiki the iframe currently points at, and whether a switch to another
@@ -244,7 +259,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     // state on a status refresh.
     if (frame.dataset.loaded !== url) {
       frame.dataset.loaded = url
-      frameLoaded = false
+      surfaceState.frameLoaded = false
       frame.src = url
       // 换了文档 = 重新下载整份 wiki（10–30MB、no-store）：这段时间必须给个可见说明。
       if (label !== undefined) showSwitching(label)
@@ -270,7 +285,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    * A newer open request supersedes an in-flight wait.
    */
   const applyPendingHash = (): void => {
-    if (pendingHash === null || frame === undefined || !frameLoaded) return
+    if (pendingHash === null || frame === undefined || !surfaceState.frameLoaded) return
     // 换库还没完成：此刻写 hash 只会落进**正在被替换**的那份文档。
     if (wikiSwitchPending) return
     const hash = pendingHash
@@ -301,10 +316,10 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
           // Tracked so dispose() cancels the chain (v0.19.1 — the untracked
           // 40×150ms retry kept the iframe/closure alive after unmount).
           const timer = window.setTimeout(() => {
-            hashWaitTimers.delete(timer)
+            surfaceState.hashWaitTimers.delete(timer)
             tryOnce(attempt + 1)
           }, 150)
-          hashWaitTimers.add(timer)
+          surfaceState.hashWaitTimers.add(timer)
           return
         }
         fallbackLoad(hash)
@@ -482,7 +497,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     // Track load so a pending tiddler-hash navigation can target a ready
     // document (setting contentWindow.location.hash before load is a no-op).
     frameEl.addEventListener('load', () => {
-      frameLoaded = true
+      surfaceState.frameLoaded = true
       // 新文档到了：收起"正在载入…"（幂等，普通刷新时它本来就是隐藏的）。
       hideSwitching()
       applyPendingHash()
@@ -548,8 +563,8 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       unsubscribeFocus()
       clearRetry()
       clearSwitchTimer()
-      for (const timer of hashWaitTimers) window.clearTimeout(timer)
-      hashWaitTimers.clear()
+      for (const timer of surfaceState.hashWaitTimers) window.clearTimeout(timer)
+      surfaceState.hashWaitTimers.clear()
       themeSyncDispose?.()
       view?.remove()
     },
