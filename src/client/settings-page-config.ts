@@ -338,31 +338,46 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
   textField('bridge.tag', '剪藏笔记默认 tag', typeof bridge.tag === 'string' && bridge.tag.trim().length > 0 ? bridge.tag.trim() : 'clip')
   // 剪藏目标库（v0.28.8）：剪藏桥自建 loopback 服务，请求走不到宿主的 `?wiki=` 解析，
   // 所以多库下**必须**在这里显式选一次，否则永远剪进默认库。选项要等 /admin/wikis
-  // 回来才知道，所以先渲染一个只有「默认库」的 select，拿到列表后再补全；用户已选的值
-  // 若不在列表里（库被移出清单）也保留一行，免得下拉把它静默抹掉。
-  const clipWiki = selectField('bridge.wiki', '剪藏写入的知识库（默认库=不指定；多库时可指定某个库）', typeof bridge.wiki === 'string' ? bridge.wiki.trim() : '', [{ value: '', label: '默认库' }])
+  // 回来才知道，所以先渲染一个占位 select，拿到列表后补全；用户已选的值若不在列表里
+  // （库被移出清单）也保留一行。
+  //
+  // 空值 = 「不指定，写进默认的那个库」，但这一项的**名字**不再是「默认库」（v0.28.12，
+  // 作者 2026-09-29 要求：设置过默认库之后，界面上不该再出现「默认库」这个字样，应当
+  // 直接给出真实库名）——清单回来后把这一项就地改名成默认库自己的显示名 +「（默认）」，
+  // 并且**跳过**它自己那一行，免得同一个库在下拉里出现两次。
+  const clipWiki = selectField('bridge.wiki', '剪藏写入的知识库（不指定 = 写进知识库列表里带 ★ 的那个库；多库时可指定具体的库）', typeof bridge.wiki === 'string' ? bridge.wiki.trim() : '', [{ value: '', label: '（跟随默认的那个库）' }])
   void (async () => {
     try {
       const view = await fetchJson<WikisView>(WIKI_LIST_ENDPOINT)
       if (isDisposed()) return
       const items = Array.isArray(view.wikis) ? view.wikis : []
       const current = clipWiki.value
+      const defaultEntry = items.find((wiki) => wiki.id === view.defaultId)
+      const defaultLabel = defaultEntry?.label ?? undefined
+      // 空值那一项的**名字**：默认库的显示名 + 身份标记。读不到清单/没有默认库时保持
+      // 中性说法（绝不退回「默认库」这三个字）。
+      const placeholder = clipWiki.options.item(0)
+      if (placeholder !== null && defaultLabel !== undefined) placeholder.textContent = `${defaultLabel}（默认）`
       for (const wiki of items) {
+        // 默认库由空值那一项代表；再列一遍就是同一个库出现两次。
+        if (wiki.id === view.defaultId) continue
         const option = document.createElement('option')
         option.value = wiki.id
         option.textContent = `${wiki.label}（${wiki.id}）${wiki.running ? '' : ' · 未运行'}`
         clipWiki.append(option)
       }
-      // 当前值不在清单里（已移出）：补一行，避免下拉静默把它抹成默认库。
+      // 当前值不在清单里（已移出）：补一行，避免下拉静默把它抹成另一个库。
       if (current.length > 0 && !items.some((wiki) => wiki.id === current)) {
         const option = document.createElement('option')
         option.value = current
-        option.textContent = `${current}（不在清单里，保存后回落默认库）`
+        option.textContent = defaultLabel !== undefined
+          ? `${current}（不在清单里，保存后写进 ${defaultLabel}）`
+          : `${current}（不在清单里）`
         clipWiki.append(option)
       }
       clipWiki.value = current
     } catch {
-      /* 读不到清单：只有「默认库」一项，单库安装本来就是这种形态 */
+      /* 读不到清单：保留中性占位项（单库安装本来就是这种形态） */
     }
   })()
   // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。

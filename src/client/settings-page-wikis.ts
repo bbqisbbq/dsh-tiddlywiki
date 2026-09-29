@@ -122,9 +122,13 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
 
   const render = (view: WikisView): void => {
     status.textContent = view.error !== undefined && view.error.length > 0 ? `⚠️ ${view.error}` : ''
+    // 「默认库」这个字样不再出现在界面上（v0.28.12，作者 2026-09-29）：直接说**那个库的名字**，
+    // 读不到清单时用中性说法兜底，绝不退回「默认库」。
+    const defaultLabel = (view.wikis ?? []).find((wiki) => wiki.id === view.defaultId)?.label
+    const defaultName = defaultLabel !== undefined && defaultLabel.length > 0 ? defaultLabel : '默认的那个库'
     modeRow.replaceChildren(make('span', 'dsh-tw-settings-label', '运行模式：'))
     const modes: Array<[string, string]> = [
-      ['single', '单库（只跑默认库）'],
+      ['single', `单库（只跑 ${defaultName}）`],
       ['multi', '多库（清单里的库都可用）'],
     ]
     for (const [value, text] of modes) {
@@ -135,7 +139,7 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
       chip.addEventListener('click', () => {
         const ok = window.confirm(value === 'multi'
           ? '切换到多库模式：清单里标了「开局自启」的知识库都会启动（每个库一个 TW 子进程）。继续？'
-          : '切换到单库模式：除默认库外的知识库会被停掉（内容与清单都不受影响）。继续？')
+          : `切换到单库模式：除 ${defaultName} 外的知识库会被停掉（内容与清单都不受影响）。继续？`)
         if (ok) void post({ action: 'set-mode', mode: value }, '切换模式中…')
       })
       modeRow.append(chip)

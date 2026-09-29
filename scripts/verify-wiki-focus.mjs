@@ -123,7 +123,9 @@ test('会话选择器：走 /session/wiki，清空选择发 null 而不是空字
   assert.match(dockSrc, /SESSION_WIKI_ENDPOINT/, '组件必须用共享端点常量，而不是自己拼路径')
   const endpointsSrc = readFileSync(path.join(repoRoot, 'src/client/endpoints.ts'), 'utf8')
   assert.match(endpointsSrc, /SESSION_WIKI_ENDPOINT = `\$\{ROUTE_PREFIX\}\/session\/wiki`/, '端点定义必须是 /session/wiki')
-  assert.match(dockSrc, /wiki: next\.length > 0 \? next : null/, '清除选择必须发 null')
+  // v0.28.12：选中「默认库那一项」= 清空显式作用域 → 发 null（不再是 value='' 的占位选项，
+  // 但"清空"的语义与对应的报文完全没变）。
+  assert.match(dockSrc, /wiki: wanted\.length > 0 \? wanted : null/, '清除选择（选中默认库那一项）必须发 null')
   // 选中一个没在跑的库会在宿主侧把它起起来，冷启动可能几十秒——预算必须够。
   assert.match(dockSrc, /AbortSignal\.timeout\(120_000\)/, '启动一个库可能要几十秒，超时不能太短')
 })
@@ -663,6 +665,46 @@ test('回复流卡片「在 TW 打开」必须带上是哪个库（作者 2026-0
   assert.match(views, /closest\('\[data-dsh-tw-wiki\]'\)/, '拦截器必须从所在卡片取库（裸路径 = 默认库别名，照它走会开错库）')
   assert.match(views, /'data-dsh-tw-wiki': wikiId/, '工具卡根节点必须带上本会话的库')
   assert.match(summary, /'data-dsh-tw-wiki': wikiId/, '会话汇总面板同样要带（它的片段里也是裸链接）')
+})
+
+test('「默认库」不得作为选项名出现：默认的那个库要用它自己的显示名（作者 2026-09-29）', () => {
+  // 需求原文：「设置了默认库之后，在其他所有的地方不出现默认库的字样，而是取而代之的是
+  // 被设置成默认库的真实库名，比如开启会话时默认选中的就是被设置成默认库的库，而不是
+  // 显示默认库这个选项，这个选项都不该在下拉列表中出现」。
+  //
+  // 判据只看**代码里的字符串**（注释当然可以、也必须讲这段历史），所以先把注释剥掉：
+  // 这些模块的说明里到处都有「默认库」这个词。
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '')
+  const files = {
+    wikiScopeDock: readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8'),
+    noteWidget: readFileSync(path.join(repoRoot, 'src/client/note-widget.ts'), 'utf8'),
+    settingsConfig: readFileSync(path.join(repoRoot, 'src/client/settings-page-config.ts'), 'utf8'),
+    settingsWikis: readFileSync(path.join(repoRoot, 'src/client/settings-page-wikis.ts'), 'utf8'),
+  }
+  for (const [name, src] of Object.entries(files)) {
+    assert.ok(
+      !/默认库/.test(strip(src)),
+      `${name} 的界面文案里仍然出现「默认库」这个字样 —— 应当直接给出被设为默认的那个库的真实显示名（可加「（默认）」身份标记）`,
+    )
+  }
+
+  // 会话选择器三条落地判据（它是最要命的一处：新会话默认选中的就是那个库）。
+  const dock = files.wikiScopeDock
+  assert.match(dock, /readResolvedWiki/, '必须读 /session/wiki 的 resolved（默认库的真实 id 与 label）')
+  assert.match(dock, /（默认）/, '默认库那一项必须带「（默认）」身份标记（否则用户不知道哪个是默认）')
+  assert.match(dock, /const selected = scope\.length > 0 && listed\(scope\) \? scope : defaultId/, '没显式选过时必须显示默认库（而不是空白/无名占位）')
+  assert.match(dock, /const wanted = next === defaultId \? '' : next/, '选中默认那一项 = 清空显式作用域（仍然跟随默认，默认改了也跟着走）')
+
+  // 快速笔记卡片：那个 value='' 的占位选项必须已经删掉；默认库只标身份，不改名。
+  assert.ok(!/fallback\.textContent = '默认库'/.test(files.noteWidget), '快速笔记卡片不得再有名为「默认库」的选项')
+  assert.match(files.noteWidget, /const mark = item\.id === defaultId \? '（默认）' : ''/, '卡片里的默认库同样只加身份标记')
+
+  // 设置页剪藏目标：空值那一项改名成默认库的显示名，且默认库不得在同一个下拉里出现两次。
+  assert.match(files.settingsConfig, /placeholder\.textContent = `\$\{defaultLabel\}（默认）`/, '剪藏目标下拉里空值那一项必须改名成默认库的显示名')
+  assert.match(files.settingsConfig, /if \(wiki\.id === view\.defaultId\) continue/, '默认库由空值那一项代表，不得再单独列一遍（否则同一个库出现两次）')
+  // 单库模式那个单选与确认框同样直呼其名。
+  assert.match(files.settingsWikis, /单库（只跑 \$\{defaultName\}）/, '「单库」模式标签必须写出默认库的名字')
+  assert.match(files.settingsWikis, /除 \$\{defaultName\} 外的知识库会被停掉/, '切单库的确认文案必须写出默认库的名字')
 })
 
 console.log(failures === 0 ? '\nWIKI FOCUS CHECKS OK' : `\nWIKI FOCUS CHECKS FAILED (${failures})`)

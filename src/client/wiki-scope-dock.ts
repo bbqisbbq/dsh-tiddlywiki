@@ -29,6 +29,21 @@ import { isBlankSeatMounted, subscribeBlankSeat } from './scope-seat.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
 
+/** `resolved` of `/session/wiki`: the wiki a session EFFECTIVELY uses. */
+interface ResolvedWiki { id: string; label: string }
+
+/**
+ * Read `{id,label}` out of a `/session/wiki` payload, tolerating every shape we
+ * may be handed (absent field, wrong types, id-only). `undefined` = unknown.
+ */
+function readResolvedWiki(value: unknown): ResolvedWiki | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const id = (value as { id?: unknown }).id
+  if (typeof id !== 'string' || id.length === 0) return undefined
+  const label = (value as { label?: unknown }).label
+  return { id, label: typeof label === 'string' && label.length > 0 ? label : id }
+}
+
 /** Props the shell passes to a `conversation.input.dock` entry (scope: session). */
 interface DockProps {
   sessionId?: string
@@ -107,6 +122,17 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
     const blankSeat = useBlankSeatMounted()
     const [wikis, setWikis] = React.useState<WikiOption[]>([])
     const [scope, setScope] = React.useState('')
+    /**
+     * The wiki this session effectively uses when no explicit scope is set —
+     * the host resolves it (registry default, or the first running visible one)
+     * and returns it as `resolved` (v0.28.12).
+     *
+     * WHY: the picker used to render a nameless 「默认库」 option. The author's
+     * 2026-09-29 report: with a default wiki configured, the UI should show
+     * THAT LIBRARY'S NAME everywhere (and a new session should already show it
+     * selected) — 「默认库」 as a name must not appear in the list at all.
+     */
+    const [defaultWiki, setDefaultWiki] = React.useState<ResolvedWiki | undefined>(undefined)
     const [note, setNote] = React.useState<string | undefined>(undefined)
     const [busy, setBusy] = React.useState(false)
     const wrapRef = React.useRef<HTMLDivElement | null>(null)
@@ -131,6 +157,7 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
         const visible = (status?.wikis ?? []).filter((wiki) => wiki.agentVisible)
         setWikis(visible.map((wiki) => ({ id: wiki.id, label: wiki.label, running: wiki.running })))
         setScope(typeof current?.scope === 'string' ? current.scope : '')
+        setDefaultWiki(readResolvedWiki(current?.resolved))
         setNote(typeof current?.reason === 'string' ? current.reason : undefined)
       })()
       return () => { alive = false }
@@ -146,7 +173,30 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
     // 空白会话里仍有唯一一个选择器。
     if (!blankOnly && blank && blankSeat) return null
 
+    // 「默认库」不再作为一个**名字**出现在这里（作者 2026-09-29 报障）：那个选项就是被设为
+    // 默认的那个库本身，用它自己的显示名，后缀「（默认）」标示身份。选中它 = 清空显式
+    // 作用域（仍然跟随默认），所以以后改了默认库，没动过选择器的会话会跟着走 —— 语义与
+    // 原来那行 `value=''` 完全一致，只是不再用无名占位符。
+    const defaultId = defaultWiki?.id ?? ''
+    const listed = (id: string): boolean => wikis.some((wiki) => wiki.id === id)
+    const selected = scope.length > 0 && listed(scope) ? scope : defaultId
+
+    const options: WikiOption[] = [...wikis]
+    if (defaultId.length > 0 && !listed(defaultId)) {
+      // 默认库不在可见清单里（例如它被设成「对 Agent 隐身」）时必须**补一行**：
+      // 否则下拉的 value 指向一个不存在的 option，界面直接显示成空白。
+      // `running: true` 表示不额外标「未运行」—— 我们在这里拿不到它的运行态，
+      // 而能被解析成"本会话实际使用"的库本来就一定是正在跑的那个。
+      options.push({ id: defaultId, label: defaultWiki?.label ?? defaultId, running: true })
+    }
+    // 默认库排在最前（原来是那个无名选项的位置），其余保持清单顺序。
+    const ordered = defaultId.length > 0 && listed(defaultId)
+      ? [...options.filter((wiki) => wiki.id === defaultId), ...options.filter((wiki) => wiki.id !== defaultId)]
+      : options
+
     const apply = (next: string): void => {
+      // 选中默认库那一项 = 清空显式作用域，仍然跟随默认（默认库改了也跟着改）。
+      const wanted = next === defaultId ? '' : next
       setBusy(true)
       void (async () => {
         try {
@@ -156,15 +206,16 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
             // A generous budget: selecting a wiki that is not running STARTS it
             // host-side (the tools resolve the scope synchronously and never start
             // anything themselves), and a cold child can take tens of seconds.
-            body: JSON.stringify({ session: sessionId, wiki: next.length > 0 ? next : null }),
+            body: JSON.stringify({ session: sessionId, wiki: wanted.length > 0 ? wanted : null }),
             signal: AbortSignal.timeout(120_000),
           })
-          const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; scope?: string; reason?: string; error?: string }
+          const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; scope?: string; resolved?: unknown; reason?: string; error?: string }
           if (!res.ok || payload.ok !== true) {
             setNote(payload.error ?? `切换失败（HTTP ${res.status}）`)
             return
           }
-          setScope(typeof payload.scope === 'string' ? payload.scope : next)
+          setScope(typeof payload.scope === 'string' ? payload.scope : wanted)
+          setDefaultWiki(readResolvedWiki(payload.resolved) ?? defaultWiki)
           setNote(typeof payload.reason === 'string' ? payload.reason : undefined)
           // 立即让工具卡/会话汇总重新解析作用域（v0.28.8）：它们按会话缓存 wiki id，
           // 不失效的话切库后已显示的卡片仍带着旧库的 ?wiki= 与库徽标。
@@ -185,17 +236,17 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
         'select',
         {
           className: 'dsh-tw-scope-select',
-          value: scope,
+          value: selected,
           disabled: busy,
           'aria-label': '本会话使用的知识库',
           title: '本会话的 tiddlywiki_* 工具与注入提示词都作用于这个知识库（下一个模型步骤生效）',
           onChange: (event: React.ChangeEvent<HTMLSelectElement>) => { apply(event.target.value) },
         },
-        React.createElement('option', { value: '' }, '默认库'),
-        ...wikis.map((wiki) => React.createElement(
+        ...ordered.map((wiki) => React.createElement(
           'option',
           { key: wiki.id, value: wiki.id },
-          `${wiki.label}${wiki.running ? '' : '（未运行，选中会启动）'}`,
+          // 「（默认）」是**身份标记**，不是库名：库名照旧是它自己的显示名。
+          `${wiki.label}${wiki.id === defaultId ? '（默认）' : ''}${wiki.running ? '' : '（未运行，选中会启动）'}`,
         )),
       ),
       note !== undefined ? React.createElement('span', { className: 'dsh-tw-scope-note' }, note) : null,

@@ -513,18 +513,18 @@ export function createNoteWidget(): NoteWidgetHandle {
         if (!targetPicked) targetWiki = resolveFocusWiki(roster, defaultId)
       }
       followFocus()
+      // 「默认库」不再作为选项出现（作者 2026-09-29 报障）：那个位置就是**被设为默认的那个
+      // 库本身**，用它自己的显示名，只加「（默认）」作为身份标记。原来那个 `value=''` 的
+      // 占位项其实是多余的 —— 清单里本来就有这个库，选中它写进去的就是它。
       wikiSelect.replaceChildren(
         ...roster.map((item) => {
           const option = document.createElement('option')
           option.value = item.id
-          option.textContent = item.running ? item.label : `${item.label}（未运行）`
+          const mark = item.id === defaultId ? '（默认）' : ''
+          option.textContent = item.running ? `${item.label}${mark}` : `${item.label}${mark}（未运行）`
           return option
         }),
       )
-      const fallback = document.createElement('option')
-      fallback.value = ''
-      fallback.textContent = '默认库'
-      wikiSelect.append(fallback)
       wikiSelect.value = targetWiki ?? ''
       wikiField.hidden = false
       markStopped()

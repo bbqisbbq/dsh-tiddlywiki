@@ -71,7 +71,7 @@ export function createClipSurface(deps: ClipDeps): ClipSurface {
   const warnClipFallbackOnce = (wanted: string): void => {
     if (clipFallbackWarned.has(wanted)) return
     clipFallbackWarned.add(wanted)
-    console.warn(`[dsh-tiddlywiki] clip bridge: 配置的 bridge.wiki「${wanted}」当前不在运行（或已移出清单），剪藏回落到默认库（设置页可改）`)
+    console.warn(`[dsh-tiddlywiki] clip bridge: 配置的 bridge.wiki「${wanted}」当前不在运行（或已移出清单），剪藏回落到默认的那个知识库（设置页可改）`)
   }
 
   const clipTarget = (): { runtime: WikiInstance; id: string } | undefined => {

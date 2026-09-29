@@ -134,7 +134,7 @@ export function createGitLayer(deps: GitLayerDeps): GitLayer {
     if (members.length > 1) {
       const fingerprints = new Set(members.map((entry) => JSON.stringify(runtimeConfig(entry)?.git ?? {})))
       if (fingerprints.size > 1) {
-        console.warn(`[dsh-tiddlywiki] 知识库 ${members.map((entry) => entry.id).join('、')} 共用同一个仓库（${repoRoot}），但各自配了不同的 git.* —— 一个仓库只有一份 git 设置，本次以「${chosen?.id ?? '默认库'}」为准`)
+        console.warn(`[dsh-tiddlywiki] 知识库 ${members.map((entry) => entry.label ?? entry.id).join('、')} 共用同一个仓库（${repoRoot}），但各自配了不同的 git.* —— 一个仓库只有一份 git 设置，本次以「${chosen?.label ?? chosen?.id ?? '默认的那个库'}」为准`)
       }
     }
     const base = deps.gitConfig()
