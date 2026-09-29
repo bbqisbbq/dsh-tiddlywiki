@@ -38,6 +38,10 @@
  *                           `scope.setSyncDom()`.
  *   - note-widget-placement.ts WHERE the card sits + dragging by its title bar
  *                           (v0.30.43: pure DOM, zero card state — see its header)
+ *   - note-widget-autosave.ts the draft lifecycle: debounce → persist / clear,
+ *                           plus「重置即定型」(v0.30.44). It OWNS `draftTimer` /
+ *                           `persistedSignature`; the card only reads/writes them
+ *                           through the handle it returns.
  *
  * @module dsh-tiddlywiki/client/note-widget
  */
@@ -51,7 +55,8 @@ import { uploadInto } from './note-widget-upload.ts'
 import { createRecentPicker } from './note-widget-recent.ts'
 import { createNoteScope } from './note-widget-scope.ts'
 import { installCardDrag, positionCard } from './note-widget-placement.ts'
-import { DRAFT_DEBOUNCE_MS, adoptDraft, clearDraft, draftSignature, fetchDefaultTag, loadDraft, persistDraft, timestampTitle } from './note-widget-draft.ts'
+import { createDraftAutosave } from './note-widget-autosave.ts'
+import { adoptDraft, clearDraft, fetchDefaultTag, loadDraft, timestampTitle } from './note-widget-draft.ts'
 
 /**
  * Broadcast by the card on open/close (detail: { open }). The input-dock quick-
@@ -119,7 +124,20 @@ export function createNoteWidget(): NoteWidgetHandle {
    */
   const scope = createNoteScope({ isDisposed: () => disposed })
   const wikiQuery = scope.wikiQuery
-  let draftTimer: number | undefined
+  /**
+   * 草稿生命周期（防抖落盘 / 幽灵草稿守卫 /「重置即定型」）住在
+   * note-widget-autosave.ts（v0.30.44）。它**持有** `draftTimer` 与
+   * `persistedSignature`，因为 `verify-frame-guards` 把这两条不变量**按名字**钉在
+   * `resetForNewNote` 的函数体里 —— 变量随函数一起搬走，两处字面量逐字保留、守门
+   * 一条都不用改；卡片只经它返回的句柄读写。
+   */
+  const autosave = createDraftAutosave({
+    getUi: () => ui,
+    isOpened: () => opened,
+    isDisposed: () => disposed,
+  })
+  // 别名：这几个名字在 build() / dispose() 里到处都在用，改名只放大 diff 不增加信息。
+  const { flush: flushDraft, schedule: scheduleDraft, hideBanner: hideDraftBanner, resetTitle } = autosave
   /**
    * Optimistic-concurrency token of the note currently loaded into the card
    * (v0.19.1): set by the 「🕘 最近」picker, echoed on save so a human edit made
@@ -127,13 +145,6 @@ export function createNoteWidget(): NoteWidgetHandle {
    * Cleared once the note is saved (the fresh value is re-read on next load).
    */
   let loadedToken: { title: string; modified?: string; revision?: number } | null = null
-  /**
-   * Signature of content that was already persisted to the wiki by the last
-   * successful save /「在 TW 中编辑」(v0.19.1). `flushDraft` skips re-persisting
-   * the IDENTICAL content, so a no-op change event after saving no longer
-   * resurrects an "unsaved draft" banner on the next open.
-   */
-  let persistedSignature: string | null = null
 
   /**
    * Broadcast the card's open/close state to the rest of the page (the input-
@@ -144,70 +155,6 @@ export function createNoteWidget(): NoteWidgetHandle {
     try {
       window.dispatchEvent(new CustomEvent(NOTE_STATE_EVENT, { detail: { open } }))
     } catch { /* event dispatch is best-effort */ }
-  }
-
-  /**
-   * The auto-generated title currently in the title input, or null once the
-   * user changed it. Used by `flushDraft` to recognise "opened the card, typed
-   * nothing, closed it": that state must not be persisted as an unsaved draft
-   * (v0.22.8 — `dispose()`/pagehide call `flushDraft()` unconditionally, and a
-   * blank body with only an auto timestamp passed the old `text && title` guard,
-   * so the next open announced「已恢复未保存草稿」over an empty editor).
-   */
-  let autoTitle: string | null = null
-
-  const resetTitle = (): void => {
-    if (ui !== undefined) {
-      autoTitle = timestampTitle()
-      ui.titleInput.value = autoTitle
-    }
-  }
-
-  /**
-   * 同步落盘一次当前草稿（防抖定时器的回调体，也是 dispose 时的收尾动作）。
-   * 内容为空 = 把本窗口的草稿清掉（同旧行为）。
-   */
-  const flushDraft = (): void => {
-    if (ui === undefined) return
-    const text = ui.editor.getValue()
-    const title = ui.titleInput.value.trim()
-    // 正文为空 = 没有值得恢复的内容，一律清掉草稿（v0.29.0）。
-    //
-    // 旧判据是「正文为空 **且** 标题为空或是自动生成的那个标题」。它漏掉了一条
-    // 真实入口：**恢复草稿**的分支从不设置自动标题（恢复出来的是草稿里存的那个
-    // 标题），于是「打开卡片 → 恢复出旧时间戳标题 → 把正文清空 → 关窗」会写出
-    // 一份 {text:'', title:'<旧时间戳>'} 的草稿，下次打开又对着**空白编辑器**报
-    // 「已恢复未保存草稿」—— 正是 v0.22.8 修掉的那个症状。
-    // 一份只有标题、没有正文的草稿没有任何恢复价值，所以判据直接取「正文为空」。
-    if (text.trim().length === 0) {
-      clearDraft()
-      return
-    }
-    // 刚写入 wiki / 刚在 TW 原生编辑器里打开过的同一份内容不再写成"未保存草稿"
-    // （v0.19.1）：保存成功后清草稿，但编辑器内容还在，随后任何一个 change 事件
-    // （哪怕内容没变）都会把整篇重新持久化成草稿，下次打开弹「已恢复未保存草稿」，
-    // 用户会以为保存失败。
-    // v0.20.0: use the PURE read. `getTags()` commits the pending input as a
-    // side effect, and this debounce fires on ANY editor/title change — so a
-    // half-typed tag ("meet", no Enter) used to be promoted to a chip and the
-    // input cleared 500ms later.
-    const signature = draftSignature(title, text, ui.tagEditor.peekTags())
-    if (persistedSignature !== null && signature === persistedSignature) return
-    persistDraft({ text, title, tags: ui.tagEditor.peekTags(), savedAt: Date.now() })
-  }
-
-  /** Debounced draft auto-save (500ms after the last change). */
-  const scheduleDraft = (): void => {
-    if (disposed || !opened || ui === undefined) return
-    if (draftTimer !== undefined) { clearTimeout(draftTimer); draftTimer = undefined }
-    draftTimer = window.setTimeout(() => {
-      draftTimer = undefined
-      flushDraft()
-    }, DRAFT_DEBOUNCE_MS)
-  }
-
-  const hideDraftBanner = (): void => {
-    if (ui !== undefined) ui.draftBanner.hidden = true
   }
 
   /**
@@ -239,7 +186,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       // The content just went to the wiki; remember it so no later no-op change
       // event re-persists it as an "unsaved draft" (v0.19.1), and drop the
       // concurrency token (the note was just rewritten).
-      persistedSignature = draftSignature(title, text, tags)
+      autosave.markPersisted(title, text, tags)
       loadedToken = null
       // twUrl is the same-origin proxy path (e.g. /dsh-tiddlywiki/tw/);
       // resolveTwUrl turns it into an absolute URL against this page's origin
@@ -271,7 +218,7 @@ export function createNoteWidget(): NoteWidgetHandle {
     wikiQuery,
     hideDraftBanner,
     setLoadedToken: (token) => { loadedToken = token },
-    setPersistedSignature: (signature) => { persistedSignature = signature },
+    setPersistedSignature: autosave.setPersistedSignature,
   })
 
   /** Build the whole card DOM once, then wire every interaction. */
@@ -487,37 +434,17 @@ export function createNoteWidget(): NoteWidgetHandle {
       emitState(false)
     }
 
-    /**
-     * Reset the editor to a blank new note and make that reset STICK.
-     *
-     * `editor.setValue('')` fires CodeMirror's change listener → `scheduleDraft()`
-     * while `opened` is still true, so a 500ms debounce lands in `flushDraft`
-     * after save/discard. There the empty-body guard does not fire (the title is
-     * a fresh non-empty timestamp) and the signature guard misses too (the title
-     * changed), so a PHANTOM draft `{text:'', title:'<timestamp>', tags:[]}` was
-     * persisted. The next open then showed「已恢复未保存草稿」over an empty
-     * editor and skipped the default-tag branch — and 「已丢弃草稿」 came back
-     * on the next open (v0.22.8).
-     *
-     * Cancelling the pending timer and recording the cleared state as already
-     * "persisted" makes the debounce a no-op whichever way it is re-armed.
-     */
-    const resetForNewNote = (): void => {
-      if (draftTimer !== undefined) { clearTimeout(draftTimer); draftTimer = undefined }
-      editor.setValue('')
-      titleInput.value = timestampTitle()
-      autoTitle = titleInput.value
-      tagEditor.setTags([])
-      persistedSignature = draftSignature(titleInput.value.trim(), '', [])
-    }
+    // 重置成空白新笔记 + 「这次重置要定型」的整段语义（幽灵草稿 v0.22.8）现在住在
+    // note-widget-autosave.ts 的 `resetForNewNote()` 里 —— 它与 `draftTimer` /
+    // `persistedSignature` 是同一个不变量，所以一起搬走。
 
     const saveDone = (): void => {
       clearDraft()
       hideDraftBanner()
       // 这份内容已经进 wiki 了：同内容不再回写成草稿（v0.19.1），token 也失效。
-      persistedSignature = draftSignature(titleInput.value.trim(), editor.getValue(), tagEditor.getTags())
+      autosave.markPersisted(titleInput.value.trim(), editor.getValue(), tagEditor.getTags())
       loadedToken = null
-      resetForNewNote()
+      autosave.resetForNewNote()
       close()
     }
 
@@ -613,7 +540,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       hideDraftBanner()
       // 与保存后同样的「重置即定型」：否则 500ms 后防抖会把这份空内容又写成草稿，
       // 下次打开又弹「已恢复未保存草稿」（v0.22.8）。
-      resetForNewNote()
+      autosave.resetForNewNote()
       toast(t('note.draftDiscarded'))
     })
 
@@ -724,7 +651,7 @@ export function createNoteWidget(): NoteWidgetHandle {
       }
       // 先同步落盘一次待写草稿，再清定时器：500ms 防抖窗口内点关闭/刷新（pagehide
       // 会走到这里）不丢最后输入。flushDraft 自带「内容为空则清草稿」的语义。
-      if (draftTimer !== undefined) { clearTimeout(draftTimer); draftTimer = undefined }
+      autosave.clearTimer()
       flushDraft()
       ui?.tagEditor.dispose()
       ui?.editor.view.destroy()
