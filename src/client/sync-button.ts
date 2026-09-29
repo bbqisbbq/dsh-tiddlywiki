@@ -16,6 +16,7 @@
  *
  * @module dsh-tiddlywiki/client/sync-controller
  */
+import { t } from './i18n.ts'
 import { toast } from './toast.ts'
 
 import { SYNC_ENDPOINT, describeSyncResult, type SyncResultPayload } from './endpoints.ts'
@@ -44,28 +45,28 @@ function clock(date: Date): string {
 /** Map a git summary onto a SyncStateView. */
 function buildState(payload: StatusPayload | null, lastSync: Date | undefined): SyncStateView {
   const git = payload?.git
-  const bits: string[] = ['同步知识库']
+  const bits: string[] = [t('frame.syncTooltip')]
   let state: SyncStateView['state'] = 'offline'
 
   if (git === null || git === undefined || git.exists !== true) {
-    bits.push('git 仓库不可用')
+    bits.push(t('frame.gitUnavailable'))
   } else {
-    bits.push(`分支 ${git.branch ?? '?'}`)
+    bits.push(t('frame.branch', { branch: git.branch ?? '?' }))
     if (typeof git.lastCommit === 'string') bits.push(git.lastCommit)
     const behind = typeof git.behind === 'number' ? git.behind : 0
     const ahead = typeof git.ahead === 'number' ? git.ahead : 0
-    if (ahead > 0) bits.push(`领先 ${ahead}`)
-    if (behind > 0) bits.push(`落后 ${behind}`)
+    if (ahead > 0) bits.push(t('frame.ahead', { n: ahead }))
+    if (behind > 0) bits.push(t('frame.behind', { n: behind }))
     if (git.dirty === true) {
       state = 'dirty'
-      bits.push(`有 ${git.dirtyFiles?.length ?? 0} 个未提交改动`)
+      bits.push(t('frame.dirty', { n: git.dirtyFiles?.length ?? 0 }))
     } else if (behind > 0) {
       state = 'behind'
     } else {
       state = 'clean'
     }
   }
-  if (lastSync !== undefined) bits.push(`上次同步 ${clock(lastSync)}`)
+  if (lastSync !== undefined) bits.push(t('frame.lastSync', { time: clock(lastSync) }))
   return { state, tooltip: bits.join(' · ') }
 }
 
@@ -84,7 +85,7 @@ export interface SyncController {
  * `trigger()` for the FAB's 同步 entry. No DOM is created here.
  */
 export function createSyncController(): SyncController {
-  let state: SyncStateView = { state: 'offline', tooltip: '同步知识库' }
+  let state: SyncStateView = { state: 'offline', tooltip: t('frame.syncTooltip') }
   let lastSync: Date | undefined
   let timer: number | undefined
   let syncing = false
@@ -121,7 +122,7 @@ export function createSyncController(): SyncController {
     if (disposed) return state
     if (syncing) {
       // 同步中重复点击不再静默 return：给用户一个明确反馈。
-      toast('同步进行中…')
+      toast(t('frame.syncing'))
       return state
     }
     syncing = true
@@ -132,14 +133,14 @@ export function createSyncController(): SyncController {
       const payload = (await res.json().catch(() => null)) as SyncResultPayload | null
       const result = describeSyncResult(payload, res.status)
       if (!result.ok) {
-        toast(`同步失败：${result.message}`)
+        toast(t('frame.syncFailed', { message: result.message }))
       } else {
         // 只在成功时记录「上次同步」，失败时 tooltip 不应显示一个假的成功时间。
         lastSync = new Date()
-        toast(`同步完成：${result.message}`)
+        toast(t('frame.syncDone', { message: result.message }))
       }
     } catch (err) {
-      toast(`同步失败：${err instanceof Error ? err.message : String(err)}`)
+      toast(t('frame.syncFailed', { message: err instanceof Error ? err.message : String(err) }))
     } finally {
       syncing = false
       // Re-sync the state (may still be dirty after a failed sync). This is the

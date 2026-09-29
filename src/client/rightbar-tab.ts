@@ -21,6 +21,7 @@
  *
  * @module dsh-tiddlywiki/client/rightbar-tab
  */
+import { t } from './i18n.ts'
 import * as React from 'react'
 import {
   ACTIVATE_EVENT,
@@ -131,8 +132,8 @@ function rightbarDefinition(): Record<string, unknown> {
     guide: [
       {
         order: 10,
-        title: (): string => 'TiddlyWiki 知识库',
-        description: (): string => '在右侧边栏打开 TiddlyWiki 编辑器（与聊天并排）',
+        title: (): string => t('frame.rightbarTitle'),
+        description: (): string => t('frame.rightbarDescription'),
         icon: TwTabIcon,
       },
     ],

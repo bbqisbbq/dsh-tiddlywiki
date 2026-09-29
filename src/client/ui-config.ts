@@ -16,6 +16,7 @@
  * @module dsh-tiddlywiki/client/ui-config
  */
 
+import { t } from './i18n.ts'
 import { fetchStatus, invalidateStatus } from './status-cache.ts'
 
 export interface UiConfig {
@@ -40,7 +41,7 @@ export interface UiConfig {
 }
 
 const FALLBACK: UiConfig = {
-  showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: '知识库',
+  showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: t('frame.tabLabelDefault'),
   showSessionTab: true, showRightbarTab: true, showQuickNote: true, showPanelStatus: true, showSyncButton: true,
 }
 
@@ -97,7 +98,7 @@ export function fetchUiConfig(): Promise<UiConfig> {
         : 'TiddlyWiki',
       tabLabel: typeof ui.tabLabel === 'string' && ui.tabLabel.trim().length > 0
         ? ui.tabLabel.trim()
-        : '知识库',
+        : t('frame.tabLabelDefault'),
       showSessionTab: ui.showSessionTab !== false,
       showRightbarTab: ui.showRightbarTab !== false,
       showQuickNote: ui.showQuickNote !== false,
@@ -108,3 +109,4 @@ export function fetchUiConfig(): Promise<UiConfig> {
   cache = { at: Date.now(), value: pending }
   return pending
 }
+

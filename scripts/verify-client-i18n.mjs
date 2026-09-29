@@ -60,12 +60,15 @@ const chunkFiles = clientFiles.filter((f) => f.startsWith('i18n-') && f !== 'i18
 
 /** Keys of the `zh:` / `en:` object inside one chunk (one entry per line). */
 function chunkKeys(source, lang) {
-  const start = source.indexOf(`${lang}: {`)
-  assert.ok(start >= 0, `分片里找不到 \`${lang}: {\``)
-  // The object ends at the first line that is exactly `},` (or `}` at file end).
-  const rest = source.slice(start)
-  const end = rest.search(/\n\s*\},\s*(\n|$)/)
-  const body = end >= 0 ? rest.slice(0, end) : rest
+  // The zh region ends where `en: {` begins (and vice versa ends at EOF): keying on
+  // the closing brace was fragile — a chunk that puts `},` on the LAST entry's line
+  // made the zh region swallow the whole en block (22 keys, 11 duplicated), which
+  // the gate then reported as a key-set mismatch. Splitting on the two language
+  // headers is robust to any brace formatting.
+  const zhAt = source.indexOf('zh: {')
+  const enAt = source.indexOf('en: {')
+  assert.ok(zhAt >= 0 && enAt > zhAt, '分片里必须同时有 `zh: {` 与 `en: {` 且顺序固定')
+  const body = lang === 'zh' ? source.slice(zhAt, enAt) : source.slice(enAt)
   return [...body.matchAll(/^\s*'([^']+)':/gm)].map((m) => m[1])
 }
 
@@ -142,24 +145,17 @@ test('目录里没有从未使用的键（死条目）', () => {
  */
 const PENDING_CONVERSION = [
   'editor-popup.ts',
-  'endpoints.ts',
-  'index.ts',
   'knowledge-fab.ts',
   'note-widget-draft.ts',
-  'note-widget-tags.ts',
   'note-widget-upload.ts',
   'note-widget.ts',
   'quick-note-dock.ts',
-  'rightbar-tab.ts',
-  'scope-seat.ts',
   'session-summary.ts',
   'settings-page-catalog.ts',
   'settings-page-config.ts',
   'sidebar-entry.ts',
-  'sync-button.ts',
   'tool-views.ts',
   'tw-frame.ts',
-  'ui-config.ts',
   'wiki-scope-dock.ts',
 ]
 

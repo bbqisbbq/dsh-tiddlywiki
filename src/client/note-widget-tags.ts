@@ -9,6 +9,7 @@
  *
  * @module dsh-tiddlywiki/client/note-widget-tags
  */
+import { t } from './i18n.ts'
 import { TAGS_ENDPOINT } from './endpoints.ts'
 
 /** Multi-tag chip editor with autocomplete from the wiki's existing tags. */
@@ -30,7 +31,7 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
   chipWrap.className = 'dsh-tw-note-chips'
   const input = document.createElement('input')
   input.className = 'dsh-tw-note-taginput'
-  input.placeholder = 'tag（可多选，自动补全）'
+  input.placeholder = t('note.tagsPlaceholder')
   const suggest = document.createElement('div')
   suggest.className = 'dsh-tw-note-tagsuggest'
   suggest.hidden = true
@@ -50,7 +51,7 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
       const x = document.createElement('span')
       x.className = 'dsh-tw-note-tagchip-x'
       x.textContent = '×'
-      x.title = `移除 tag「${tag}」`
+      x.title = `t('note.removeTag', { tag })`
       x.addEventListener('click', (event) => {
         event.stopPropagation()
         const i = chips.indexOf(tag)
@@ -114,7 +115,7 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
       // 键盘可达：div + mousedown 对键盘用户不可用，补 role/tabIndex/Enter·Space。
       item.setAttribute('role', 'button')
       item.tabIndex = 0
-      item.setAttribute('aria-label', `添加标签「${tag}」`)
+      item.setAttribute('aria-label', `t('note.addTag', { tag })`)
       item.addEventListener('mousedown', (event) => {
         event.preventDefault()
         addTag(tag)

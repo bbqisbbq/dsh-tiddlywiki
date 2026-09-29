@@ -40,6 +40,7 @@
  */
 
 /** Structural face of the seat we mount into (kept local: no SDK types). */
+import { t } from './i18n.ts'
 export interface ScopeSeatSlots {
   inject(name: string, register: () => unknown): (() => void) | undefined
   register(opts: { name: string; id: string; order?: number; label?: string }, component: unknown): () => void
@@ -90,7 +91,7 @@ export function mountScopeSeat(slots: ScopeSeatSlots, chip: unknown): () => void
     setBlankSeatMounted(true)
     try {
       return slots.register(
-        { name: SELECTOR_CONTEXT_SLOT, id: 'wiki-scope', order: 9, label: '知识库' },
+        { name: SELECTOR_CONTEXT_SLOT, id: 'wiki-scope', order: 9, label: t('chrome.scopeSlotLabel') },
         chip,
       )
     } catch {
@@ -110,3 +111,4 @@ export function mountScopeSeat(slots: ScopeSeatSlots, chip: unknown): () => void
     if (remove !== undefined) remove()
   }
 }
+

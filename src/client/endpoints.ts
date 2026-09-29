@@ -10,6 +10,7 @@
  */
 
 /** Host route prefix (mirrors PATH_PREFIX in src/host/wiki.ts). */
+import { t } from './i18n.ts'
 export const ROUTE_PREFIX = '/dsh-tiddlywiki'
 
 /** Same-origin TW proxy base (mirrors TW_PROXY_PATH in src/host/wiki.ts). */
@@ -143,7 +144,7 @@ export interface SyncResultPayload {
  *
  * One implementation (v0.22.8): the FAB's sync controller and the settings
  * page's 同步 button each built this string by hand, including the identical
- * 「，TW 已重启 / ，TW 未自动重启（err）」 construction — and they had already
+ * 「t('frame.syncRestarted') / t('frame.syncNotRestarted')（err）」 construction — and they had already
  * drifted (only the FAB one reported the `push` detail).
  */
 export function describeSyncResult(
@@ -158,8 +159,9 @@ export function describeSyncResult(
     detail = `（${payload.push}）`
   }
   if (payload.changed === true) {
-    detail += payload.restarted === true ? '，TW 已重启' : '，TW 未自动重启'
+    detail += payload.restarted === true ? t('frame.syncRestarted') : t('frame.syncNotRestarted')
     if (typeof payload.restartError === 'string' && payload.restartError.length > 0) detail += `（${payload.restartError}）`
   }
   return { ok: true, message: `${payload.message ?? 'OK'}${detail}` }
 }
+

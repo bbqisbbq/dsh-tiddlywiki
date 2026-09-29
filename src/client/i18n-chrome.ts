@@ -8,6 +8,12 @@
  * @module dsh-tiddlywiki/client/i18n-chrome
  */
 export const CHROME_MESSAGES: { zh: Record<string, string>; en: Record<string, string> } = {
-  zh: {},
-  en: {},
+  zh: {
+    'chrome.scopeSlotLabel': '知识库',
+    'chrome.dockQuickNote': '快速笔记',
+  },
+  en: {
+    'chrome.scopeSlotLabel': 'Knowledge base',
+    'chrome.dockQuickNote': 'Quick note',
+  },
 }

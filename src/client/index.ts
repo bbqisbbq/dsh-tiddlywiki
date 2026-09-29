@@ -11,6 +11,7 @@
  *
  * @module dsh-tiddlywiki/client
  */
+import { t } from './i18n.ts'
 import { injectStyles } from './styles.ts'
 import { PanelState } from './state.ts'
 import { mountSidebarEntry } from './sidebar-entry.ts'
@@ -121,7 +122,7 @@ export function apply(ctx: ClientContextFace): void {
           safeMount('quick-note dock', () => {
             const removeDock = ctx.slots?.inject('conversation.input.dock', () =>
               ctx.slots?.register(
-                { name: 'conversation.input.dock', id: 'quick-note', order: 8, label: '快速笔记' },
+                { name: 'conversation.input.dock', id: 'quick-note', order: 8, label: t('chrome.dockQuickNote') },
                 createQuickNoteDock(widget, createWikiScopeDock()),
               ),
             )
@@ -191,7 +192,7 @@ export function apply(ctx: ClientContextFace): void {
     safeMount('settings section', () => {
       const removeSettings = ctx.slots?.inject('settings.section', () =>
         ctx.slots?.register(
-          { name: 'settings.section', id: 'dsh-tiddlywiki', order: 50, label: 'TiddlyWiki 知识库' },
+          { name: 'settings.section', id: 'dsh-tiddlywiki', order: 50, label: t('frame.settingsSection') },
           SettingsSection,
         ),
       )
