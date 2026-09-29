@@ -28,7 +28,7 @@ import { readFamily } from './lib/source-family.mjs' // v0.28.8：按「模块�
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const docText = fs.readFileSync(path.join(repoRoot, 'docs', 'wechat-publish-setup.md'), 'utf8').replace(/\r\n/g, '\n')
 const seedSrc = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'seed-wechat-docs.ts'), 'utf8').replace(/\r\n/g, '\n')
-const seedsSrc = fs.readFileSync(path.join(repoRoot, 'src', 'host', 'seeds.ts'), 'utf8').replace(/\r\n/g, '\n')
+const seedsSrc = readFamily(repoRoot, 'src/host/seeds') // v0.30.27：注册表搬到 seeds-registry.ts，按模块族读
 
 let failures = 0
 async function test(name, fn) {
