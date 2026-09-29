@@ -50,6 +50,9 @@
  *                           hidden input + drop-onto-the-editor. Its own
  *                           `dragDepth` travels with it; it asks the card for
  *                           exactly two things — the editor and `wikiQuery`.
+ *   - note-widget-foot.ts   the bottom action bar (v0.30.47): left group
+ *                           (upload / 「最近」 / Ctrl+Enter hint) + right group
+ *                           (「编辑」 / 「保存」). Layout only — zero card state.
  *
  * @module dsh-tiddlywiki/client/note-widget
  */
@@ -60,6 +63,7 @@ import { buildMarkdownEditor, type MarkdownEditor } from './markdown-editor.ts'
 import { EDIT_ENDPOINT, resolveTwUrl, twProxyFor } from './endpoints.ts'
 import { buildTagEditor } from './note-widget-tags.ts'
 import { createNoteUploadUi } from './note-widget-upload-ui.ts'
+import { createNoteFooter } from './note-widget-foot.ts'
 import { createRecentPicker } from './note-widget-recent.ts'
 import { createNoteScope } from './note-widget-scope.ts'
 import { installCardDrag, positionCard } from './note-widget-placement.ts'
@@ -365,33 +369,14 @@ export function createNoteWidget(): NoteWidgetHandle {
     // `wikiQuery`（附件必须落在**这张卡片的目标库**里）。
     const upload = createNoteUploadUi({ editor, wikiQuery })
 
-    const foot = document.createElement('div')
-    foot.className = 'dsh-tw-note-foot'
-    const footLeft = document.createElement('div')
-    footLeft.className = 'dsh-tw-note-foot-left'
-    const hint = document.createElement('span')
-    hint.className = 'dsh-tw-note-hint'
-    hint.textContent = 'Ctrl+Enter'
-    const recentBtn = document.createElement('button')
-    recentBtn.type = 'button'
-    recentBtn.className = 'dsh-tw-note-recent-btn'
-    recentBtn.title = t('note.recentTitle')
-    recentBtn.textContent = t('note.recent')
-    recentBtn.addEventListener('click', () => { recent.toggle() })
-    footLeft.append(upload.button, recentBtn, hint)
-    const footRight = document.createElement('div')
-    footRight.className = 'dsh-tw-note-foot-right'
-    const editBtn = document.createElement('button')
-    editBtn.type = 'button'
-    editBtn.className = 'dsh-tw-note-edit'
-    editBtn.title = t('note.editTitle')
-    editBtn.textContent = t('note.editInTw')
-    const saveBtn = document.createElement('button')
-    saveBtn.type = 'button'
-    saveBtn.className = 'dsh-tw-note-save'
-    saveBtn.textContent = t('note.save')
-    footRight.append(editBtn, saveBtn)
-    foot.append(footLeft, footRight)
+    // 底栏（左组：上传 / 最近 / Ctrl+Enter 提示；右组：编辑 / 保存）整段住在
+    // note-widget-foot.ts（v0.30.47）—— 它只建 DOM、不留任何卡片状态：接一个
+    // 已经建好的上传按钮 + `recent.toggle` 的函数引用，把两个按钮交回来由卡片
+    // 接线（保存那一组的实现在 note-widget-save.ts）。
+    const { foot, saveBtn, editBtn } = createNoteFooter({
+      uploadButton: upload.button,
+      onRecent: () => { recent.toggle() },
+    })
 
     // Recent dropdown — absolute, pops above the card.
     const recentWrap = document.createElement('div')
