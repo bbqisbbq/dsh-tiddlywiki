@@ -92,7 +92,7 @@ const ALLOWED = [
   {
     label: 'config.ts 的配置 tiddler（ConfigStore）',
     match: /^src\/host\/config\.ts$/,
-    why: '例外类 ①+特例：`ConfigStore` 有自己的合并语义（存的是补丁后的整份配置），改前需确认与「保留自定义字段」不冲突 —— 见 wiki 待办笔记',
+    why: '例外类 ①+特例（v0.30.33 核实后**有意保留**）：`ConfigStore` 已先读后写、且**按文本**做幂等跳过（`storedText === nextText`，v0.25.0 为「每次保存都产出 git diff」加）。改成 buildWriteTiddler 的唯一收益是「保留自定义字段」（配置 tiddler 上没有这种场景），代价却是**若写策略对正文做任何规范化，幂等判据就会与实际落盘文本不一致 ⇒ 每次保存都重新 PUT ⇒ 那个 git-diff 回归复活**。收益小、风险确切 ⇒ 不动，只把判据留在原处。',
   },
 ]
 
