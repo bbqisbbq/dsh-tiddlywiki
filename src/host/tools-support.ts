@@ -333,10 +333,71 @@ export function snippetAround(text: string, query: string, max = 160): string {
   return `${prefix}${flat.slice(start, end)}${suffix}`
 }
 
-/** Trash namespace for soft-deleted tiddlers (system titles: never listed by
- *  the default recipe filter, so deleted notes stop appearing in search/recent
- *  while staying recoverable). */
+/**
+ * Trash namespace for soft-deleted tiddlers (system titles: never listed by
+ * the default recipe filter, so deleted notes stop appearing in search/recent
+ * while staying recoverable).
+ *
+ * ⚠️ v0.30.58 — 「不可枚举」只对 **HTTP 列举端点**成立，不是全平台的性质。
+ * 三条通道必须分开说，v0.30.58 之前这里只写了两条半，害人：
+ *   1. HTTP 列举（`GET /recipes/default/tiddlers.json`，含浏览器 syncer 的
+ *      skinny 增量同步）：`get-tiddlers-json.js` 会给**任何** filter 追加
+ *      `+[!is[system]]`，所以 `$:/` 条目永远不在返回里（实测：work 库
+ *      tiddlers.json 恒 138 条、系统条目恒 0 条）。
+ *   2. **filter 引擎**（`wiki.filterTiddlers()`，服务端的 /render 与浏览器
+ *      内的 wikitext 都走它）：**没有任何 `is[system]` 判断**，`$:/` 条目照常
+ *      命中。实测服务端渲染 `[tag[$:/tags/trashbin]]` 得 `COUNT=125`。
+ *   3. **启动期 store 内嵌**（`store.area.template.html.tid` 把整个 wiki
+ *      store 塞进 index.html）：客户端启动即拥有全部 tiddler，不依赖通道 1。
+ * 正因为 2 和 3 成立，trashbin 格式的副本才既能被 TW 界面 filter 列出、又能
+ * 跨浏览器存活 —— 它不需要 trash-index 索引。
+ */
 export const TRASH_PREFIX = '$:/dsh-tiddlywiki/trash/'
+
+/**
+ * kookma/trashbin 的**数据契约**（v0.30.58）。
+ *
+ * 这里刻意只依赖两个约定 —— 副本标题 `$:/trashbin/<原标题>` + 标签
+ * `$:/tags/trashbin` —— 而**不依赖该插件被安装**：它的 35 个 tiddler 全是
+ * `text/vnd.tiddlywiki` 模板（靠 `$:/tags/SideBar` / `$:/tags/ViewToolbar`
+ * 驱动，没有一个 JS module），所以哪怕没登记进 tiddlywiki.info、哪怕只是
+ * 浏览器里装的、哪怕压根没装，我们自己写的 wikitext 页面照样列得出、恢复得
+ * 动。同理装了它的库则额外多一个原生侧边栏，两边说的是同一种格式。
+ */
+export const TRASHBIN_PREFIX = '$:/trashbin/'
+export const TRASHBIN_TAG = '$:/tags/trashbin'
+/** 副本上记录的溯源字段：原标题、删除时刻。trashbin 原生不写，但我们写。 */
+export const TRASHBIN_OF_FIELD = 'trash-of'
+export const TRASHBIN_AT_FIELD = 'trash-at'
+
+/** The trashbin-format copy title that holds one soft-deleted tiddler. */
+export function trashbinTitleFor(title: string): string {
+  return `${TRASHBIN_PREFIX}${title}`
+}
+
+/**
+ * Does this wiki use the trashbin mechanism?
+ *
+ * Read-only probe (v0.30.58). NO probe tiddler is written — a marker would
+ * litter every wiki that never installs trashbin, and it would be the very
+ * thing this is trying to detect.
+ *
+ * Presence of the *sidebar tab template* is the signal, not `tiddlywiki.info`:
+ * a browser-installed trashbin never appears in the info file (verified — the
+ * user's copy has no `plugin.info` on the server and is absent from
+ * tiddlywiki.info, yet works), so an info-based check reports false negatives
+ * on exactly the wikis that HAVE it. The tab template is what the mechanism
+ * actually needs, and it is what both the sidebar and our own page read.
+ */
+export async function hasTrashbin(wiki: TiddlyWebClient): Promise<boolean> {
+  // Either half of the convention is enough: the tag-driven listing works with
+  // just the tag registered, and a wiki that only has stray copies (plugin
+  // removed, copies left behind) still deserves listing/restore.
+  const tagged = await wiki.get(TRASHBIN_TAG)
+  if (tagged !== undefined) return true
+  const sidebar = await wiki.get('$:/plugins/kookma/trashbin/sidebar-tab')
+  return sidebar !== undefined
+}
 
 /**
  * Trash INDEX tiddler. A `$:/`-titled tiddler cannot be ENUMERATED through the
@@ -396,6 +457,49 @@ export async function readTrashIndex(wiki: TiddlyWebClient): Promise<{ readOk: b
 /** Persist the trash index. */
 export async function writeTrashIndex(wiki: TiddlyWebClient, entries: TrashIndexEntry[]): Promise<void> {
   await wiki.put({ title: TRASH_INDEX_TITLE, text: JSON.stringify(entries, null, 2), type: 'application/json', tags: [] })
+}
+
+/**
+ * One trashbin-format copy, as seen from the HOST (v0.30.58).
+ *
+ * Note the enumeration problem this shape exists to solve: `wiki.list()` goes
+ * through the HTTP listing endpoint, which appends `+[!is[system]]` to ANY
+ * filter — so `[tag[$:/tags/trashbin]]` there returns nothing. The filter
+ * ENGINE has no such restriction, so the only way for the host to enumerate
+ * trashbin copies is to have the TW service render the filter itself (via the
+ * plugin's `/render` route) and read the titles back off the fragment.
+ */
+export interface TrashbinEntry { trash: string; of: string; at: string }
+
+/**
+ * Enumerate trashbin-format copies by asking the TW service to run the filter.
+ *
+ * Returns `undefined` when the wiki cannot answer (service down, /render not
+ * seeded yet) so callers can fall back to the legacy index instead of
+ * reporting an empty trash.
+ */
+export async function listTrashbin(wiki: TiddlyWebClient, renderFilter: (filter: string) => Promise<string | undefined>): Promise<TrashbinEntry[] | undefined> {
+  // One title per line, in a wrapper the sanitizer cannot strip. The `\n`
+  // separator is what we split on; titles may contain any other character.
+  const wikitext = `<$list filter="[tag[${TRASHBIN_TAG}]sort[title]]" variable="ignore"><$view field="title"/>\\n</$list>`
+  let html: string | undefined
+  try {
+    html = await renderFilter(wikitext)
+  } catch {
+    return undefined
+  }
+  if (typeof html !== 'string') return undefined
+  const titles = html.split('\n').map((line) => line.trim()).filter((line) => line.startsWith(TRASHBIN_PREFIX))
+  const entries: TrashbinEntry[] = []
+  for (const trash of titles) {
+    // `trash-of` is ours; trashbin's native copies fall back to the title minus
+    // the prefix, which is exactly how that plugin stores the original name.
+    const t = await wiki.get(trash)
+    const of = typeof t?.fields?.[TRASHBIN_OF_FIELD] === 'string' ? t.fields[TRASHBIN_OF_FIELD] as string : trash.slice(TRASHBIN_PREFIX.length)
+    const at = typeof t?.fields?.[TRASHBIN_AT_FIELD] === 'string' ? t.fields[TRASHBIN_AT_FIELD] as string : (t?.modified ?? '')
+    entries.push({ trash, of, at })
+  }
+  return entries
 }
 
 /** Raised when the trash index cannot be read: the operation must abort rather
