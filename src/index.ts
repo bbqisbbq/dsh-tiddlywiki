@@ -241,6 +241,14 @@ export {
   type SessionScopeState,
 } from './host/session-scope.ts'
 export { RepoCommitters, type RepoCommitSettings, type RepoCommittersOptions } from './host/repo-committers.ts'
+/**
+ * The git layer factory (v0.30.58). Exported because `gitTargets()` — "which
+ * wikis count as syncable, and with which remote" — is a rule the gate
+ * `scripts/verify-git-multi-sync.mjs` drives with fake deps (farm + GitFace), and
+ * it is only reachable through this factory. Keep it here rather than inlining
+ * a private copy of the rule into the test.
+ */
+export { createGitLayer, type GitLayer, type GitLayerDeps } from './index-git.ts'
 export {
   SKILL_FILE_NAME,
   SPLIT_SKILL_DIR,

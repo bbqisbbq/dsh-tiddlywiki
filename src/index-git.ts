@@ -96,9 +96,10 @@ export interface GitLayer {
   eff: () => PluginConfigShape
   /**
    * Every registered knowledge base that COULD be git-synced (v0.30.5): its
-   * folder, its repository root (cached `rev-parse`) and its EFFECTIVE
-   * `git.remote`. Registry-based on purpose — a STOPPED wiki still has a
-   * repository on disk, and syncing is a disk operation (no TW child involved).
+   * folder, its repository root (cached `rev-parse`) and its EFFECTIVE remote —
+   * the `git.remote` setting, else the repository's own `origin` (v0.30.58).
+   * Registry-based on purpose — a STOPPED wiki still has a repository on disk,
+   * and syncing is a disk operation (no TW child involved).
    */
   gitTargets: () => Promise<GitSyncTarget[]>
   /** Workspace (project) marking for agent-created notes (v0.24.0). */
@@ -175,14 +176,34 @@ export function createGitLayer(deps: GitLayerDeps): GitLayer {
       const runtime = live.runtime(entry.id)
       const dir = entryPath(entry)
       const g = (runtime?.eff() ?? deps.baseShape()).git ?? {}
-      const remote = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : base.remote).trim()
+      const configured = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : base.remote).trim()
       const repoRoot = await repos.repoRootOf(dir)
+      /**
+       * No `git.remote` no longer means "skip this wiki" (v0.30.58, author
+       * 2026-10-09): it means "use the repository's own `origin`".
+       *
+       * WHY: the settings-page 「同步」 button has always run
+       * `pull/commit/push` in the folder and therefore synced any repo with an
+       * origin, while this tool — the agent's only way to sync — refused the
+       * very same repo and reported "没有任何知识库配置了 git.remote（同步远端）」".
+       * A user who added the remote with plain `git remote add` (or who pulled a
+       * config tiddler that had not reached the host's config cache yet) got two
+       * different answers for one question.
+       *
+       * `git.remote` stays as an explicit OVERRIDE (and as the target
+       * `ensureRemote` writes). Only probed when there is no config value and
+       * the folder actually belongs to a repository — a wiki outside git keeps
+       * costing zero extra `git` calls.
+       */
+      const detected = configured.length > 0 || repoRoot === undefined ? '' : await git.originOf(dir)
+      const remote = configured.length > 0 ? configured : detected
       out.push({
         id: entry.id,
         label: entry.label ?? entry.id,
         dir,
         ...(repoRoot !== undefined ? { repoRoot } : {}),
         remote,
+        remoteSource: configured.length > 0 ? 'config' : detected.length > 0 ? 'origin' : 'none',
         branch: typeof g.branch === 'string' && g.branch.trim().length > 0 ? g.branch.trim() : base.branch,
         running: runtime !== undefined,
       })

@@ -155,6 +155,14 @@ export interface SyncRepoResult {
   wikis: string[]
   /** Their ids — what `tiddlywiki_git_resolve wiki=<id>` takes. */
   wikiIds: string[]
+  /**
+   * The remote this repository will use (v0.30.58), and where it came from:
+   * the `git.remote` setting, or the repository's own `origin` when that
+   * setting is empty. Printed in the receipt so an auto-detected push target is
+   * never invisible (credentials stripped — a `git.remote` may carry a PAT).
+   */
+  remote?: string
+  remoteSource?: 'config' | 'origin'
   ok: boolean
   message: string
   changed?: boolean
@@ -192,9 +200,10 @@ export interface SyncResult {
   drainFailed?: boolean
   status?: GitStatusView
   /**
-   * Repositories that were NOT synced, with the reason (v0.30.5). Never
-   * silently ignored: "sync said OK" must not be readable as "we synced
-   * everything" when some wiki simply has no `git.remote`.
+   * Repositories that were NOT synced, with the reason (v0.30.5; reason wording
+   * widened in v0.30.58). Never silently ignored: "sync said OK" must not be
+   * readable as "we synced everything" when some wiki has no remote at all —
+   * neither a `git.remote` setting nor a repository `origin`.
    */
   skipped?: string[]
   /** One entry per repository that actually ran (in deterministic order). */

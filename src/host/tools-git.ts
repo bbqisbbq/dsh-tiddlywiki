@@ -10,6 +10,13 @@
  * install could not sync the others from the agent at all — while the receipt
  * was labelled with the session's wiki.
  *
+ * v0.30.58 (author's decision, 2026-10-09): the SCOPE is still "every wiki in a
+ * repository", but "has a remote" now means **`git.remote` OR the repository's
+ * own `origin`**. The tool used to skip a repo the settings-page 「同步」 button
+ * synced happily, and reported「没有任何知识库配置了 git.remote（同步远端）」
+ * while the repo plainly had an origin — two answers to one question. The
+ * receipt now names the remote and its source.
+ *
  * Split out of `tools.ts` in v0.28.8 — pure code move, bodies unchanged.
  *
  * @module dsh-tiddlywiki/host/tools-git
@@ -37,6 +44,25 @@ function repoLabel(repo: SyncRepoResult): string {
   return repo.wikis.length > 0 ? `库 ${repo.wikis.join('、')}` : '(未登记库)'
 }
 
+/**
+ * Strip credentials from a remote URL before it reaches the receipt.
+ *
+ * v0.30.58 started printing remotes here (they used to be invisible), and a
+ * `git.remote` may legitimately carry a PAT — `/admin/state` masks exactly that
+ * value, so printing it raw from a tool would open a new leak path. Only the
+ * `scheme://user:pass@host` form is affected; `git@host:path` has no `//`.
+ */
+function safeRemote(url: string): string {
+  return url.replace(/\/\/[^/@]*@/, '//')
+}
+
+/** `（远端 <url>，来自 …）` — which remote a repo is about to push to, and why. */
+function remoteNote(repo: SyncRepoResult): string {
+  const remote = repo.remote ?? ''
+  if (remote.length === 0) return ''
+  return `（远端 ${safeRemote(remote)}${repo.remoteSource === 'origin' ? '，自动识别自仓库 origin' : '，来自 git.remote 配置'}）`
+}
+
 function renderSync(value: SyncResult): Array<{ type: 'text'; text: string }> {
   const lines = [`git ${value.action}: ${value.ok ? '成功' : '失败'}`]
   lines.push(`  ${value.message}`)
@@ -44,7 +70,7 @@ function renderSync(value: SyncResult): Array<{ type: 'text'; text: string }> {
     lines.push(`未同步：${value.skipped.join('；')}`)
   }
   for (const repo of value.repos ?? []) {
-    lines.push(`- ${repoLabel(repo)} @ ${repo.root}`)
+    lines.push(`- ${repoLabel(repo)} @ ${repo.root}${remoteNote(repo)}`)
     lines.push(`  ${repo.ok ? '成功' : '失败'}: ${repo.message}`)
     if (repo.conflictFiles !== undefined && repo.conflictFiles.length > 0) {
       lines.push('  冲突文件（rebase 已 abort，勿自动覆盖）:')
@@ -88,6 +114,18 @@ async function syncOneRepo(
     root: group.root,
     wikis: group.targets.map((t) => t.label),
     wikiIds: group.targets.map((t) => t.id),
+    // Which remote this repo will use, and where that value came from
+    // (v0.30.58). Informational: pull/push go through the repository's own
+    // tracking config, and a per-wiki override that disagrees with the repo's
+    // origin is exactly the case the receipt must not hide.
+    ...(group.targets[0] !== undefined && group.targets[0].remote.length > 0
+      ? {
+          remote: group.targets[0].remote,
+          // A non-empty remote can only have come from one of the two sources
+          // ('none' means empty), so this is a narrowing, not a guess.
+          remoteSource: group.targets[0].remoteSource === 'origin' ? ('origin' as const) : ('config' as const),
+        }
+      : {}),
     ...(drainFailed ? { drainFailed: true } : {}),
   }
   /**
@@ -166,7 +204,7 @@ export function gitSyncTool(env: ToolEnv) {
   // ── tiddlywiki_git_sync ──────────────────────────────────────────────────
   return defineTool({
     name: 'tiddlywiki_git_sync',
-    description: '对**所有开启了 git 同步**（配了 `git.remote`）的知识库仓库做同步：pull（拉取远端并 rebase 本地，冲突则 abort 并报文件）、push（推送本地提交到远端）、sync（pull → commit 本地改动 → push）。多个库共用一个仓库时**只同步一次**；每个仓库独立成败（一个仓库冲突不影响其余），回执逐仓库标明「哪个库 @ 哪个仓库」。未配 `git.remote` 或不在 git 仓库里的库会被跳过并在回执里列出。',
+    description: '对**所有可同步**的知识库仓库做同步：pull（拉取远端并 rebase 本地，冲突则 abort 并报文件）、push（推送本地提交到远端）、sync（pull → commit 本地改动 → push）。可同步 = 该库配了 `git.remote`，没配就**自动用它所在仓库的 `origin`**（与设置页「同步」按钮同口径）；两者都没有、或不在 git 仓库里的库会被跳过并在回执里列出。多个库共用一个仓库时**只同步一次**；每个仓库独立成败（一个仓库冲突不影响其余），回执逐仓库标明「哪个库 @ 哪个仓库」与远端来源。',
     parameters: {
       action: { type: 'string', enum: ['pull', 'push', 'sync'], description: '要执行的 git 操作（作用于每一个可同步的仓库）', required: true },
       message: { type: 'string', description: 'commit 信息（可选，仅 sync 的本地 commit 使用）' },
@@ -185,7 +223,7 @@ export function gitSyncTool(env: ToolEnv) {
       const targets = allTargets.filter((t) => t.remote.trim().length > 0)
       const skipped = allTargets
         .filter((t) => t.remote.trim().length === 0)
-        .map((t) => `${t.label}（未配 git.remote）`)
+        .map((t) => `${t.label}（${t.repoRoot === undefined ? '不在 git 仓库里' : '未配 git.remote，仓库也没有 origin'}）`)
       if (targets.length === 0) {
         // ok:false on purpose: `verify-tools.mjs` (and the README) promise that
         // "push with no remote" is a FAILURE, not a silent success.
@@ -194,7 +232,7 @@ export function gitSyncTool(env: ToolEnv) {
           ok: false,
           message: allTargets.length === 0
             ? '没有已登记的知识库，未执行任何 git 操作。'
-            : '没有任何知识库配置了 git.remote（同步远端），未执行任何 git 操作；请在设置页给要同步的库填上远端地址。',
+            : '没有任何知识库可同步（既没配 git.remote，仓库里也没有 origin），未执行任何 git 操作；请在设置页给要同步的库填上远端地址，或给仓库加上 origin。',
           ...(skipped.length > 0 ? { skipped } : {}),
           repos: [],
         }
@@ -285,7 +323,7 @@ export function gitResolveTool(env: ToolEnv) {
   // ── tiddlywiki_git_resolve ───────────────────────────────────────────────
   return defineTool({
     name: 'tiddlywiki_git_resolve',
-    description: '在 tiddlywiki_git_sync action=pull 冲突（已 abort）后，按 tiddler 二选一解决：keep-local 保留本地版本；keep-remote 用 git fetch 拉取远端并检出远端版本（需已配置 git.remote）；list 仅报告当前状态。多库各有独立仓库时用 `wiki` 指明是哪一个（取 sync 回执里的库 id）。解决后建议重新 pull/sync 整合其余改动。',
+    description: '在 tiddlywiki_git_sync action=pull 冲突（已 abort）后，按 tiddler 二选一解决：keep-local 保留本地版本；keep-remote 用 git fetch 拉取远端并检出远端版本（需仓库有可用远端：`git.remote` 或它自己的 `origin`）；list 仅报告当前状态。多库各有独立仓库时用 `wiki` 指明是哪一个（取 sync 回执里的库 id）。解决后建议重新 pull/sync 整合其余改动。',
     parameters: {
       strategy: { type: 'string', enum: ['keep-local', 'keep-remote', 'list'], description: 'keep-local=保留本地；keep-remote=改用远端版本；list=仅报告当前 git 状态', required: true },
       files: { type: 'array', items: { type: 'string' }, description: '冲突文件名数组（来自 pull 返回的 conflictFiles；list 时忽略）' },
@@ -327,7 +365,7 @@ export function gitResolveTool(env: ToolEnv) {
       }
       const fetched = await deps.git.fetch(dir)
       if (!fetched.ok) {
-        return { ok: false, action: 'keep-remote', message: `fetch 失败（可能未配置 git.remote）：${fetched.message}` }
+        return { ok: false, action: 'keep-remote', message: `fetch 失败（仓库可能既没有 origin、也没配 git.remote）：${fetched.message}` }
       }
       const checked = await deps.git.checkoutFetchHead(dir, files)
       if (!checked.ok) {

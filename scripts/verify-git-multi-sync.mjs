@@ -10,17 +10,25 @@
  *   4. 没配 `git.remote` 的库要被**列出来**（"同步完成"不能读成"全都同步了"）；
  *   5. 一个可同步的库都没有时 `ok:false`（README 与 verify-tools 都承诺
  *      "push 没有 remote = 失败"）；
- *   6. 排干失败、以及每个仓库的冲突文件，都要出现在回执里（模型据此决定下一步）。
+ *   6. 排干失败、以及每个仓库的冲突文件，都要出现在回执里（模型据此决定下一步）；
+ *   7. 「有 remote」= **`git.remote` 或该库所在仓库自己的 `origin`**（v0.30.58，
+ *      作者 2026-10-09 裁定）：设置页「同步」按钮一直按仓库 origin 走，工具却要求显式配置
+ *      —— 同一个问题两个答案，用户看到的却是「没有任何知识库配置了 git.remote」。回落只在
+ *      「没配 **且** 真的在 git 仓库里」时发生（不在仓库里就不该白跑一次 `git`）；
+ *   8. 回执要写出**用的是哪个远端、以及它从哪来**（config / origin），且 URL 里的凭据
+ *      必须先剥掉 —— `git.remote` 可能带 PAT，`/admin/state` 对同一个值打码。
  *
- * 不 spawn TW、不碰真 git：用假 deps 直接驱动 `registerTiddlywikiTools()` 注册出来的
- * 那个工具（顺便证明注册路径本身能被这样驱动）。
+ * 不 spawn TW、不碰真 git：① 用假 deps 驱动 `registerTiddlywikiTools()` 注册出来的那个工具
+ * （顺便证明注册路径本身能被这样驱动）；② 用假 farm + 假 GitFace 驱动 `createGitLayer()`
+ * 的 `gitTargets()` —— 第 7 条只活在那里，工具层的假 targets 绕不过它。
  *
  *   node scripts/verify-git-multi-sync.mjs
  *
  * @module dsh-tiddlywiki/scripts/verify-git-multi-sync
  */
 import assert from 'node:assert/strict'
-import { GitConflictStateError, registerTiddlywikiTools } from '../lib/index.js'
+import { resolve } from 'node:path'
+import { GitConflictStateError, createGitLayer, registerTiddlywikiTools } from '../lib/index.js'
 
 let failures = 0
 async function test(name, fn) {
@@ -80,15 +88,18 @@ function makeDeps({ targets, pullResult = () => ({ ok: true, message: 'up to dat
   return { env, deps, calls }
 }
 
-const T = (id, label, dir, repoRoot, remote) => ({ id, label, dir, repoRoot, remote, branch: 'main', running: true })
+const T = (id, label, dir, repoRoot, remote, remoteSource = remote.length > 0 ? 'config' : 'none') =>
+  ({ id, label, dir, repoRoot, remote, remoteSource, branch: 'main', running: true })
 
 await test('一个仓库只同步一次；多库共用仓库时逐库标注；没配 remote 的库被列出来', async () => {
   const { env, calls } = makeDeps({
     targets: [
       T('work', '工作', '/w/work', '/repo/shared', 'https://example.invalid/shared.git'),
       T('personal', '个人', '/w/personal', '/repo/shared', 'https://example.invalid/shared.git'),
-      T('books', '书籍', '/w/books', '/repo/books', 'https://example.invalid/books.git'),
+      // v0.30.58：这个库没配 git.remote，remote 来自仓库自己的 origin
+      T('books', '书籍', '/w/books', '/repo/books', 'https://example.invalid/books.git', 'origin'),
       T('scratch', '草稿', '/w/scratch', '/repo/scratch', ''),
+      T('loose', '裸目录', '/w/loose', undefined, ''),
     ],
   })
   const { sync } = toolsFrom(env.deps)
@@ -103,10 +114,13 @@ await test('一个仓库只同步一次；多库共用仓库时逐库标注；�
   const shared = result.repos.find((r) => r.root === '/repo/shared')
   assert.deepEqual(shared.wikis, ['工作', '个人'], '共用一个仓库的两个库都要出现在该仓库名下')
   assert.deepEqual(shared.wikiIds, ['work', 'personal'], '回执要给出库 id（git_resolve 的 wiki 参数要用）')
-  assert.equal(result.skipped?.length, 1, '没配 git.remote 的库必须被列出，而不是静默略过')
+  assert.equal(result.skipped?.length, 2, '同步不了的库必须被列出，而不是静默略过')
   assert.match(result.skipped[0], /草稿.*git\.remote/)
+  assert.match(result.skipped[1], /裸目录.*不在 git 仓库里/, '两种跳过原因要分得清：有仓库但没远端 ≠ 根本不在仓库里')
   const text = sync.output.render({ action: 'sync' }, result)[0].text
   assert.match(text, /库 工作、个人 @ \/repo\/shared/, `回执要逐仓库标注库名与仓库：\n${text}`)
+  assert.match(text, /远端 https:\/\/example\.invalid\/shared\.git，来自 git\.remote 配置/, `配了 remote 要说清来源：\n${text}`)
+  assert.match(text, /远端 https:\/\/example\.invalid\/books\.git，自动识别自仓库 origin/, `自动识别的 remote 必须显形（否则"推到了我没填过的远端"是静默的）：\n${text}`)
 })
 
 await test('一个仓库失败不影响其余仓库（且总 ok=false、点名是哪个仓库）', async () => {
@@ -187,6 +201,118 @@ await test('git_resolve：多库各有仓库时必须能按 wiki id 指定（并
   assert.deepEqual(calls.status, ['/w/books'], '必须落在 books 那个仓库，而不是会话作用域的库')
   assert.equal(listed.repo, '/repo/books')
   await assert.rejects(() => resolve.execute({ strategy: 'list', wiki: 'nope' }, {}), /未知的知识库/)
+})
+
+await test('跳过原因分得清：有仓库但没远端 ≠ 根本不在 git 仓库里', async () => {
+  const { env } = makeDeps({
+    targets: [
+      T('scratch', '草稿', '/w/scratch', '/repo/scratch', ''),
+      T('loose', '裸目录', '/w/loose', undefined, ''),
+    ],
+  })
+  const { sync } = toolsFrom(env.deps)
+  const result = await sync.execute({ action: 'push' }, {})
+  assert.equal(result.ok, false)
+  assert.match(result.skipped[0], /草稿（未配 git\.remote，仓库也没有 origin）/)
+  assert.match(result.skipped[1], /裸目录（不在 git 仓库里）/)
+  assert.match(result.message, /git\.remote/, `空目标时要告诉用户两条出路（填 remote / 给仓库加 origin）：${result.message}`)
+})
+
+await test('回执里的远端必须剥掉凭据（git.remote 可能带 PAT，/admin/state 对同一个值打码）', async () => {
+  const { env } = makeDeps({
+    targets: [T('work', '工作', '/w/work', '/repo/shared', 'https://user:tok3n@example.invalid/shared.git')],
+  })
+  const { sync } = toolsFrom(env.deps)
+  const result = await sync.execute({ action: 'sync' }, {})
+  const text = sync.output.render({ action: 'sync' }, result)[0].text
+  assert.doesNotMatch(text, /tok3n/, `回执不许把远端里的凭据带进模型上下文：\n${text}`)
+  assert.match(text, /https:\/\/example\.invalid\/shared\.git/)
+})
+
+// ── gitTargets()：v0.30.58 的回落规则（假 farm + 假 GitFace，不 spawn 任何东西）──
+/**
+ * `gitTargets()` 只活在 `createGitLayer()` 里，工具层的假 targets 绕不过它，
+ * 所以这里直接驱动工厂：`roots[dir]` 决定该文件夹在不在仓库里，`origins[dir]`
+ * 是 `git remote get-url origin` 会答的东西。
+ */
+function gitLayer({ wikis, configFor = () => ({}), roots = {}, origins = {}, baseRemote = '' }) {
+  const calls = { originOf: [] }
+  /**
+   * `entryPath()` resolves through `node:path`, so the folders it hands out are
+   * PLATFORM-native (`C:\w\work` on Windows, `/w/work` on Linux) — key the fake
+   * maps the same way instead of assuming forward slashes. Otherwise this gate
+   * passes on Linux and fails on Windows for a reason unrelated to the rule.
+   */
+  const rmap = new Map(Object.entries(roots).map(([k, v]) => [resolve(k), v]))
+  const omap = new Map(Object.entries(origins).map(([k, v]) => [resolve(k), v]))
+  const base = { note: { tag: 'note', workspaceMark: true }, git: { autoCommit: true, debounceMs: 60000, remote: baseRemote, branch: 'main' } }
+  const git = {
+    repoRoot: async (dir) => rmap.get(dir),
+    originOf: async (dir) => { calls.originOf.push(dir); return omap.get(dir) ?? '' },
+  }
+  const farm = {
+    registry: { wikis: wikis.map((w) => ({ id: w.id, label: w.label, root: w.dir, name: '.', agentVisible: true, autostart: false })) },
+    runtime: (id) => {
+      const cfg = configFor(id)
+      return cfg === undefined ? undefined : { eff: () => cfg }
+    },
+  }
+  const layer = createGitLayer({
+    git,
+    farm: () => farm,
+    defaultInstance: () => undefined,
+    baseShape: () => base,
+    gitConfig: () => base.git,
+    noteConfig: () => base.note,
+    defaultPath: () => '/w/work',
+    registryFile: () => '/w/wikis.json',
+  })
+  return { layer, calls }
+}
+
+await test('gitTargets：没配 git.remote 就回落到仓库自己的 origin（且只在"真在仓库里"时才去问）', async () => {
+  const { layer, calls } = gitLayer({
+    wikis: [
+      { id: 'work', label: '工作', dir: '/w/work' },
+      { id: 'personal', label: '个人', dir: '/w/personal' },
+      { id: 'books', label: '书籍', dir: '/w/books' },
+      { id: 'loose', label: '裸目录', dir: '/w/loose' },
+    ],
+    configFor: (id) => (id === 'work' ? { git: { remote: 'https://example.invalid/typed.git' } } : {}),
+    roots: { '/w/work': '/repo/shared', '/w/personal': '/repo/shared', '/w/books': '/repo/books' },
+    origins: {
+      '/w/work': 'https://example.invalid/repo-origin.git',
+      '/w/personal': 'https://example.invalid/repo-origin.git',
+      '/w/books': 'https://example.invalid/books.git',
+    },
+  })
+  const targets = await layer.gitTargets()
+  const by = (id) => {
+    const hit = targets.find((t) => t.id === id)
+    assert.ok(hit !== undefined, `gitTargets 少了 ${id}`)
+    return hit
+  }
+  assert.equal(by('work').remote, 'https://example.invalid/typed.git', '配了 git.remote 就以它为准（覆盖）')
+  assert.equal(by('work').remoteSource, 'config')
+  assert.equal(by('personal').remote, 'https://example.invalid/repo-origin.git', '没配就回落到仓库 origin —— 这正是"界面能同步、Agent 说没远端"的那一半')
+  assert.equal(by('personal').remoteSource, 'origin')
+  assert.equal(by('books').remoteSource, 'origin')
+  assert.equal(by('loose').remote, '', '不在 git 仓库里 ⇒ 没有可回落的东西')
+  assert.equal(by('loose').remoteSource, 'none')
+  assert.deepEqual(calls.originOf, [resolve('/w/personal'), resolve('/w/books')], '只在「没配 **且** 在仓库里」时才探 origin：work 有配置、loose 不在仓库')
+})
+
+await test('gitTargets：cordis base 的 git.remote 仍对所有库生效（来源算 config）', async () => {
+  const { layer, calls } = gitLayer({
+    wikis: [{ id: 'work', label: '工作', dir: '/w/work' }],
+    roots: { '/w/work': '/repo/shared' },
+    origins: { '/w/work': 'https://example.invalid/repo-origin.git' },
+    baseRemote: 'https://example.invalid/base.git',
+  })
+  const [target] = await layer.gitTargets()
+  assert.equal(target.remote, 'https://example.invalid/base.git', 'base 的非空 remote 仍然优先于仓库 origin')
+  assert.equal(target.remoteSource, 'config')
+  assert.deepEqual(calls.originOf, [], 'base 已经给了 remote ⇒ 不必再探仓库（零额外 git 调用）')
 })
 
 console.log(failures === 0 ? '\nGIT MULTI-SYNC CHECKS OK' : `\nGIT MULTI-SYNC CHECKS FAILED (${failures})`)

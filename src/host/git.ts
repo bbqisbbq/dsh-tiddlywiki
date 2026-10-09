@@ -138,8 +138,20 @@ export interface GitSyncTarget {
   dir: string
   /** `git rev-parse --show-toplevel` of `dir`, or undefined when it has none. */
   repoRoot?: string
-  /** Effective `git.remote` for its repository. '' = not configured → skipped. */
+  /**
+   * Effective remote of its repository: the per-wiki `git.remote` setting when
+   * set, else the repository's own `origin` (v0.30.58, author 2026-10-09).
+   * `''` = neither → the wiki is skipped (and listed in the receipt).
+   */
   remote: string
+  /**
+   * Which of the two produced {@link remote} (v0.30.58). The receipt prints it,
+   * so "we will push to a remote you never typed in" is visible instead of
+   * silent — the settings-page 「同步」 button has always worked off the
+   * repository's own `origin`, and the agent tool refusing the same repo was
+   * the surprising half (see wiki note 「同步口径」).
+   */
+  remoteSource: 'config' | 'origin' | 'none'
   branch: string
   /** Whether its TW child is currently serving (the receipt says so). */
   running: boolean
@@ -395,6 +407,21 @@ export class GitFace {
     return r.ok
       ? { ok: true, message: `已从远端检出 ${files.length} 个文件` }
       : { ok: false, message: (r.stderr.trim() || r.stdout.trim()).slice(0, 500) }
+  }
+
+  /**
+   * `origin`'s URL in `dir`, or `''` when that remote does not exist (or `dir`
+   * is not in a repository at all). v0.30.58: `gitTargets()` falls back to this
+   * when a knowledge base has no `git.remote` — the repo is the source of truth
+   * for "where would a push go", and unlike the config cache it is always
+   * current on disk (a pulled config tiddler only reaches the host on a full
+   * wiki start; see the wiki note 「同步口径」).
+   *
+   * Read-only: never adds a remote. `ensureRemote` is the writing half.
+   */
+  async originOf(dir: string): Promise<string> {
+    const r = await this.exec(['remote', 'get-url', 'origin'], { cwd: dir, timeout: QUICK_TIMEOUT_MS })
+    return r.ok ? r.stdout.trim() : ''
   }
 
   /** Ensure `origin` points at `url` (add or set-url). */

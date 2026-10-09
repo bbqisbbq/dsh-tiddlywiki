@@ -98,6 +98,19 @@ try {
     }
   })
 
+  await test('originOf：读得出仓库的 origin；没有 origin / 不在仓库里都答空串（只读，不建远端）', async () => {
+    // v0.30.58：`gitTargets()` 在没配 git.remote 时回落到这个值，所以它必须
+    // 把「没有 origin」和「不在仓库里」都答成 ''（而不是抛错/瞎猜），并且**只读**
+    // —— 写的那一半是 ensureRemote，别把两件事混在一个方法里。
+    assert.equal(await repo.originOf(books), '', '仓库没有 origin ⇒ 空串')
+    assert.equal(await repo.originOf(loose), '', '不在仓库里 ⇒ 空串，而不是抛错')
+    await git(shared, ['remote', 'add', 'origin', 'https://example.invalid/shared.git'])
+    assert.equal(await repo.originOf(work), 'https://example.invalid/shared.git', '子目录要问出它所属仓库的 origin')
+    assert.equal(await repo.originOf(personal), 'https://example.invalid/shared.git', '同一个仓库的两个库得到同一个答案')
+    assert.equal(await repo.originOf(books), '', '别的仓库加了 origin，不影响这个仓库')
+    assert.equal(await git(books, ['remote']), '', 'originOf 是只读的：不许顺手给没有 origin 的仓库加一个')
+  })
+
   await test('filesChangedBetween：说出"这次改动动了哪些路径"（决定重启哪个库）', async () => {
     await writeFile(join(shared, 'README.md'), 'x\n', 'utf8')
     await writeFile(join(work, 'only-work.txt'), 'w\n', 'utf8')
