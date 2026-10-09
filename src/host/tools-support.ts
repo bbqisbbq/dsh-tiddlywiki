@@ -505,7 +505,19 @@ export async function listTrashbin(wiki: TiddlyWebClient, renderFilter: (filter:
     return undefined
   }
   if (typeof html !== 'string') return undefined
-  const titles = html.split('|').map((title) => title.trim()).filter((title) => title.startsWith(TRASHBIN_PREFIX))
+  // Strip tags before matching: TW wraps the FIRST element of a block-level
+  // fragment in `<p>…</p>`, so the first title arrives as `<p>$:/trashbin/…`
+  // and a `startsWith` test drops exactly that one entry (v0.30.60 — it made
+  // `list` report 125 for a 126-item trash). Matching on "contains the prefix,
+  // then take from there" keeps every entry regardless of decoration.
+  const titles = html
+    .split('|')
+    .map((chunk) => {
+      const at = chunk.indexOf(TRASHBIN_PREFIX)
+      return at === -1 ? '' : chunk.slice(at)
+    })
+    .map((title) => title.replace(/<[^>]*>/g, '').trim())
+    .filter((title) => title.startsWith(TRASHBIN_PREFIX))
   // Self-check (v0.30.59): separators present but no usable title means the
   // template rendered empty — the shape a BROKEN probe takes. Reporting that as
   // an empty trash is the exact failure this function had on its first run, and
@@ -525,7 +537,12 @@ export async function listTrashbin(wiki: TiddlyWebClient, renderFilter: (filter:
       // minus the prefix, which is how that plugin stores the original name.
       const t = await wiki.get(trash)
       const of = typeof t?.fields?.[TRASHBIN_OF_FIELD] === 'string' ? t.fields[TRASHBIN_OF_FIELD] as string : trash.slice(TRASHBIN_PREFIX.length)
-      const at = typeof t?.fields?.[TRASHBIN_AT_FIELD] === 'string' ? t.fields[TRASHBIN_AT_FIELD] as string : (t?.modified ?? '')
+      // Read BOTH field names: copies written before v0.30.60 carry `trash-at`,
+      // whose value TW has already rewritten into the wiki's LOCAL date format.
+      // It still reads as a human timestamp, which beats showing nothing.
+      const iso = typeof t?.fields?.[TRASHBIN_AT_FIELD] === 'string' ? t.fields[TRASHBIN_AT_FIELD] as string : ''
+      const legacy = typeof t?.fields?.['trash-at'] === 'string' ? t.fields['trash-at'] as string : ''
+      const at = iso !== '' ? iso : (legacy !== '' ? legacy : (t?.modified ?? ''))
       return { trash, of, at }
     }))
     entries.push(...rows)

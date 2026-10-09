@@ -37,8 +37,18 @@ check('枚举探针必须输出 currentTiddler（列表项的标题本身）',
 
 // ── the split must use a delimiter that survives HTML ─────────────────────
 check('分隔符用 `|`（HTML 会把换行折成空格，按 \\n 拆会把整个列表当一行）',
-  src.includes("html.split('|')"))
+  /\.split\('\|'\)/.test(src))
 check('不得再按换行拆分片段', !src.includes("html.split('\\n')"))
+
+// ── the FIRST title arrives wrapped in <p>…</p> (TW wraps block fragments) ─
+check('必须剥掉 HTML 标签后再匹配前缀（首条带 <p> 会被裸 startsWith 丢掉）',
+  src.includes('indexOf(TRASHBIN_PREFIX)') && src.includes('replace(/<[^>]*>/g'))
+check('不得再对未剥标签的片段直接 startsWith 过滤',
+  !/\.map\(\(title\) => title\.trim\(\)\)\.filter\(\(title\) => title\.startsWith/.test(src))
+
+// ── the pre-0.30.60 field name must still be read ─────────────────────────
+check('必须同时读 trash-iso 与旧的 trash-at（旧数据只带后者，否则时间显示为空）',
+  src.includes("t?.fields?.['trash-at']") && src.includes('TRASHBIN_AT_FIELD'))
 
 // ── the self-check: separators present but no titles must THROW ───────────
 check('有分隔符却零标题时必须显式报错（否则谎报「回收站是空的」）',
