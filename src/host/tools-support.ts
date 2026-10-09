@@ -136,6 +136,7 @@ export interface DeleteResult { ok: boolean; title: string; /** true = moved to 
 export interface TrashItem { title: string; at?: string; of?: string }
 export interface TrashResult { action: string; message: string; items?: TrashItem[] }
 export interface AppendResult { ok: boolean; title: string; mode: 'append' | 'prepend'; heading: string | null; /** v0.26.6：给了 heading 时该标题是否真的定位成功（false = 未找到，文本已追加到文末）。 */ headingMatched?: boolean; created: boolean; added: number; total: number; type?: string | null; typeDefaulted?: boolean; typeChanged?: { from: string; to: string }; /** 新建时自动打上的工作区标记（v0.24.0）。 */ workspace?: string }
+export interface ReplaceResult { ok: boolean; title: string; /** 替换了几处（0 = old 没找到，未做任何改动）。 */ replaced: number; /** old 是否命中（false = 没找到原文）。 */ found: boolean; /** 替换后的正文字符数。 */ total: number; type?: string | null }
 export interface BacklinkHit { title: string; refs: number; via: 'link' | 'tag'; modified: string | null }
 export interface BacklinkResult { title: string; total: number; linkCount: number; tagCount: number; items: BacklinkHit[] }
 export interface AttachResult {

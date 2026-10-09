@@ -7,10 +7,11 @@
  * @module dsh-tiddlywiki/host/tools-notes-structure
  */
 import { defineTool } from '../sdk.ts'
+import { isBinaryType } from './tw-api.ts'
 import { assertNoConflict, buildWriteTiddler, normalizeTagArg } from './write-policy.ts'
 import { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX } from './workspace.ts'
 import { insertIntoSection, normalizeFieldsInArgs, rewriteRefs, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
-import type { AppendResult, RenameResult, ToolEnv } from './tools-support.ts'
+import type { AppendResult, RenameResult, ReplaceResult, ToolEnv } from './tools-support.ts'
 
 export function renameTool(env: ToolEnv) {
   const { deps, requireWiki } = env
@@ -239,6 +240,61 @@ export function appendTool(env: ToolEnv) {
         ...(typeDefaulted ? { typeDefaulted: true } : {}),
         ...typeChangeOf(existing, tiddler),
       }
+    },
+  })
+}
+
+export function replaceTool(env: ToolEnv) {
+  const { deps, requireWiki } = env
+  // ── tiddlywiki_replace ────────────────────────────────────────────────────
+  return defineTool({
+    name: 'tiddlywiki_replace',
+    description: '对笔记正文做**局部替换**（读全文 → 替换 → 整篇回写），用于只改笔记里的几处文字、不用整篇重写。`old` 是精确匹配的子串（原文）；`new` 是替换后的文本（传空字符串 = 删除该片段）。默认只替换**第一处**，`all: true` 替换全部出现。⚠️ 本工具内部是「读全文 → 整篇回写」，属于覆盖写入：改前请先 `tiddlywiki_get`，并把读到的 `modified` 作为 `expectedModified` 传回，否则人类在 TW 编辑器里的并发修改会被静默回滚。`old` 没找到时**不报错**，回执 `replaced: 0` 并说明未找到（别把「没命中」当「改好了」）。',
+    parameters: {
+      title: { type: 'string', description: 'tiddler 标题（精确匹配）', required: true },
+      old: { type: 'string', description: '要被替换的原文（精确匹配子串；找不到则不报错，replaced=0）', required: true },
+      new: { type: 'string', description: '替换后的文本（传空字符串表示删除该片段）', required: true },
+      all: { type: 'boolean', description: '可选：是否替换所有出现（默认 false = 只替换第一处）' },
+      expectedModified: { type: 'string', description: '可选：乐观并发保护。传 tiddlywiki_get 读到的 modified；若条目在你读取之后被改动则拒绝写入（本工具是整篇回写，这一步能防止吞掉别人的修改）' },
+      expectedRevision: { type: 'integer', description: '可选：乐观并发保护的另一种令牌——tiddlywiki_get 返回字段里的 revision' },
+      force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制替换（默认 false）' },
+    },
+    output: {
+      render: (_args, value: ReplaceResult) => {
+        if (value.found === false) {
+          return [{ type: 'text', text: `⚠️ tiddler「${value.title}」里没找到要替换的原文，未做任何改动。请先 tiddlywiki_get 读原文、确认要替换的精确子串。` }]
+        }
+        return [{ type: 'text', text: `已替换 tiddler「${value.title}」：命中 ${value.replaced} 处，现共 ${value.total} 字符。` }]
+      },
+    },
+    execute: async (args: { title: string; old: string; new: string; all?: boolean; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<ReplaceResult> => {
+      const wiki = requireWiki(sessionIdOf(exec))
+      const title = args.title.trim()
+      if (title.length === 0) throw new Error('tiddlywiki_replace: title 不能为空')
+      if (typeof args.old !== 'string' || args.old.length === 0) throw new Error('tiddlywiki_replace: old 不能为空')
+      const existing = await wiki.get(title)
+      assertNoConflict(title, existing, {
+        expectedModified: args.expectedModified,
+        expectedRevision: args.expectedRevision,
+        force: args.force,
+      })
+      if (existing === undefined) throw new Error(`tiddler「${title}」不存在（replace 只改已有笔记；新建用 tiddlywiki_put）`)
+      if (isBinaryType(typeof existing.type === 'string' ? existing.type : undefined)) {
+        throw new Error(`tiddlywiki_replace: 「${title}」是二进制附件（正文为 base64），不能做文本替换。`)
+      }
+      const base = existing.text ?? ''
+      const idx = base.indexOf(args.old)
+      if (idx === -1) {
+        return { ok: true, title, replaced: 0, found: false, total: base.length, type: typeof existing.type === 'string' ? existing.type : null }
+      }
+      const next = args.all === true
+        ? base.split(args.old).join(args.new)
+        : `${base.slice(0, idx)}${args.new}${base.slice(idx + args.old.length)}`
+      const replaced = args.all === true ? base.split(args.old).length - 1 : 1
+      const { tiddler } = buildWriteTiddler(title, next, { existing })
+      await wiki.put(tiddler)
+      deps.autoCommit()
+      return { ok: true, title, replaced, found: true, total: next.length, type: typeof tiddler.type === 'string' ? tiddler.type : null }
     },
   })
 }

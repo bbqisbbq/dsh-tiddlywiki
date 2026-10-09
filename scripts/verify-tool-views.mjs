@@ -63,8 +63,8 @@ function blockBody(source, declaration, open, close) {
 const viewKeys = [...blockBody(viewsSrc, 'const TOOL_VIEW_KEYS', '[', ']').matchAll(/'([^']+)'/g)].map((m) => m[1]).sort()
 const labelKeys = [...blockBody(viewsSrc, 'const TOOL_LABELS', '{', '}').matchAll(/^\s*(tiddlywiki_[A-Za-z_]+):/gm)].map((m) => m[1]).sort()
 
-test(`host 注册了 ${registeredUnique.length} 个工具（期望 15 个）`, () => {
-  assert.equal(registeredUnique.length, 15, `工具数变了（${registeredUnique.join(', ')}）——同步检查客户端 TOOL_VIEW_KEYS 与 AGENTS.md §2`)
+test(`host 注册了 ${registeredUnique.length} 个工具（期望 16 个）`, () => {
+  assert.equal(registeredUnique.length, 16, `工具数变了（${registeredUnique.join(', ')}）——同步检查客户端 TOOL_VIEW_KEYS 与 AGENTS.md §2`)
 })
 
 test('客户端 TOOL_VIEW_KEYS 与 host 工具名完全一致', () => {

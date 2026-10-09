@@ -33,6 +33,7 @@ const TOOL_LABELS: Record<string, () => string> = {
   tiddlywiki_put: () => t('card.toolPut'),
   tiddlywiki_batch_put: () => t('card.toolBatchPut'),
   tiddlywiki_append: () => t('card.toolAppend'),
+  tiddlywiki_replace: () => t('card.toolReplace'),
   tiddlywiki_rename: () => t('card.toolRename'),
   tiddlywiki_delete: () => t('card.toolDelete'),
   tiddlywiki_trash: () => t('card.toolTrash'),

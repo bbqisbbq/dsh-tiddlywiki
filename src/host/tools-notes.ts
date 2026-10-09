@@ -13,5 +13,5 @@
  * @module dsh-tiddlywiki/host/tools-notes
  */
 export { getTool, putTool, batchPutTool } from './tools-notes-write.ts'
-export { renameTool, appendTool } from './tools-notes-structure.ts'
+export { renameTool, appendTool, replaceTool } from './tools-notes-structure.ts'
 export { deleteTool, trashTool } from './tools-notes-lifecycle.ts'

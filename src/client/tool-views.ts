@@ -49,6 +49,7 @@ function headerTitle(toolName: string, args: Record<string, unknown>): string {
     case 'tiddlywiki_get':
     case 'tiddlywiki_put':
     case 'tiddlywiki_append':
+    case 'tiddlywiki_replace':
     case 'tiddlywiki_delete':
     case 'tiddlywiki_attach':
     case 'tiddlywiki_backlinks':
@@ -116,6 +117,9 @@ function TiddlywikiToolViewBody(props: ToolCallOwnerProps): React.ReactNode {
     case 'tiddlywiki_append':
       // 增量写入同样改变正文（追加/前插/段落写入）。
       return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: t('card.subAppended'), fresh: true })
+    case 'tiddlywiki_replace':
+      // 局部替换也改变正文。
+      return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.title), subtitle: t('card.subReplaced'), fresh: true })
     case 'tiddlywiki_rename':
       return React.createElement(TiddlerBodyCard, { toolName: name, title: str(args.newTitle), subtitle: t('card.subRenamed', { old: str(args.oldTitle) }), fresh: true })
     case 'tiddlywiki_delete':
@@ -154,6 +158,7 @@ const TOOL_VIEW_KEYS: readonly string[] = [
   'tiddlywiki_put',
   'tiddlywiki_batch_put',
   'tiddlywiki_append',
+  'tiddlywiki_replace',
   'tiddlywiki_rename',
   'tiddlywiki_delete',
   'tiddlywiki_trash',

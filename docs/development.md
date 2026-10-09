@@ -107,7 +107,7 @@ src/
 │   ├── seeds.ts        # 统一 seed 注册表（13 项，三层：核心/起步/可选）
 │   ├── prompt.ts       # 系统提示词（v0.21.0）：slim/full 两种形态 + extra/override，full 的目录由工具注册表实时生成；v0.22.7 起草稿预览；v0.29.0 slim 去重到 ~1.0KB
 │   ├── seed-*.ts       # 各 seed 实现（bundle/首页/ui-styles 常量脚本生成；starter-docs/menubar/clip-bridge 手工维护）
-│   └── tools.ts        # 15 个 tiddlywiki_* 工具的**装配与注册顺序**；实现分 tools-{support,read,notes,attach,git}.ts（v0.28.8）
+│   └── tools.ts        # 16 个 tiddlywiki_* 工具的**装配与注册顺序**；实现分 tools-{support,read,notes,attach,git}.ts（v0.28.8）
 └── client/             # 浏览器半部
     ├── index.ts        # client 入口（inject ['slots']，纯 DOM，永不 throw）
     ├── endpoints.ts    # 客户端同源端点常量 + describeSyncResult（同步回执唯一实现，v0.22.8）

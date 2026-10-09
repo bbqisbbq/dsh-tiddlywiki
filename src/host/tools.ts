@@ -4,7 +4,7 @@
  * new tool is just one more `defineTool` in the array — index.ts never changes.
  *
  * Toolset (v0.19):
- *   search / get / put / batch_put / append / rename / delete / trash /
+ *   search / get / put / batch_put / append / replace / rename / delete / trash /
  *   backlinks / attach / lint / recent / list_tags / git_sync / git_resolve
  *
  * RENDER CONTRACT (design doc §4.3): the registry feeds `output.render(args,
@@ -18,7 +18,7 @@
 import { requireWiki, sessionIdOf } from './tools-support.ts'
 import type { RegistrableTool, ToolEnv, ToolScope, ToolsCtx, ToolsDeps } from './tools-support.ts'
 import { backlinksTool, lintTool, listTagsTool, recentTool, searchTool } from './tools-read.ts'
-import { appendTool, batchPutTool, deleteTool, getTool, putTool, renameTool, trashTool } from './tools-notes.ts'
+import { appendTool, batchPutTool, deleteTool, getTool, putTool, renameTool, replaceTool, trashTool } from './tools-notes.ts'
 import { attachTool } from './tools-attach.ts'
 import { gitResolveTool, gitSyncTool } from './tools-git.ts'
 
@@ -119,6 +119,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   register(putTool(env))
   register(batchPutTool(env))
   register(appendTool(env))
+  register(replaceTool(env))
   register(renameTool(env))
   register(deleteTool(env))
   register(trashTool(env))

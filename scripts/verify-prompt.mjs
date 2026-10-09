@@ -89,8 +89,8 @@ test('默认形态是 slim 且与 section 名一致', () => {
   assert.equal(normalizePromptMode('full'), 'full')
 })
 
-test('工具注册表被真实填充（15 个 tiddlywiki_* 工具）', () => {
-  assert.equal(tools.length, 15, `工具数应为 15，实际 ${tools.length}`)
+test('工具注册表被真实填充（16 个 tiddlywiki_* 工具）', () => {
+  assert.equal(tools.length, 16, `工具数应为 16，实际 ${tools.length}`)
   for (const t of tools) {
     assert.ok(t.name.startsWith('tiddlywiki_'), `工具名异常：${t.name}`)
     assert.ok(t.params.length > 0, `${t.name} 未采集到参数`)
@@ -112,7 +112,7 @@ test('slim 不含参数清单（无第二份可漂移的 schema 副本）', () =
 test('slim 有长度预算（防止再次膨胀成工具手册）', () => {
   // 1800 → 2100（v0.24.0）→ 1200（v0.29.0，见 SLIM_BUDGET 的注释）。
   // 预算的作用只是「别偷偷长回工具手册」——真正的守门是上面两条
-  // 「slim 不含参数清单」+ 下面「关键约定必须在场」：谁想把 15 个工具的签名
+  // 「slim 不含参数清单」+ 下面「关键约定必须在场」：谁想把 16 个工具的签名
   // 抄回来，签名断言先红，光靠预算也藏不住（一份签名目录 ≫ 300 字符）。
   // 因此这里只做**窄幅**调整；下一次要动它时请先证明规则不是冗余。
   const limit = SLIM_BUDGET
