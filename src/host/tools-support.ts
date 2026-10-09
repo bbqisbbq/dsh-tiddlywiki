@@ -41,6 +41,18 @@ export interface ToolScope {
   /** Id + display label of the resolved wiki. */
   id?: string
   label?: string
+  /**
+   * Absolute folder of the resolved wiki (v0.30.62).
+   *
+   * The git tools need a DIRECTORY, not a client: draining the write queue means
+   * waiting for a file to appear in `<dir>/tiddlers`, and resolving a conflict is
+   * a pure disk operation that works while the wiki is stopped. Both used to go
+   * through `ToolsDeps.wikiPath()`, which resolved to the plugin's DEFAULT wiki —
+   * so a session scoped elsewhere drained the wrong folder (a guaranteed 12s
+   * timeout + a false `drainFailed`) and resolved conflicts in the wrong repo.
+   * Present even for a registered-but-stopped wiki (the folder still exists).
+   */
+  dir?: string
   /** Actionable sentence for the tool error when there is no client. */
   reason?: string
   /** More than one visible wiki ⇒ results must name the one they used. */
@@ -58,7 +70,6 @@ export interface ToolsDeps {
    */
   scope: (sessionId: string | undefined) => ToolScope
   git: GitFace
-  wikiPath: () => string
   /** Debounced auto-commit touch (fires after our writes). */
   autoCommit: () => void
   /**
@@ -377,6 +388,16 @@ export const TRASHBIN_OF_FIELD = 'trash-of'
  * field leaves the machine-readable value intact for the receipt.
  */
 export const TRASHBIN_AT_FIELD = 'trash-iso'
+/**
+ * The PRE-v0.30.60 spelling of {@link TRASHBIN_AT_FIELD}.
+ *
+ * Copies written before the rename (and the built-in snapshot format, which is
+ * still written with this name) carry it, and TW has already re-serialized it into
+ * the wiki's LOCAL date format. Read it as a fallback when LISTING, and delete it
+ * when RESTORING (v0.30.62) — deleting only the new name left a stray field
+ * describing the note's own deletion on the recovered note.
+ */
+export const TRASHBIN_LEGACY_AT_FIELD = 'trash-at'
 
 /** The trashbin-format copy title that holds one soft-deleted tiddler. */
 export function trashbinTitleFor(title: string): string {
@@ -480,49 +501,79 @@ export async function writeTrashIndex(wiki: TiddlyWebClient, entries: TrashIndex
 export interface TrashbinEntry { trash: string; of: string; at: string }
 
 /**
+ * Markup the probe wraps EACH title in (v0.30.62).
+ *
+ * WHY MARKUP, NOT A CHARACTER: the fragment is HTML, and TW escapes `<`, `>`, `&`
+ * and `"` inside a title (`<` arrives as `&lt;`) but **NOT** `|`. The v0.30.60
+ * separator therefore silently truncated any copy whose original title contained
+ * one — `<$text text="a|b"/>` renders back `a|b` (verified), so `$:/trashbin/a|b`
+ * was listed as `$:/trashbin/a` and could never be restored. A rendered `<li>` can
+ * only come from OUR markup, because a title's `<` is always escaped.
+ */
+export const TRASHBIN_ITEM_TAG = '<li>'
+
+/**
+ * The wikitext the host renders to enumerate trashbin copies.
+ *
+ * Pure and exported so `scripts/verify-trashbin-probe.mjs` can pin its SHAPE
+ * without a TW child.
+ *
+ * NO `variable="ignore"`: that name RESERVES `currentTiddler`, so every widget in
+ * the body binds to nothing and the fragment comes back as N empty items — which
+ * reads as「回收站是空的」instead of as an error (v0.30.59's first live run).
+ */
+export function trashbinProbeWikitext(): string {
+  return `<$list filter="[tag[${TRASHBIN_TAG}]sort[title]]">${TRASHBIN_ITEM_TAG}<$text text=<<currentTiddler>>/></li></$list>`
+}
+
+/**
+ * Undo the entities TW's HTML renderer emits (`$tw.utils.htmlEncode`: `& < > "`).
+ *
+ * `&amp;` LAST on purpose: a title holding the literal text `&lt;` is rendered as
+ * `&amp;lt;` (the `&` is encoded first), so decoding `&lt;` before `&amp;` would
+ * corrupt it while decoding it after restores the original exactly.
+ */
+function unescapeTwHtml(text: string): string {
+  return text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+}
+
+/**
+ * Pull the copy titles out of one probe fragment. Pure + exported so the guard can
+ * feed it synthetic fragments (a `<p>`-wrapped first item, a title containing
+ * `|`, an escaped `<`, junk before the first item) and assert the behaviour.
+ */
+export function parseTrashbinFragment(html: string): string[] {
+  return html
+    .split(TRASHBIN_ITEM_TAG)
+    .map((chunk) => unescapeTwHtml(chunk.replace(/<[^>]*>/g, '').trim()))
+    .filter((title) => title.startsWith(TRASHBIN_PREFIX))
+}
+
+/**
  * Enumerate trashbin-format copies by asking the TW service to run the filter.
  *
  * Returns `undefined` when the wiki cannot answer (service down, /render not
- * seeded yet) so callers can fall back to the legacy index instead of
- * reporting an empty trash.
+ * seeded yet) so callers can fall back to the legacy index instead of reporting
+ * an empty trash.
  */
 export async function listTrashbin(wiki: TiddlyWebClient, renderFilter: (filter: string) => Promise<string | undefined>): Promise<TrashbinEntry[] | undefined> {
-  // NO `variable="ignore"` here: that RESERVES `currentTiddler` (setting a
-  // list variable to that name makes it unavailable inside the body), so every
-  // `<$view>`/`<$text>` in the loop bound to nothing and the fragment came back
-  // as N separators with zero titles — which reads as「回收站是空的」rather
-  // than as an error (v0.30.59, first run).
-  //
-  // Separator is `|`, not a newline: the fragment is HTML, where newlines are
-  // collapsed to spaces, so splitting on `\n` would yield ONE line holding
-  // every title — which then fails the prefix test just as silently. `|` cannot
-  // occur inside a title produced by `<$view>` (TW escapes it to `&#124;`).
-  const wikitext = `<$list filter="[tag[${TRASHBIN_TAG}]sort[title]]"><$text text=<<currentTiddler>>/>|</$list>`
   let html: string | undefined
   try {
-    html = await renderFilter(wikitext)
+    html = await renderFilter(trashbinProbeWikitext())
   } catch {
     return undefined
   }
   if (typeof html !== 'string') return undefined
-  // Strip tags before matching: TW wraps the FIRST element of a block-level
-  // fragment in `<p>…</p>`, so the first title arrives as `<p>$:/trashbin/…`
-  // and a `startsWith` test drops exactly that one entry (v0.30.60 — it made
-  // `list` report 125 for a 126-item trash). Matching on "contains the prefix,
-  // then take from there" keeps every entry regardless of decoration.
-  const titles = html
-    .split('|')
-    .map((chunk) => {
-      const at = chunk.indexOf(TRASHBIN_PREFIX)
-      return at === -1 ? '' : chunk.slice(at)
-    })
-    .map((title) => title.replace(/<[^>]*>/g, '').trim())
-    .filter((title) => title.startsWith(TRASHBIN_PREFIX))
-  // Self-check (v0.30.59): separators present but no usable title means the
-  // template rendered empty — the shape a BROKEN probe takes. Reporting that as
-  // an empty trash is the exact failure this function had on its first run, and
-  // it is indistinguishable from「真的空的」for the caller. Fail loudly instead.
-  if (titles.length === 0 && html.includes('|')) {
+  const titles = parseTrashbinFragment(html)
+  // Self-check (v0.30.59): items rendered but none usable means the probe is
+  // broken — the shape a broken template takes. Reporting that as an empty trash
+  // is the exact failure this function had on its first run, and it is
+  // indistinguishable from「真的空的」for the caller. Fail loudly instead.
+  if (titles.length === 0 && html.includes(TRASHBIN_ITEM_TAG)) {
     throw new Error('tiddlywiki_trash: 回收站列表渲染结果异常——分隔符存在但没有任何可识别的条目标题（TW 的 <$list> 上下文或转义行为与预期不符）。已中止，未改动任何数据。')
   }
   const entries: TrashbinEntry[] = []
@@ -541,7 +592,7 @@ export async function listTrashbin(wiki: TiddlyWebClient, renderFilter: (filter:
       // whose value TW has already rewritten into the wiki's LOCAL date format.
       // It still reads as a human timestamp, which beats showing nothing.
       const iso = typeof t?.fields?.[TRASHBIN_AT_FIELD] === 'string' ? t.fields[TRASHBIN_AT_FIELD] as string : ''
-      const legacy = typeof t?.fields?.['trash-at'] === 'string' ? t.fields['trash-at'] as string : ''
+      const legacy = typeof t?.fields?.[TRASHBIN_LEGACY_AT_FIELD] === 'string' ? t.fields[TRASHBIN_LEGACY_AT_FIELD] as string : ''
       const at = iso !== '' ? iso : (legacy !== '' ? legacy : (t?.modified ?? ''))
       return { trash, of, at }
     }))

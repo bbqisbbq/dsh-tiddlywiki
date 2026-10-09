@@ -89,8 +89,3 @@ export function t(key: string, vars?: Record<string, string | number>): string {
     return value === undefined ? match : String(value)
   })
 }
-
-/** All keys (default language) — the gate and the settings preview use it. */
-export function messageKeys(): string[] {
-  return Object.keys(MESSAGES[DEFAULT_LANG] ?? {}).sort()
-}

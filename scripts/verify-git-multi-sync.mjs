@@ -27,8 +27,11 @@
  * @module dsh-tiddlywiki/scripts/verify-git-multi-sync
  */
 import assert from 'node:assert/strict'
-import { resolve } from 'node:path'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path, { resolve } from 'node:path'
 import { GitConflictStateError, createGitLayer, registerTiddlywikiTools } from '../lib/index.js'
+import { FLUSH_PROBE_FILE_HINT } from '../src/host/seeds-flush.ts'
 
 let failures = 0
 async function test(name, fn) {
@@ -55,13 +58,16 @@ function toolsFrom(deps) {
 
 /**
  * A fake host: spies on every git call, plus a target list.
- * `requireWiki` THROWS by default → the tool's pre-restart drain fails → the
- * receipt must say so (and the test stays fast: no 12s flush timeout).
+ *
+ * `sessionScope` is exactly what the tools see for THIS session (v0.30.62): the
+ * git tools take BOTH the drain folder and the default `git_resolve` target from
+ * it. Left unset = no client and no folder, so the pre-restart drain cannot be
+ * proven and the receipt must say so (the test stays fast: no 12s timeout).
  */
-function makeDeps({ targets, pullResult = () => ({ ok: true, message: 'up to date' }), commitThrows = false, drainOk = false }) {
+function makeDeps({ targets, sessionScope, pullResult = () => ({ ok: true, message: 'up to date' }), commitThrows = false }) {
   const calls = { pull: [], push: [], commit: [], status: [] }
   const deps = {
-    scope: () => ({ ambiguous: false }),
+    scope: () => sessionScope ?? { ambiguous: false },
     git: {
       pull: async (dir) => { calls.pull.push(dir); return pullResult(dir) },
       push: async (dir) => { calls.push.push(dir); return { ok: true, message: 'pushed' } },
@@ -73,17 +79,15 @@ function makeDeps({ targets, pullResult = () => ({ ok: true, message: 'up to dat
       status: async (dir) => { calls.status.push(dir); return { branch: 'main', dirty: false, dirtyFiles: [], ahead: 0, behind: 0 } },
     },
     gitTargets: async () => targets,
-    wikiPath: () => '/fake/default',
     autoCommit: () => {},
     restartAffected: async () => ({ restarted: [], failed: [] }),
   }
   const env = {
     register: () => {},
     deps,
-    requireWiki: () => {
-      if (drainOk) return { put: async () => undefined, get: async () => undefined }
-      throw new Error('知识库服务未运行')
-    },
+    // The git tools no longer call this (they read `scope` instead); kept because
+    // ToolEnv requires it and a future tool may.
+    requireWiki: () => { throw new Error('知识库服务未运行') },
   }
   return { env, deps, calls }
 }
@@ -168,9 +172,30 @@ await test('排干失败必须显形（drainFailed + 回执警告），而不是
   })
   const { sync } = toolsFrom(env.deps)
   const result = await sync.execute({ action: 'sync' }, {})
-  assert.equal(result.repos[0].drainFailed, true, 'requireWiki 抛错 ⇒ 排干未确认，必须记下来')
+  assert.equal(result.repos[0].drainFailed, true, '会话作用域没有可用的 client/目录 ⇒ 排干未确认，必须记下来')
   const text = sync.output.render({ action: 'sync' }, result)[0].text
   assert.match(text, /syncer 队列/, `回执必须警告排干未确认：\n${text}`)
+})
+
+await test('git_sync：排干哨兵写进**会话作用域那个库**的 tiddlers/（旧代码看的是默认库目录 ⇒ 必然超时）', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dsh-tw-drain-'))
+  mkdirSync(path.join(dir, 'tiddlers'), { recursive: true })
+  try {
+    const client = {
+      // 哨兵的真实行为：PUT 一段唯一文本，随后由 syncer 落盘到 <dir>/tiddlers/。
+      put: async (t) => { writeFileSync(path.join(dir, 'tiddlers', `x-${FLUSH_PROBE_FILE_HINT}.tid`), t.text ?? '') },
+      get: async () => undefined,
+    }
+    const { env } = makeDeps({
+      targets: [T('books', '书籍', '/w/books', '/repo/books', 'https://example.invalid/books.git')],
+      sessionScope: { ambiguous: true, id: 'books', label: '书籍', dir, client },
+    })
+    const { sync } = toolsFrom(env.deps)
+    const result = await sync.execute({ action: 'sync' }, {})
+    assert.notEqual(result.repos[0].drainFailed, true, '探针落在会话作用域那个库里 ⇒ 必须判定排干成功')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 await test('没有任何可同步的库 → ok:false 并说明原因（不假装成功）', async () => {
@@ -201,6 +226,29 @@ await test('git_resolve：多库各有仓库时必须能按 wiki id 指定（并
   assert.deepEqual(calls.status, ['/w/books'], '必须落在 books 那个仓库，而不是会话作用域的库')
   assert.equal(listed.repo, '/repo/books')
   await assert.rejects(() => resolve.execute({ strategy: 'list', wiki: 'nope' }, {}), /未知的知识库/)
+})
+
+await test('git_resolve：不传 wiki ⇒ 落在**本会话作用域**那个库，而不是插件默认库（v0.30.62）', async () => {
+  const { env, calls } = makeDeps({
+    targets: [
+      T('work', '工作', '/w/work', '/repo/shared', 'https://example.invalid/shared.git'),
+      T('books', '书籍', '/w/books', '/repo/books', 'https://example.invalid/books.git'),
+    ],
+    sessionScope: { ambiguous: true, id: 'books', label: '书籍', dir: '/w/books' },
+  })
+  const { resolve } = toolsFrom(env.deps)
+  const listed = await resolve.execute({ strategy: 'list' }, {})
+  assert.equal(listed.ok, true)
+  assert.deepEqual(calls.status, ['/w/books'], '缺省目标必须是会话作用域那个库（旧代码会落到 deps.wikiPath() = 默认库）')
+})
+
+await test('git_resolve：会话作用域无从得知时明确报错（绝不改去动别的仓库）', async () => {
+  const { env, calls } = makeDeps({
+    targets: [T('work', '工作', '/w/work', '/repo/shared', 'https://example.invalid/shared.git')],
+  })
+  const { resolve } = toolsFrom(env.deps)
+  await assert.rejects(() => resolve.execute({ strategy: 'list' }, {}), /无法确定本会话的知识库目录/)
+  assert.deepEqual(calls.status, [], '报错前不得触碰任何仓库')
 })
 
 await test('跳过原因分得清：有仓库但没远端 ≠ 根本不在 git 仓库里', async () => {

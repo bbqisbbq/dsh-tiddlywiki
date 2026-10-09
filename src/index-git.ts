@@ -163,6 +163,10 @@ export function createGitLayer(deps: GitLayerDeps): GitLayer {
    * The clip bridge's effective config. `bridge.wiki` is OPTIONAL on the bridge's
    * own type (empty = the default wiki), so `baseShape().bridge` — where the
    * cordis block always fills it in — is exactly the fallback index.ts used.
+   *
+   * The cast states that invariant: `PluginConfigShape.bridge` is declared
+   * OPTIONAL (a malformed config tiddler may drop the group), while `baseShape()`
+   * here is always built from `ResolvedConfig`, whose bridge block is complete.
    */
   const effectiveBridge = (): BridgeConfig => defaultInstance()?.bridgeConfig() ?? (deps.baseShape().bridge as BridgeConfig)
   const effectiveWechat = (): WechatPublishConfig => normalizeWechatConfig(eff().wechat)

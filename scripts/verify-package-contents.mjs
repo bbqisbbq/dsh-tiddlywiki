@@ -51,6 +51,13 @@ const FORBIDDEN = ['lib/client.bundle.js']
 const LIB_WHITELIST = ['lib/index.js', 'lib/index.js.map', 'lib/client.js']
 /** 发布包必须**不含**的目录前缀（构建/校验脚本只服务于 git 仓库）。 */
 const FORBIDDEN_PREFIXES = ['scripts/']
+/**
+ * 工作底稿：`.gitignore` 已经声明它们不进仓库（「审计发现要么已修、要么挂在 issue
+ * 里」），但 `files` 白名单里的 `docs` 会把它们一起带上 —— v0.30.62 实测
+ * `npm pack` 的 171 项里就有 `docs/code-review-2026-09-17.md`。它们是过程文档，
+ * 不是交付物。
+ */
+const FORBIDDEN_PATTERNS = [/^docs\/code-review-.*\.md$/]
 
 let failures = 0
 async function test(name, fn) {
@@ -148,6 +155,11 @@ await test('发布包不含中间产物 lib/client.bundle.js', () => {
   for (const bad of FORBIDDEN) {
     assert.ok(!files.includes(bad), `发布包混入了中间产物 ${bad}（它是 tsdown 的 cjs+minify 中间件，应由 wrap-client.mjs 包成 lib/client.js 后丢弃）`)
   }
+})
+
+await test('发布包不含工作底稿（docs/code-review-*.md 只是本地审计文档）', () => {
+  const stray = files.filter((f) => FORBIDDEN_PATTERNS.some((re) => re.test(f)))
+  assert.deepEqual(stray, [], `发布包混入了工作底稿：${stray.join(', ')}（package.json files 里的否定式丢了？）`)
 })
 
 await test('发布包不含 scripts/（构建与校验脚本只服务于 git 仓库）', () => {

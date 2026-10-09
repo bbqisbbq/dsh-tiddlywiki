@@ -8,7 +8,7 @@
  */
 import { defineTool } from '../sdk.ts'
 import { assertNoConflict, buildWriteTiddler } from './write-policy.ts'
-import { TRASH_INDEX_TITLE, TRASH_PREFIX, TRASHBIN_AT_FIELD, TRASHBIN_OF_FIELD, TRASHBIN_TAG, TRASHBIN_PREFIX, TrashIndexUnavailableError, hasTrashbin, listTrashbin, readTrashIndex, sessionIdOf, trashTitleFor, trashbinTitleFor, writeTrashIndex } from './tools-support.ts'
+import { TRASH_INDEX_TITLE, TRASH_PREFIX, TRASHBIN_AT_FIELD, TRASHBIN_LEGACY_AT_FIELD, TRASHBIN_OF_FIELD, TRASHBIN_TAG, TRASHBIN_PREFIX, TrashIndexUnavailableError, hasTrashbin, listTrashbin, readTrashIndex, sessionIdOf, trashTitleFor, trashbinTitleFor, writeTrashIndex } from './tools-support.ts'
 import type { DeleteResult, ToolEnv, TrashIndexEntry, TrashResult } from './tools-support.ts'
 
 export function deleteTool(env: ToolEnv) {
@@ -115,13 +115,16 @@ export function deleteTool(env: ToolEnv) {
       if (!index.readOk || index.corrupted) throw new TrashIndexUnavailableError()
       // The snapshot is a COPY: it keeps the original's created/modified (they
       // describe the note — deleting must not rewrite its history, and a later
-      // restore must bring the note back with the same times). `trash-at` records
-      // when it was deleted. buildWriteTiddler refreshes `modified` to now (it
-      // cannot tell a copy from an edit), so put the original back explicitly.
+      // restore must bring the note back with the same times). `TRASHBIN_AT_FIELD`
+      // records when it was deleted. buildWriteTiddler refreshes `modified` to now
+      // (it cannot tell a copy from an edit), so put the original back explicitly.
       const { tiddler: trashTiddler } = buildWriteTiddler(trashTitle, existing.text ?? '', { existing })
       trashTiddler.created = existing.created ?? trashTiddler.created
       trashTiddler.modified = existing.modified ?? trashTiddler.modified
-      await wiki.put({ ...trashTiddler, 'trash-of': args.title, 'trash-at': at })
+      // Same field names as the trashbin format, and the same constant as every
+      // other writer (v0.30.62): `*-at` fields get re-serialized by TW into the
+      // wiki's local format, which is why the name moved to `trash-iso`.
+      await wiki.put({ ...trashTiddler, [TRASHBIN_OF_FIELD]: args.title, [TRASHBIN_AT_FIELD]: at })
       await wiki.delete(args.title)
       index.entries.push({ trash: trashTitle, of: args.title, at })
       await writeTrashIndex(wiki, index.entries)
@@ -154,9 +157,12 @@ export function trashTool(env: ToolEnv) {
       // v0.30.59: the trashbin format is self-describing, so it needs no index —
       // enumerate it through the filter ENGINE (the HTTP listing endpoint
       // cannot see `$:/` titles; see the module docblock in tools-support.ts).
-      // The legacy index is still READ so a wiki that has both keeps working.
+      // BOTH formats are read (v0.30.62): the tool's contract is「两种回收站格式
+      // 都认」, and an EMPTY trashbin probe used to hide every legacy entry — on a
+      // wiki that has trashbin installed but nothing in its bin, `list` reported
+      // 共 0 条 while the built-in index still held entries (reproduced live).
       const trashbin = await listTrashbin(wiki, (wikitext) => wiki.render({ text: wikitext, type: 'text/vnd.tiddlywiki' }))
-      const index = trashbin !== undefined ? { readOk: true, corrupted: false, entries: [] as TrashIndexEntry[] } : await readTrashIndex(wiki)
+      const index = await readTrashIndex(wiki)
       // A failed/corrupt index must never be treated as「回收站是空的」: `empty`
       // would then report success while doing nothing, and `restore` would claim
       // the note was never trashed (v0.19.5).
@@ -164,11 +170,12 @@ export function trashTool(env: ToolEnv) {
       if (index.corrupted) {
         throw new Error('回收站索引已损坏（JSON 解析失败），本次操作已中止以免误删记录；可手动检查 $:/dsh-tiddlywiki/trash-index 后重试。')
       }
+      const legacyEntries = index.entries
       // Unified view: trashbin copies first (new format), legacy index entries
       // after (old format) — a wiki mid-migration sees both, exactly once each.
       const all: TrashIndexEntry[] = [
         ...(trashbin ?? []).map((e) => ({ trash: e.trash, of: e.of, at: e.at })),
-        ...index.entries,
+        ...legacyEntries,
       ]
       const indexed = all
       if (args.action === 'list') {
@@ -184,7 +191,7 @@ export function trashTool(env: ToolEnv) {
         // Only rewrite the legacy index when one actually exists: on a wiki that
         // never used it, `writeTrashIndex` would CREATE an empty index file —
         // a spurious `$:/` tiddler where the design says there is none.
-        if (index.entries.length > 0 || trashbin === undefined) await writeTrashIndex(wiki, [])
+        if (legacyEntries.length > 0 || trashbin === undefined) await writeTrashIndex(wiki, [])
         deps.autoCommit()
         return { action: 'empty', message: `已清空 ${indexed.length} 条` }
       }
@@ -192,11 +199,16 @@ export function trashTool(env: ToolEnv) {
       if (wanted.length === 0) throw new Error('tiddlywiki_trash: action=restore 需要 title')
       const match = indexed.slice().reverse().find((entry) => entry.of === wanted || entry.trash === wanted)
       if (match === undefined) throw new Error(`回收站里没有「${wanted}」`)
+      // Which format did the match come from? Only the LEGACY index needs
+      // bookkeeping (pruning a restored/stale record); a trashbin copy IS its own
+      // record. Keyed off the match rather than off `trashbin === undefined`, so a
+      // wiki holding both formats still prunes the index correctly (v0.30.62).
+      const fromIndex = legacyEntries.some((entry) => entry.trash === match.trash)
       const stored = await wiki.get(match.trash)
       if (stored === undefined) {
         // Stale entry (the tiddler was removed by hand): prune and report. Only
         // the legacy index can go stale — a trashbin copy IS the record.
-        if (trashbin === undefined) await writeTrashIndex(wiki, index.entries.filter((entry) => entry.trash !== match.trash))
+        if (fromIndex) await writeTrashIndex(wiki, legacyEntries.filter((entry) => entry.trash !== match.trash))
         throw new Error(`回收站条目「${match.trash}」已不存在（索引已清理）`)
       }
       if ((await wiki.get(match.of)) !== undefined) {
@@ -212,8 +224,13 @@ export function trashTool(env: ToolEnv) {
       const { tiddler: restored } = buildWriteTiddler(match.of, stored.text ?? '', { existing: stored })
       restored.created = stored.created ?? restored.created
       restored.modified = stored.modified ?? restored.modified
+      // BOTH spellings of the deletion timestamp: copies written before v0.30.60
+      // carry `trash-at`, and deleting only the current name left a stray field
+      // describing the note's own deletion ON the recovered note (v0.30.62 —
+      // reproduced end to end by the guard).
       delete restored[TRASHBIN_OF_FIELD]
       delete restored[TRASHBIN_AT_FIELD]
+      delete restored[TRASHBIN_LEGACY_AT_FIELD]
       // A trashbin copy carries ONE tag — the trashbin marker — which is an
       // artifact of the copy, not of the note. Restoring it verbatim would hand
       // the recovered note a `$:/tags/trashbin` tag, and the next listing would
@@ -228,7 +245,7 @@ export function trashTool(env: ToolEnv) {
       await wiki.delete(match.trash)
       // Only touch the legacy index when this restore came from it (a trashbin
       // copy needs no index bookkeeping at all).
-      if (trashbin === undefined) await writeTrashIndex(wiki, index.entries.filter((entry) => entry.trash !== match.trash))
+      if (fromIndex) await writeTrashIndex(wiki, legacyEntries.filter((entry) => entry.trash !== match.trash))
       deps.autoCommit()
       return { action: 'restore', message: `已恢复「${match.of}」`, items: [] }
     },

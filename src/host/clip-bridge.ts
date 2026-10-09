@@ -101,6 +101,12 @@ export interface ClipBridgeDeps {
    * indistinguishable from "it went to the wrong one".
    */
   targetWiki?(): string | undefined
+  /**
+   * Why the CONFIGURED target wiki cannot take a clip right now (v0.30.62), or
+   * undefined. A registered-but-stopped target is a named 503 — never a silent
+   * fallback into a different knowledge base.
+   */
+  targetProblem?(): string | undefined
   /** Optional logger (console.info prefixed by the caller). */
   log?(message: string): void
 }
@@ -338,11 +344,20 @@ export class ClipBridge {
     }
     const { title, url, text, tags, source, images } = parsed.value
 
+    // A configured-but-stopped target is refused HERE, before anything is written
+    // (v0.30.62): the caller gets the wiki's name and what to do with it, instead
+    // of a clip landing in the default wiki while the bookmarklet says「已剪藏」.
+    const problem = this.deps.targetProblem?.()
+    if (problem !== undefined) {
+      this.respond(res, { ok: false, error: problem }, 503)
+      return
+    }
+
     let resolvedTitle: string
     try {
       resolvedTitle = await resolveClipTitle((t) => this.deps.exists(t), title)
     } catch {
-      this.respond(res, { ok: false, error: 'TiddlyWiki 服务暂不可用，请稍后重试' }, 503)
+      this.respond(res, { ok: false, error: this.deps.targetProblem?.() ?? 'TiddlyWiki 服务暂不可用，请稍后重试' }, 503)
       return
     }
 
@@ -406,7 +421,7 @@ export class ClipBridge {
     } catch {
       // The note is the primary artifact — fail the clip (images may already
       // be stored; they are still referenced by the note if it lands later).
-      this.respond(res, { ok: false, error: 'TiddlyWiki 服务暂不可用，剪藏未写入' }, 503)
+      this.respond(res, { ok: false, error: this.deps.targetProblem?.() ?? 'TiddlyWiki 服务暂不可用，剪藏未写入' }, 503)
       return
     }
     // `wiki` (v0.28.8) tells a multi-wiki user WHICH knowledge base took the

@@ -62,7 +62,7 @@ let clientRef = undefined
 // preview below is built from the REAL tool summaries (v0.21.0).
 registerTiddlywikiTools(
   { tools: { register: () => () => {} } },
-  { scope: () => ({ client: clientRef, ambiguous: false }), git: {}, wikiPath: () => join(root, 'main'), autoCommit: () => {} },
+  { scope: () => ({ client: clientRef, ambiguous: false, dir: join(root, 'main') }), git: {}, autoCommit: () => {} },
 )
 let configChanged = 0
 /** v0.28.0: the admin deps expose the config store PER REQUEST (`config: (req) => …`). */

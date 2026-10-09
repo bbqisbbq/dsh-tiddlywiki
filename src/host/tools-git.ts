@@ -200,7 +200,7 @@ async function syncOneRepo(
 }
 
 export function gitSyncTool(env: ToolEnv) {
-  const { deps, requireWiki } = env
+  const { deps } = env
   // ── tiddlywiki_git_sync ──────────────────────────────────────────────────
   return defineTool({
     name: 'tiddlywiki_git_sync',
@@ -251,13 +251,22 @@ export function gitSyncTool(env: ToolEnv) {
        * Drain ONCE, for the wiki the caller just wrote to: it is the only queue
        * this tool can reach, and the one at risk from the restarts below (every
        * other running wiki drains inside its own `restart()`).
+       *
+       * v0.30.62 — BOTH halves now come from that wiki's SCOPE. The folder used to
+       * be `deps.wikiPath()`, which resolves through the plugin's DEFAULT runtime:
+       * the sentinel was written into the session's wiki while the poll watched the
+       * default wiki's `tiddlers/`, so in a multi-wiki install with the session
+       * scoped elsewhere the probe could never be seen ⇒ a guaranteed 12s timeout
+       * plus a false「syncer 队列可能未排干」warning, while the wiki that mattered
+       * was never actually verified.
        */
+      const scope = deps.scope(sessionIdOf(exec))
       let drainFailed = false
-      try {
-        const sessionDir = deps.wikiPath()
-        const drained = await flushPendingWrites(requireWiki(sessionIdOf(exec)), join(sessionDir, 'tiddlers')).catch(() => false)
+      if (scope.client !== undefined && scope.dir !== undefined) {
+        const drained = await flushPendingWrites(scope.client, join(scope.dir, 'tiddlers')).catch(() => false)
         if (!drained) drainFailed = true
-      } catch {
+      } else {
+        // No live client or no known folder ⇒ the queue cannot be proven empty.
         drainFailed = true
       }
       const repos: SyncRepoResult[] = []
@@ -298,16 +307,27 @@ export function gitSyncTool(env: ToolEnv) {
  * Which folder a `git_resolve` call acts on (v0.30.5).
  *
  * `wiki` picks a registered knowledge base by id (what the `git_sync` receipt
- * prints); omitted → the session's wiki, exactly as before. Without this,
- * resolving a conflict in a repository that is NOT the session's would silently
- * operate on the wrong tree.
+ * prints); omitted → the SESSION's wiki (v0.30.62).
+ *
+ * ⚠️ That default used to be `deps.wikiPath()`, i.e. the plugin's DEFAULT wiki —
+ * so a session scoped to `books` resolved a conflict in `work`'s repository when
+ * the model left `wiki` out (the receipt's example command does exactly that).
+ * `keep-remote` then checked out far-end versions of files in the WRONG tree. The
+ * session's folder now comes from `ToolScope.dir`, and an unresolvable scope is a
+ * loud error instead of a different repository.
  */
 async function resolveResolveTarget(
   deps: ToolsDeps,
   wiki: string | undefined,
+  sessionDir: string | undefined,
 ): Promise<{ dir: string; repo?: string; wikis?: string[] }> {
   const wanted = (wiki ?? '').trim()
-  if (wanted.length === 0) return { dir: deps.wikiPath() }
+  if (wanted.length === 0) {
+    if (sessionDir === undefined) {
+      throw new Error('无法确定本会话的知识库目录（清单还没读到或没有对 Agent 可见的库）：请显式传 wiki=<库 id>，或用 tiddlywiki_git_sync 的回执确认库 id')
+    }
+    return { dir: sessionDir }
+  }
   const targets = (await deps.gitTargets?.()) ?? []
   const key = wanted.toLowerCase()
   const hit = targets.find((t) => t.id.toLowerCase() === key || t.label === wanted)
@@ -341,7 +361,7 @@ export function gitResolveTool(env: ToolEnv) {
       },
     },
     execute: async (args: { strategy: 'keep-local' | 'keep-remote' | 'list'; files?: string[]; wiki?: string }, exec: unknown): Promise<ResolveResult> => {
-      const target = await resolveResolveTarget(deps, args.wiki)
+      const target = await resolveResolveTarget(deps, args.wiki, deps.scope(sessionIdOf(exec)).dir)
       const dir = target.dir
       const where = { ...(target.repo !== undefined ? { repo: target.repo } : {}), ...(target.wikis !== undefined ? { wikis: target.wikis } : {}) }
       if (args.strategy === 'list') {

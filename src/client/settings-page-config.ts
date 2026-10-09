@@ -23,7 +23,7 @@ import {
   ADMIN_PROMPT_ENDPOINT as PROMPT_ENDPOINT,
   ADMIN_WIKIS_ENDPOINT as WIKI_LIST_ENDPOINT,
 } from './endpoints.ts'
-import { fetchJson, makeErrorBanner, withWiki } from './settings-page-runtime.ts'
+import { editingWiki, fetchJson, makeErrorBanner, withWiki } from './settings-page-runtime.ts'
 import type { WikisView } from './settings-page-runtime.ts'
 
 /** Form controls registry for the config section (changed-only patch). */
@@ -77,6 +77,15 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
   const git = (config.git ?? {}) as Record<string, unknown>
   const ui = (config.ui ?? {}) as Record<string, unknown>
   const fields: ConfigField[] = []
+  /**
+   * Where the field helpers attach their DOM (v0.30.62).
+   *
+   * `target` starts at the section and is temporarily pointed at a DETACHED box by
+   * blocks that are only shown in some scopes (the clip bridge — see below). The
+   * fields are always REGISTERED (so 保存配置 / 未保存改动 still sees them), only
+   * their nodes are attached conditionally.
+   */
+  let target = section
 
   const textField = (key: string, label: string, initial: string): void => {
     const input = make('input', 'dsh-tw-settings-input')
@@ -89,7 +98,7 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)
     fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
-    section.append(wrap)
+    target.append(wrap)
   }
   /**
    * 共享口令输入（v0.24.x）：`type=password` + 👁 显隐切换。
@@ -115,7 +124,7 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input, toggle)
     fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
-    section.append(wrap)
+    target.append(wrap)
   }
   const checkField = (key: string, label: string, initial: boolean): HTMLInputElement => {
     const input = make('input', 'dsh-tw-settings-check')
@@ -124,7 +133,7 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     const wrap = make('label', 'dsh-tw-settings-field dsh-tw-settings-field-check')
     wrap.append(input, make('span', 'dsh-tw-settings-label', label))
     fields.push({ key, initial, read: () => input.checked, changed: () => input.checked !== initial })
-    section.append(wrap)
+    target.append(wrap)
     return input
   }
   /**
@@ -176,7 +185,7 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     // 先跑一次：config tiddler 里本来就存着越界值（宿主已静默夹取）时，进页面就该看见
     // 提示，而不是等用户改动过才亮。
     sync()
-    section.append(wrap)
+    target.append(wrap)
   }
   const selectField = (key: string, label: string, initial: string, options: Array<{ value: string; label: string }>): HTMLSelectElement => {
     const select = make('select', 'dsh-tw-settings-input')
@@ -190,7 +199,7 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), select)
     fields.push({ key, initial, read: () => select.value, changed: () => select.value !== initial })
-    section.append(wrap)
+    target.append(wrap)
     return select
   }
   /**
@@ -206,7 +215,7 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     const wrap = make('label', 'dsh-tw-settings-field dsh-tw-settings-field-area')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)
     fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
-    section.append(wrap)
+    target.append(wrap)
     return input
   }
 
@@ -336,9 +345,14 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
   })
   section.append(preview, previewOut)
 
+  // ── 本地剪藏桥 ──────────────────────────────────────────────────────────
+  // 这一组是**插件级**设置（见下面 append 处的说明），所以先建在一个脱离文档的盒子里，
+  // 最后由作用域决定是把它挂上去、还是只挂一句说明。
+  const bridgeBox = make('div', 'dsh-tw-settings-bridge')
+  target = bridgeBox
   const bridge = (config.bridge ?? {}) as Record<string, unknown>
   checkField('bridge.enabled', t('config.bridge.enabled'), bridge.enabled === true)
-  // 宿主的真实规则（index.ts effectiveBridge）：必须是 1–65535 的整数，否则静默用默认 8618 ——
+  // 宿主的真实规则（index-git.ts effectiveBridge）：必须是 1–65535 的整数，否则静默用默认 8618 ——
   // 这里不拦，用户会以为端口改了，其实监听还在 8618。
   numField('bridge.port', t('config.bridge.port'), typeof bridge.port === 'number' && bridge.port > 0 ? bridge.port : 8618, { min: 1, max: 65_535, step: 1, integer: true })
   tokenField('bridge.token', t('config.bridge.token'), typeof bridge.token === 'string' ? bridge.token : '')
@@ -387,9 +401,16 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
       /* 读不到清单：保留中性占位项（单库安装本来就是这种形态） */
     }
   })()
-  // 界面语言在下方「语言管理」区块设置（config 的 uiLanguage 仅供启动时自动应用）。
-  // 注意：uiLanguage 目前只影响 TW 侧语言，客户端插件文案（FAB/快速笔记/侧边栏/本页）
-  // 暂为中文，尚无 i18n 分支。
+  target = section
+  // 剪藏桥是**插件级**设置（整插件一个监听端口、一个写入目标），而读取它的是**默认库**
+  // 那份 config（index-git.ts 的 effectiveBridge）。多库下在别的库的配置里改它并保存，
+  // 插件永远不会读 ⇒ 静默无效（v0.30.62）。所以只在「未选中具体库」的作用域里渲染它，
+  // 否则只给一句说明 —— 口径与 `ui.sidebarLabel`（只在单库露出）一致。
+  if (rosterMode !== 'multi' || editingWiki === undefined) section.append(bridgeBox)
+  else section.append(make('div', 'dsh-tw-settings-muted', t('config.bridge.pluginScopeOnly')))
+  // 界面语言在「本库配置」的「语言管理」区块设置（这里读到的 uiLanguage 只是当前库那份，
+  // 用于回显）；客户端文案已全量 i18n（v0.30.6，见 src/client/i18n.ts），语言来自插件
+  // 配置 → /status 的 lang，改后其余界面下次刷新生效。
 
   // 保存失败的解释性横幅（v0.24.x）：文案存在 mount 级 configState 里，因为 refresh()
   // 可能按新签名重建整个配置区 —— 局部 DOM 连同这里刚写的节点会一起消失，重建后要从

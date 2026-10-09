@@ -26,7 +26,6 @@ import { WechatPublishRunner } from './host/wechat-publish.ts'
 import { registerTiddlywikiTools, type ToolsDeps, type ToolScope } from './host/tools.ts'
 import {
   defaultLocationStateFile,
-  locationPath,
   // v0.30.49 / v0.30.50：readLocationState / readRegistry **只**被下面的 barrel
   // 再导出使用（`export { … } from '…'` 是独立语句、不消费 import 绑定）⇒
   // `noUnusedLocals` 把它们点成「未使用」。**必须无视这条 error 并留着**：
@@ -43,6 +42,7 @@ import {
   DEFAULT_WIKI_ID,
   DEFAULT_WIKI_MODE,
   defaultRegistryFile,
+  entryPath,
   readRegistry,
   singleEntryRegistry,
   type WikiEntry,
@@ -415,8 +415,14 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     const resolution = resolveAgentScope(farm, sessionScopes, sessionId)
     const visible = farm?.registry.wikis.filter((entry) => entry.agentVisible).length ?? 0
     const client = resolution.runtime?.client()
+    // The folder of the wiki this session acts on (v0.30.62): the git tools need a
+    // DIRECTORY (drain sentinel / conflict resolution), and resolving it here is
+    // what keeps them session-scoped. `entryPath` also covers a registered-but-
+    // stopped wiki — resolving a conflict is a disk operation with no TW child.
+    const dir = resolution.runtime?.path ?? (resolution.entry !== undefined ? entryPath(resolution.entry) : undefined)
     return {
       ...(client !== undefined ? { client } : {}),
+      ...(dir !== undefined ? { dir } : {}),
       ...(resolution.entry !== undefined ? { id: resolution.entry.id, label: resolution.entry.label } : {}),
       // No client ⇒ say WHY (the resolver's sentence is actionable); a bare
       // "service not running" would send the user looking in the wrong place.
@@ -505,7 +511,6 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // （多库可能共用一个工作树），逐仓库独立成败。此前只动会话作用域那个库，
     // 回执却按会话作用域标注（"作用对象与标注不一致"）。
     gitTargets: () => gitTargets(),
-    wikiPath: () => defaultInstance()?.path ?? locationPath(defaultLocation),
     autoCommit: () => defaultInstance()?.touchAutoCommit(),
     // After a pull that changed the working tree, restart the wikis whose content
     // ACTUALLY changed (v0.28.0). The syncer drain happens inside the runtime's

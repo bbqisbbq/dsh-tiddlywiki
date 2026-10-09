@@ -113,6 +113,14 @@ export interface PromptPreviewConfig {
    * text — the exact class of bug v0.22.7 fixed for `mode` (v0.23.0).
    */
   wechat?: boolean
+  /**
+   * Scope's proxy base for the link convention (v0.30.62).
+   *
+   * NOT part of the untrusted `POST /admin/prompt` draft (the preview always
+   * describes the DEFAULT scope), but `promptTextFor()` passes the session's own
+   * base so a scoped session is told to write id-bearing links.
+   */
+  linkBase?: string
 }
 
 /**
@@ -153,7 +161,7 @@ export function describePrompt(config: PromptPreviewConfig, tools: readonly Prom
   return {
     enabled,
     mode: normalizePromptMode(config.mode),
-    text: buildPromptText({ enabled, mode: config.mode, extra: config.extra, override: config.override, tools, wechat: config.wechat }),
+    text: buildPromptText({ enabled, mode: config.mode, extra: config.extra, override: config.override, tools, wechat: config.wechat, linkBase: config.linkBase }),
   }
 }
 
@@ -198,12 +206,21 @@ export function escapePromptBraces(text: string): string {
  * rules on the SCHEMA side, so deleting them here can never lose them silently.
  */
 const WRITE_RULES = `### 写入约定
-- 覆盖或删除已有笔记前先 \`tiddlywiki_get\` 读一次，并把读到的 \`expectedModified\`（或 \`expectedRevision\`）传回去；被拒绝说明刚有人（在 TW 编辑器里）改过——**重读一遍再决定，不要用 \`force\` 硬覆盖**。`
+- 写入被拒（说明刚有人（在 TW 编辑器里）改过）时**重读一遍再决定**，不要用 \`force\` 硬覆盖。`
 
 /** Governance block: the three-step git discipline + conflict recovery. */
 const SYNC_RULES = `### 同步纪律
-- 开工先 \`tiddlywiki_git_sync action=pull\`，收工 \`action=sync\`（插件另会防抖自动 commit，默认 60s）。
+- 开工先 \`tiddlywiki_git_sync action=pull\`，收工 \`action=sync\`。
 - pull 冲突：先 \`tiddlywiki_git_resolve files=[冲突文件] strategy=keep-local\`（保留本地）或 \`keep-remote\`，再重新 pull/sync 整合其余改动。`
+
+/**
+ * Same-origin TW proxy base the agent writes into `[标题](…)` links.
+ *
+ * In SINGLE mode this bare path IS the only wiki (the default-wiki alias). In a
+ * MULTI-wiki install the caller passes `/dsh-tiddlywiki/tw/<id>/` instead — see
+ * `noteRules()` for why that matters (v0.30.62).
+ */
+export const TW_LINK_BASE = '/dsh-tiddlywiki/tw/'
 
 /**
  * Governance block: knowledge-base conventions (tags, memory, links).
@@ -215,13 +232,24 @@ const SYNC_RULES = `### 同步纪律
  * (long-term memory), the todo convention, time-boxing/supersession fields, the
  * `human-edited` counterpart to the automatic `agent-written`, and the clickable
  * link format.
+ *
+ * v0.30.62 — the link format takes the SCOPE's proxy base. With several wikis the
+ * bare `/tw/` is the DEFAULT-wiki alias: a link in the assistant's prose then
+ * follows whatever library happens to be focused, and the same link inside a NOTE
+ * navigates the embedded TW iframe to another library entirely. Multi-wiki links
+ * therefore have to carry the id the banner names.
  */
-const NOTE_RULES = `### 笔记约定
+function noteRules(linkBase: string): string {
+  const link = linkBase === TW_LINK_BASE
+    ? `\`[标题](${linkBase}#标题)\`（空格等特殊字符做 URL 编码；中文可直写）——优先用它代替纯文本标题。`
+    : `\`[标题](${linkBase}#标题)\`——**多库：必须写上面横幅里那个库 id**（否则会开到别的库）；空格等特殊字符做 URL 编码（中文可直写）。`
+  return `### 笔记约定
 - wiki 是长期记忆：会议纪要、决策记录、调研笔记、随手的想法都存成独立 tiddler（tag 用 inbox/meeting/decision 等便于检索）。
 - **值得做但不在当前范围内的想法**：写成独立 tiddler、打 \`todo\`，正文简述来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
 - **阶段性内容标时效**：会过期的笔记带 \`valid-until: YYYY-MM-DD\`（硬过期）或 \`review-after: YYYY-MM-DD\`（该复查）；被取代时写 \`superseded-by: [[新笔记]]\` 并打 \`superseded\` 标签、**保留旧笔记**。**淘汰只由人决定**，不要自行删除。
 - \`agent-written\` 由工具自动补打，别手动加或删；人类编辑过 Agent 笔记后补 \`human-edited\`。
-- **引用笔记用可点击链接**：\`[标题](/dsh-tiddlywiki/tw/#标题)\`（空格等特殊字符做 URL 编码；中文可直写）。点它会打开中央 TW 面板并跳转，优先用它代替纯文本标题。`
+- **引用笔记用可点击链接**：${link}`
+}
 
 /**
  * Publish-metadata rule, appended ONLY when `wechat.enabled` is on (v0.23.0).
@@ -237,7 +265,7 @@ const PUBLISH_RULE = `- **对外发布前**：先读 [[发布元数据规范]]�
  * Governance blocks that MUST survive in every mode — exported so
  * `scripts/verify-prompt.mjs` can assert a re-write never silently drops one.
  */
-export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = [WRITE_RULES, SYNC_RULES, NOTE_RULES]
+export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = [WRITE_RULES, SYNC_RULES, noteRules(TW_LINK_BASE)]
 
 /**
  * One line per tool: `bullet \`name\`（p1, p2?, …）`; `?` marks an optional
@@ -265,7 +293,7 @@ export function toolSignatureLines(tools: readonly PromptToolSummary[], bullet =
 function slimIntro(count: number): string {
   return `## TiddlyWiki 持久知识库
 
-本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。插件提供 ${count} 个 \`tiddlywiki_*\` 工具：**参数与返回契约以各工具 schema 的 description 为准**，本段只补充 schema 表达不了的约定。`
+本机的 TiddlyWiki 5 知识库（wiki 文件夹即 git 仓库）由 ${count} 个 \`tiddlywiki_*\` 工具读写：**参数与返回契约见各工具 schema**，本段只写 schema 表达不了的约定。`
 }
 
 /** Heading + the generated signature catalogue (full intro). */
@@ -273,7 +301,7 @@ function fullIntro(tools: readonly PromptToolSummary[]): string {
   const lines = toolSignatureLines(tools).join('\n')
   return `## TiddlyWiki 持久知识库
 
-本机有一个 TiddlyWiki 5 持久知识库（wiki 文件夹即 git 仓库）。可用工具（${tools.length} 个，\`?\` 表示可选参数；详细契约以各工具的 description 为准）：
+本机的 TiddlyWiki 5 知识库（wiki 文件夹即 git 仓库）。可用工具（${tools.length} 个，\`?\` 表示可选参数；详细契约以各工具的 description 为准）：
 
 ${lines}`
 }
@@ -299,18 +327,27 @@ export function buildPromptText(options: {
    * FALSE: a user who never enabled it gets no publishing text at all.
    */
   wechat?: boolean
+  /**
+   * Proxy base for the clickable-link convention (v0.30.62).
+   *
+   * Defaults to `TW_LINK_BASE` (single mode / the default-wiki alias). A session
+   * scoped to another library must pass `/dsh-tiddlywiki/tw/<id>/`, otherwise the
+   * link opens whatever library happens to be focused (assistant prose) or sends
+   * the embedded TW iframe to the DEFAULT wiki (a link inside a note).
+   */
+  linkBase?: string
 }): string {
   if (options.enabled === false) return ''
   const tools = options.tools ?? []
   const override = typeof options.override === 'string' ? options.override.trim() : ''
   const intro = normalizePromptMode(options.mode) === 'full' ? fullIntro(tools) : slimIntro(tools.length)
-  // The publish rule rides with NOTE_RULES so it reads as part of 笔记约定;
+  // The publish rule rides with noteRules() so it reads as part of 笔记约定;
   // `override` replaces the whole body, so the rule is dropped there too (an
   // override means "I'll say it myself").
-  const notes = options.wechat === true ? `${NOTE_RULES}\n${PUBLISH_RULE}` : NOTE_RULES
+  const notes = noteRules(options.linkBase ?? TW_LINK_BASE)
   const body = override.length > 0
     ? escapePromptBraces(override)
-    : [intro, WRITE_RULES, SYNC_RULES, notes].join('\n\n')
+    : [intro, WRITE_RULES, SYNC_RULES, options.wechat === true ? `${notes}\n${PUBLISH_RULE}` : notes].join('\n\n')
   const extra = typeof options.extra === 'string' ? escapePromptBraces(options.extra.trim()) : ''
   return extra.length > 0 ? `${body}\n\n${extra}` : body
 }

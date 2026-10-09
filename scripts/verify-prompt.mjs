@@ -55,7 +55,7 @@ function test(name, fn) {
 // never quietly become "gone everywhere".
 const toolDefs = []
 const ctx = { tools: { register: (def) => { toolDefs.push(def); return () => {} } } }
-const deps = { scope: () => ({ client: undefined, ambiguous: false }), git: {}, wikiPath: () => '', autoCommit: () => {} }
+const deps = { scope: () => ({ client: undefined, ambiguous: false, dir: '/w' }), git: {}, autoCommit: () => {} }
 registerTiddlywikiTools(ctx, deps)
 const tools = tiddlywikiToolSummary()
 /** Everything the model receives from the tool schemas, as one searchable text. */
@@ -73,8 +73,12 @@ const full = buildPromptText({ mode: 'full', tools })
  * `put`/`search` 的 schema），实测正文 939 字符。预算跟着腰斩是**故意的**：
  * 它现在守的是"别再长回工具手册"，而不是给冗余留额度。被删掉的规则由下面的
  * 「委派的规则必须在 schema 里」用例逐条反向守住 —— 从提示词里删不等于丢了。
+ *
+ * 1200 → 1000（v0.30.62）：同一把尺子再用一次 —— 写入约定压成一句（`expectedModified`
+ * /`force` 的语义逐字在 `put` 的 schema 里）、同步那条去掉与 schema 重复的自动 commit
+ * 说明、intro 去掉「本机有一个」（多库下它是错的）。实测正文 881 字符。
  */
-const SLIM_BUDGET = 1200
+const SLIM_BUDGET = 1000
 
 test('默认形态是 slim 且与 section 名一致', () => {
   assert.equal(DEFAULT_PROMPT_MODE, 'slim', 'v0.21.0 起默认应为 slim')
@@ -139,6 +143,8 @@ test('委派给 schema 的规则必须在工具 description 里（从提示词�
     ['fields.type 是内容类型保留字段', '内容类型'],
     ['attach 同名默认拒绝覆盖', '默认拒绝写入'],
     ['增量内容优先 append', '增量写入'],
+    // v0.30.62：写入约定的正文压成一句「被拒后重读」，并发令牌本身只由 schema 说明。
+    ['并发令牌（写入被拒后的动作）', 'expectedModified'],
   ]
   for (const [what, needle] of delegated) {
     assert.ok(
@@ -154,6 +160,7 @@ test('委派给 schema 的规则必须在工具 description 里（从提示词�
   const needleOf = (what) => delegated.find(([w]) => w === what)[1]
   assert.ok(!slim.includes(needleOf('工作区标签自动打')), 'slim 不该再复述工作区标记（已在 put 的 schema 里）')
   assert.ok(!slim.includes(needleOf('检索先窄后宽')), 'slim 不该再复述先窄后宽（已在 search 的 schema 里）')
+  assert.ok(!slim.includes(needleOf('并发令牌（写入被拒后的动作）')), 'slim 不该再复述并发令牌（已在 put 的 schema 里）')
 })
 
 test('可选功能默认不打扰：不进提示词（v0.23.0）', () => {
@@ -202,7 +209,7 @@ test('两种形态都保留治理约定块', () => {
     assert.ok(slim.includes(block), `slim 丢了治理约定块：${block.slice(0, 24)}…`)
     assert.ok(full.includes(block), `full 丢了治理约定块：${block.slice(0, 24)}…`)
   }
-  for (const needle of ['tiddlywiki_git_sync action=pull', 'tiddlywiki_git_resolve', '[标题](/dsh-tiddlywiki/tw/#标题)', 'human-edited', 'agent-written', 'expectedModified']) {
+  for (const needle of ['tiddlywiki_git_sync action=pull', 'tiddlywiki_git_resolve', '[标题](/dsh-tiddlywiki/tw/#标题)', 'human-edited', 'agent-written']) {
     assert.ok(slim.includes(needle), `slim 缺少关键约定：${needle}`)
   }
 })
@@ -320,6 +327,25 @@ test('多库作用域横幅（v0.28.0）：单库逐字节不变，多库必须�
   // 于是一个"永远成立"的数留在这里假装在守门。横幅实测 ~70 字符，给 200 余量。
   const multiBudget = SLIM_BUDGET + 200
   assert.ok(composed.length <= multiBudget, `多库注入文本过长：${composed.length} 字符（预算 ${multiBudget} = slim ${SLIM_BUDGET} + 横幅余量 200）`)
+})
+
+/**
+ * v0.30.62 — 多库的链接必须指名库。
+ *
+ * 裸 `/tw/#标题` 在多库下不是「本会话那个库」：助手正文里的链接跟随**焦点库**，
+ * 而写进笔记正文的同一个链接会把中央 TW 的 iframe 直接导航到**默认库**。所以
+ * 作用域带 id 时，正文里的链接格式必须换成 `/tw/<id>/`，并且明说要写那个 id。
+ */
+test('多库链接（v0.30.62）：带库 id 的链接格式 + 明确警告，且仍在预算内', () => {
+  const multi = buildPromptText({ mode: 'slim', tools, linkBase: '/dsh-tiddlywiki/tw/work/' })
+  assert.ok(multi.includes('[标题](/dsh-tiddlywiki/tw/work/#标题)'), '多库正文必须给出带库 id 的链接格式')
+  assert.ok(multi.includes('必须写上面横幅里那个库 id'), '多库正文必须说明为什么要带 id')
+  assert.ok(!multi.includes('[标题](/dsh-tiddlywiki/tw/#标题)'), '多库正文不得再给出裸 /tw/ 的链接示例')
+  assert.ok(multi.length <= SLIM_BUDGET + 200, `多库正文过长：${multi.length}`)
+
+  // 单库保持逐字节不变（默认 linkBase）——现有安装的注入一个字都不多。
+  assert.ok(slim.includes('[标题](/dsh-tiddlywiki/tw/#标题)'))
+  assert.ok(!slim.includes('必须写上面横幅里那个库 id'))
 })
 
 if (failures > 0) {

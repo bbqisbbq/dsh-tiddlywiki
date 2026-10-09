@@ -82,6 +82,7 @@ export const CONFIG_MESSAGES: { zh: Record<string, string>; en: Record<string, s
     'config.clipWiki.notRunning': ' · 未运行',
     'config.clipWiki.notInListWithDefault': '{current}（不在清单里，保存后写进 {label}）',
     'config.clipWiki.notInList': '{current}（不在清单里）',
+    'config.bridge.pluginScopeOnly': '剪藏桥是插件级设置（整插件共用一个监听端口和一个写入目标），只在「未选中具体库」的作用域里可改——请先点上方「退出配置」。',
     // ── 保存 / 校验提示 ─────────────────────────────────────────────────
     'config.save': '保存配置',
     'config.invalidFields': '有 {count} 个字段填得不对（见字段旁的红色提示），未保存',
@@ -163,6 +164,7 @@ export const CONFIG_MESSAGES: { zh: Record<string, string>; en: Record<string, s
     'config.clipWiki.notRunning': ' · not running',
     'config.clipWiki.notInListWithDefault': '{current} (not in the list; saving writes to {label})',
     'config.clipWiki.notInList': '{current} (not in the list)',
+    'config.bridge.pluginScopeOnly': 'The clip bridge is a plugin-wide setting (one listener, one write target), so it can only be changed when no specific library is selected — use “Exit configuration” above first.',
     // ── save / validation messages ────────────────────────────────────────
     'config.save': 'Save settings',
     'config.invalidFields': '{count} fields are filled in incorrectly (see the red hint next to them); nothing was saved',

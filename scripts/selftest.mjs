@@ -107,7 +107,10 @@ try {
   const toolsByName = new Map()
   registerTiddlywikiTools(
     { tools: { register: (tool) => { toolsByName.set(tool.name, tool); return () => {} } } },
-    { scope: () => ({ client: api, ambiguous: false }), git: new GitFace(), wikiPath: () => wikiDir, autoCommit: () => {} },
+    // `dir` is a GETTER on purpose: `wikiDir` is declared further down (line ~316),
+    // and the git tools read `scope.dir` only when they need a folder — an eagerly
+    // evaluated property would hit the TDZ on every other tool call.
+    { scope: () => ({ client: api, ambiguous: false, get dir() { return wikiDir } }), git: new GitFace(), autoCommit: () => {} },
   )
   const renameTool = toolsByName.get('tiddlywiki_rename')
   assert(renameTool !== undefined, 'rename tool registered through the registry')

@@ -199,7 +199,7 @@ try {
     registeredTools.length = 0
     registerTiddlywikiTools(
       { tools: { register: (tool) => { registeredTools.push(tool); return () => {} } } },
-      { scope: () => deps, git: {}, wikiPath: () => ROOT, autoCommit: () => {} },
+      { scope: () => ({ ...deps, dir: ROOT }), git: {}, autoCommit: () => {} },
     )
     return registeredTools.find((tool) => tool.name === 'tiddlywiki_get')
   }

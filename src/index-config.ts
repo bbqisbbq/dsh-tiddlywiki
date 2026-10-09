@@ -36,7 +36,7 @@ export interface TiddlywikiConfig {
     workspaceMark?: boolean
   }
   /** 本地剪藏桥（书签小工具）：见 host/clip-bridge.ts 与 seed-clip-bridge.ts 文档。 */
-  bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string }
+  bridge?: { enabled?: boolean; port?: number; token?: string; tag?: string; wiki?: string }
   /** 注入给每个会话的系统提示词（v0.21.0，见 host/prompt.ts）。 */
   prompt?: { enabled?: boolean; mode?: 'slim' | 'full'; extra?: string; override?: string }
   /** TW 子进程启动策略（v0.22.5，见 host/ready-policy.ts）：软就绪窗口 ms。 */
@@ -71,7 +71,7 @@ export interface ResolvedConfig {
    * 关闭时不注入发布相关提示词、不写两个 gated seed，`/wechat/*` 三条路由也一律
    * 403（v0.23.3）。`command`/`adapter`/`token`/`dsn` 供 TW 工具栏按钮使用。
    */
-  wechat: { enabled: boolean; command: string; token: string; adapter: 'publish-note' | 'publish-note-imgs'; dsn: string }
+  wechat: { enabled: boolean; command: string; token: string; adapter: 'publish-note' | 'publish-note-imgs'; dsn: string; /** TW 侧读的请求基址覆盖（host 不用，同 ui.sendToAgent.endpoint） */ endpoint?: string }
   uiLanguage: string
   auth: { username?: string; password?: string }
 }

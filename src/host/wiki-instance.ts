@@ -66,7 +66,7 @@ export const MARKDOWN_PLUGIN = 'tiddlywiki/markdown'
 export interface WikiInstanceBase {
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string; workspaceMark: boolean }
-  bridge: { enabled: boolean; port: number; token: string; tag: string }
+  bridge: { enabled: boolean; port: number; token: string; tag: string; wiki?: string }
   startup: { readyTimeoutMs: number }
   wechat: { enabled: boolean; command: string; token: string; adapter: 'publish-note' | 'publish-note-imgs'; dsn: string }
   ui: {

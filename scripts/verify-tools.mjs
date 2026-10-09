@@ -100,9 +100,11 @@ try {
   registerTiddlywikiTools(
     { tools: { register: (tool) => { tools.set(tool.name, tool); return () => {} } } },
     {
-      scope: () => ({ client: api, ambiguous: false }),
+      // `dir` is the SESSION's wiki folder (v0.30.62): the git tools take both the
+      // drain folder and the default `git_resolve` target from the scope, not from
+      // a plugin-wide default path.
+      scope: () => ({ client: api, ambiguous: false, dir: wikiDir }),
       git,
-      wikiPath: () => wikiDir,
       autoCommit: () => {},
       workspaceName: (sessionId) => WORKSPACES.get(sessionId),
       workspaceMarkEnabled: () => workspaceMarkEnabled,

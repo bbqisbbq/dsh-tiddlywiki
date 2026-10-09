@@ -18,6 +18,7 @@ import { ClipBridge, downloadClipImage, type BridgeConfig, type ClipImageDownloa
 import type { TiddlyWebClient } from './host/tw-api.ts'
 import type { WikiEntry } from './host/wiki-registry.ts'
 import type { WikiFarm } from './host/wiki-farm.ts'
+import { stoppedWikiMessage } from './host/wiki-farm.ts'
 import type { WikiInstance } from './host/wiki-instance.ts'
 
 export interface ClipDeps {
@@ -43,55 +44,74 @@ export interface ClipSurface {
    * which is hard-wired to the DEFAULT runtime — meaning a multi-wiki install
    * could only ever clip into the default wiki, with no way to say otherwise.
    *
-   * Resolution order:
-   *   1. `bridge.wiki` (config) when it names a wiki that EXISTS in the
-   *      registry — running or not (a stopped one is a legitimate target: the
-   *      bookmarklet must not have to care which wikis happen to be up);
-   *   2. otherwise the farm's default runtime.
-   *
-   * Deliberately NOT an error when the id is unknown: this is a preference read
-   * per request, and the bookmarklet is fire-and-forget. Falling back to the
-   * default keeps clipping working, and the response reports which wiki was
-   * actually used (see `write`/`exists` below).
+   * Resolution order (v0.30.62):
+   *   1. `bridge.wiki` naming a RUNNING wiki → that one;
+   *   2. `bridge.wiki` naming a REGISTERED but stopped wiki → UNDEFINED (refuse):
+   *      the same rule every `?wiki=` route has followed since v0.29.0. Silently
+   *      writing the clip into a different knowledge base is the one failure this
+   *      feature exists to prevent, and the bookmarklet cannot detect it;
+   *   3. `bridge.wiki` naming an UNKNOWN id (removed / typo) → the farm's default
+   *      runtime, with one warning (an old bookmark must keep working);
+   *   4. no `bridge.wiki` → the farm's default runtime.
    */
   clipTarget: () => { runtime: WikiInstance; id: string } | undefined
   /** The clip target's TiddlyWeb client, plus the id to report back. */
   clipClient: () => { client: TiddlyWebClient; wikiId: string } | undefined
+  /**
+   * Why the CONFIGURED target cannot take a clip right now (v0.30.62), or
+   * undefined. Names the wiki and what to do; the bridge puts it in the 503 body,
+   * so a bookmarklet user is told why nothing was written.
+   */
+  targetProblem: () => string | undefined
 }
 
 export function createClipSurface(deps: ClipDeps): ClipSurface {
   const { farm, defaultInstance } = deps
 
+  /** The configured `bridge.wiki`, trimmed ('' = follow the default wiki). */
+  const configuredClipWiki = (): string => {
+    const configured = deps.effectiveBridge()?.wiki
+    return typeof configured === 'string' ? configured.trim() : ''
+  }
+
   /**
-   * Warn about a clip falling back to the default wiki, at most once per
-   * DISTINCT configured id (so a stale `bridge.wiki` costs one log line, not one
-   * per clip, while switching the setting and back still explains itself again).
+   * Warn about a clip falling back to the default wiki because the configured id
+   * is not in the registry at all (removed wiki, typo). At most once per DISTINCT
+   * id, so a stale setting costs one log line rather than one per clip — while
+   * switching the setting and back still explains itself again.
    */
   const clipFallbackWarned = new Set<string>()
   const warnClipFallbackOnce = (wanted: string): void => {
     if (clipFallbackWarned.has(wanted)) return
     clipFallbackWarned.add(wanted)
-    console.warn(`[dsh-tiddlywiki] clip bridge: 配置的 bridge.wiki「${wanted}」当前不在运行（或已移出清单），剪藏回落到默认的那个知识库（设置页可改）`)
+    console.warn(`[dsh-tiddlywiki] clip bridge: 配置的 bridge.wiki「${wanted}」不在知识库清单里，剪藏回落到默认的那个知识库（设置页可改）`)
   }
 
   const clipTarget = (): { runtime: WikiInstance; id: string } | undefined => {
-    const configured = deps.effectiveBridge()?.wiki
-    const wanted = typeof configured === 'string' ? configured.trim() : ''
+    const wanted = configuredClipWiki()
     if (wanted.length > 0) {
       const entry: WikiEntry | undefined = farm()?.registry.wikis.find((item) => item.id === wanted)
       if (entry !== undefined) {
         const runtime = farm()?.runtime(entry.id)
-        if (runtime !== undefined) return { runtime, id: entry.id }
+        // Registered but NOT running ⇒ refuse; never fall back (v0.30.62). The
+        // bridge reports `targetProblem()` (the wiki's name) as a 503.
+        return runtime === undefined ? undefined : { runtime, id: entry.id }
       }
-      // Configured but not running (or since removed): say so, then fall back.
-      // A silent fallback is how a user ends up with clips in the wrong wiki.
-      // Throttled: this runs per clip and a stale setting would otherwise write
-      // the same line to the log on every save a user makes.
       warnClipFallbackOnce(wanted)
     }
     const fallback = defaultInstance()
     if (fallback === undefined) return undefined
     return { runtime: fallback, id: fallback.entry.id }
+  }
+
+  /** See {@link ClipSurface.targetProblem}: only a REGISTERED, stopped target. */
+  const targetProblem = (): string | undefined => {
+    const wanted = configuredClipWiki()
+    if (wanted.length === 0) return undefined
+    const entry: WikiEntry | undefined = farm()?.registry.wikis.find((item) => item.id === wanted)
+    if (entry === undefined) return undefined
+    if (farm()?.runtime(entry.id) !== undefined) return undefined
+    return stoppedWikiMessage(entry)
   }
 
   /** The clip target's TiddlyWeb client, plus the id to report back. */
@@ -124,6 +144,8 @@ export function createClipSurface(deps: ClipDeps): ClipSurface {
     },
     /** Which wiki the CURRENT clip is writing to (reported back to the caller). */
     targetWiki: () => clipTarget()?.id,
+    /** A configured-but-stopped target is a named 503, never a silent fallback. */
+    targetProblem,
     // Server-side image download: no browser CORS; a browser-ish UA + the clip
     // source page as Referer get past most hotlink-protected CDNs. The whole
     // SSRF posture (public http(s) only, per-hop validation with the resolved
@@ -138,5 +160,5 @@ export function createClipSurface(deps: ClipDeps): ClipSurface {
   })
   deps.effect(() => () => clipBridge.stop(), 'dsh-tiddlywiki: clip bridge')
 
-  return { clipBridge, clipTarget, clipClient }
+  return { clipBridge, clipTarget, clipClient, targetProblem }
 }

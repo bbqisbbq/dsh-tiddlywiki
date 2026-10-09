@@ -272,7 +272,7 @@ const STRING_CONFIG_PATHS = new Set<string>([
   'auth.password', 'auth.username', 'bridge.tag', 'bridge.token', 'bridge.wiki', 'git.branch', 'git.remote',
   'note.tag', 'prompt.extra', 'prompt.mode', 'prompt.override', 'ui.darkPalette',
   'ui.quickNoteMode', 'ui.sendToAgent.endpoint', 'ui.sendToAgent.token', 'ui.sidebarLabel',
-  'ui.tabLabel', 'uiLanguage', 'wechat.adapter', 'wechat.command', 'wechat.dsn', 'wechat.token',
+  'ui.tabLabel', 'uiLanguage', 'wechat.adapter', 'wechat.command', 'wechat.dsn', 'wechat.endpoint', 'wechat.token',
 ])
 
 /** Keys a patch must never carry (`deepMerge` would assign them onto the object). */
