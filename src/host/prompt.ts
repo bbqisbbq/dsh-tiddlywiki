@@ -240,15 +240,16 @@ export const TW_LINK_BASE = '/dsh-tiddlywiki/tw/'
  * therefore have to carry the id the banner names.
  */
 function noteRules(linkBase: string): string {
-  const link = linkBase === TW_LINK_BASE
-    ? `\`[标题](${linkBase}#标题)\`（空格等特殊字符做 URL 编码；中文可直写）——优先用它代替纯文本标题。`
-    : `\`[标题](${linkBase}#标题)\`——**多库：必须写上面横幅里那个库 id**（否则会开到别的库）；空格等特殊字符做 URL 编码（中文可直写）。`
+  const chatLink = linkBase === TW_LINK_BASE
+    ? `\`[标题](${linkBase}#标题)\`（空格等特殊字符做 URL 编码；中文可直写）`
+    : `\`[标题](${linkBase}#标题)\`——**多库：必须写上面横幅里那个库 id**（否则会开到别的库）；空格等特殊字符做 URL 编码（中文可直写）`
   return `### 笔记约定
 - wiki 是长期记忆：会议纪要、决策记录、调研笔记、随手的想法都存成独立 tiddler（tag 用 inbox/meeting/decision 等便于检索）。
 - **值得做但不在当前范围内的想法**：写成独立 tiddler、打 \`todo\`，正文简述来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
 - **阶段性内容标时效**：会过期的笔记带 \`valid-until: YYYY-MM-DD\`（硬过期）或 \`review-after: YYYY-MM-DD\`（该复查）；被取代时写 \`superseded-by: [[新笔记]]\` 并打 \`superseded\` 标签、**保留旧笔记**。**淘汰只由人决定**，不要自行删除。
 - \`agent-written\` 由工具自动补打，别手动加或删；人类编辑过 Agent 笔记后补 \`human-edited\`。
-- **引用笔记用可点击链接**：${link}`
+- **笔记内引用**：写 \`[[标题]]\`（文字不同写 \`[[标题|文字]]\`），别用 \`[标题](url)\`（当外链、URL 带空格即失效）。
+- **聊天里引用笔记**：写 ${chatLink}，点它打开 TW 面板。`
 }
 
 /**
