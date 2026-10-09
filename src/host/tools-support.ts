@@ -368,7 +368,15 @@ export const TRASHBIN_PREFIX = '$:/trashbin/'
 export const TRASHBIN_TAG = '$:/tags/trashbin'
 /** 副本上记录的溯源字段：原标题、删除时刻。trashbin 原生不写，但我们写。 */
 export const TRASHBIN_OF_FIELD = 'trash-of'
-export const TRASHBIN_AT_FIELD = 'trash-at'
+/**
+ * Deletion timestamp, as an ISO string.
+ *
+ * NOT `trash-at`: TW parses any field named `*-at`/`*-date`/… as a date and
+ * re-serializes it in the wiki's LOCAL format, so the ISO value we PUT came
+ * back as `10/09/2026 05:11:54` (verified). Keeping it a plain `trash-iso`
+ * field leaves the machine-readable value intact for the receipt.
+ */
+export const TRASHBIN_AT_FIELD = 'trash-iso'
 
 /** The trashbin-format copy title that holds one soft-deleted tiddler. */
 export function trashbinTitleFor(title: string): string {
@@ -479,9 +487,17 @@ export interface TrashbinEntry { trash: string; of: string; at: string }
  * reporting an empty trash.
  */
 export async function listTrashbin(wiki: TiddlyWebClient, renderFilter: (filter: string) => Promise<string | undefined>): Promise<TrashbinEntry[] | undefined> {
-  // One title per line, in a wrapper the sanitizer cannot strip. The `\n`
-  // separator is what we split on; titles may contain any other character.
-  const wikitext = `<$list filter="[tag[${TRASHBIN_TAG}]sort[title]]" variable="ignore"><$view field="title"/>\\n</$list>`
+  // NO `variable="ignore"` here: that RESERVES `currentTiddler` (setting a
+  // list variable to that name makes it unavailable inside the body), so every
+  // `<$view>`/`<$text>` in the loop bound to nothing and the fragment came back
+  // as N separators with zero titles — which reads as「回收站是空的」rather
+  // than as an error (v0.30.59, first run).
+  //
+  // Separator is `|`, not a newline: the fragment is HTML, where newlines are
+  // collapsed to spaces, so splitting on `\n` would yield ONE line holding
+  // every title — which then fails the prefix test just as silently. `|` cannot
+  // occur inside a title produced by `<$view>` (TW escapes it to `&#124;`).
+  const wikitext = `<$list filter="[tag[${TRASHBIN_TAG}]sort[title]]"><$text text=<<currentTiddler>>/>|</$list>`
   let html: string | undefined
   try {
     html = await renderFilter(wikitext)
@@ -489,15 +505,30 @@ export async function listTrashbin(wiki: TiddlyWebClient, renderFilter: (filter:
     return undefined
   }
   if (typeof html !== 'string') return undefined
-  const titles = html.split('\n').map((line) => line.trim()).filter((line) => line.startsWith(TRASHBIN_PREFIX))
+  const titles = html.split('|').map((title) => title.trim()).filter((title) => title.startsWith(TRASHBIN_PREFIX))
+  // Self-check (v0.30.59): separators present but no usable title means the
+  // template rendered empty — the shape a BROKEN probe takes. Reporting that as
+  // an empty trash is the exact failure this function had on its first run, and
+  // it is indistinguishable from「真的空的」for the caller. Fail loudly instead.
+  if (titles.length === 0 && html.includes('|')) {
+    throw new Error('tiddlywiki_trash: 回收站列表渲染结果异常——分隔符存在但没有任何可识别的条目标题（TW 的 <$list> 上下文或转义行为与预期不符）。已中止，未改动任何数据。')
+  }
   const entries: TrashbinEntry[] = []
-  for (const trash of titles) {
-    // `trash-of` is ours; trashbin's native copies fall back to the title minus
-    // the prefix, which is exactly how that plugin stores the original name.
-    const t = await wiki.get(trash)
-    const of = typeof t?.fields?.[TRASHBIN_OF_FIELD] === 'string' ? t.fields[TRASHBIN_OF_FIELD] as string : trash.slice(TRASHBIN_PREFIX.length)
-    const at = typeof t?.fields?.[TRASHBIN_AT_FIELD] === 'string' ? t.fields[TRASHBIN_AT_FIELD] as string : (t?.modified ?? '')
-    entries.push({ trash, of, at })
+  // Bounded concurrency: a 125-item trash would otherwise be 125 SEQUENTIAL
+  // REST round-trips (the shape `session-summary` already had to fix). 8 at a
+  // time keeps it well under a second without hammering a single-user TW child.
+  const CONCURRENCY = 8
+  for (let i = 0; i < titles.length; i += CONCURRENCY) {
+    const slice = titles.slice(i, i + CONCURRENCY)
+    const rows = await Promise.all(slice.map(async (trash): Promise<TrashbinEntry> => {
+      // `trash-of` is ours; trashbin's native copies fall back to the title
+      // minus the prefix, which is how that plugin stores the original name.
+      const t = await wiki.get(trash)
+      const of = typeof t?.fields?.[TRASHBIN_OF_FIELD] === 'string' ? t.fields[TRASHBIN_OF_FIELD] as string : trash.slice(TRASHBIN_PREFIX.length)
+      const at = typeof t?.fields?.[TRASHBIN_AT_FIELD] === 'string' ? t.fields[TRASHBIN_AT_FIELD] as string : (t?.modified ?? '')
+      return { trash, of, at }
+    }))
+    entries.push(...rows)
   }
   return entries
 }
