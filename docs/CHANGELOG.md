@@ -4,6 +4,12 @@
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.33.3**（2026-10-26）：**`.tid` 预览的第一眼改成看内容，而不是看元数据**。
+v0.33.2 修好注册之后，预览能出图了，但顶部把**所有**字段原样铺开：`created`/`modified` 是 17 位 UTC 戳（`20260920070533227`），`revision`/`workspace`/`ws/<项目>`/`agent-written` 这类机械字段也一字不落地占版面 —— 打开一个笔记，前两屏全是元数据。
+现在新增纯函数 `summarizeTid()`（`src/client/tid-parse.ts`）：单列 `title` / `tags` / 时间，时间戳按 `YYYY-MM-DD HH:mm` 格式化（不是 17 位数字就**原样返回**，不装作看懂了）；`ws/*` 与 `agent-written` 不再占标签位，但会在「另外 N 个字段」那行留一个 `tags(hidden)=…` 的影子 —— **折叠不等于丢弃**。
+另把实现名从 `.tid 文件预览` 改成 **「真 TiddlyWiki 渲染」**（en: `Rendered TiddlyWiki`）：宿主在 `candidates.length > 1` 时会画一个实现选择菜单（`rendererId` 按标签页记忆，这是它让"修好了"看起来像"没修好"的原因），名字写清楚用户才能自己切回来。
+守门 `verify-tid-preview` 17 条：新增「17 位戳格式化 / 非 17 位原样」「摘要只单列 title·tags·时间且机械字段进 other」「没有 title/时间时不硬造」三条；i18n 475 → 476 键（`frame.tidMoreFields`）。
+
 - **v0.33.2**（2026-10-26）：**`.tid` 预览仍不生效 —— 这次是"服务还没出现就放弃"**。
 v0.33.1 修好了 `key` 配对，但用户实测仍是纯文本，且 devtools 里 `[class*="dsh-tw-tid"]` 数量为 0（正文组件压根没渲染）。
 根因在插件的**加载顺序**：`documentPreviews` 是另一个插件（宿主的 `dsh-client-ui-sidebar-documentpreview`）用 `ctx.reflect.provide(...)` 提供的，本插件若先加载，`ctx.get(...)` 那一瞬间拿到 `undefined`，v0.32/0.33.0/0.33.1 就**静默 return** 了 —— 界面上看不出差别（宿主用内置纯文本兜底），console 里也一条日志都没有，等于把失败藏起来。

@@ -26,6 +26,83 @@ export interface ParsedTid {
 }
 
 /**
+ * 内部/机械性字段：对「人看这个文件」没有信息量，摘要里折到一行小字里。
+ *
+ * `ws/*` 与 `agent-written` 其实是**标签值里的标记**，不是字段名 —— 见 `summarizeTid`。
+ */
+export const INTERNAL_FIELD_KEYS = ['revision', 'workspace', 'human-edited', 'agent-written', 'bag', 'list']
+
+/** 摘要里单列出来的字段（其余进「另外 N 个字段」那一行）。 */
+export const SUMMARY_FIELD_KEYS = ['created', 'modified', 'creator', 'modifier', 'type']
+
+export interface TidSummary {
+  /** 展示标题：`title:` 字段优先。 */
+  title?: string
+  /** 去掉内部标记后的标签。 */
+  tags: string[]
+  /** 人类可读的时间（优先 `modified`，其次 `created`）。 */
+  time?: string
+  /** 单列出来的字段（`created`/`modified`/`creator`/`modifier`/`type`），时间字段已格式化。 */
+  known: Array<[string, string]>
+  /** 折进「另外 N 个字段」的那些（内部字段 + 其余自定义字段）。 */
+  other: Array<[string, string]>
+}
+
+/**
+ * 把 TiddlyWiki 的 17 位时间戳（`YYYYMMDDHHmmssSSS`，UTC）变成 `YYYY-MM-DD HH:mm`。
+ *
+ * 不是 17 位数字就原样返回 —— 宁可显示原文，也不要把一个看不懂的值装作看懂了。
+ */
+export function formatTidStamp(value: string): string {
+  const raw = value.trim()
+  if (!/^\d{17}$/.test(raw)) return raw
+  const [y, mo, d, h, mi] = [raw.slice(0, 4), raw.slice(4, 6), raw.slice(6, 8), raw.slice(8, 10), raw.slice(10, 12)]
+  return `${y}-${mo}-${d} ${h}:${mi}`
+}
+
+/**
+ * 把解析结果压成**给人看**的摘要。
+ *
+ * 规则（作者 2026-10-26 要求）：只单列 `title` / `tags` / 时间，其余（`revision`、`workspace`、
+ * `human-edited`、`ws/*` 这类机械字段）折进一行小字 —— 预览器的第一眼应该看到**内容**，
+ * 不是一堆元数据。
+ */
+export function summarizeTid(parsed: ParsedTid): TidSummary {
+  const known: Array<[string, string]> = []
+  const other: Array<[string, string]> = []
+  let tags: string[] = []
+  let created: string | undefined
+  let modified: string | undefined
+  for (const [key, value] of parsed.fields) {
+    if (key === 'tags') {
+      tags = value.split(/[\s,]+/).filter((tag) => tag.length > 0)
+      continue
+    }
+    if (key === 'created') created = value
+    if (key === 'modified') modified = value
+    if (SUMMARY_FIELD_KEYS.includes(key)) {
+      known.push([key, key === 'created' || key === 'modified' ? formatTidStamp(value) : value])
+      continue
+    }
+    other.push([key, key === 'created' || key === 'modified' ? formatTidStamp(value) : value])
+  }
+  // 系统/机械标记不占版面：`ws/<项目>` 与 `agent-written` 只在「另外 N 个」里留个影子。
+  const visibleTags = tags.filter((tag) => !tag.startsWith('ws/') && tag !== 'agent-written')
+  const hiddenTags = tags.filter((tag) => !visibleTags.includes(tag))
+  // 键名走英文：这是开发者可见的折叠行标签，客户端守门禁止中文字面量。
+  if (hiddenTags.length > 0) other.push(['tags(hidden)', hiddenTags.join(' ')])
+  const stamp = modified ?? created
+  const time = stamp === undefined ? undefined : formatTidStamp(stamp)
+  return {
+    ...(parsed.title !== undefined && parsed.title.length > 0 ? { title: parsed.title } : {}),
+    tags: visibleTags,
+    ...(time !== undefined ? { time } : {}),
+    known: known.filter(([key]) => key !== 'created' && key !== 'modified'),
+    other,
+  }
+}
+
+/**
  * 把一份 `.tid` 文件拆成「字段 + 正文」。
  *
  * `.tid` 格式：若干 `key: value` 行 → **一个空行** → 正文。没有空行时整份都当字段

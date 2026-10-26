@@ -32,11 +32,12 @@ import * as React from 'react'
 import { t } from './i18n.ts'
 import { RENDER_ENDPOINT, withWikiQuery } from './endpoints.ts'
 
-import { parseTidText, TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT } from './tid-parse.ts'
+import { parseTidText, summarizeTid, TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT } from './tid-parse.ts'
 
 // 纯逻辑住在 tid-parse.ts（宿主 barrel 也要导出它，而宿主包不能出现 react）。
 export { parseTidText, TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT } from './tid-parse.ts'
-export type { ParsedTid } from './tid-parse.ts'
+export type { ParsedTid, TidSummary } from './tid-parse.ts'
+export { formatTidStamp, summarizeTid } from './tid-parse.ts'
 
 /**
  * 从正文 props 里取文件文本。
@@ -116,16 +117,26 @@ export function createTidPreviewBody(): (props: unknown) => React.ReactElement {
       return () => { alive = false }
     }, [parsed.text])
 
+    // 摘要（v0.33.3，作者要求）：第一眼只看 title / tags / 时间，机械字段折成一行小字。
+    const summary = React.useMemo(() => summarizeTid(parsed), [parsed])
     const head: React.ReactElement[] = []
-    if (parsed.title !== undefined && parsed.title.length > 0) {
-      head.push(React.createElement('div', { key: 'title', className: 'dsh-tw-tid-title' }, `📄 ${parsed.title}`))
+    if (summary.title !== undefined) {
+      head.push(React.createElement('div', { key: 'title', className: 'dsh-tw-tid-title' }, `📄 ${summary.title}`))
     }
-    if (parsed.fields.length > 0) {
+    const chips: React.ReactElement[] = []
+    if (summary.time !== undefined) chips.push(React.createElement('span', { key: 'time', className: 'dsh-tw-tid-time' }, `🕒 ${summary.time}`))
+    for (const tag of summary.tags) chips.push(React.createElement('span', { key: `tag:${tag}`, className: 'dsh-tw-tid-tag' }, `#${tag}`))
+    for (const [key, value] of summary.known) {
+      chips.push(React.createElement('span', { key: `k:${key}`, className: 'dsh-tw-tid-field' }, `${key}: ${value.length > 40 ? `${value.slice(0, 40)}…` : value}`))
+    }
+    if (chips.length > 0) head.push(React.createElement('div', { key: 'chips', className: 'dsh-tw-tid-fields' }, ...chips))
+    if (summary.other.length > 0) {
+      const folded = summary.other.map(([key, value]) => `${key}=${value.length > 24 ? `${value.slice(0, 24)}…` : value}`).join(' · ')
       head.push(
         React.createElement(
           'div',
-          { key: 'fields', className: 'dsh-tw-tid-fields' },
-          parsed.fields.map(([key, value]) => React.createElement('span', { key, className: 'dsh-tw-tid-field' }, `${key}: ${value.length > 60 ? `${value.slice(0, 60)}…` : value}`)),
+          { key: 'more', className: 'dsh-tw-tid-more', title: folded },
+          `${t('frame.tidMoreFields', { n: summary.other.length })} — ${folded}`,
         ),
       )
     }

@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT, parseTidText } from '../lib/index.js'
+import { TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT, formatTidStamp, parseTidText, summarizeTid } from '../lib/index.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 let failures = 0
@@ -74,6 +74,30 @@ test('解析：只有字段、没有正文', () => {
 test('解析：空文本不炸', () => {
   assert.deepEqual(parseTidText(''), { fields: [], text: '' })
   assert.deepEqual(parseTidText(undefined), { fields: [], text: '' })
+})
+
+test('时间戳：17 位 UTC → 人类可读；别的形态原样返回', () => {
+  assert.equal(formatTidStamp('20260920070533227'), '2026-09-20 07:05')
+  assert.equal(formatTidStamp('2026-09-20'), '2026-09-20', '不是 17 位就原样，别装作看懂了')
+})
+
+test('摘要：只单列 title/tags/时间，机械字段折进 other', () => {
+  const parsed = parseTidText('title: 任务\ncreated: 20260920070533227\nmodified: 20261026143200000\nmodifier: 王二\ntags: 索引 工具 ws/ai-project agent-written\nrevision: 7\n\n正文')
+  const sum = summarizeTid(parsed)
+  assert.equal(sum.title, '任务')
+  assert.deepEqual(sum.tags, ['索引', '工具'], 'ws/* 与 agent-written 不该占标签位')
+  assert.equal(sum.time, '2026-10-26 14:32', '时间优先取 modified，且格式化')
+  assert.deepEqual(sum.known, [['modifier', '王二']], 'created/modified 已进 time，不再重复列')
+  const keys = sum.other.map(([k]) => k)
+  assert.ok(keys.includes('revision'), '机械字段进 other')
+  assert.ok(keys.includes('tags(hidden)'), '被隐藏的标签要留个影子（可追溯，不静默丢）')
+})
+
+test('摘要：没有 title/时间时不硬造', () => {
+  const sum = summarizeTid(parseTidText('tags: a\n\n正文'))
+  assert.equal(sum.title, undefined)
+  assert.equal(sum.time, undefined)
+  assert.deepEqual(sum.tags, ['a'])
 })
 
 test('注册成对：元数据与正文必须用同一个 id 常量', () => {
