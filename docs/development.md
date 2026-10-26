@@ -147,6 +147,33 @@ npm publish    # 版本号在 package.json；文件白名单见 files 字段
 
 `tiddlywiki` 依赖体较大（含全部语言包/插件）。
 
+### v0.31.x 的两项未做（决策记录，2026-10-26）
+
+原计划里的这两项**没有实现**，理由写在这里，免得下一个人从头再猜一遍：
+
+**① `ctx.locale.register` 替换自研 i18n（470 键 / 7 分片）**
+
+- 官方契约要求「用已合并进 `LocaleNamespaceMap` 的命名空间」调用 `ctx.locale.register(ns,{zh,en})`，
+  编译器会按该命名空间的**类型化键并集**逐个校验。本插件的客户端是**单文件打包、无 .d.ts**
+  （`lib/client.js` 由 esbuild 产出），无法参与那个类型合并 —— 迁移等于**放弃键名拼错的保护**，
+  而现有 `scripts/verify-client-i18n.mjs` 恰好是拿这层保护在守（zh/en 键集合一致、每个
+  `t('…')` 的键都存在、无未使用键、无残留中文）。
+- 收益只有"改语言即时生效"；代价是动到每一个客户端文件 + 重写那条守门。**风险与收益不成比例**，
+  故不做。若将来要做，前置条件是先给客户端加类型检查，或确认 `ctx.locale.bind(ns)` 的返回值
+  能让纯 React 组件在 `locale/change` 时重渲染（本会话无法取得该证据）。
+
+**② `.tid` 的 `documentPreviews` 预览**
+
+- 契约是**成对**的：`ctx.documentPreviews.register({ id, extensions, …, loading })` 注册元数据，
+  再以**同一个 id** 往 keyed、Session 作用域的 `sidebar.right.tab.document` 注册正文；正文接收
+  `resourceAddress`/`content`/`wrap`/`scrollportRef`/`addResource`/`setResources` + `useTabInfo`/`useResource`。
+- 这套 props 没有随包 .d.ts（`app.asar` 里 0 个 d.ts），本会话也**没有可视验证手段**
+  （CDP 9222 不通、web 端 401）。按本仓库的规矩「守门就是证据」，没有可视证据就发出去，
+  是在赌一个面板不会白屏 —— 而白屏是**沉默失败**，正是这一轮专门在消灭的那一类。
+- 未做的部分不代表没结论：真要做时，正文应当把文件文本 POST 到本插件自己的
+  `/dsh-tiddlywiki/render`（铁律 #7 要求所有 TW 注入都走净化管道），拿回净化后的 HTML 再渲染；
+  这条路径与现有工具卡、TW 代理面板**共用同一个安全边界**，不要另开一条。
+
 ### 发布时要动的地方（完整清单见 AGENTS.md §4）
 
 1. `package.json` 的 `version`；
