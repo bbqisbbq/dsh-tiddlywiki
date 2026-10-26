@@ -151,7 +151,7 @@ npm publish    # 版本号在 package.json；文件白名单见 files 字段
 
 原计划里的这两项**没有实现**，理由写在这里，免得下一个人从头再猜一遍：
 
-**① `ctx.locale.register` 替换自研 i18n（470 键 / 7 分片）**
+**① `ctx.locale.register` 与自研 i18n —— v0.33.0 已用「注册但不搬」落地**（`src/client/i18n-host.ts` + `scripts/verify-locale-host.mjs`）：目录仍只有一份、键名校验一条不减；宿主有 locale 服务时 `t()` 先问它、否则回本地表。下面这段是当初的判断，仍然成立（正因如此才没有整体迁移）：
 
 - 官方契约要求「用已合并进 `LocaleNamespaceMap` 的命名空间」调用 `ctx.locale.register(ns,{zh,en})`，
   编译器会按该命名空间的**类型化键并集**逐个校验。本插件的客户端是**单文件打包、无 .d.ts**

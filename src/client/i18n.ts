@@ -22,6 +22,7 @@
  * @module dsh-tiddlywiki/client/i18n
  */
 import { MESSAGES } from './i18n-catalog.ts'
+import { translate } from './locale-host.ts'
 
 export type Lang = 'zh' | 'en'
 
@@ -72,14 +73,14 @@ export function setLang(raw: unknown): boolean {
 }
 
 /**
- * Look one message up. `vars` interpolates `{name}` placeholders.
+ * Look one message up in the LOCAL table. `vars` interpolates `{name}` placeholders.
  *
  * Never throws and never returns an empty string: an unknown key falls back to
  * the default language and then to the KEY itself (visible in the UI, which is
  * exactly what you want while converting a surface — a missing entry shows up
  * instead of silently rendering "").
  */
-export function t(key: string, vars?: Record<string, string | number>): string {
+function fromLocalTable(key: string, vars?: Record<string, string | number>): string {
   const table = MESSAGES[current] as Record<string, string> | undefined
   const fallback = MESSAGES[DEFAULT_LANG] as Record<string, string> | undefined
   const raw = table?.[key] ?? fallback?.[key] ?? key
@@ -88,4 +89,16 @@ export function t(key: string, vars?: Record<string, string | number>): string {
     const value = vars[name]
     return value === undefined ? match : String(value)
   })
+}
+
+/**
+ * Resolve one message (v0.33.0): **host locale service first, local table as the
+ * fallback**. See `locale-host.ts` for why the catalog is registered rather than
+ * migrated. Any host failure (missing service, no `bind`, throw, empty string,
+ * or the key echoed back) falls through to the local table, so the worst case
+ * equals v0.32.0 behaviour. There is exactly ONE catalog, so "two disagreeing
+ * copies" cannot exist by construction.
+ */
+export function t(key: string, vars?: Record<string, string | number>): string {
+  return translate(key, vars, fromLocalTable)
 }

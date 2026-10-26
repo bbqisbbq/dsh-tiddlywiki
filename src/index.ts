@@ -144,6 +144,14 @@ export { tiddlywikiToolSummary } from './host/tools.ts'
 // `.tid` 预览的**纯**半边（v0.32.0）。只能导出不碰 react 的模块：`client/tid-preview.ts`
 // 依赖 React 与客户端 endpoints，进宿主包会炸。
 export { TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT, parseTidText, type ParsedTid } from './client/tid-parse.ts'
+// 宿主 locale 集成（v0.33.0）：只导出**不碰 react** 的那半边（i18n-host 只依赖目录数据）。
+export {
+  LOCALE_NAMESPACE,
+  hasHostTranslator,
+  registerLocaleWithHost,
+  translate,
+  type LocaleServiceFace,
+} from './client/locale-host.ts'
 export {
   NOTE_COMMAND_NAME,
   parseNoteInput,

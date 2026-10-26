@@ -28,6 +28,7 @@ import { SettingsSection } from './settings-page.ts'
 import { registerToolViews, installWikiLinkInterceptor } from './tool-views.ts'
 import { mountRightbarTab, type RightbarSlotsFace } from './rightbar-tab.ts'
 import { registerTidPreview } from './tid-preview.ts'
+import { registerLocaleWithHost } from './locale-host.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-tiddlywiki/client'
@@ -192,6 +193,9 @@ export function apply(ctx: ClientContextFace): void {
     // `.tid` / `.tiddler` 文件的侧栏预览（v0.32.0）：元数据 + 正文成对注册。
     // 宿主没有 `documentPreviews` 服务时它自己什么都不做（老版本 DSH 不受影响）。
     safeMount('tid preview', () => disposers.push(...registerTidPreview(ctx)))
+    // 文案目录注册进宿主 locale 服务（v0.33.0）：目录**不搬家**，只是让宿主的语言
+    // 运行时也能解析它；没有该服务时静默跳过（老版本 DSH 行为一个字节都不变）。
+    safeMount('locale registration', () => disposers.push(...registerLocaleWithHost(ctx.get)))
     // Settings page → Settings → 「TiddlyWiki 知识库」(config panel §13).
     safeMount('settings section', () => {
       const removeSettings = ctx.slots?.inject('settings.section', () =>
