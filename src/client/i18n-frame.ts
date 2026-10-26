@@ -34,6 +34,10 @@ export const FRAME_MESSAGES: { zh: Record<string, string>; en: Record<string, st
     'frame.statusUnreachable': '无法访问 /dsh-tiddlywiki/status',
     'frame.noEditorUrl': '服务未返回编辑器地址',
     'frame.statusError': '服务状态：{status}',
+  'frame.tidPreviewTitle': '.tid 文件预览',
+  'frame.tidPreviewWaiting': '等待文件内容…',
+  'frame.tidPreviewNoBody': '这个 .tid 只有字段、没有正文。',
+  'frame.tidPreviewFallback': '渲染失败，下面是原文：',
   },
   en: {
     'frame.syncRestarted': ', TiddlyWiki restarted',
@@ -60,5 +64,9 @@ export const FRAME_MESSAGES: { zh: Record<string, string>; en: Record<string, st
     'frame.statusUnreachable': 'Cannot reach /dsh-tiddlywiki/status',
     'frame.noEditorUrl': 'The service returned no editor address',
     'frame.statusError': 'Service status: {status}',
+  'frame.tidPreviewTitle': '.tid file preview',
+  'frame.tidPreviewWaiting': 'Waiting for file content…',
+  'frame.tidPreviewNoBody': 'This .tid has fields but no body text.',
+  'frame.tidPreviewFallback': 'Rendering failed; showing the raw text:',
   },
 }

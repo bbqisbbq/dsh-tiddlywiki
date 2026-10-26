@@ -141,6 +141,9 @@ export {
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, drainThenStop, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUnavailableError, isJunkTag } from './host/tools.ts'
 export { tiddlywikiToolSummary } from './host/tools.ts'
+// `.tid` 预览的**纯**半边（v0.32.0）。只能导出不碰 react 的模块：`client/tid-preview.ts`
+// 依赖 React 与客户端 endpoints，进宿主包会炸。
+export { TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT, parseTidText, type ParsedTid } from './client/tid-parse.ts'
 export {
   NOTE_COMMAND_NAME,
   parseNoteInput,

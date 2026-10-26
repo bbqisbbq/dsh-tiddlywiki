@@ -147,7 +147,7 @@ npm publish    # 版本号在 package.json；文件白名单见 files 字段
 
 `tiddlywiki` 依赖体较大（含全部语言包/插件）。
 
-### v0.31.x 的两项未做（决策记录，2026-10-26）
+### v0.31.x 的决策记录（2026-10-26，v0.32.0 已补做 .tid 预览）
 
 原计划里的这两项**没有实现**，理由写在这里，免得下一个人从头再猜一遍：
 
@@ -162,7 +162,7 @@ npm publish    # 版本号在 package.json；文件白名单见 files 字段
   故不做。若将来要做，前置条件是先给客户端加类型检查，或确认 `ctx.locale.bind(ns)` 的返回值
   能让纯 React 组件在 `locale/change` 时重渲染（本会话无法取得该证据）。
 
-**② `.tid` 的 `documentPreviews` 预览**
+**② `.tid` 的 `documentPreviews` 预览 —— v0.32.0 已实现**（`src/client/tid-parse.ts` 纯逻辑 + `src/client/tid-preview.ts` UI + `scripts/verify-tid-preview.mjs` 10 条守门）。下面这段当初写下的顾虑仍然成立，所以留下的实现约定照旧执行：
 
 - 契约是**成对**的：`ctx.documentPreviews.register({ id, extensions, …, loading })` 注册元数据，
   再以**同一个 id** 往 keyed、Session 作用域的 `sidebar.right.tab.document` 注册正文；正文接收
