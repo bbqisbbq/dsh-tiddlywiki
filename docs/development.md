@@ -173,6 +173,12 @@ npm publish    # 版本号在 package.json；文件白名单见 files 字段
 - 未做的部分不代表没结论：真要做时，正文应当把文件文本 POST 到本插件自己的
   `/dsh-tiddlywiki/render`（铁律 #7 要求所有 TW 注入都走净化管道），拿回净化后的 HTML 再渲染；
   这条路径与现有工具卡、TW 代理面板**共用同一个安全边界**，不要另开一条。
+- **已核实的契约（2026-10-26，直接读 `app.asar` 里 `dsh-client-ui-sidebar-documentpreview/lib/client.js`）**：
+  `ctx.documentPreviews.register({ id, extensions, binaryExtensions?, priority, title, loading, wrap? })`
+  确实存在，且**按 id 去重**——同 id 重复注册抛「duplicate implementation」；`binaryExtensions`
+  必须在 `extensions` 里，否则也抛。**唯一还没核实的是正文组件的 props 形状**（`content` 的
+  text/bytes/renderer 三态与 `ResourceGroup` 相关字段），它同样在那个 bundle 里：动手前先读它，
+  别照着这条笔记猜。
 
 ### 发布时要动的地方（完整清单见 AGENTS.md §4）
 
