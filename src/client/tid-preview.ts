@@ -215,7 +215,8 @@ export function registerTidPreview(ctx: PreviewCtx): Array<() => void> {
     const previews = getter('documentPreviews') as DocumentPreviewsFace | undefined
     if (previews === undefined || previews === null) {
       if (attempts >= 40) {
-        console.warn('[dsh-tiddlywiki] tid preview: documentPreviews 服务始终没出现（尝试 ' + attempts + ' 次），.tid 将显示内置纯文本')
+        // 开发者日志（客户端守门禁止中文字面量，故一律英文）
+        console.warn('[dsh-tiddlywiki] tid preview: documentPreviews never appeared after ' + attempts + ' attempts; .tid files will fall back to the builtin plain-text preview')
         return
       }
       timer = setTimeout(attempt, 250)
@@ -235,7 +236,7 @@ export function registerTidPreview(ctx: PreviewCtx): Array<() => void> {
           wrap: false,
         }),
       )
-      console.info('[dsh-tiddlywiki] tid preview: 元数据已注册（第 ' + attempts + ' 次尝试）id=' + TID_PREVIEW_ID + ' 后缀=' + TID_EXTENSIONS.join('/'))
+      console.info('[dsh-tiddlywiki] tid preview: metadata registered on attempt ' + attempts + ' (id=' + TID_PREVIEW_ID + ', suffixes=' + TID_EXTENSIONS.join('/') + ')')
     } catch (err) {
       // 开发者日志，不是用户文案（与仓库其它模块的 console.warn 同一性质）。
       console.warn('[dsh-tiddlywiki] tid preview registration failed:', err)
@@ -244,17 +245,17 @@ export function registerTidPreview(ctx: PreviewCtx): Array<() => void> {
     const slots = ctx.slots
     if (slots === undefined) {
       // 元数据已注册但没有正文 → 宿主会拿不到渲染器，宁可整体撤回。
-      console.warn('[dsh-tiddlywiki] tid preview: 没有 ctx.slots，撤回元数据')
+      console.warn('[dsh-tiddlywiki] tid preview: no ctx.slots; rolling back the metadata registration')
       for (const dispose of disposers.splice(0)) dispose()
       return
     }
     const bodyDispose = slots.inject(TID_PREVIEW_SLOT, () =>
       slots.register({ name: TID_PREVIEW_SLOT, key: TID_PREVIEW_ID }, createTidPreviewBody()),
     )
-    if (bodyDispose === undefined) console.warn('[dsh-tiddlywiki] tid preview: 正文注册失败（slot ' + TID_PREVIEW_SLOT + '）')
+    if (bodyDispose === undefined) console.warn('[dsh-tiddlywiki] tid preview: body registration failed (slot ' + TID_PREVIEW_SLOT + ')')
     else {
       disposers.push(bodyDispose)
-      console.info('[dsh-tiddlywiki] tid preview: 正文已注册到 ' + TID_PREVIEW_SLOT + ' key=' + TID_PREVIEW_ID)
+      console.info('[dsh-tiddlywiki] tid preview: body registered into ' + TID_PREVIEW_SLOT + ' with key=' + TID_PREVIEW_ID)
     }
   }
 
