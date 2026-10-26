@@ -7,6 +7,7 @@
  * @module dsh-tiddlywiki/host/tools-notes-structure
  */
 import { defineTool } from '../sdk.ts'
+import { APPEND_RESULT, RENAME_RESULT, REPLACE_RESULT } from './tool-output-schemas.ts'
 import { isBinaryType } from './tw-api.ts'
 import { assertNoConflict, buildWriteTiddler, normalizeTagArg } from './write-policy.ts'
 import { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX } from './workspace.ts'
@@ -28,6 +29,7 @@ export function renameTool(env: ToolEnv) {
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制重命名（默认 false）' },
     },
     output: {
+      schema: RENAME_RESULT,
       render: (_args, value: RenameResult) => {
         const lines = [`已重命名「${value.from}」→「${value.to}」`]
         lines.push(`更新了 ${value.refsUpdated} 处引用（${value.refsTiddlers} 个 tiddler）`)
@@ -156,6 +158,7 @@ export function appendTool(env: ToolEnv) {
     },
     normalizeArgs: normalizeFieldsInArgs,
     output: {
+      schema: APPEND_RESULT,
       render: (_args, value: AppendResult) => {
         // v0.26.6：标题没定位到时必须说出来。以前回执无条件打「段落「X」」，
         // 于是「静默追加到文末」看起来跟「精确写进那一节」一模一样。
@@ -260,6 +263,7 @@ export function replaceTool(env: ToolEnv) {
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制替换（默认 false）' },
     },
     output: {
+      schema: REPLACE_RESULT,
       render: (_args, value: ReplaceResult) => {
         if (value.found === false) {
           return [{ type: 'text', text: `⚠️ tiddler「${value.title}」里没找到要替换的原文，未做任何改动。请先 tiddlywiki_get 读原文、确认要替换的精确子串。` }]

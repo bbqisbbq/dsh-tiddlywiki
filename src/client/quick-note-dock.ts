@@ -22,14 +22,6 @@ import { alignDockEntry } from './dock-align.ts'
 import { isEditorPopupOpen, isEditorPopupBlank, closeEditorPopup } from './editor-popup.ts'
 
 /**
- * Session-store reader the shell supplies on session-scoped slots (v0.28.8).
- * Re-declared structurally here (no SDK import): the selector needs it to tell
- * a BLANK session from an active one, and it must travel through this entry
- * because the slot hands props to the ENTRY, not to the child it renders.
- */
-type SessionStoreReader = (selector: (state: unknown) => unknown) => unknown
-
-/**
  * Build the dock entry component bound to one note-widget handle. Called once
  * per client mount; the returned component is what the slot renders.
  *
@@ -39,16 +31,14 @@ type SessionStoreReader = (selector: (state: unknown) => unknown) => unknown
  * 最右端。注意 dock 槽位会把各条目包在一个容器里、与输入栏是兄弟节点，所以
  * 必须逐级往上爬祖先才能找到输入框。
  *
- * `scope`（v0.28.7）是同一行里渲染在按钮**前面**的元素（知识库选择器）。
- * 为什么合并成一个条目：dock 槽位是纵向 flex 列，**每个条目 = 一整行**，所以
- * "选择器一行、快速笔记一行"永远不可能对齐成一条 —— 各自量各自的宽度，视觉上
- * 就是两行错位（作者连报两次）。合并后只有一个条目、一次测量，两者天然同基线。
+ * 这个条目**只**负责快速笔记按钮（v0.30.66）：会话级知识库选择器已迁到
+ * `conversation.input.left`（宿主的工具行），不再由这里用 `scope` 参数带出来。
+ * 它不再需要窗口 props，因此签名没有参数（slot 传什么都不会用到）。
  */
 export function createQuickNoteDock(
   note: NoteWidgetHandle,
-  scope?: (props: { sessionId?: string; useSessions?: SessionStoreReader }) => React.ReactElement | null,
-): (props: { sessionId?: string; useSessions?: SessionStoreReader }) => React.ReactElement {
-  return function QuickNoteDock(props: { sessionId?: string; useSessions?: SessionStoreReader }) {
+): () => React.ReactElement {
+  return function QuickNoteDock() {
     const [open, setOpen] = React.useState(false)
     // 点击行为由 ui.quickNoteMode 决定：native=直达 TW 原生编辑页（弹窗）；
     // card=Markdown 卡片。null = 配置尚未加载（点击时按配置实时分发）。
@@ -72,9 +62,9 @@ export function createQuickNoteDock(
         window.removeEventListener(NOTE_STATE_EVENT, onState)
       }
     }, [])
-    // 与 composer 输入框右缘对齐：测量逻辑已抽到 client/dock-align.ts（v0.28.2），
-    // 因为第二个 dock 条目（会话级知识库选择器）加进来时它没有对齐 —— 规则只写在
-    // 这里，别人看不见。
+    // 与 composer 输入框右缘对齐：测量逻辑在 client/dock-align.ts（v0.28.2）。
+    // 这里仍然是 dock 的**整行**条目，所以仍需一次测量（v0.30.66：知识库选择器
+    // 迁去工具行之后，"同一行里两个元素"的对齐问题整体消失了）。
     React.useLayoutEffect(() => {
       const wrap = wrapRef.current
       if (wrap === null) return
@@ -88,16 +78,6 @@ export function createQuickNoteDock(
     return React.createElement(
       'div',
       { ref: wrapRef, className: 'dsh-tw-dock-note' },
-      // 知识库选择器排在按钮**前面**（同一行、同一基线）。它的 sessionId 必须
-      // 从本条目透传下去 —— 槽位的 scope=session，props 是发给**条目组件**的，
-      // 子元素不会自动拿到（v0.28.7：漏了这一步选择器会永远读不到会话 id）。
-      // useSessions（v0.28.11）同理：选择器要靠它认出「空白会话」，而空白/活动
-      // 两种状态下选择器该待在哪儿是不同的（见 scope-seat.ts）。
-      // scope 为 undefined 时（单库安装）什么都不渲染，DOM 与以前逐字相同。
-      scope?.({
-        ...(props.sessionId !== undefined ? { sessionId: props.sessionId } : {}),
-        ...(props.useSessions !== undefined ? { useSessions: props.useSessions } : {}),
-      }) ?? null,
       React.createElement(
         'button',
         {

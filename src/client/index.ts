@@ -21,7 +21,6 @@ import { createSyncController } from './sync-button.ts'
 import { mountKnowledgeFab } from './knowledge-fab.ts'
 import { createQuickNoteDock } from './quick-note-dock.ts'
 import { createWikiScopeDock } from './wiki-scope-dock.ts'
-import { mountScopeSeat, type ScopeSeatSlots } from './scope-seat.ts'
 import { fetchUiConfig } from './ui-config.ts'
 import { mountSessionSummaryView } from './session-summary.ts'
 import { disposeEditorPopup } from './editor-popup.ts'
@@ -109,11 +108,14 @@ export function apply(ctx: ClientContextFace): void {
     // queue/git-graph 等插件内容都渲染在这里、按纵向 flex 排列，天然不重叠。
     // 由 ui.showQuickNoteDock 配置控制（默认开）。
     //
-    // 「会话级知识库选择器」（v0.28.0，需求：会话栏上面动态选 wiki）**不再单独占一个
-    // 槽位条目**（v0.28.7）：dock 是纵向 flex 列，一个条目 = 一整行，所以两个条目
-    // 各自量宽度、永远对不齐（作者连报两次）。现在它作为 `scope` 渲染在快速笔记按钮
-    // 同一行的前面，只有一个条目、一次测量。组件自己在"可见库 ≤ 1"时返回 null，
-    // 所以单库安装这一块 DOM 与以前逐字相同。
+    // 「会话级知识库选择器」（v0.28.0，需求：会话栏上面动态选 wiki）的座位演进：
+    //   v0.28.0 独立 dock 条目 → 两边永远上下两行（dock 是纵向 flex，一个条目一整行）；
+    //   v0.28.7 塞进快速笔记那一行（`scope` 参数）→ 能并排，但靠逐行测量对齐；
+    //   v0.28.8 想给空白会话一个「模式选择器旁边」的座位 → 那个座位
+    //   `conversation.input.selector.context` 在 DSH 0.2.1 里**根本不存在**
+    //   （宿主座位表里没有，随包 client bundle 里连字符串都没有），那一支从未渲染。
+    //   v0.30.66：改挂 `conversation.input.left` —— 宿主为「输入工具行左侧的小控件」
+    //   提供的正式座位，空白/活动会话都有，一个家、无重复、由宿主负责对齐。
     if (ctx.slots !== undefined) {
       void fetchUiConfig().then((cfg) => {
         if (clientDisposed) return
@@ -123,25 +125,23 @@ export function apply(ctx: ClientContextFace): void {
             const removeDock = ctx.slots?.inject('conversation.input.dock', () =>
               ctx.slots?.register(
                 { name: 'conversation.input.dock', id: 'quick-note', order: 8, label: t('chrome.dockQuickNote') },
-                createQuickNoteDock(widget, createWikiScopeDock()),
+                createQuickNoteDock(widget),
               ),
             )
             if (removeDock !== undefined) disposers.push(removeDock)
           })
         }
-        // 空白会话（新建）里的知识库选择器（v0.28.8，需求 9）：挂到
-        // `conversation.input.selector.context` —— 模式/预设选择器旁边那一格，
-        // 正是作者要的位置（参考 dsh-client-ui-git-graph 的做法）。
-        //
-        // 与会话内那个选择器的分工（**两者不会同时出现**）：
-        //   · selector.context 是 session-maybe + 只在**空白会话**渲染 →
-        //     新建会话时出现在模式选择器旁；
-        //   · 会话内那个在 quick-note 行里（v0.28.7），只在**已有消息**的会话出现。
-        // 组件自身在两种情况下都会因为拿不到可用数据而不渲染，但这层「哪个座位」
-        // 的选择由 scope-seat.ts 负责；本机 shell 未声明 selector.context 时它会
-        // 回落到 dock（dock 里已经有 quick-note 行的选择器，所以回落态下这一条
-        // 用 blank-only 组件，避免同一选择器在 dock 里出现两次）。
-        safeMount('wiki scope seat', () => disposers.push(mountScopeSeat(ctx.slots as ScopeSeatSlots, createWikiScopeDock({ blankOnly: true }))))
+        // 会话级知识库选择器：输入框工具行左侧（v0.30.66）。
+        // 组件自身在「可见库 ≤ 1」时返回 null —— 单库安装这一块 DOM 不存在。
+        safeMount('wiki scope seat', () => {
+          const removeScope = ctx.slots?.inject('conversation.input.left', () =>
+            ctx.slots?.register(
+              { name: 'conversation.input.left', id: 'wiki-scope', order: 9, label: t('chrome.scopeSlotLabel') },
+              createWikiScopeDock(),
+            ),
+          )
+          if (removeScope !== undefined) disposers.push(removeScope)
+        })
         // 会话顶部「知识库」Tab（conversation.view 槽位）：显示本会话产生/读取/
         // 检索过的 wiki 笔记汇总（TW 原生渲染）。由 ui.showSessionTab 控制（默认
         // 开），tab 名跟随 ui.tabLabel（默认「知识库」）。

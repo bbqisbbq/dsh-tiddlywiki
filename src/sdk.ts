@@ -34,7 +34,7 @@ interface ScalarSpec {
 }
 
 /** Author-facing object spec (additionalProperties is mandatory). */
-interface ObjectSpec {
+export interface ObjectSpec {
   readonly type: 'object'
   readonly additionalProperties: boolean
   readonly description?: string
@@ -43,7 +43,7 @@ interface ObjectSpec {
 }
 
 /** Author-facing value spec. */
-type ValueSpec = ScalarSpec | ObjectSpec | { readonly type: 'json'; readonly description?: string } | { readonly type: 'array'; readonly items?: ValueSpec; readonly description?: string }
+export type ValueSpec = ScalarSpec | ObjectSpec | { readonly type: 'json'; readonly description?: string } | { readonly type: 'array'; readonly items?: ValueSpec; readonly description?: string }
 
 /** Author-facing parameter entry (a value spec plus top-level required). */
 type ParameterSpec = ValueSpec & { readonly required?: boolean }
@@ -165,6 +165,15 @@ export interface DefineToolOptions<A, V> {
    */
   normalizeArgs?(args: Record<string, unknown>): Record<string, unknown>
   readonly output: {
+    /**
+     * 可选：**返回值**的 schema（v0.30.66）。
+     *
+     * DSH 的注册表会用它在每次调用后校验 `execute` 的返回值
+     * （`validateJsonSchemaValue` → `ToolOutputError`），所以这是唯一一处
+     * 「工具自己声明、宿主来执行」的出口契约。不声明 = 不校验（旧行为）。
+     * 规则见 `host/tool-output-schemas.ts` 的模块头（只声明必定存在且类型稳定的字段）。
+     */
+    schema?: ValueSpec
     render(args: A, value: V): Array<{ type: 'text'; text: string }>
   }
   execute(args: A, exec: unknown): Promise<V>
@@ -196,11 +205,12 @@ export function defineTool<A extends Record<string, unknown>, V>(options: Define
     description: options.description,
     parameters,
     output: {
-      // The registry's render contract only consumes `render()`; the declared
-      // `schema` is kept as the empty raw node it always effectively was (the
-      // per-tool `schema: {type:'json'}` literals were never read — removed in
-      // v0.20.0 so the option list matches what the code does).
-      schema: {},
+      /**
+       * The registry DOES read this (v0.30.66): DSH validates the returned value
+       * against it on every call. Unset → `{}` = no constraint, i.e. the old
+       * behaviour. Tools that declare a schema get an exit check for free.
+       */
+      schema: options.output.schema !== undefined ? compileValue(options.output.schema) : {},
       render(args, value) {
         return options.output.render(args, value)
       },

@@ -267,6 +267,31 @@ await test('死标记不再出现：dataset.visible / data-dsh-tw-rightbar', () 
   assertNo(rightbar, /data-dsh-tw-rightbar/, 'data-dsh-tw-rightbar 没有任何消费者')
 })
 
+await test('rightbar tab 类型：keepMounted + guide 条目 id（v0.30.66 对齐 DSH 0.2.1 契约）', () => {
+  // 切成「定义对象」那一段再断言：bodyOf() 会跳到签名里的第一个 `{`，而这里的
+  // 签名带返回类型 `Record<string, unknown>`（本身就是花括号），用它必然取错区域。
+  const defStart = rightbar.indexOf('function rightbarDefinition(')
+  const defEnd = rightbar.indexOf('export function mountRightbarTab(')
+  assert.ok(defStart >= 0 && defEnd > defStart, '找不到 rightbarDefinition()')
+  const def = rightbar.slice(defStart, defEnd)
+
+  // ① keepMounted：没有它，切 tab / 切 Session / 收起右栏都会卸载 body，
+  //    而 body 持有 TW iframe —— 每次回来都重载整份 wiki（10–30MB，no-store）。
+  assert.match(def, /keepMounted:\s*true/, 'tab 类型必须声明 keepMounted: true，否则隐藏即卸载、iframe 反复重载')
+  // ② guide 条目的 id：注册表用 `new Set(entries.map(e => e.id))` 查重，
+  //    第一条没有 id 只是「恰好不冲突」，加第二条就 throw → 整个 rightbar
+  //    集成（调用点的 try/catch）静默消失。
+  assert.match(def, /id:\s*TW_RIGHTBAR_GUIDE_ID/, 'guide 条目必须带 id（且用独立常量）')
+  assert.match(
+    rightbar,
+    /export const TW_RIGHTBAR_GUIDE_ID = '/,
+    'guide 条目身份必须是导出常量：它和 tab 类型 id 属于两个命名空间，不得互相复用',
+  )
+  // ③ 关闭 tab 仍然卸载（keepMounted 只挡「隐藏」）—— 这是「同一时刻只有一个
+  //    TW 客户端」的保证，`dsh-panel-activate` 互斥靠它。
+  assert.match(rightbar, /controller\.dispose\(\)/, 'body 卸载时必须 dispose 控制器（关 tab = 卸载 = 释放 TW）')
+})
+
 console.log('空掉的编辑器弹窗 —— 删除笔记后必须能重新打开（v0.22.6）')
 
 await test('editor-popup：URL 相同但里面空了也必须重载；关闭要清掉已载入标记', () => {

@@ -1,12 +1,27 @@
 /**
- * Per-SESSION knowledge-base selector above the chat input box
+ * Per-SESSION knowledge-base selector in the composer's tool row
  * (需求: 会话栏上面可动态选择当前会话能用的 wiki).
  *
- * Registers into `conversation.input.dock` — the sanctioned "full-width entries
- * above the composer" seat the quick-note button already uses. That slot is
- * `kind: 'list', scope: 'session'`, so the component receives the `sessionId` it
- * is mounted for, which is exactly what the host needs to answer "which wiki is
- * THIS conversation working on".
+ * SEAT (v0.30.66): `conversation.input.left` — DSH's documented seat for
+ * "compact controls at the left of the composer tool row" (`kind: 'list'`,
+ * `scope: 'session'`, owner props `{}` plus the standard session-scoped props,
+ * so `sessionId` still arrives).
+ *
+ * WHAT IT REPLACED, AND WHY (read this before moving it again)
+ * -----------------------------------------------------------
+ * · v0.28.0 mounted it as its own `conversation.input.dock` entry. That slot is
+ *   a **vertical flex column — one entry = one full row**, so the selector and
+ *   the quick-note button could never sit side by side.
+ * · v0.28.7 rendered it INSIDE the quick-note dock row (a `scope` child), and
+ *   v0.28.8 tried to upgrade blank sessions to
+ *   `conversation.input.selector.context` next to the mode picker.
+ * · v0.30.66 audit: **that seat does not exist in DSH 0.2.1** — not merely
+ *   "undeclared by this shell": the string appears nowhere in the shipped
+ *   client bundles nor in the host's slot catalogue. The blank-session branch
+ *   was dead code that had never rendered, and the whole `blankSeat` hand-off
+ *   dance existed only to stop two copies showing at once.
+ * · Now there is exactly ONE home: the tool row. No blank/active distinction,
+ *   no second mount, no hand-off protocol.
  *
  * WHY THE SELECTION LIVES HOST-SIDE: it drives the agent's tool scope AND the
  * injected prompt (see host/session-scope.ts), so it cannot be a browser-only
@@ -25,8 +40,6 @@ import { fetchStatus } from './status-cache.ts'
 import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
 // 切库后要立刻失效其它界面的作用域缓存（v0.28.8，见 wiki-scope.ts）。
 import { invalidateSessionWikiId } from './wiki-scope.ts'
-// 空白会话那一格（selector.context）是否已经拿着选择器（v0.28.11）。
-import { isBlankSeatMounted, subscribeBlankSeat } from './scope-seat.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
 
@@ -45,82 +58,22 @@ function readResolvedWiki(value: unknown): ResolvedWiki | undefined {
   return { id, label: typeof label === 'string' && label.length > 0 ? label : id }
 }
 
-/** Props the shell passes to a `conversation.input.dock` entry (scope: session). */
+/** Props the shell passes to a session-scoped `conversation.input.left` entry. */
 interface DockProps {
   sessionId?: string
-  /**
-   * Session store reader, provided by the shell on session-scoped slots
-   * (v0.28.8). Used to tell a BLANK (new) session from an active one; optional
-   * because not every shell version supplies it.
-   */
-  useSessions?: (selector: (state: unknown) => unknown) => unknown
-}
-
-/** How the chip behaves in each seat (see scope-seat.ts). */
-export interface WikiScopeDockOptions {
-  /**
-   * Render ONLY for a blank (new) session.
-   *
-   * Set when mounting into a seat that is not exclusive to blank sessions —
-   * notably the dock FALLBACK: the dock already carries the selector inside the
-   * quick-note row (v0.28.7), so an unconditional second mount would show the
-   * same control twice. When the real selector-context seat exists, blank
-   * sessions are the only thing it renders for anyway.
-   */
-  blankOnly?: boolean
 }
 
 /**
- * Read the session store's `blank` flag, tolerating every shape we might be
- * handed: an absent reader, an absent session, or a store that does not track
- * blankness. Unknown ⇒ `false`, i.e. "treat as active" — the conservative
- * choice, because rendering a blank-only chip in an active session is exactly
- * the duplication this option exists to prevent.
- */
-function isBlankSession(props: DockProps): boolean {
-  const sessionId = props.sessionId
-  if (typeof sessionId !== 'string' || sessionId.length === 0) return false
-  if (typeof props.useSessions !== 'function') return false
-  try {
-    return props.useSessions((state) => {
-      const byId = (state as { byId?: Record<string, { blank?: unknown }> } | undefined)?.byId
-      return byId?.[sessionId]?.blank === true
-    }) === true
-  } catch {
-    return false
-  }
-}
-
-/**
- * React binding for the blank-seat ownership flag (v0.28.11).
+ * 会话级知识库选择器（v0.28.0；座位演进见模块头）。
  *
- * The flag is written by `mountScopeSeat()` (possibly BEFORE this component
- * mounts, e.g. a re-render after the seat appeared), so the initial state must
- * be read, not assumed false — and the subscription keeps it live.
- */
-function useBlankSeatMounted(): boolean {
-  const [mounted, setMounted] = React.useState<boolean>(() => isBlankSeatMounted())
-  React.useEffect(() => subscribeBlankSeat(() => { setMounted(isBlankSeatMounted()) }), [])
-  return mounted
-}
-
-/**
- * 会话级知识库选择器（v0.28.0）。
+ * 渲染在输入框工具行里（`conversation.input.left`），是一个 inline-flex 小控件：
+ * 宽度由内容决定，不占满整行，也不再自己测量任何东西 —— 对齐由宿主那一行负责。
  *
- * 它**不是**一个独立的 dock 条目，而是渲染在快速笔记那一行**里面**的元素
- * （v0.28.7）：dock 是纵向 flex 列，一个条目 = 一整行，两个条目各自量宽度就永远
- * 对不齐。所以这里返回的是"一行里的一个内联块"，宽度由内容决定，不占满整行。
- *
- * 返回 `null` 表示"这一行不需要它"——单库安装（可见库 ≤1）时正是如此，DOM 与
- * 加这个功能之前逐字相同。
+ * 返回 `null` 表示"这里不需要它"：单库安装（可见库 ≤1）时正是如此。
  */
-export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props: DockProps) => React.ReactElement | null {
-  const blankOnly = options.blankOnly === true
+export function createWikiScopeDock(): (props: DockProps) => React.ReactElement | null {
   return function WikiScopeDock(props: DockProps) {
     const sessionId = typeof props.sessionId === 'string' && props.sessionId.length > 0 ? props.sessionId : undefined
-    // Hooks must run unconditionally — read blankness before any early return.
-    const blank = isBlankSession(props)
-    const blankSeat = useBlankSeatMounted()
     const [wikis, setWikis] = React.useState<WikiOption[]>([])
     const [scope, setScope] = React.useState('')
     /**
@@ -136,12 +89,10 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
     const [defaultWiki, setDefaultWiki] = React.useState<ResolvedWiki | undefined>(undefined)
     const [note, setNote] = React.useState<string | undefined>(undefined)
     const [busy, setBusy] = React.useState(false)
-    const wrapRef = React.useRef<HTMLDivElement | null>(null)
 
-    // 注意（v0.28.7）：这里**不再**自己调 alignDockEntry。选择器已经从独立 dock 条目
-    // 改成渲染在快速笔记那一行**里面**的元素，而那一行整行负责与输入框右缘对齐
-    // （quick-note-dock.ts 的 wrapRef）。如果这里再量一次、再补一次右内边距，就是
-    // 同一个右缘被补两遍 —— 选择器会被推进去一大截，正是"没和对话框对齐"的复现。
+    // 不测量、不补内边距（v0.30.66）：控件住在宿主的工具行里，那一行自己负责
+    // 与输入框对齐。历史上它塞在 dock 行里时需要 ref + 逐行测量，那套逻辑已随
+    // 迁移退役（见 dock-align.ts 的模块头）。
 
     React.useEffect(() => {
       if (sessionId === undefined) return
@@ -164,14 +115,6 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
     }, [sessionId])
 
     if (sessionId === undefined || wikis.length <= 1) return null
-    // blankOnly（v0.28.8）：这一挂载点只在「新会话」阶段显示，避免与会话内
-    // quick-note 行里的同一个选择器重复出现（见 WikiScopeDockOptions 的说明）。
-    if (blankOnly && !blank) return null
-    // 让位（v0.28.11）：新会话里 selector.context 那一格已经拿着选择器了，dock 里
-    // 这一个（与快速笔记同一行）必须消失——作者 2026-09-29 报障「有两个知识库选择」。
-    // 反向也成立：本机 shell 没有那一格时 blankSeat 恒为 false，这里照旧渲染，
-    // 空白会话里仍有唯一一个选择器。
-    if (!blankOnly && blank && blankSeat) return null
 
     // 「默认库」不再作为一个**名字**出现在这里（作者 2026-09-29 报障）：那个选项就是被设为
     // 默认的那个库本身，用它自己的显示名，后缀「（默认）」标示身份。选中它 = 清空显式
@@ -230,11 +173,10 @@ export function createWikiScopeDock(options: WikiScopeDockOptions = {}): (props:
 
     return React.createElement(
       'div',
-      // ⚠️ 这个 ref **不是**死代码（v0.30.4 差点被我当"调试锚点"删掉，守门当场变红）：
-// `scripts/verify-wiki-focus.mjs` 断言「选择器的根元素必须挂 ref」，因为对齐是按行
-// 测量的，元素必须有一个可被持有的身份。改这里之前先读那条断言。
-{ ref: wrapRef, className: 'dsh-tw-scope-dock' },
-      // 与 `scope-seat.ts` 注册槽位时用的标签同源（同一行里两处都写「知识库」会漂移）。
+      // 不再挂 ref / 不再自己测量（v0.30.66）：这个控件现在住在宿主的工具行里，
+      // 对齐由那一行负责。历史上这里挂 ref 是为了给 `alignDockEntry` 一个可测量
+      // 的身份 —— 那套逻辑随「选择器塞进 dock 行」一起退役了。
+      { className: 'dsh-tw-scope-dock' },
       React.createElement('span', { className: 'dsh-tw-scope-label' }, t('chrome.scopeSlotLabel')),
       React.createElement(
         'select',

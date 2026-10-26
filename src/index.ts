@@ -61,6 +61,8 @@ import { createMutationLock } from './host/mutation-lock.ts'
 import { createGitLayer } from './index-git.ts'
 import { createRouteStage } from './index-routes.ts'
 import { createStartupStage } from './index-startup.ts'
+import type { SkillRegistryFace } from './host/skill-install.ts'
+import { registerNoteCommand, type CommandRegistryFace } from './host/command-note.ts'
 import { createPromptSurface, createServerTuning } from './index-prompt.ts'
 import { createClipSurface } from './index-clip.ts'
 
@@ -139,6 +141,14 @@ export {
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, drainThenStop, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUnavailableError, isJunkTag } from './host/tools.ts'
 export { tiddlywikiToolSummary } from './host/tools.ts'
+export {
+  NOTE_COMMAND_NAME,
+  parseNoteInput,
+  registerNoteCommand,
+  type CommandRegistryFace,
+  type NoteCommandDeps,
+  type ParsedNoteInput,
+} from './host/command-note.ts'
 export {
   buildPromptText,
   describePrompt,
@@ -255,8 +265,12 @@ export {
   SPLIT_SKILL_MARKER,
   defaultSkillRoot,
   installSplitSkill,
+  parseSkillText,
   readBundledSkillText,
+  registerSplitSkill,
+  type ParsedSkill,
   type SkillInstallResult,
+  type SkillRegistryFace,
 } from './host/skill-install.ts'
 export {
   READY_TIMEOUT_DEFAULT_MS,
@@ -530,6 +544,21 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     workspaceMarkEnabled: () => effectiveWorkspaceMark(),
   }
   disposers.push(...registerTiddlywikiTools(ctx, toolsDeps))
+  // `/note` 斜杠命令（v0.30.66）：直接写一条笔记，不产生模型消息。宿主没有
+  // `commands` 服务时静默跳过（老版本 DSH 仍然可用，只是没有这个命令）。
+  try {
+    const commands = ctx.get('commands') as CommandRegistryFace | undefined
+    if (commands !== undefined) {
+      disposers.push(registerNoteCommand(commands, {
+        scope: toolScope,
+        workspaceName: toolsDeps.workspaceName,
+        workspaceMarkEnabled: toolsDeps.workspaceMarkEnabled,
+        autoCommit: toolsDeps.autoCommit,
+      }))
+    }
+  } catch (err) {
+    console.warn('[dsh-tiddlywiki] /note 命令注册失败：', err)
+  }
   // Register the prompt section only AFTER the tools: `full` mode's signature
   // catalogue is generated from the registry filled by that call (v0.21.0).
   applyPrompt()
@@ -580,6 +609,10 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     clipBridge,
     effectiveBridge,
     defaultCurrentLocation: () => wikiViews.defaultCurrentLocation(),
+    // 嵌入式 skill（v0.30.66）：宿主有 skill 注册表就注册到内存（不写用户目录），
+    // 没有就由 startup 回落到文件安装。
+    skills: () => ctx.get('skills') as SkillRegistryFace | undefined,
+    pushDisposer: (dispose) => disposers.push(dispose),
   })
 
   /**

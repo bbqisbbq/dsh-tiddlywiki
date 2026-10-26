@@ -139,7 +139,7 @@ test('setFocusWiki：写入即持久化，且只在真的变化时通知', () =>
 })
 
 // ── 会话选择器的接线（源码级：组件是 React，零 DOM 环境下只能这样断）──────────
-const { readFileSync } = await import('node:fs')
+const { readFileSync, existsSync, readdirSync } = await import('node:fs')
 const dockSrc = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
 const indexSrc = readFileSync(path.join(repoRoot, 'src/client/index.ts'), 'utf8')
 
@@ -171,59 +171,55 @@ test('设置页：多库模式下**不再渲染**「知识库位置」（与列�
   assert.match(settings, /WIKI_SWITCH_ENDPOINT/, '默认库改目录仍走 /admin/wiki/switch')
 })
 
-test('会话选择器：与快速笔记**同一行**（v0.28.7 合并；作者报障"没和对话框对齐"）', () => {
-  // 演进：v0.28.0 起选择器是**独立的** conversation.input.dock 条目（id: wiki-scope）。
-  // 但该槽位是竖向 flex 列，**每个条目独占一整行** —— 两个条目永远是上下两行，
-  // 无论怎么调 padding 都不可能"并排"。所以 v0.28.7 把选择器改成由 quick-note 条目
-  // 通过 `scope` 参数渲染在自己那一行里（按钮前面）。
-  // 判据（新）：注册表里**只能有一个** input.dock 条目，且选择器由它带出来。
+test('会话选择器：住在 conversation.input.left（工具行），快速笔记仍独占 dock 一行（v0.30.66）', () => {
+  // 演进：v0.28.0 起选择器是**独立的** conversation.input.dock 条目 →
+  // dock 是竖向 flex 列、**每个条目独占一整行**，两个条目永远上下两行；
+  // v0.28.7 把它塞进 quick-note 条目（`scope` 参数）→ 能并排但要自己测量对齐；
+  // v0.30.66 改为挂宿主的 `conversation.input.left`（"Compact controls at the left
+  // of the composer tool row"），一个家、空白会话也有、对齐由宿主负责。
+  const leftRegs = indexSrc.match(/name: 'conversation\.input\.left'/g) ?? []
+  assert.equal(leftRegs.length, 1, `选择器必须且只能注册一个 conversation.input.left 条目（实际 ${leftRegs.length}）`)
+  assert.match(indexSrc, /id: 'wiki-scope'/, '选择器条目的 id 仍叫 wiki-scope')
+  assert.match(indexSrc, /createWikiScopeDock\(\)/, '工具行座位挂的就是选择器组件本身（不再通过 scope 参数内嵌）')
+  // dock 仍然只有一个条目，而且只剩按钮：不再往 dock 里塞选择器。
   const dockRegs = indexSrc.match(/name: 'conversation\.input\.dock'/g) ?? []
-  assert.equal(dockRegs.length, 1, `input.dock 只能注册一个条目（实际 ${dockRegs.length}）——多条目=多行，永远对不齐`)
-  assert.match(indexSrc, /createQuickNoteDock\(widget, createWikiScopeDock\(\)\)/, '选择器必须作为 scope 传进快速笔记条目')
-  // 组件仍要能拿到 sessionId：scope=session 的 props 是发给**条目组件**的，靠 scope 透传。
-  // （v0.28.8 起 DockProps 多了可选的 useSessions 用来识别空白会话，所以这里只断言
-  //  sessionId 这个字段存在，不再钉死整个 interface 的字面写法。）
-  assert.match(dockSrc, /sessionId\?: string/, '选择器组件的 props 必须含 sessionId（该槽位 scope=session）')
+  assert.equal(dockRegs.length, 1, `input.dock 只能注册一个条目（实际 ${dockRegs.length}）`)
+  assert.match(indexSrc, /createQuickNoteDock\(widget\)/, '快速笔记条目不再接收 scope（选择器已搬走）')
   const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
-  assert.match(quick, /scope\?: \(props: \{ sessionId\?: string; useSessions\?: SessionStoreReader \}\)/, '快速笔记条目必须接受 scope（同一行渲染），并透传 useSessions（v0.28.11：选择器靠它认出空白会话）')
-  assert.match(quick, /sessionId: props\.sessionId/, '条目必须把 sessionId 透传给 scope（否则选择器拿不到会话）')
-  assert.match(quick, /useSessions: props\.useSessions/, '条目必须把 useSessions 透传给 scope（否则 dock 里的选择器认不出空白会话，让位不了 → 一屏两个）')
+  assert.ok(!/scope\?\.\(/.test(quick), '快速笔记条目里不得再渲染 scope 子元素')
+  assert.match(dockSrc, /sessionId\?: string/, '选择器组件的 props 必须含 sessionId（该槽位 scope=session）')
 })
 
-test('新会话（空白会话）的知识库选择器：走 selector.context，且**不许**再往 dock 挂第二个（v0.28.11，作者报障「有两个」）', () => {
-  // 需求原文：「新会话时像 dsh-client-ui-git-graph 这个插件在模式选择后面增加个知识库选择」。
-  // 参考实现用的是 `conversation.input.selector.context`（模式/预设选择器旁边那一格），
-  // 并且**声明感知**——因为不是每个 shell 都声明这个洞，裸 register 会抛。
-  //
-  // v0.28.8 的回落是「往 dock 再注册一个 blank-only 条目」，而 dock 里**本来就有**
-  // 同一个选择器（快速笔记那一行的 scope 子元素，v0.28.7）。本机 shell 恰好不声明
-  // selector.context（app.asar 里连这个字符串都没有 → 回落是常态），于是新会话里
-  // 两个选择器同时渲染：一个和快速笔记同一行、一个独占一行（作者 2026-09-29 报障）。
-  // 正确做法：dock 那个就是**唯一**的家，context 那一格是空白会话的升级位；谁在
-  // 用由 scope-seat 的 blankSeat 标记协调。
-  const seat = readFileSync(path.join(repoRoot, 'src/client/scope-seat.ts'), 'utf8')
-  const indexSrc = readFileSync(path.join(repoRoot, 'src/client/index.ts'), 'utf8')
-  const dockSrc = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
-
-  assert.match(seat, /conversation\.input\.selector\.context/, '必须优先用 selector.context —— 那才是「模式选择后面」')
-  // 声明感知：裸 register 到未声明的槽位会抛。
-  assert.match(seat, /slots\.inject\(SELECTOR_CONTEXT_SLOT/, 'selector.context 必须经 inject 注册（声明感知）')
-  // 反向：**不许**再出现「回落注册 dock 条目」这条路（它就是重复的来源）。
-  // 判据只在代码上，不在注释上 —— 这个模块的说明必须能解释这段历史。
-  const seatCode = seat.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '')
-  assert.ok(!/conversation\.input\.dock|INPUT_DOCK_SLOT/.test(seatCode), '不得再回落注册 dock 条目 —— dock 里已经有同一个选择器，两个同时渲染就是「新会话两个知识库选择」')
-  assert.ok(!/fallbackToDock|CONTEXT_FALLBACK_MS/.test(seatCode), '回落计时器必须一起删掉（留着它迟早又会挂出第二个条目）')
-  assert.match(indexSrc, /createWikiScopeDock\(\{ blankOnly: true \}\)/, 'context 那一格的组件必须 blankOnly（否则活动会话里会多出第二个选择器）')
-  assert.match(indexSrc, /mountScopeSeat\(/, 'index.ts 必须真的挂上这个座位')
-
-  // 让位协议：context 那一格挂上了 → dock 里的选择器在空白会话必须返回 null。
-  assert.match(seat, /setBlankSeatMounted\(true\)/, 'context 那一格挂上时必须发布 blankSeat 标记')
-  assert.match(seat, /setBlankSeatMounted\(false\)/, '注册失败 / dispose 时必须把标记交还（否则空白会话会一个选择器都没有）')
-  assert.match(dockSrc, /isBlankSeatMounted/, 'dock 里的选择器必须查这个标记')
-  assert.match(dockSrc, /if \(!blankOnly && blank && blankSeat\) return null/, '空白会话里让位的判据必须同时含「非 blankOnly」「会话是空白」「那一格在挂着」三个条件')
-  // 空白会话判定：从 session store 读 blank，且拿不到时保守当作「非空白」。
-  assert.match(dockSrc, /useSessions/, '必须能从 session store 读 blank 标记')
-  assert.match(dockSrc, /isBlankSession/, '空白会话判定必须收敛到一个函数里')
+test('死座位必须彻底消失：conversation.input.selector.context 与它的让位协议（v0.30.66）', () => {
+  // 背景：v0.28.8 的需求是「新会话时在模式选择后面加个知识库选择」，参考实现用的是
+  // `conversation.input.selector.context`。**那个座位在 DSH 0.2.1 里根本不存在** ——
+  // 宿主座位表（103 条）里没有它，随包 client bundle 里连字符串都搜不到。于是
+  // scope-seat.ts 的 slots.inject() 永远等不到声明 -> 那一支从未渲染，而为了防"两个
+  // 选择器"长出来的一整套 blankSeat 让位协议，服务的也是一个不会出现的局面。
+  // v0.30.66 把选择器移到 conversation.input.left 后，这些全部删除。
+  assert.ok(
+    !existsSync(path.join(repoRoot, 'src/client/scope-seat.ts')),
+    'scope-seat.ts 必须删掉：它注册的座位在宿主里不存在，等于死代码',
+  )
+  // 逐个扫 client 源码：这个座位名只允许出现在解释历史的注释里，不得再被注册。
+  const offenders = []
+  for (const entry of readdirSync(path.join(repoRoot, 'src/client'))) {
+    if (!entry.endsWith('.ts')) continue
+    const text = readFileSync(path.join(repoRoot, 'src/client', entry), 'utf8')
+    const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '')
+    if (/selector\.context/.test(code)) offenders.push(entry)
+  }
+  assert.deepEqual(offenders, [], '不得再有任何代码注册 selector.context（只允许注释里解释历史）')
+  // 让位协议的三个符号一个都不许留。
+  for (const symbol of ['mountScopeSeat', 'isBlankSeatMounted', 'blankSeat']) {
+    const hits = readdirSync(path.join(repoRoot, 'src/client'))
+      .filter((entry) => entry.endsWith('.ts'))
+      .filter((entry) => {
+        const text = readFileSync(path.join(repoRoot, 'src/client', entry), 'utf8')
+        return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '').includes(symbol)
+      })
+    assert.deepEqual(hits, [], `${symbol} 必须随死座位一起删除（它解决的问题已不存在）`)
+  }
 })
 
 test('快速笔记：单库模式不得露出「写入」选择器（作者 2026-09-28 报障）', () => {
@@ -244,7 +240,7 @@ test('快速笔记：单库模式不得露出「写入」选择器（作者 2026
   assert.ok(guardBlock.includes('wikiSelect.disabled = true'), '单库时选择器必须被禁用')
 })
 
-test('dock 条目必须与 composer 输入框对齐，且选择器与按钮**并排**（作者 2026-09-28 报障）', () => {
+test('dock 条目仍与 composer 输入框对齐；选择器已不参与行内测量（v0.30.66）', () => {
   const align = readFileSync(path.join(repoRoot, 'src/client/dock-align.ts'), 'utf8')
   const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
   const scope = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
@@ -255,22 +251,16 @@ test('dock 条目必须与 composer 输入框对齐，且选择器与按钮**并
   assert.match(align, /paddingRight/, '对齐靠给条目补右内边距')
   assert.match(align, /ResizeObserver/, '侧栏开合会移动输入框卡片 → 必须观察祖先链重测')
 
-  // 对齐只由**那个唯一的行**负责（v0.28.7：选择器已并入这一行，不再自己对齐，
-  // 否则同一行会被测两次、右内边距翻倍）。
+  // 只剩快速笔记这一个 dock 条目需要对（v0.30.66）：选择器搬去了工具行，
+  // 由宿主那一行负责对齐，因此它**不再**测任何东西。
   assert.match(quick, /alignDockEntry\(/, '快速笔记条目必须用共享对齐')
-  assert.ok(!/alignDockEntry\(/.test(scope), '选择器并入同一行后不该再自己测一次（会与整行重复补 padding）')
   assert.match(quick, /const wrap = wrapRef\.current[\s\S]{0,80}return alignDockEntry\(wrap\)/, '对齐必须挂在这一行的根元素上')
-  // 两处都必须挂 ref（没有元素可测就没法对齐）
-  assert.match(scope, /ref: wrapRef/, '选择器必须把 ref 挂到自己的根元素上')
-  // 选择器在**同一行内**：inline-flex（占满宽就又把按钮挤到下一行了）+ 该行仍是右对齐。
-  assert.match(styles, /\.dsh-tw-scope-dock\s*\{[^}]*display:\s*inline-flex/, '选择器必须是 inline-flex（并排，不能整行宽）')
-  assert.match(styles, /\.dsh-tw-dock-note\s*\{[^}]*justify-content:\s*flex-end/, '该行必须右对齐到输入框边缘')
-  // 顺序要求（作者原话"并排放在快速笔记的前面或者后面"）：选择器渲染在按钮**之前**。
-  const scopeRenderAt = quick.indexOf('scope?.(')
-  const btnRenderAt = quick.indexOf("className: open ? 'dsh-tw-dock-note-btn")
-  assert.ok(scopeRenderAt > 0 && btnRenderAt > scopeRenderAt, '选择器必须在按钮之前渲染（同一行、并排）')
-  assert.ok(!/BoundingClientRect/.test(scope), '条目里不得再自带一份测量实现')
+  assert.ok(!/alignDockEntry\(/.test(scope), '选择器不再自己测量（它已不在 dock 行里）')
+  assert.ok(!/BoundingClientRect/.test(scope), '构造器里不得再带测量实现')
   assert.ok(!/BoundingClientRect/.test(quick), '快速笔记的测量也必须只剩共享那一份')
+  // 工具行里是行内小控件；dock 行仍右对齐到输入框边缘。
+  assert.match(styles, /\.dsh-tw-scope-dock\s*\{[^}]*display:\s*inline-flex/, '选择器必须是 inline-flex（行内小控件，不能整行宽）')
+  assert.match(styles, /\.dsh-tw-dock-note\s*\{[^}]*justify-content:\s*flex-end/, '该行必须右对齐到输入框边缘')
 })
 
 test('设置页：知识库列表是第一块，且能改模式/启停/默认/可见性/移出', () => {

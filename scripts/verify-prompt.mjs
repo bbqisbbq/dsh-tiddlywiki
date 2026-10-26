@@ -77,8 +77,15 @@ const full = buildPromptText({ mode: 'full', tools })
  * 1200 → 1000（v0.30.62）：同一把尺子再用一次 —— 写入约定压成一句（`expectedModified`
  * /`force` 的语义逐字在 `put` 的 schema 里）、同步那条去掉与 schema 重复的自动 commit
  * 说明、intro 去掉「本机有一个」（多库下它是错的）。实测正文 881 字符。
+ *
+ * 1000 → 1160 → 1470（v0.30.66，两次）：先加「### 先查再答」（工具面从 57 涨到
+ * 243 之后模型想不起先检索），再加「### 时效与去重」（作者 2026-10-26：agent 爱写
+ * 短命内容、同一件事写多份互相矛盾的说法、正文里堆变更流水）。**实测 1390 字符**
+ * （微信开关打开时 1451）。这两块都是「时机与纪律」，schema 表达不了，因此不属于
+ * v0.29.0 要清理的那类重复；上调与「关键约定必须在场」以及下面「时效三条」的
+ * 逐条断言绑定 —— 删掉任何一条，断言立刻红。
  */
-const SLIM_BUDGET = 1000
+const SLIM_BUDGET = 1470
 
 test('默认形态是 slim 且与 section 名一致', () => {
   assert.equal(DEFAULT_PROMPT_MODE, 'slim', 'v0.21.0 起默认应为 slim')
@@ -118,6 +125,21 @@ test('slim 有长度预算（防止再次膨胀成工具手册）', () => {
   const limit = SLIM_BUDGET
   assert.ok(slim.length <= limit, `slim 已 ${slim.length} 字符，超出预算 ${limit}`)
   assert.ok(slim.length < full.length, 'full 必须比 slim 长（否则说明模式没生效）')
+})
+
+/**
+ * 作者 2026-10-26 的三条（原话）：agent 爱写短命内容、同一件事写多份互相矛盾的
+ * 东西、正文里堆变更流水。「关键约定必须在场」只保证**块**还在；这里逐条钉住
+ * **规则本身** —— 免得有人留着标题、把内容删空。
+ */
+test('时效三条：写清有效期 / 一件事只留一处权威表述 / 不写流水账 / 读后判时效', () => {
+  for (const [label, text] of [['slim', slim], ['full', full]]) {
+    assert.match(text, /valid-until/, `${label} 必须要求写清有效期（否则下个会话不知道这条还能不能信）`)
+    assert.match(text, /原地改那一节/, `${label} 必须要求同一件事原地改，而不是另起一篇（多份矛盾 = 谁都不敢用）`)
+    assert.match(text, /不写流水账/, `${label} 必须禁止正文追加"某日改了什么"的变更流水`)
+    assert.match(text, /读到就先判时效/, `${label} 必须要求读到之后判定时效、并处理过期/被取代的内容`)
+    assert.match(text, /说不清时效的/, `${label} 必须明说"说不清时效的别写进 wiki"`)
+  }
 })
 
 /**

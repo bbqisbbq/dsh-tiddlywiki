@@ -7,6 +7,7 @@
  * @module dsh-tiddlywiki/host/tools-notes-write
  */
 import { defineTool } from '../sdk.ts'
+import { BATCH_RESULT, GET_RESULT, PUT_RESULT } from './tool-output-schemas.ts'
 import { isBinaryType, toIsoDateString } from './tw-api.ts'
 import { isBlockedProxyTitle } from './proxy-guard.ts'
 import { assertNoConflict, buildWriteTiddler, normalizeTagArg } from './write-policy.ts'
@@ -19,11 +20,16 @@ export function getTool(env: ToolEnv) {
   // ── tiddlywiki_get ───────────────────────────────────────────────────────
   return defineTool({
     name: 'tiddlywiki_get',
-    description: '读取一个 TiddlyWiki tiddler 的完整内容（标题、全文、标签、自定义字段）。二进制 tiddler（图片等附件）只返回元数据，不返回 base64 正文。',
+    description: `读取一个 TiddlyWiki tiddler 的内容（标题、正文、标签、自定义字段）。二进制 tiddler（图片等附件）只返回元数据，不返回 base64 正文。
+
+正文按字符分页返回（默认 ${DEFAULT_GET_LIMIT_CHARS} 字符，上限 ${MAX_GET_LIMIT_CHARS}）：超长笔记会被**明确标注**已截断，并按回执里的 offset 继续读。分页是刻意的 —— 单条工具结果过大会在上下文压缩时被宿主拦腰截断（DSH 的 spill/pruner 预算），那时既不完整也看不出切口在哪。`,
     parameters: {
       title: { type: 'string', description: 'tiddler 标题（精确匹配）', required: true },
+      offset: { type: 'integer', description: '可选：从正文第几个字符开始返回（默认 0）。截断回执会告出下一页的 offset' },
+      limit: { type: 'integer', description: `可选：本次返回的字符数上限（默认 ${DEFAULT_GET_LIMIT_CHARS}，最大 ${MAX_GET_LIMIT_CHARS}）` },
     },
     output: {
+      schema: GET_RESULT,
       render: (_args, value: GetResult) => {
         if (value.notFound) return [{ type: 'text', text: `tiddler「${value.title}」不存在。可用 tiddlywiki_search 检索，或用 tiddlywiki_put 新建。` }]
         if (value.binary === true) {
@@ -40,12 +46,25 @@ export function getTool(env: ToolEnv) {
         if (value.modified !== null) lines.push(`修改: ${value.modified}`)
         const fields = Object.entries(value.fields)
         if (fields.length > 0) lines.push(`字段: ${fields.map(([k, v]) => `${k}=${String(v)}`).join(', ')}`)
-        lines.push('--- 全文 ---')
+        // 分页回执：先说清楚这一屏是整篇的哪一段，再说正文。
+        if (value.textTotalChars > value.text.length || value.offset > 0) {
+          const from = value.offset
+          const to = value.offset + value.text.length
+          lines.push(`--- 正文 ${from}–${to} / 共 ${value.textTotalChars} 字符 ---`)
+        } else {
+          lines.push('--- 全文 ---')
+        }
         lines.push(value.text.length > 0 ? value.text : '（空）')
+        if (value.textTotalChars > value.offset + value.text.length) {
+          const next = value.offset + value.text.length
+          lines.push(
+            `⚠️ 正文未读完：还有 ${value.textTotalChars - next} 字符。继续用 tiddlywiki_get({ title: ${JSON.stringify(value.title)}, offset: ${next} }) 读取下一页（不要凭这一页的截断内容做整体改写）。`,
+          )
+        }
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { title: string }, exec: unknown): Promise<GetResult> => {
+    execute: async (args: { title: string; offset?: number; limit?: number }, exec: unknown): Promise<GetResult> => {
       // Ironclad rule #6 (v0.29.0): every path that turns a caller-supplied
       // title into TW output runs the secret-namespace guard. `/get`, `/tw`,
       // `/api` and `/render` already did; the tool did not, so the MODEL could
@@ -58,12 +77,19 @@ export function getTool(env: ToolEnv) {
       }
       const wiki = requireWiki(sessionIdOf(exec))
       const t = await wiki.get(args.title)
-      if (t === undefined) return { notFound: true, title: args.title, text: '', tags: [], fields: {}, modified: null }
+      if (t === undefined) {
+        return { notFound: true, title: args.title, text: '', tags: [], fields: {}, modified: null, textTotalChars: 0, offset: 0 }
+      }
       const binary = isBinaryType(typeof t.type === 'string' ? t.type : undefined)
+      const full = binary ? '' : (t.text ?? '')
+      const offset = clampGetOffset(args.offset, full.length)
+      const limit = clampGetLimit(args.limit)
       const result: GetResult = {
         notFound: false,
         title: t.title,
-        text: binary ? '' : (t.text ?? ''),
+        text: full.slice(offset, offset + limit),
+        textTotalChars: full.length,
+        offset,
         tags: t.tags ?? [],
         fields: pickFields(t),
         modified: toIsoDateString(t.modified),
@@ -76,6 +102,34 @@ export function getTool(env: ToolEnv) {
       return result
     },
   })
+}
+
+/**
+ * 单条工具结果的字符预算（v0.30.66）。
+ *
+ * 为什么是 12,000：DSH 宿主对**单条**工具结果有两道闸 —— `spill-policy` 的
+ * `maxInlineTokens: 12500`（超了换成「首尾预览 + Omitted N bytes + 落盘路径」）
+ * 与 `compaction-tool-result-pruner` 的 8192/4096/1024（压缩压力下把头尾之外剪掉）。
+ * 中文大约 1 token/字符，所以 12,000 字符对中英混排都落在预算内。分页**由我们**
+ * 做，模型能看到明确的页码与下一页 offset —— 比让宿主在中间剪一刀可读得多。
+ */
+const DEFAULT_GET_LIMIT_CHARS = 12_000
+const MAX_GET_LIMIT_CHARS = 80_000
+
+/** 把 `limit` 夹到 [1, MAX]；未给/非法值回落默认。 */
+function clampGetLimit(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_GET_LIMIT_CHARS
+  const n = Math.trunc(value)
+  if (n < 1) return DEFAULT_GET_LIMIT_CHARS
+  return Math.min(n, MAX_GET_LIMIT_CHARS)
+}
+
+/** 把 `offset` 夹到 [0, totalChars]（越界读取返回空片段而不是报错）。 */
+function clampGetOffset(value: number | undefined, totalChars: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0
+  const n = Math.trunc(value)
+  if (n < 0) return 0
+  return Math.min(n, totalChars)
 }
 
 export function putTool(env: ToolEnv) {
@@ -97,6 +151,7 @@ export function putTool(env: ToolEnv) {
     // 归一化必须发生在 schema 预校验之前——见 normalizeFieldsArg。
     normalizeArgs: normalizeFieldsInArgs,
     output: {
+      schema: PUT_RESULT,
       render: (_args, value: PutResult) => {
         const lines = [`已写入 tiddler「${value.title}」`]
         if (value.workspace !== undefined) lines.push(`已自动标记工作区: ${WORKSPACE_TAG_PREFIX}${value.workspace}（字段 ${WORKSPACE_FIELD}）`)
@@ -194,6 +249,7 @@ export function batchPutTool(env: ToolEnv) {
     },
     normalizeArgs: (args) => ({ ...args, items: normalizeBatchItemsFields(args.items) }),
     output: {
+      schema: BATCH_RESULT,
       render: (_args, value: BatchResult) => {
         const lines = [`批量写入完成：成功 ${value.written}，跳过 ${value.skipped}，失败 ${value.failed}，共 ${value.items.length} 条。`]
         for (const r of value.items) {

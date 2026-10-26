@@ -6,6 +6,7 @@
  * @module dsh-tiddlywiki/host/tools-attach
  */
 import { readFile, stat } from 'node:fs/promises'
+import { ATTACH_RESULT } from './tool-output-schemas.ts'
 import { basename, extname, isAbsolute } from 'node:path'
 import { defineTool } from '../sdk.ts'
 import { isBinaryType } from './tw-api.ts'
@@ -53,6 +54,7 @@ export function attachTool(env: ToolEnv) {
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision，允许覆盖同名 tiddler（默认 false；即便覆盖也会保留其 tags 与自定义字段）' },
     },
     output: {
+      schema: ATTACH_RESULT,
       render: (_args, value: AttachResult) => {
         const size = value.encoding === 'base64' ? `base64 约 ${value.chars} 字符` : `纯文本 ${value.chars} 字符`
         const lines = [`已保存附件「${value.title}」（${value.mime}，${value.bytes} 字节，${size}）`]

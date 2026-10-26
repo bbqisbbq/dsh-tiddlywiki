@@ -119,7 +119,12 @@ export interface TagListResult { count: number; total: number; truncated: boolea
 export interface GetResult {
   notFound: boolean
   title: string
+  /** The requested PAGE of the body (v0.30.66 — see `offset`/`textTotalChars`). */
   text: string
+  /** Full body length in characters; `text.length` may be smaller (paging). */
+  textTotalChars: number
+  /** Where this page starts inside the body. */
+  offset: number
   tags: string[]
   fields: Record<string, unknown>
   modified: string | null

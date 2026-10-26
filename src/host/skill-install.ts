@@ -45,6 +45,83 @@ export function defaultSkillRoot(): string {
   return dshHomePath('skills')
 }
 
+/**
+ * Structural face over DSH's skill registry (v0.30.66) — no `@deepseek-ai` import.
+ *
+ * `ctx.skills.register()` keeps the skill **in memory**: it disappears when the
+ * plugin unloads, it never touches the user's `$DSH_HOME`, and uninstalling
+ * cannot leave a stale copy behind. That is strictly better than writing a file,
+ * which is why the file path below is now only a FALLBACK for hosts that have no
+ * skill registry.
+ */
+export interface SkillRegistryFace {
+  register(skill: {
+    name: string
+    description: string
+    whenToUse?: string
+    content: string
+    invocation?: { modelInvocable: boolean; userInvocable: boolean }
+  }): () => void
+}
+
+/** A SKILL.md split into its frontmatter fields and body. */
+export interface ParsedSkill {
+  name: string
+  description: string
+  whenToUse?: string
+  content: string
+}
+
+/**
+ * Split a `SKILL.md` into `{name, description, whenToUse?, content}`.
+ *
+ * Hand-rolled on purpose: the only structured part we need is the four-line
+ * frontmatter at the top, and pulling a YAML parser in for that would add a
+ * runtime dependency to a plugin whose pitch is "no build surprises".
+ * Tolerant by design — anything unexpected returns `undefined` and the caller
+ * falls back to the file installer.
+ */
+export function parseSkillText(text: string): ParsedSkill | undefined {
+  const normalised = text.replace(/\r\n/g, '\n')
+  const match = /^---\n([\s\S]*?)\n---\n?/.exec(normalised)
+  if (match === null) return undefined
+  const front = match[1] ?? ''
+  const field = (key: string): string | undefined => {
+    const found = new RegExp(`^${key}:[ \\t]*(.+)$`, 'm').exec(front)
+    const value = found?.[1]
+    return value === undefined ? undefined : value.trim()
+  }
+  const name = field('name')
+  const description = field('description')
+  if (name === undefined || name.length === 0 || description === undefined || description.length === 0) return undefined
+  // 名字语法在这一步就拒：注册表的 `validateRuntimeSkill()` 也会抛，但那时已经
+  // 进了 register() —— 我们宁可在解析阶段返回 undefined，让调用方回落，
+  // 而不是把一个语法错误的名字送进去、再靠 try/catch 兜住。
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) return undefined
+  const content = normalised.slice(match[0].length).trim()
+  if (content.length === 0) return undefined
+  const whenToUse = field('whenToUse')
+  return { name, description, ...(whenToUse !== undefined && whenToUse.length > 0 ? { whenToUse } : {}), content }
+}
+
+/**
+ * Register the split-wiki skill **in memory** through the host's skill registry.
+ *
+ * Returns the registry's disposer, or `undefined` when the shipped text cannot be
+ * parsed (the caller then falls back to writing the file). Never throws: a skill
+ * that fails to register must not take startup down.
+ */
+export function registerSplitSkill(skills: SkillRegistryFace, text: string): (() => void) | undefined {
+  const parsed = parseSkillText(text)
+  if (parsed === undefined) return undefined
+  try {
+    return skills.register({ ...parsed, invocation: { modelInvocable: true, userInvocable: true } })
+  } catch (err) {
+    console.warn('[dsh-tiddlywiki] 拆库 skill 注册失败（改用文件安装）：', err)
+    return undefined
+  }
+}
+
 export interface SkillInstallResult {
   path: string
   /** `written` = created, `updated` = ours and changed, `kept` = left alone. */

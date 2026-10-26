@@ -208,6 +208,49 @@ export function escapePromptBraces(text: string): string {
 const WRITE_RULES = `### 写入约定
 - 写入被拒（说明刚有人（在 TW 编辑器里）改过）时**重读一遍再决定**，不要用 \`force\` 硬覆盖。`
 
+/**
+ * Governance block: WHEN to come and look (v0.30.66).
+ *
+ * WHY IT HAS TO BE HERE, AND WHY IT IS FIRST
+ * ------------------------------------------
+ * 插件过去只讲「怎么写」—— 写入约定 / 同步纪律 / 笔记约定 —— 全是写侧规则，
+ * 没有一句讲"什么时候该来查"。工具面小的时候这没问题（模型只有几十个工具可选，
+ * 看到 `tiddlywiki_search` 的 description 就会想起来）；工具面一大就不行了：
+ * 2026-10-26 实测同一个 profile 的会话里模型可见工具从 57 个涨到 243 个
+ * （MCP 批量接入），作者随即报「新会话不会主动去查找 wiki 了」。注入本身没坏
+ * （`system/message` 里逐字可查），坏的是**没有任何一条规则要求它先查**。
+ *
+ * 这条属于「schema 表达不了的约定」里最典型的一类：**时机**。参数/返回契约在
+ * 各工具 schema 里，而"什么时候该调"只能写在提示词里。
+ */
+const READ_RULES = `### 先查再答
+- 问题可能已沉淀成笔记（项目背景、历史决策、"之前记过的东西"）：**先 \`tiddlywiki_search\`**，命中不足再放宽词或换 tag/field，别凭记忆答；读整篇用 \`tiddlywiki_get\`，超长会分页、按回执里的 offset 续读。`
+
+/**
+ * Governance block: 时效 / 去重 / 不写流水账 (v0.30.66, 作者 2026-10-26 提出)。
+ *
+ * THE FAILURE IT FIXES
+ * --------------------
+ * 作者的原话：「agent 在 wiki 里很喜欢写入一些时效性很短的东西，换个会话基本
+ * 就很难用上了；以及同样的事情，写了多个内容有差异的东西」——即
+ *   ① 写了**短命内容**却没有任何"什么时候还有效"的标记 →
+ *      下一个会话读到它，既不知道能不能用，也不知道该不该清；
+ *   ② 同一件事被写成**多份互相矛盾**的笔记（没有"先搜再写/原地改"的纪律）→
+ *      人和后续 Agent 都不敢用任何一份；
+ *   ③ 每次改动都在正文**追加变更流水**（"2026-10-26 改了什么"）→
+ *      信息膨胀，而真正有用的始终只有那一小段"现在怎么做"。
+ *
+ * 这三条都是**时机与纪律**，任何工具 schema 都表达不了（schema 只说怎么调，不说
+ * 什么时候该写、该改、该清），所以只能落在提示词里 —— 也正是这个 block 存在的
+ * 理由。它会明显推高 slim 的长度预算，这是刻意的：宁可多 400 字符，也不要每个
+ * 新会话都重新踩一遍"读完不知道能不能信、信了又被下一份笔记打脸"。
+ */
+const LIFECYCLE_RULES = `### 时效与去重（写之前先搜，别留短命内容）
+- **一件事只留一处权威表述**：先 \`tiddlywiki_search\`；命中就**原地改那一节**，别另起一篇 —— 同主题两份说法不一致，后续会话和人类都不敢用。
+- 每条笔记要能看出**还有效到什么时候**：会过期的写 \`valid-until: YYYY-MM-DD\`，该复查的写 \`review-after: YYYY-MM-DD\`，长期不变的正文开头写明「长期有效」；说不清时效的（"今天试了一下"）**别写进 wiki**。
+- **不写流水账**：不要追加"某日改了什么"这类变更流水（git 历史里就有），只留「现在正确的做法」。运营日志/复盘/踩坑存档可按时间追加，但正文必须自带存档标记。
+- **读到就先判时效**：过期 / 被取代 / 与现状不符 → 当场更新那一处，或明确说"这条已过期、建议清理"，别照着旧内容答；被取代的写 \`superseded-by: [[新笔记]]\` + \`superseded\` 标签并**保留旧笔记**。**淘汰只由人决定**，别自行删除。`
+
 /** Governance block: the three-step git discipline + conflict recovery. */
 const SYNC_RULES = `### 同步纪律
 - 开工先 \`tiddlywiki_git_sync action=pull\`，收工 \`action=sync\`。
@@ -246,7 +289,6 @@ function noteRules(linkBase: string): string {
   return `### 笔记约定
 - wiki 是长期记忆：会议纪要、决策记录、调研笔记、随手的想法都存成独立 tiddler（tag 用 inbox/meeting/decision 等便于检索）。
 - **值得做但不在当前范围内的想法**：写成独立 tiddler、打 \`todo\`，正文简述来源（会话 / 工作区 / 项目背景），由用户决定是否继续。
-- **阶段性内容标时效**：会过期的笔记带 \`valid-until: YYYY-MM-DD\`（硬过期）或 \`review-after: YYYY-MM-DD\`（该复查）；被取代时写 \`superseded-by: [[新笔记]]\` 并打 \`superseded\` 标签、**保留旧笔记**。**淘汰只由人决定**，不要自行删除。
 - \`agent-written\` 由工具自动补打，别手动加或删；人类编辑过 Agent 笔记后补 \`human-edited\`。
 - **笔记内引用**：写 \`[[标题]]\`（文字不同写 \`[[标题|文字]]\`），别用 \`[标题](url)\`（当外链、URL 带空格即失效）。
 - **聊天里引用笔记**：写 ${chatLink}，点它打开 TW 面板。`
@@ -266,7 +308,21 @@ const PUBLISH_RULE = `- **对外发布前**：先读 [[发布元数据规范]]�
  * Governance blocks that MUST survive in every mode — exported so
  * `scripts/verify-prompt.mjs` can assert a re-write never silently drops one.
  */
-export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = [WRITE_RULES, SYNC_RULES, noteRules(TW_LINK_BASE)]
+export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = governanceBlocks(noteRules(TW_LINK_BASE), false)
+
+/**
+ * The governance blocks **in injection order** — the single source for both the
+ * built body and the exported list the guard iterates (v0.30.66).
+ *
+ * Why a function: the previous code had the exported list AND a hand-written
+ * array inside `buildPromptText`, so adding a block to one of them silently
+ * produced a prompt the guard still considered complete. `verify-prompt.mjs`
+ * caught exactly that when `READ_RULES` was added.
+ */
+function governanceBlocks(notes: string, wechat: boolean): string[] {
+  return [READ_RULES, LIFECYCLE_RULES, WRITE_RULES, SYNC_RULES, wechat ? `${notes}\n${PUBLISH_RULE}` : notes]
+}
+
 
 /**
  * One line per tool: `bullet \`name\`（p1, p2?, …）`; `?` marks an optional
@@ -348,7 +404,7 @@ export function buildPromptText(options: {
   const notes = noteRules(options.linkBase ?? TW_LINK_BASE)
   const body = override.length > 0
     ? escapePromptBraces(override)
-    : [intro, WRITE_RULES, SYNC_RULES, options.wechat === true ? `${notes}\n${PUBLISH_RULE}` : notes].join('\n\n')
+    : [intro, ...governanceBlocks(notes, options.wechat === true)].join('\n\n')
   const extra = typeof options.extra === 'string' ? escapePromptBraces(options.extra.trim()) : ''
   return extra.length > 0 ? `${body}\n\n${extra}` : body
 }

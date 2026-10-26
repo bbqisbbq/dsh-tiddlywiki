@@ -110,16 +110,29 @@ try {
       workspaceMarkEnabled: () => workspaceMarkEnabled,
     },
   )
-  const call = (name, args) => {
+  /**
+   * 每个工具的**真实返回值**（v0.30.66）。
+   *
+   * 用途：`output.schema` 现在会被 DSH 在每次调用后真的校验（不过即抛
+   * `ToolOutputError`），所以"schema 写错了"不是风格问题，是**线上工具会坏**。
+   * 这里把 E2E 里每一次真实调用都记下来，最后逐个拿声明的 schema 去校验 ——
+   * 相当于用真实数据反向验证"我们声明的 schema 没有比现实更严"。
+   */
+  const captured = []
+  const call = async (name, args) => {
     const tool = tools.get(name)
     assert.ok(tool !== undefined, `工具 ${name} 未注册`)
-    return tool.execute(args, undefined)
+    const value = await tool.execute(args, undefined)
+    captured.push({ name, value })
+    return value
   }
   /** 带「调用会话」的工具调用（`exec.agent.id` 是唯一的工作区线索）。 */
-  const callAs = (name, args, sessionId) => {
+  const callAs = async (name, args, sessionId) => {
     const tool = tools.get(name)
     assert.ok(tool !== undefined, `工具 ${name} 未注册`)
-    return tool.execute(args, { agent: { id: sessionId } })
+    const value = await tool.execute(args, { agent: { id: sessionId } })
+    captured.push({ name, value })
+    return value
   }
   /** 非标准字段在单条 GET 里被 TW 折进 `fields`（knownFields 之外），两处都要看。 */
   const fieldOf = (tiddler, name) => (tiddler === undefined ? undefined : (tiddler[name] ?? tiddler.fields?.[name]))
@@ -890,6 +903,130 @@ try {
     const list = await call('tiddlywiki_git_resolve', { strategy: 'list' })
     assert.equal(list.ok, true, `list 是只读报告，应成功：${JSON.stringify(list)}`)
     assert.ok(list.status !== undefined && typeof list.status.branch === 'string', 'list 应返回 git status')
+  })
+
+  // ── 结果体量预算（v0.30.66）──────────────────────────────────────────────
+  //
+  // 为什么要断这个：DSH 宿主对**单条**工具结果有两道闸（spill maxInlineTokens
+  // 12500 / tool-result-pruner 8192 字符）。把整篇 25KB 笔记塞进一条结果，模型
+  // 看到的会是一份首尾被剪过的正文，而且看不出切口在哪。所以分页由我们自己
+  // 做，并把"还有多少、下一页 offset"说清楚。
+  await test('get 分页：超长正文按 12000 字符切页，回执指明页码与下一页 offset', async () => {
+    const body = `${'x'.repeat(20_000)}TAILMARK`
+    await call('tiddlywiki_put', { title: 'ToolsLongNote', text: body })
+    const get = tools.get('tiddlywiki_get')
+    const first = await call('tiddlywiki_get', { title: 'ToolsLongNote' })
+    assert.equal(first.textTotalChars, body.length, `必须报告正文总长（实际 ${first.textTotalChars}）`)
+    assert.equal(first.text.length, 12_000, `默认每页 12000 字符（实际 ${first.text.length}）`)
+    assert.equal(first.offset, 0, '首页 offset 必须是 0')
+    const firstText = get.output.render({ title: 'ToolsLongNote' }, first).map((l) => l.text).join('\n')
+    assert.match(firstText, new RegExp(`共 ${body.length} 字符`), '回执必须写明正文总长')
+    assert.match(firstText, /正文未读完/, '截断必须显式告警，不能假装读完了')
+    assert.match(firstText, /offset: 12000/, '回执必须给出下一页的 offset（否则模型无法续读）')
+
+    const second = await call('tiddlywiki_get', { title: 'ToolsLongNote', offset: 12_000 })
+    assert.equal(second.offset, 12_000)
+    assert.equal(second.text.length, body.length - 12_000, '第二页应取到剩余全部（未超限）')
+    const secondText = get.output.render({ title: 'ToolsLongNote', offset: 12_000 }, second).map((l) => l.text).join('\n')
+    assert.match(secondText, /TAILMARK/, '第二页必须包含正文尾部')
+    assert.ok(!/正文未读完/.test(secondText), '读完了就不许再喊"未读完"')
+
+    const clamped = await call('tiddlywiki_get', { title: 'ToolsLongNote', limit: 50 })
+    assert.equal(clamped.text.length, 50, 'limit 必须生效')
+    const beyond = await call('tiddlywiki_get', { title: 'ToolsLongNote', offset: 999_999 })
+    assert.equal(beyond.text, '', 'offset 越界应返回空片段而不是报错')
+  })
+
+  await test('search / lint 回执预算：超预算时截断**并说明省略了多少条**（纯 render，无需真库）', async () => {
+    const search = tools.get('tiddlywiki_search')
+    const heavySearch = {
+      query: 'q', tags: [], since: null, type: null, field: null, value: null,
+      total: 200, workspace: null, scope: 'global', fellBack: false,
+      results: Array.from({ length: 200 }, (_, i) => ({
+        title: `结果标题 ${i} `.padEnd(80, '·'), tags: [], modified: null, snippet: 's'.repeat(200),
+      })),
+    }
+    const searchText = search.output.render({ query: 'q' }, heavySearch).map((l) => l.text).join('\n')
+    assert.ok(searchText.length <= 13_000, `search 回执必须受体量预算约束（实际 ${searchText.length} 字符）`)
+    assert.match(searchText, /受回执体量预算限制/, 'search 必须说明有多少条命中没列出，而不是静默少给')
+
+    const lint = tools.get('tiddlywiki_lint')
+    const heavyLint = {
+      scanned: 100, checks: ['junk-tags'], unknownChecks: [],
+      issues: [{ kind: 'junk-tags', count: 400, hint: 'h', samples: Array.from({ length: 400 }, (_, i) => `样本 ${i} `.padEnd(80, '·')) }],
+    }
+    const lintText = lint.output.render({}, heavyLint).map((l) => l.text).join('\n')
+    assert.ok(lintText.length <= 13_000, `lint 回执必须受体量预算约束（实际 ${lintText.length} 字符）`)
+    assert.match(lintText, /条示例省略/, 'lint 必须说明示例被省略了多少条')
+    assert.match(lintText, /- junk-tags：400 处/, '计数是结论，不许被预算截掉')
+  })
+
+  // ── 输出 schema（v0.30.66）────────────────────────────────────────────────
+  //
+  // DSH 0.2.1 的注册表会在**每次调用之后**跑
+  // `validateJsonSchemaValue(tool.output.schema, value)`，不过就抛 ToolOutputError。
+  // 所以 schema 写错不是风格问题，而是线上工具直接不可用。两条一起守：
+  //   ① 每个工具都必须声明（新工具忘了补 → 红）；
+  //   ② 用**本次 E2E 的真实返回值**反向校验声明 —— 抓「schema 比现实更严」。
+  function validateAgainst(schema, value, path, problems) {
+    if (schema === null || typeof schema !== 'object') return
+    const type = schema.type
+    if (type === 'object') {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        problems.push(`${path} 应为 object，实际 ${Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value}`)
+        return
+      }
+      for (const key of schema.required ?? []) if (!(key in value)) problems.push(`${path}.${key} 缺少必需字段`)
+      for (const [key, sub] of Object.entries(schema.properties ?? {})) {
+        if (key in value) validateAgainst(sub, value[key], `${path}.${key}`, problems)
+      }
+      return
+    }
+    if (type === 'array') {
+      if (!Array.isArray(value)) { problems.push(`${path} 应为 array，实际 ${typeof value}`); return }
+      if (schema.items !== undefined) value.forEach((item, i) => validateAgainst(schema.items, item, `${path}[${i}]`, problems))
+      return
+    }
+    if (typeof type === 'string') {
+      const ok = type === 'string' ? typeof value === 'string'
+        : type === 'number' ? typeof value === 'number'
+          : type === 'boolean' ? typeof value === 'boolean'
+            : type === 'null' ? value === null
+              : true
+      if (!ok) problems.push(`${path} 应为 ${type}，实际 ${value === null ? 'null' : typeof value}`)
+    }
+    if (Array.isArray(schema.enum) && !schema.enum.includes(value)) problems.push(`${path} 不在 enum 内：${JSON.stringify(value)}`)
+  }
+
+  await test('每个 tiddlywiki_* 工具都声明了 output.schema（非空 object、放行未知字段）', () => {
+    const missing = []
+    const bad = []
+    for (const [name, tool] of tools) {
+      if (!name.startsWith('tiddlywiki_')) continue
+      const schema = tool.output?.schema
+      if (schema === undefined || Object.keys(schema).length === 0) { missing.push(name); continue }
+      if (schema.type !== 'object') bad.push(`${name}（type=${JSON.stringify(schema.type)}）`)
+      else if (schema.additionalProperties !== true) bad.push(`${name}（additionalProperties 不是 true —— 我们会返回可选字段）`)
+    }
+    assert.deepEqual(missing, [], `这些工具没有 output.schema（等于放弃出口校验）：${missing.join(', ')}`)
+    assert.deepEqual(bad, [], `这些工具的 output.schema 形状不对：${bad.join('；')}`)
+  })
+
+  await test('真实返回值必须通过各自声明的 output.schema（声明比现实更严 = 线上工具会坏）', () => {
+    const perTool = new Map()
+    for (const { name, value } of captured) {
+      const schema = tools.get(name)?.output?.schema
+      if (schema === undefined) continue
+      const problems = []
+      validateAgainst(schema, value, name, problems)
+      if (problems.length === 0) continue
+      const list = perTool.get(name) ?? []
+      list.push(...problems)
+      perTool.set(name, list)
+    }
+    const report = [...perTool].map(([name, problems]) => `${name}: ${[...new Set(problems)].slice(0, 3).join(' / ')}`)
+    assert.ok(captured.length > 20, `E2E 只捕获到 ${captured.length} 次调用，样本太少（脚本结构变了？）`)
+    assert.deepEqual(report, [], `声明的 output.schema 与真实返回值不符：\n      ${report.join('\n      ')}`)
   })
 
 } catch (err) {

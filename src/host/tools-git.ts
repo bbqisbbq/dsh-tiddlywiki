@@ -28,6 +28,7 @@ import type { GitStatusView, GitSyncTarget } from './git.ts'
 import { flushPendingWrites } from './seeds.ts'
 import { sessionIdOf } from './tools-support.ts'
 import type { ResolveResult, SyncRepoResult, SyncResult, ToolEnv, ToolsDeps } from './tools-support.ts'
+import { GIT_RESULT } from './tool-output-schemas.ts'
 
 /** One-line 状态 summary: 分支 … 领先 … 落后 … 工作区未提交 … 最近提交. */
 function gitStatusBits(s: GitStatusView): string {
@@ -210,6 +211,7 @@ export function gitSyncTool(env: ToolEnv) {
       message: { type: 'string', description: 'commit 信息（可选，仅 sync 的本地 commit 使用）' },
     },
     output: {
+      schema: GIT_RESULT,
       render: (_args, value: SyncResult) => renderSync(value),
     },
     execute: async (args: { action: 'pull' | 'push' | 'sync'; message?: string }, exec: unknown): Promise<SyncResult> => {
@@ -350,6 +352,7 @@ export function gitResolveTool(env: ToolEnv) {
       wiki: { type: 'string', description: '可选：要解决哪一个知识库所在的仓库（传 tiddlywiki_git_sync 回执里的库 id）。不传 = 当前会话作用域的那个库；多库各有独立仓库时**必须传**，否则可能改错仓库。' },
     },
     output: {
+      schema: GIT_RESULT,
       render: (_args, value: ResolveResult) => {
         const lines = [`git resolve ${value.action}: ${value.ok ? '成功' : '失败'}`]
         lines.push(`  ${value.message}`)

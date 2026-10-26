@@ -7,6 +7,7 @@
  * @module dsh-tiddlywiki/host/tools-notes-lifecycle
  */
 import { defineTool } from '../sdk.ts'
+import { DELETE_RESULT, TRASH_RESULT } from './tool-output-schemas.ts'
 import { assertNoConflict, buildWriteTiddler } from './write-policy.ts'
 import { TRASH_INDEX_TITLE, TRASH_PREFIX, TRASHBIN_AT_FIELD, TRASHBIN_LEGACY_AT_FIELD, TRASHBIN_OF_FIELD, TRASHBIN_TAG, TRASHBIN_PREFIX, TrashIndexUnavailableError, hasTrashbin, listTrashbin, readTrashIndex, sessionIdOf, trashTitleFor, trashbinTitleFor, writeTrashIndex } from './tools-support.ts'
 import type { DeleteResult, ToolEnv, TrashIndexEntry, TrashResult } from './tools-support.ts'
@@ -25,6 +26,7 @@ export function deleteTool(env: ToolEnv) {
       force: { type: 'boolean', description: '可选：true 时忽略 expectedModified/expectedRevision 强制删除（默认 false）' },
     },
     output: {
+      schema: DELETE_RESULT,
       render: (_args, value: DeleteResult) => [{
         type: 'text',
         text: value.trashed === true
@@ -146,6 +148,7 @@ export function trashTool(env: ToolEnv) {
       limit: { type: 'integer', description: 'action=list 的返回上限（默认 30，最大 200）' },
     },
     output: {
+      schema: TRASH_RESULT,
       render: (_args, value: TrashResult) => {
         const lines = [`回收站 ${value.action}：${value.message}`]
         for (const item of value.items ?? []) lines.push(`- ${item.title}（删除于 ${item.at ?? '?'}${item.of !== undefined ? `，原名「${item.of}」` : ''}）`)

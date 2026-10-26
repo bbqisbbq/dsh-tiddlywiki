@@ -43,7 +43,7 @@
 import type { GitFace } from './host/git.ts'
 import type { RepoCommitters } from './host/repo-committers.ts'
 import type { BridgeConfig } from './host/clip-bridge.ts'
-import { installSplitSkill } from './host/skill-install.ts'
+import { installSplitSkill, readBundledSkillText, registerSplitSkill, type SkillRegistryFace } from './host/skill-install.ts'
 import { readSessionScopes } from './host/session-scope.ts'
 import { readLocationState, type WikiLocation } from './host/wiki-location.ts'
 import { WikiInstance, type WikiInstanceBase } from './host/wiki-instance.ts'
@@ -99,6 +99,15 @@ export interface StartupStageDeps {
   effectiveBridge: () => BridgeConfig
   /** The wiki's own location surface — only `defaultCurrentLocation` is read here. */
   defaultCurrentLocation: () => WikiLocation
+  /**
+   * DSH's skill registry, when the host has one (v0.30.66).
+   *
+   * Present ⇒ the split-wiki skill is registered **in memory** (no file writes
+   * into `$DSH_HOME`); absent ⇒ we keep the old file-install fallback.
+   */
+  skills?: () => SkillRegistryFace | undefined
+  /** Register a disposer owned by the plugin (the skill registration's). */
+  pushDisposer: (dispose: () => void) => void
 }
 
 /**
@@ -116,19 +125,29 @@ export function createStartupStage(deps: StartupStageDeps): { start: () => Promi
   const start = async (): Promise<void> => {
     try {
       /**
-       * Ship the 「拆分知识库」 skill FIRST (v0.28.0).
+       * Ship the 「拆分知识库」 skill FIRST (v0.28.0; in-memory since v0.30.66).
        *
-       * It is deliberately independent of the wiki: it only writes a file into
-       * `$DSH_HOME/skills`, and it must still happen when the wiki is slow to
-       * start, fails to start, or the user is mid-migration with a broken config.
-       * A plugin cannot register a skill ROOT, so writing into the user's own root
-       * is the only zero-config path; it only ever touches its own file (the
-       * marker line decides — see host/skill-install.ts).
+       * Two delivery paths, best one first:
+       *   · **registry** (`ctx.skills.register`) — the skill lives in memory, is
+       *     disposed with the plugin, and never writes into the user's home.
+       *   · **file** (`$DSH_HOME/skills/…`) — fallback for hosts without a skill
+       *     registry. It only ever touches its own marked file.
+       *
+       * Deliberately independent of the wiki: it must still happen when the wiki
+       * is slow, broken, or mid-migration.
        */
       try {
-        const installed = await installSplitSkill()
-        if (installed.action === 'failed') console.warn('[dsh-tiddlywiki] 拆库 skill 安装失败：', installed.error)
-        else console.info(`[dsh-tiddlywiki] 拆库 skill：${installed.action}（${installed.path}）`)
+        const text = await readBundledSkillText()
+        const skills = deps.skills?.()
+        const dispose = skills !== undefined && text !== undefined ? registerSplitSkill(skills, text) : undefined
+        if (dispose !== undefined) {
+          deps.pushDisposer(dispose)
+          console.info('[dsh-tiddlywiki] 拆库 skill：已注册到宿主 skill 注册表（内存，无文件写入）')
+        } else {
+          const installed = await installSplitSkill()
+          if (installed.action === 'failed') console.warn('[dsh-tiddlywiki] 拆库 skill 安装失败：', installed.error)
+          else console.info(`[dsh-tiddlywiki] 拆库 skill：${installed.action}（${installed.path}）`)
+        }
       } catch (err) {
         console.warn('[dsh-tiddlywiki] 拆库 skill 安装异常：', err)
       }

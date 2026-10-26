@@ -516,18 +516,15 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-fab-item[data-current="1"] { font-weight: 600; }
 
-/* ── 会话级知识库选择器（v0.28.0，同一个 conversation.input.dock 槽位）──
-   与快速笔记按钮同区、纵向 flex 排列；只在"多于一个可见库"时渲染（组件自己返回
-   null），所以单库安装这一整块都不存在。 */
-/* ── 会话级知识库选择器（v0.28.0；v0.28.7 起并入快速笔记那一行）──
-   它现在渲染在 .dsh-tw-dock-note **里面**、按钮的前面，所以：
-   - 不再 width:100%（那是"独占一整行"的写法，会把按钮挤下去）；
-   - 不再自己做 padding/justify —— 右对齐与"与 composer 输入框对齐"由父级
-     统一负责（见 client/dock-align.ts），一行只测量一次、天然同一基线。
+/* ── 会话级知识库选择器（v0.28.0；v0.30.66 起住在 conversation.input.left）──
+   它现在渲染在**输入框工具行**里（宿主的行内座位），所以：
+   - inline-flex（行内小控件，宽度由内容决定，绝不 width:100%）；
+   - 不自己测量/补 padding —— 对齐由宿主那一行负责（旧的逐行测量随 dock 内嵌
+     方案一起退役，见 client/dock-align.ts）。
    只在"多于一个可见库"时渲染（组件自己返回 null），单库安装这一块 DOM 不存在。 */
 .dsh-tw-scope-dock {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px;
+  font-size: 12px; min-width: 0;
 }
 .dsh-tw-scope-label { opacity: .7; }
 .dsh-tw-scope-select {

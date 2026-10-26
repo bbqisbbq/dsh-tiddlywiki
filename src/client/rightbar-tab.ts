@@ -36,6 +36,19 @@ import {
 export const TW_RIGHTBAR_KIND = 'dsh-tiddlywiki'
 /** This implementation's identity in the tab system: the key its body registers under. */
 export const TW_RIGHTBAR_ID = 'dsh-tiddlywiki'
+/**
+ * The guide-card identity (v0.30.66).
+ *
+ * `sidebarRightTabs.register()` validates guide entries with
+ * `new Set(entries.map(e => e.id))`, so an entry WITHOUT an `id` survives only
+ * while it is the only one: adding a second entry throws, and the whole rightbar
+ * integration (wrapped in a try/catch at the call site) disappears silently.
+ *
+ * Deliberately NOT `TW_RIGHTBAR_ID`: a guide entry and a tab type are two
+ * identities in two namespaces, and the shipped guide page names its own with a
+ * `/guide` suffix (`@deepseek-ai/dsh-client-ui-sidebar-right/guide`).
+ */
+export const TW_RIGHTBAR_GUIDE_ID = 'dsh-tiddlywiki/guide'
 /** Activation-event name for THIS tab (distinct from the center panel's 'dsh-tiddlywiki'). */
 const RIGHTBAR_PANEL_NAME = 'dsh-tiddlywiki/rightbar'
 
@@ -129,8 +142,26 @@ function rightbarDefinition(): Record<string, unknown> {
     id: TW_RIGHTBAR_ID,
     kind: TW_RIGHTBAR_KIND,
     title: (): string => getTabLabel(),
+    /**
+     * Keep the body mounted while the tab is hidden (v0.30.66).
+     *
+     * Without this flag the suite unmounts the body whenever the tab is hidden —
+     * switching tabs, switching Session, collapsing the column — and our body
+     * owns the TW iframe: every return then reloads the WHOLE wiki (tens of
+     * megabytes, served `no-store`, so the browser cache cannot help).
+     *
+     * Visibility is still driven from the outside: the body applies
+     * `controller.setVisible(tab.visible)` whenever the tab record's `visible`
+     * flips, so the frame stays hidden rather than rendering.
+     *
+     * Closing the tab still unmounts (the tab record is gone, so React drops the
+     * entry and `controller.dispose()` runs) — which is what keeps the
+     * `dsh-panel-activate` mutual exclusion ("one TW client at a time") intact.
+     */
+    keepMounted: true,
     guide: [
       {
+        id: TW_RIGHTBAR_GUIDE_ID,
         order: 10,
         title: (): string => t('frame.rightbarTitle'),
         description: (): string => t('frame.rightbarDescription'),

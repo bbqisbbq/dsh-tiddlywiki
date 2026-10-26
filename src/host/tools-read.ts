@@ -6,6 +6,7 @@
  * @module dsh-tiddlywiki/host/tools-read
  */
 import { defineTool } from '../sdk.ts'
+import { BACKLINK_RESULT, LINT_RESULT, RECENT_RESULT, SEARCH_RESULT, TAG_LIST_RESULT } from './tool-output-schemas.ts'
 import { MISSING_TYPE_FILTER, isBinaryType, parseTiddlerDate, toIsoDateString } from './tw-api.ts'
 import type { Tiddler } from './tw-api.ts'
 import { snippetOf } from './text-util.ts'
@@ -29,6 +30,18 @@ import type {
   ToolEnv,
 } from './tools-support.ts'
 
+/**
+ * 单条工具回执的文本预算（v0.30.66）。
+ *
+ * 与 `tiddlywiki_get` 的分页同一个理由：DSH 宿主对单条工具结果有 `spill-policy`
+ * （`maxInlineTokens: 12500`，超了换成首尾预览 + 落盘）与
+ * `compaction-tool-result-pruner`（8192 字符，压缩压力下剪掉中间）两道闸。
+ * 列表类工具（search / lint）的条数上限管不住**字节数**（200 条命中照样能到
+ * 40KB），所以这里再加一道按字符的预算，并且**自己**把"省略了多少条"说清楚 ——
+ * 比让宿主拦腰剪断可读得多。
+ */
+const RENDER_TEXT_BUDGET_CHARS = 12_000
+
 export function searchTool(env: ToolEnv) {
   const { deps, requireWiki } = env
   // ── tiddlywiki_search ────────────────────────────────────────────────────
@@ -46,6 +59,7 @@ export function searchTool(env: ToolEnv) {
       limit: { type: 'integer', description: '可选：返回条数上限（默认 30，最大 200）' },
     },
     output: {
+      schema: SEARCH_RESULT,
       render: (_args, value: SearchResult) => {
         const filters: string[] = []
         if (value.tags.length > 0) filters.push(`tags=${value.tags.join(',')}`)
@@ -64,11 +78,23 @@ export function searchTool(env: ToolEnv) {
         const head = `TiddlyWiki 搜索「${value.query}」${filters.length > 0 ? ` (${filters.join(' · ')})` : ''}：命中 ${value.total} 条${scope}（按相关度排序）。`
         const lines = [head]
         if (value.results.length === 0) lines.push('没有匹配的 tiddler。')
+        // `limit` 管"查多少条"，这里管"回执多大"（见 RENDER_TEXT_BUDGET_CHARS）。
+        let shown = 0
+        let usedChars = head.length
         for (const r of value.results) {
           const tags = r.tags.length > 0 ? ` [${r.tags.join(', ')}]` : ''
           const modified = r.modified !== null ? ` (${r.modified})` : ''
-          lines.push(`- ${r.title}${tags}${modified}`)
+          const row = `- ${r.title}${tags}${modified}`
+          const cost = row.length + (r.snippet.length > 0 ? r.snippet.length + 4 : 1)
+          // 至少留一条：单条就超预算时也要让调用方看到命中的是哪个标题。
+          if (shown > 0 && usedChars + cost > RENDER_TEXT_BUDGET_CHARS) break
+          lines.push(row)
           if (r.snippet.length > 0) lines.push(`  ${r.snippet}`)
+          usedChars += cost
+          shown++
+        }
+        if (shown < value.results.length) {
+          lines.push(`（受回执体量预算限制：本次只展开前 ${shown} 条，另外 ${value.results.length - shown} 条命中未列出 —— 用更精确的 query / tag / field 收窄，或直接 tiddlywiki_get 读标题）`)
         }
         if (value.total > value.results.length) lines.push(`（另有 ${value.total - value.results.length} 条未展开，可用 tiddlywiki_get 读取具体标题，或提高 limit）`)
         return [{ type: 'text', text: lines.join('\n') }]
@@ -126,6 +152,7 @@ export function recentTool(env: ToolEnv) {
       since: { type: 'string', description: '可选：只返回修改时间不早于该 ISO 时间的 tiddler' },
     },
     output: {
+      schema: RECENT_RESULT,
       render: (_args, value: RecentResult) => {
         const lines = [`TiddlyWiki 最近修改（最近 ${value.results.length} 条${value.since !== null ? `，since=${value.since}` : ''}）：`]
         if (value.results.length === 0) lines.push('暂无笔记。')
@@ -158,6 +185,7 @@ export function listTagsTool(env: ToolEnv) {
       limit: { type: 'integer', description: '可选：最多返回多少个标签（按使用次数降序），默认 200，上限 1000。' },
     },
     output: {
+      schema: TAG_LIST_RESULT,
       render: (_args, value: TagListResult) => {
         if (value.tags.length === 0) return [{ type: 'text', text: '知识库暂无标签。' }]
         const lines = [
@@ -194,6 +222,7 @@ export function backlinksTool(env: ToolEnv) {
       limit: { type: 'integer', description: '可选：最多返回多少条（默认 30，最大 200）' },
     },
     output: {
+      schema: BACKLINK_RESULT,
       render: (_args, value: BacklinkResult) => {
         const lines = [`「${value.title}」的反向链接：${value.total} 条（引用 ${value.linkCount} · 标签 ${value.tagCount}）`]
         if (value.items.length === 0) lines.push('没有任何笔记引用它。')
@@ -240,6 +269,7 @@ export function lintTool(env: ToolEnv) {
       staleAfterDays: { type: 'integer', description: '可选：`stale` 检查里「长期未改动」的阈值天数（默认 180）。只影响候选的判定，不影响 valid-until / review-after 的硬判定' },
     },
     output: {
+      schema: LINT_RESULT,
       render: (_args, value: LintResult) => {
         const ran = value.checks.length > 0 ? value.checks.join(', ') : '（无）'
         const lines = [`知识库体检：扫描 ${value.scanned} 条文本笔记，已检查 ${ran}，发现 ${value.issues.reduce((sum, i) => sum + i.count, 0)} 个问题。`]
@@ -251,9 +281,22 @@ export function lintTool(env: ToolEnv) {
             ? '没有运行任何检查（请求的检查名全部无法识别）。'
             : '没有发现问题。')
         }
+        // 同一个回执预算（v0.30.66）：`limit` 是"每类几条"，管不住总字节数。
+        let usedChars = lines.join('\n').length
         for (const issue of value.issues) {
           lines.push(`- ${issue.kind}：${issue.count} 处 — ${issue.hint}`)
-          for (const sample of issue.samples) lines.push(`    · ${sample}`)
+          let shown = 0
+          for (const sample of issue.samples) {
+            const cost = sample.length + 8
+            // 每类至少留一条示例：只剩"有个类别"没有例子，对修复没有帮助。
+            if (shown > 0 && usedChars + cost > RENDER_TEXT_BUDGET_CHARS) break
+            lines.push(`    · ${sample}`)
+            usedChars += cost
+            shown++
+          }
+          if (shown < issue.samples.length) {
+            lines.push(`    …其余 ${issue.samples.length - shown} 条示例省略（回执体量预算；可用 limit 逐类收敛，或用 tiddlywiki_search 精确定位）`)
+          }
         }
         return [{ type: 'text', text: lines.join('\n') }]
       },

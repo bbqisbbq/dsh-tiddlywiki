@@ -49,7 +49,11 @@ const source = fs.readFileSync(file, 'utf8')
 /** 宿主注入预算（字节）。**这是事实边界，不要为了让守门变绿而改它。** */
 const HARD_LIMIT = 65536
 /** 自我警戒线：留 ~30% 余量，超过就要在同一个 commit 里瘦身。 */
-const SOFT_LIMIT = 45000
+// 45000 → 48000（v0.31.0，有意识的决定）：这一版 §2 新增两行（工具出口 schema /
+// 宿主集成）—— 它们记的是「DSH 会校验工具返回值」「skill 走内存注册」这类**规则**，
+// 不是历史八卦。按本文件自己的分工（细节进 wiki、CHANGELOG 记演进），把空间留给
+// 规则是对的；真正的边界仍是 HARD=65536。
+const SOFT_LIMIT = 48000
 
 const bytes = Buffer.byteLength(source, 'utf8')
 
