@@ -176,9 +176,23 @@ npm publish    # 版本号在 package.json；文件白名单见 files 字段
 - **已核实的契约（2026-10-26，直接读 `app.asar` 里 `dsh-client-ui-sidebar-documentpreview/lib/client.js`）**：
   `ctx.documentPreviews.register({ id, extensions, binaryExtensions?, priority, title, loading, wrap? })`
   确实存在，且**按 id 去重**——同 id 重复注册抛「duplicate implementation」；`binaryExtensions`
-  必须在 `extensions` 里，否则也抛。**唯一还没核实的是正文组件的 props 形状**（`content` 的
-  text/bytes/renderer 三态与 `ResourceGroup` 相关字段），它同样在那个 bundle 里：动手前先读它，
-  别照着这条笔记猜。
+  必须在 `extensions` 里，否则也抛。
+- **正文组件的 props 形状也核实完了（同一轮，同一个 bundle 的 `TextPreview` 函数签名）**：
+
+  ```js
+  TextPreview({ useTabInfo, useResource, useStore, actions, loadPage, reloadPages,
+                loadAll, reloadAll, prepareRenderer, useDocumentPreviews, renderSlot,
+                t, addResource, setResources })
+  ```
+
+  三种 `content` 形态：`{ kind: 'text', pages, text }`（文本页，`text` 是累计前缀）、
+  `{ kind: 'bytes', data }`（完整字节）、`{ kind: 'renderer', revision, loaded, failed, reload }`
+  （`loading: 'renderer'` 时才用）。`useTabInfo()` 给 `{ tab }`，`tab.contentId` 是资源地址
+  （`useResource(tab.contentId)` 取元数据，`meta.value.absolutePath` 才是本地真实路径）。
+
+  ⇒ 因此 `.tid` 预览的正确写法是：`loading: 'text-pages'`，正文从 `content.text` 拿**已累计的**文本，
+  解析出 frontmatter 后再把正文 POST 到 `/dsh-tiddlywiki/render` 换成净化 HTML；**拿不到 `content` 时
+  必须退回 `<pre>原文</pre>`**（白屏是沉默失败）。这套已无未知量，缺的只是**可视验证**。
 
 ### 发布时要动的地方（完整清单见 AGENTS.md §4）
 
