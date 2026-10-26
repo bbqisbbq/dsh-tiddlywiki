@@ -401,6 +401,20 @@ export class WikiInstance {
   }
 
   /**
+   * This wiki's same-origin proxy base (`/dsh-tiddlywiki/tw/` or
+   * `/dsh-tiddlywiki/tw/<id>/`).
+   *
+   * v0.33.4: exposed so routes that RE-RUN seeds (the settings page's
+   * 「重新初始化」) pass the same value the startup path does. Without it the
+   * `tw-web-host` seed wrote the bare legacy base in a multi-wiki install, and
+   * that wiki's embedded editor then proxied every API call to the DEFAULT wiki
+   * (one wiki's UI over another wiki's data).
+   */
+  proxyBasePath(): string {
+    return this.options.proxyBase?.() ?? TW_PROXY_PATH
+  }
+
+  /**
    * Debounced auto-commit touch for this wiki's folder. Routed to the
    * REPOSITORY's committer (several wikis may share one repository).
    */

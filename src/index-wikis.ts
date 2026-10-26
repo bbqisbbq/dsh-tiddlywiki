@@ -136,7 +136,7 @@ export function createWikiViews(deps: WikiViewsDeps): WikiViews {
   /** Source of the CURRENT location, for the settings page. */
   const locationSource = async (): Promise<WikiLocationSource> => {
     const state = await readLocationState(locationStateFile())
-    if (state.active !== undefined && locationPath(state.active) === defaultPath()) return 'state'
+    if (state.active !== undefined && pathComparisonKey(locationPath(state.active)) === pathComparisonKey(defaultPath())) return 'state'
     const raw = deps.rawConfig()
     return typeof raw.wikiRoot === 'string' && raw.wikiRoot.trim().length > 0 ? 'config' : 'default'
   }
@@ -257,7 +257,7 @@ export function createWikiViews(deps: WikiViewsDeps): WikiViews {
    */
   const resetWikiLocation = async (): Promise<WikiSwitchResult> => {
     if (farm()?.registry.mode === 'multi') return repointDefault(defaultLocation())
-    if (locationPath(defaultLocation()) === defaultPath()) {
+    if (pathComparisonKey(locationPath(defaultLocation())) === pathComparisonKey(defaultPath())) {
       await clearLocationState(locationStateFile())
       return { ok: true, location: defaultLocation(), path: defaultPath() }
     }

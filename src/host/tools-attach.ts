@@ -12,7 +12,7 @@ import { defineTool } from '../sdk.ts'
 import { isBinaryType } from './tw-api.ts'
 import { downloadClipImage } from './clip-bridge.ts'
 import { assertNoConflict, buildWriteTiddler } from './write-policy.ts'
-import { MAX_ATTACH_BYTES, sessionIdOf } from './tools-support.ts'
+import { assertWritableTitle, MAX_ATTACH_BYTES, sessionIdOf } from './tools-support.ts'
 import type { AttachResult, ToolEnv } from './tools-support.ts'
 
 /** Mime types offered by `tiddlywiki_attach` for local files. */
@@ -68,6 +68,9 @@ export function attachTool(env: ToolEnv) {
       const wiki = requireWiki(sessionIdOf(exec))
       const title = args.title.trim()
       if (title.length === 0) throw new Error('tiddlywiki_attach: title 不能为空')
+      // v0.33.4: an attachment write is a write — same secret-namespace boundary.
+      assertWritableTitle(title)
+      if (typeof args.noteTitle === 'string' && args.noteTitle.trim().length > 0) assertWritableTitle(args.noteTitle.trim())
       const hasPath = typeof args.path === 'string' && args.path.trim().length > 0
       const hasUrl = typeof args.url === 'string' && args.url.trim().length > 0
       if (hasPath === hasUrl) throw new Error('tiddlywiki_attach: path 与 url 必须且只能提供一个')
@@ -123,7 +126,7 @@ export function attachTool(env: ToolEnv) {
         )
       }
       const explicitTags = Array.isArray(args.tags)
-        ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0)
+        ? args.tags.filter((t) => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim())
         : undefined
       // v0.30.22：文本类附件必须存**纯文本**，不能一律 base64。
       //
@@ -141,7 +144,11 @@ export function attachTool(env: ToolEnv) {
       const body = asText ? decoded : buffer.toString('base64')
       const { tiddler } = buildWriteTiddler(title, body, {
         existing,
-        ...(explicitTags !== undefined && explicitTags.length > 0 ? { tags: explicitTags } : {}),
+        // v0.33.4: pass `tags` whenever the caller SUPPLIED it — `tags: []` is the
+        // documented「清空标签」 (normalizeTagArg / buildWriteTiddler implement it
+        // that way everywhere else). The old `length > 0` test read `[]` as「没传」
+        // so an overwrite could never clear an attachment's tags.
+        ...(explicitTags !== undefined ? { tags: explicitTags } : {}),
         fields: {
           type: mime,
           'attach-source': source,
@@ -171,9 +178,22 @@ export function attachTool(env: ToolEnv) {
         // Same read-modify-write policy as everywhere else: preserve the note's
         // tags/custom fields/type, only append the embed.
         const { tiddler: noteTiddler } = buildWriteTiddler(embedInto, text, { existing: note })
+        // v0.33.4: this is the ONE read-modify-write path that had no freshness
+        // check. `expectedModified`/`expectedRevision` above describe the
+        // ATTACHMENT title, so a note the human edited in TW between our GET and
+        // this PUT was silently reverted (PUT is a whole-tiddler replace). Re-read
+        // and compare: `note === undefined` means「we are creating it」, so an
+        // appearing tiddler counts as a conflict too.
+        const fresh = await wiki.get(embedInto)
+        if ((fresh?.modified ?? '') !== (note?.modified ?? '')) {
+          throw new Error(
+            `tiddlywiki_attach: 笔记「${embedInto}」在你读取之后被改动过（可能是 TW 编辑器里的修改），`
+            + '为避免覆盖掉那次修改，本次没有写入嵌入链接。请稍后用新的 noteTitle 重试（附件本身已保存）。',
+          )
+        }
         await wiki.put(noteTiddler)
       }
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       return { ok: true, title, mime, bytes: buffer.length, chars: body.length, encoding, source, embedInto }
     },
   })

@@ -541,7 +541,11 @@ export class TiddlyWebClient {
       return true
     })
     filtered.sort((a, b) => modifiedAt(b) - modifiedAt(a))
-    return filtered.slice(0, Math.max(1, Math.min(limit, 200)))
+    // v0.33.4: reuse `clampLimit` (the reason it exists is to keep this rule in
+    // ONE place). The inline version turned a non-finite `limit` into NaN —
+    // `Math.max(1, Math.min(NaN, 200))` is NaN — and `slice(0, NaN)` is `[]`,
+    // i.e. "no recent notes" for a caller that passed junk.
+    return filtered.slice(0, clampLimit(limit, 15))
   }
 
   /** Full tag vocabulary + its size, so callers that cap can still report the

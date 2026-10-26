@@ -405,7 +405,7 @@ export function gitResolveTool(env: ToolEnv) {
         }
         throw err
       }
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       const status = await deps.git.status(dir)
       return {
         ok: true,

@@ -547,7 +547,17 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     // （多库可能共用一个工作树），逐仓库独立成败。此前只动会话作用域那个库，
     // 回执却按会话作用域标注（"作用对象与标注不一致"）。
     gitTargets: () => gitTargets(),
-    autoCommit: () => defaultInstance()?.touchAutoCommit(),
+    // v0.33.4: resolve the committer through the CALLING session's scope.
+    // Committers are per repository, and this used to touch `defaultInstance()`
+    // whatever wiki the call wrote to — so a session scoped to a wiki living in
+    // its own repo never scheduled that repo's debounce and depended on the fs
+    // watcher alone (disabled on EPERM/ENOSPC by design). The route layer has
+    // always done this per request.
+    autoCommit: (sessionId?: string) => {
+      const scoped = sessionId === undefined ? undefined : toolScope(sessionId)
+      const scopedInstance = scoped?.id !== undefined ? farm?.runtime(scoped.id) : undefined
+      ;(scopedInstance ?? defaultInstance())?.touchAutoCommit()
+    },
     // After a pull that changed the working tree, restart the wikis whose content
     // ACTUALLY changed (v0.28.0). The syncer drain happens inside the runtime's
     // restart (rule #1); here we only pick the right targets — several knowledge

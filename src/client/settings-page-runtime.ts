@@ -123,14 +123,15 @@ export function setActiveTab(tab: SettingsTab): void {
  *
  * The two halves are ONE user action and must stay together: the wiki list lives
  * in a section module and cannot assign the imported `activeTab` binding, so the
- * pair is applied here, in the module that owns both variables. The `if` guard
- * (rather than an unconditional assignment) mirrors the button's own toggle —
- * the caller only reaches this path when the wiki is NOT already being
- * configured, and keeping the condition visible is what the guard script reads.
+ * pair is applied here, in the module that owns both variables.
+ *
+ * v0.33.4：从前这里还收一个 `configuring` 参数并由 `if (!configuring)` 守着 Tab 赋值 ——
+ * 但唯一的调用点就在「还没在配置这个库」的分支里，那个参数恒为 false，判据是死的。
+ * 现在进入配置**总是**切到「本库配置」页（退出配置走 `exitWikiScope()`，不动 Tab）。
  */
-export function enterWikiScope(id: string, configuring: boolean): void {
+export function enterWikiScope(id: string): void {
   editingWiki = id
-  if (!configuring) activeTab = 'library'
+  activeTab = 'library'
 }
 
 /** 退出配置 = 回到默认库的作用域（不改 Tab：用户可能仍在「本库配置」页看别的）。 */

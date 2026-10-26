@@ -58,6 +58,21 @@ test('createMutationLock：两个实例互不影响（提醒「必须共享同�
   assert.equal(b.begin('y'), true, '各持一把时都能拿到 —— 这正是缺陷当年的形态')
 })
 
+test('createMutationLock：`end(label)` 不得释放别人的锁（v0.33.4）', () => {
+  // 现场：`/admin/seeds/run` 对**每条**响应都调 end()，而只有「确实要重启」那条路径
+  // 才 begin()。于是最常见的「重新初始化但什么都没改」会把此刻正持锁的 `/sync`
+  // 释放掉，随后的 `/admin/restart` 就能拿到锁 —— 两条路径同时排干 + 停子进程。
+  const lock = createMutationLock()
+  assert.equal(lock.begin('sync'), true)
+  lock.end('admin-seeds')
+  assert.equal(lock.current(), 'sync', '不是持有者的 end() 必须被忽略')
+  lock.end('sync')
+  assert.equal(lock.current(), undefined, '持有者自己能释放')
+  // 空锁上按 label 释放是幂等的（finally 里拿到/没拿到都会调一次）。
+  lock.end('admin-seeds')
+  assert.equal(lock.current(), undefined)
+})
+
 /* ────────────────── 2. 接线（源码级）────────────────── */
 
 const routes = readFamily(repoRoot, 'src/host/routes')
@@ -86,8 +101,8 @@ test('admin 侧：/admin/restart 与 seeds-run 都拿锁并在 finally 释放', 
   assert.match(admin, /lock\.begin\('admin-restart'\)/, '/admin/restart 必须拿锁')
   assert.match(admin, /seedLock\.begin\('admin-seeds'\)/, 'seeds-run 的重启段必须拿锁')
   assert.match(admin, /429/, '拿不到要回 429（而不是排队硬上）')
-  assert.match(admin, /lock\?\.end\(\)/, 'restart 必须在 finally 里释放')
-  assert.match(admin, /seedLock\?\.end\(\)/, 'seeds-run 必须释放')
+  assert.match(admin, /lock\?\.end\('admin-restart'\)/, 'restart 必须在 finally 里按 label 释放（无所有权校验就写回别人的锁）')
+  assert.match(admin, /seedLock\?\.end\('admin-seeds'\)/, 'seeds-run 必须按 label 释放')
 })
 
 test('index.ts：整插件**只建一把**，两侧拿到的是同一个', () => {

@@ -721,7 +721,10 @@ test('设置页分页：多库时按「总览/本库配置/全局」分开，且
   assert.match(settings, /const showOverview = !multi \|\| activeTab === 'overview'/, '单库必须始终渲染总览')
   assert.match(settings, /const showGlobal = !multi \|\| activeTab === 'global'/, '单库必须始终渲染全局配置')
   // 点「配置」要跳到「本库配置」，否则那次点击看起来没反应。
-  assert.match(settings, /if \(!configuring\) activeTab = 'library'/, '点「配置」应切到「本库配置」页')
+  // v0.33.4：原来钉的 `if (!configuring) activeTab = 'library'` 是个**恒真**条件
+  // （唯一调用点就在 else 分支里，configuring 必为 false），守门等于在保护死代码。
+  // 现在钉语义：`enterWikiScope` 一进去就切页。
+  assert.match(settings, /export function enterWikiScope\(id: string\)[\s\S]{0,400}?activeTab = 'library'/, '点「配置」应切到「本库配置」页')
 })
 
 test('回复流卡片「在 TW 打开」必须带上是哪个库（作者 2026-09-29 报障：跳到最后打开的库）', () => {

@@ -59,17 +59,24 @@ export function getLang(): Lang {
  * Apply a language. Called from `fetchStatus()` (every `/status` payload carries
  * `lang`) and from the settings page on save. Returns true when it CHANGED, so a
  * caller that can re-render (the settings page) knows whether to redraw.
+ *
+ * A payload WITHOUT a usable language is ignored (v0.33.4): `fetchStatus()` feeds
+ * this every 2 s, and an older host / an error state / a stopped wiki's trimmed
+ * payload has no `lang` at all — `normalizeLang(undefined)` used to fall back to
+ * `'zh'` and overwrite the user's cached `en` on the very next poll. Nothing is
+ * written unless the value actually changed, either.
  */
 export function setLang(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return false
   const next = normalizeLang(raw)
-  const changed = next !== current
+  if (next === current) return false
   current = next
   try {
     globalThis.localStorage?.setItem(STORAGE_KEY, next)
   } catch {
     /* best-effort cache; the UI still works with the in-memory value */
   }
-  return changed
+  return true
 }
 
 /**

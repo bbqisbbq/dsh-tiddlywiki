@@ -339,8 +339,12 @@ export class GitFace {
       }
     }
     const conflictFiles = await this.unmergedFiles(dir)
-    // Only abort when WE left a rebase behind: either it did not exist before,
-    // or it did but the failure produced unmerged paths we are responsible for.
+    // Only abort a rebase WE started (none was in progress before this pull).
+    // v0.33.4: the old comment described an OR条件 ("…or one was already there
+    // but the failure produced unmerged paths of ours") that was never
+    // implemented — and should NOT be: when a rebase predates us, `git pull`
+    // refuses up front and leaves no new conflict, so aborting would throw away
+    // the user's own in-progress rebase.
     const rebaseNow = await this.hasRebaseInProgress(dir)
     const ourRebase = rebaseNow && !preexistingRebase
     if (ourRebase) {

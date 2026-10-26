@@ -1,8 +1,8 @@
 /**
  * Note STRUCTURE tools: `rename` / `append`.
  *
- * v0.30.7：从 	ools-notes.ts **纯搬迁**拆出（职责分组），函数体一字未改。
- * 原来的文件变成 barrel，	ools.ts 的注册顺序与导入路径都没变。
+ * v0.30.7：从 tools-notes.ts **纯搬迁**拆出（职责分组），函数体一字未改。
+ * 原来的文件变成 barrel，tools.ts 的注册顺序与导入路径都没变。
  *
  * @module dsh-tiddlywiki/host/tools-notes-structure
  */
@@ -11,7 +11,7 @@ import { APPEND_RESULT, RENAME_RESULT, REPLACE_RESULT } from './tool-output-sche
 import { isBinaryType } from './tw-api.ts'
 import { assertNoConflict, buildWriteTiddler, normalizeTagArg } from './write-policy.ts'
 import { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX } from './workspace.ts'
-import { insertIntoSection, normalizeFieldsInArgs, rewriteRefs, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
+import { assertWritableTitle, insertIntoSection, normalizeFieldsInArgs, rewriteRefs, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
 import type { AppendResult, RenameResult, ReplaceResult, ToolEnv } from './tools-support.ts'
 
 export function renameTool(env: ToolEnv) {
@@ -45,6 +45,9 @@ export function renameTool(env: ToolEnv) {
       const wiki = requireWiki(sessionIdOf(exec))
       const { oldTitle, newTitle } = args
       if (oldTitle === newTitle) return { ok: true, from: oldTitle, to: newTitle, refsUpdated: 0, refsTiddlers: 0 }
+      // v0.33.4: neither side of a rename may touch the plugin's secret namespace.
+      assertWritableTitle(oldTitle)
+      assertWritableTitle(newTitle)
       const existing = await wiki.get(oldTitle)
       if (existing === undefined) throw new Error(`tiddler「${oldTitle}」不存在`)
       // The rename re-writes the OLD note's body under the NEW title: an edit that
@@ -124,7 +127,7 @@ export function renameTool(env: ToolEnv) {
         const partial = `新标题「${newTitle}」已写入，但旧标题「${oldTitle}」删除失败（${deleteFailed}）：现在两个标题都存在同一份内容，请手动删除旧标题。`
         warning = warning === undefined ? partial : `${warning} ${partial}`
       }
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       return {
         ok: true,
         from: oldTitle,
@@ -178,6 +181,7 @@ export function appendTool(env: ToolEnv) {
       const wiki = requireWiki(sessionIdOf(exec))
       const title = args.title.trim()
       if (title.length === 0) throw new Error('tiddlywiki_append: title 不能为空')
+      assertWritableTitle(title)
       const existing = await wiki.get(title)
       // v0.25.0: append is a read-modify-write of the WHOLE note (`next` below is
       // the stale base plus the addition), so it needs the same optimistic guard
@@ -221,7 +225,7 @@ export function appendTool(env: ToolEnv) {
         fields: appendMarked.fields,
       })
       await wiki.put(tiddler)
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       return {
         ok: true,
         title,
@@ -276,6 +280,7 @@ export function replaceTool(env: ToolEnv) {
       const title = args.title.trim()
       if (title.length === 0) throw new Error('tiddlywiki_replace: title 不能为空')
       if (typeof args.old !== 'string' || args.old.length === 0) throw new Error('tiddlywiki_replace: old 不能为空')
+      assertWritableTitle(title)
       const existing = await wiki.get(title)
       assertNoConflict(title, existing, {
         expectedModified: args.expectedModified,
@@ -297,7 +302,7 @@ export function replaceTool(env: ToolEnv) {
       const replaced = args.all === true ? base.split(args.old).length - 1 : 1
       const { tiddler } = buildWriteTiddler(title, next, { existing })
       await wiki.put(tiddler)
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       return { ok: true, title, replaced, found: true, total: next.length, type: typeof tiddler.type === 'string' ? tiddler.type : null }
     },
   })

@@ -14,7 +14,7 @@
  */
 import * as React from 'react'
 import { t } from './i18n.ts'
-import { RESTART_ENDPOINT } from './endpoints.ts'
+import { RESTART_ENDPOINT, withWikiQuery } from './endpoints.ts'
 
 
 export const ACTIVATE_EVENT = 'dsh-panel-activate'
@@ -59,10 +59,17 @@ export function getTabLabel(): string {
   return tabLabel ?? t('frame.tabLabelDefault')
 }
 
-/** POST /restart; `false` on any failure. Shared by both TW surfaces (v0.22.3). */
-export async function requestRestart(): Promise<boolean> {
+/**
+ * POST /restart; `false` on any failure. Shared by both TW surfaces (v0.22.3).
+ *
+ * `wiki` (v0.33.4) names the knowledge base to restart — the host resolves
+ * `/restart` by `?wiki=`, so omitting it restarts the DEFAULT wiki even when the
+ * error panel is about another one (the retry button then never clears its
+ * error state). Same rule as the settings page's `withWiki(RESTART_ENDPOINT)`.
+ */
+export async function requestRestart(wiki?: string): Promise<boolean> {
   try {
-    const res = await fetch(RESTART_ENDPOINT, { method: 'POST', signal: AbortSignal.timeout(8_000) })
+    const res = await fetch(withWikiQuery(RESTART_ENDPOINT, wiki), { method: 'POST', signal: AbortSignal.timeout(8_000) })
     return res.ok
   } catch {
     return false

@@ -99,7 +99,13 @@ export function createHashNavigator(deps: HashNavigatorDeps) {
     const base = loadableFrameUrl(frame.dataset)
     if (base === null) return
     const next = `${base.split('#')[0]}${hash}`
-    if (frame.src !== next) frame.src = next
+    if (frame.src !== next) {
+      // 换 src = 换文档（v0.33.4）：必须同时把 `frameLoaded` 清零 —— 否则紧接的 hash 请求
+      // 会落进**正在被替换**的旧文档并清掉 `pendingHash`，新文档加载完导航就丢了
+      // （与 tw-frame.ts 的 onReloadRequest / showFrame 同一条不变量）。
+      deps.surfaceState.frameLoaded = false
+      frame.src = next
+    }
   }
 
   return { applyPendingHash, fallbackLoad }

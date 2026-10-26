@@ -181,8 +181,12 @@ export class WechatPublishRunner {
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       })
     } catch (err) {
-      this.fail(record, `无法启动 ${command}：${err instanceof Error ? err.message : String(err)}`)
-      return { ok: true, job: snapshot(record.view) }
+      // v0.33.4: a spawn that THREW means the job never started. In this API
+      // `ok: true` means「任务已启动」 to the route and to the button, so
+      // answering it after `fail()` showed「发布已开始」 while nothing ran.
+      const message = `无法启动 ${command}：${err instanceof Error ? err.message : String(err)}`
+      this.jobs.delete(id)
+      return { ok: false, busy: false, error: message }
     }
     record.child = child
     this.deps.log?.(`[dsh-tiddlywiki] wechat publish started: ${id} (${adapter})`)

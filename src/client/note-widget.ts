@@ -545,7 +545,7 @@ export function createNoteWidget(): NoteWidgetHandle {
         window.removeEventListener('pagehide', onPageHide)
         onPageHide = undefined
       }
-      // 先同步落盘一次待写草稿，再清定时器：500ms 防抖窗口内点关闭/刷新（pagehide
+      // 先清防抖定时器、再同步落盘一次待写草稿：500ms 防抖窗口内点关闭/刷新（pagehide
       // 会走到这里）不丢最后输入。flushDraft 自带「内容为空则清草稿」的语义。
       autosave.clearTimer()
       flushDraft()

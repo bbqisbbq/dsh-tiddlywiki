@@ -43,7 +43,7 @@ export interface NoteCommandDeps {
   workspaceName?: (sessionId: string) => string | undefined
   workspaceMarkEnabled?: () => boolean
   /** Debounced auto-commit ping (the same one the write tools fire). */
-  autoCommit: () => void
+  autoCommit: (sessionId?: string) => void
 }
 
 /** The command's stable identity (also what `/help` lists). */
@@ -110,7 +110,10 @@ export function registerNoteCommand(commands: CommandRegistryFace, deps: NoteCom
           text: `「${parsed.title}」已经存在（${scope.label ?? '当前知识库'}）。要改请用编辑器，或让 Agent 用 tiddlywiki_get + tiddlywiki_put 按并发令牌更新；换标题再加一次也可以。`,
         }
       }
-      const mark = deps.workspaceMarkEnabled?.() === true && sessionId !== undefined
+      // 默认开启（与 put/append 同一口径：只有显式 `=== false` 才关）。旧写法是
+      // `=== true`，于是 deps 未注入（headless / 宿主换实现）时 `/note` 写出的笔记
+      // 静默缺 `ws/<项目>` 标记与 `workspace` 字段，而同一篇笔记用 put 写就有。
+      const mark = deps.workspaceMarkEnabled?.() !== false && sessionId !== undefined
         ? workspaceMarkFromCwd(deps.workspaceName?.(sessionId))
         : undefined
       const fields: Record<string, unknown> = {}
@@ -123,7 +126,7 @@ export function registerNoteCommand(commands: CommandRegistryFace, deps: NoteCom
       // `agent-written` —— 那个标签的含义是"Agent 写的，人可以放心改"。
       const { tiddler } = buildWriteTiddler(parsed.title, parsed.body, { tags, fields, agentTag: false })
       await scope.client.put(tiddler)
-      deps.autoCommit()
+      deps.autoCommit(sessionId)
       const where = scope.label !== undefined ? `（${scope.label}）` : ''
       return { kind: 'success', text: `已写入「${parsed.title}」${where}` }
     },

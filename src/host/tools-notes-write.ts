@@ -1,8 +1,8 @@
 /**
  * Note WRITE tools: `get` / `put` / `batch_put`.
  *
- * v0.30.7：从 	ools-notes.ts **纯搬迁**拆出（职责分组），函数体一字未改。
- * 原来的文件变成 barrel，	ools.ts 的注册顺序与导入路径都没变。
+ * v0.30.7：从 tools-notes.ts **纯搬迁**拆出（职责分组），函数体一字未改。
+ * 原来的文件变成 barrel，tools.ts 的注册顺序与导入路径都没变。
  *
  * @module dsh-tiddlywiki/host/tools-notes-write
  */
@@ -12,7 +12,7 @@ import { isBinaryType, toIsoDateString } from './tw-api.ts'
 import { isBlockedProxyTitle } from './proxy-guard.ts'
 import { assertNoConflict, buildWriteTiddler, normalizeTagArg } from './write-policy.ts'
 import { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX } from './workspace.ts'
-import { normalizeBatchItemsFields, normalizeFieldsInArgs, pickFields, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
+import { assertWritableTitle, normalizeBatchItemsFields, normalizeFieldsInArgs, pickFields, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
 import type { BatchItemResult, BatchResult, GetResult, PutResult, ToolEnv } from './tools-support.ts'
 
 export function getTool(env: ToolEnv) {
@@ -170,6 +170,9 @@ export function putTool(env: ToolEnv) {
     execute: async (args: { title: string; text: string; tags?: string[]; fields?: Record<string, unknown>; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<PutResult> => {
       const wiki = requireWiki(sessionIdOf(exec))
       if (args.title.trim().length === 0) throw new Error('tiddlywiki_put: title 不能为空')
+      // v0.33.4: the read tools already refuse the plugin's secret namespace;
+      // the WRITE path did not, so the model could overwrite the config tiddler.
+      assertWritableTitle(args.title)
       // Read WITHOUT swallowing errors: only a 404 means "new tiddler". A
       // transient failure treated as "new" would silently tag an existing
       // human note as agent-written.
@@ -203,15 +206,21 @@ export function putTool(env: ToolEnv) {
         : { tags, fields: args.fields }
       const { tiddler, typeDefaulted } = buildWriteTiddler(args.title, args.text, { existing, tags: marked.tags, fields: marked.fields })
       await wiki.put(tiddler)
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       return {
         ok: true,
         title: args.title,
         tags: tiddler.tags ?? [],
         type: typeof tiddler.type === 'string' ? tiddler.type : null,
         ...(typeDefaulted ? { typeDefaulted: true } : {}),
-        ...typeChangeOf(existing, tiddler),
-        fields: marked.fields ?? null,
+        ...(typeChangeOf(existing, tiddler)),
+        // v0.33.4: report the fields the tiddler NOW has, not just the ones the
+        // caller passed. Overwriting a note that carries `q`/`due`/`workspace`
+        // without a `fields` argument used to print no 字段: line at all, and the
+        // model read that as「自定义字段被清空了」 while they were preserved. `tags`
+        // in the same receipt is already the real value, so this also removes the
+        // mismatch inside one response.
+        fields: pickFields(tiddler),
         ...(marked.workspace !== undefined ? { workspace: marked.workspace } : {}),
       }
     },
@@ -282,6 +291,8 @@ export function batchPutTool(env: ToolEnv) {
         try {
           if (title.length === 0) throw new Error('缺少非空 title')
           if (typeof item.text !== 'string') throw new Error('缺少 text')
+          // v0.33.4: same secret-namespace boundary as put/get/export.
+          assertWritableTitle(title)
           // Read WITHOUT swallowing errors: only a 404 means "new tiddler".
           const existing = await wiki.get(title)
           if (!overwrite && existing !== undefined) {
@@ -315,7 +326,7 @@ export function batchPutTool(env: ToolEnv) {
           await writeOne(list[index] as { title: string; text: string }, index)
         }
       }))
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       return { ok: failed === 0, written, skipped, failed, items: results }
     },
   })

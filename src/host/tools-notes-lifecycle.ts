@@ -1,15 +1,16 @@
 /**
  * Note LIFECYCLE tools: `delete` / `trash` (soft delete).
  *
- * v0.30.7：从 	ools-notes.ts **纯搬迁**拆出（职责分组），函数体一字未改。
- * 原来的文件变成 barrel，	ools.ts 的注册顺序与导入路径都没变。
+ * v0.30.7：从 tools-notes.ts **纯搬迁**拆出（职责分组），函数体一字未改。
+ * 原来的文件变成 barrel，tools.ts 的注册顺序与导入路径都没变。
  *
  * @module dsh-tiddlywiki/host/tools-notes-lifecycle
  */
 import { defineTool } from '../sdk.ts'
+import { parseTiddlerDate } from './tw-api.ts'
 import { DELETE_RESULT, TRASH_RESULT } from './tool-output-schemas.ts'
 import { assertNoConflict, buildWriteTiddler } from './write-policy.ts'
-import { TRASH_INDEX_TITLE, TRASH_PREFIX, TRASHBIN_AT_FIELD, TRASHBIN_LEGACY_AT_FIELD, TRASHBIN_OF_FIELD, TRASHBIN_TAG, TRASHBIN_PREFIX, TrashIndexUnavailableError, hasTrashbin, listTrashbin, readTrashIndex, sessionIdOf, trashTitleFor, trashbinTitleFor, writeTrashIndex } from './tools-support.ts'
+import { assertWritableTitle, TRASH_INDEX_TITLE, TRASH_PREFIX, TRASHBIN_AT_FIELD, TRASHBIN_LEGACY_AT_FIELD, TRASHBIN_OF_FIELD, TRASHBIN_TAG, TRASHBIN_PREFIX, TrashIndexUnavailableError, hasTrashbin, listTrashbin, readTrashIndex, sessionIdOf, trashTitleFor, trashbinTitleFor, writeTrashIndex } from './tools-support.ts'
 import type { DeleteResult, ToolEnv, TrashIndexEntry, TrashResult } from './tools-support.ts'
 
 export function deleteTool(env: ToolEnv) {
@@ -36,6 +37,8 @@ export function deleteTool(env: ToolEnv) {
     },
     execute: async (args: { title: string; permanent?: boolean; expectedModified?: string; expectedRevision?: number; force?: boolean }, exec: unknown): Promise<DeleteResult> => {
       const wiki = requireWiki(sessionIdOf(exec))
+      // v0.33.4: the secret namespace is read-protected AND write-protected.
+      assertWritableTitle(args.title)
       const existing = await wiki.get(args.title)
       // Deleting something the caller never saw is fine only when it does not
       // exist; a token means the note WAS read, so a changed revision since then
@@ -63,7 +66,7 @@ export function deleteTool(env: ToolEnv) {
       // docblock). Deleting it orphans every trashed note: `trash list` can no
       // longer see them, `restore` cannot find them, `empty` cannot clean them.
       // Use `tiddlywiki_trash action=empty` to clear the trash deliberately.
-      if (args.title === TRASH_INDEX_TITLE && existing !== undefined) {
+      if (args.title === TRASH_INDEX_TITLE && existing !== undefined && args.permanent !== true) {
         throw new Error(
           `tiddlywiki_delete: 「${TRASH_INDEX_TITLE}」是回收站索引，删掉它会让回收站里的条目全部变成不可恢复的孤儿`
           + '（列不出、恢复不了、也清不掉）。要清空回收站请用 tiddlywiki_trash action=empty；'
@@ -72,7 +75,7 @@ export function deleteTool(env: ToolEnv) {
       }
       if (!canTrash) {
         await wiki.delete(args.title)
-        deps.autoCommit()
+        deps.autoCommit(sessionIdOf(exec))
         return { ok: true, title: args.title, trashed: false }
       }
       const at = new Date().toISOString()
@@ -96,18 +99,28 @@ export function deleteTool(env: ToolEnv) {
           )
         }
         const { tiddler: copy } = buildWriteTiddler(trashTitle, existing.text ?? '', { existing })
-        copy.tags = [TRASHBIN_TAG]
+        // v0.33.4: KEEP the note's tags on the copy. The old line replaced them
+        // with the marker alone and recorded them nowhere, while restore looked
+        // for them in `stored.fields.tags` — a key TW NEVER fills (`tags` is a
+        // known field, so it stays top-level, see write-policy.ts) — so `restore`
+        // handed back an untagged note, silently, and only on trashbin wikis.
+        // Writing `[marker, ...originals]` keeps the copy self-describing: the
+        // user's own trashbin view shows the real tags, and restore just peels
+        // the marker off.
+        const originalTags = Array.isArray(existing.tags) ? existing.tags.filter((tag) => tag !== TRASHBIN_TAG) : []
+        copy.tags = [TRASHBIN_TAG, ...originalTags]
         copy.created = existing.created ?? copy.created
         copy.modified = existing.modified ?? copy.modified
         copy[TRASHBIN_OF_FIELD] = args.title
         copy[TRASHBIN_AT_FIELD] = at
         await wiki.put(copy)
         await wiki.delete(args.title)
-        deps.autoCommit()
+        deps.autoCommit(sessionIdOf(exec))
         return { ok: true, title: args.title, trashed: true, trashTitle }
       }
       const trashTitle = trashTitleFor(args.title)
-      // ORDER MATTERS (v0.23.5, data safety): read + validate the index BEFORE      // any destructive step. The old order trashed the note first and only then
+      // ORDER MATTERS (v0.23.5, data safety): read + validate the index BEFORE
+      // any destructive step. The old order trashed the note first and only then
       // read the index, so a failed/corrupt read aborted the tool AFTER the
       // original was already gone and BEFORE the index recorded it — the note
       // became an unreachable orphan (`trash list` cannot see it, `restore`
@@ -130,7 +143,7 @@ export function deleteTool(env: ToolEnv) {
       await wiki.delete(args.title)
       index.entries.push({ trash: trashTitle, of: args.title, at })
       await writeTrashIndex(wiki, index.entries)
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       return { ok: true, title: args.title, trashed: true, trashTitle }
     },
   })
@@ -183,19 +196,32 @@ export function trashTool(env: ToolEnv) {
       const indexed = all
       if (args.action === 'list') {
         const limit = Math.max(1, Math.min(args.limit ?? 30, 200))
+        // v0.33.4: order by DELETION TIME, newest first. The old
+        // `slice(-limit).reverse()` assumed the array was chronological, but it
+        // is trashbin copies (sorted by TITLE) followed by legacy index entries
+        // (chronological) — so the cap could hide a whole alphabetical block and
+        // `reverse()` presented the mix as「newest first」. Entries whose time
+        // cannot be parsed sort last (0), never dropped.
+        const ordered = indexed
+          .map((entry, index) => ({ entry, index, at: parseTiddlerDate(entry.at) ?? 0 }))
+          .sort((a, b) => (b.at - a.at) || (a.index - b.index))
+          .map((row) => row.entry)
         return {
           action: 'list',
-          message: `共 ${indexed.length} 条`,
-          items: indexed.slice(-limit).reverse().map((entry) => ({ title: entry.trash, at: entry.at, of: entry.of })),
+          message: `共 ${ordered.length} 条`,
+          items: ordered.slice(0, limit).map((entry) => ({ title: entry.trash, at: entry.at, of: entry.of })),
         }
       }
       if (args.action === 'empty') {
         for (const entry of indexed) await wiki.delete(entry.trash)
-        // Only rewrite the legacy index when one actually exists: on a wiki that
+        // Only rewrite the legacy index when one actually EXISTS: on a wiki that
         // never used it, `writeTrashIndex` would CREATE an empty index file —
         // a spurious `$:/` tiddler where the design says there is none.
-        if (legacyEntries.length > 0 || trashbin === undefined) await writeTrashIndex(wiki, [])
-        deps.autoCommit()
+        // v0.33.4: the old condition (`legacyEntries.length > 0 || trashbin ===
+        // undefined`) rewrote exactly when the trashbin probe had FAILED, i.e. it
+        // created the index in the one case it meant to avoid.
+        if (index.exists) await writeTrashIndex(wiki, [])
+        deps.autoCommit(sessionIdOf(exec))
         return { action: 'empty', message: `已清空 ${indexed.length} 条` }
       }
       const wanted = typeof args.title === 'string' ? args.title.trim() : ''
@@ -234,22 +260,27 @@ export function trashTool(env: ToolEnv) {
       delete restored[TRASHBIN_OF_FIELD]
       delete restored[TRASHBIN_AT_FIELD]
       delete restored[TRASHBIN_LEGACY_AT_FIELD]
-      // A trashbin copy carries ONE tag — the trashbin marker — which is an
-      // artifact of the copy, not of the note. Restoring it verbatim would hand
-      // the recovered note a `$:/tags/trashbin` tag, and the next listing would
-      // show it as still binned. Take the ORIGINAL tags from the fields block
-      // when the copy kept them; otherwise leave the note untagged (never invent).
+      // A trashbin copy carries the trashbin marker plus the note's OWN tags
+      // (v0.33.4: `delete` writes `[marker, ...originals]`; earlier copies carry
+      // the marker alone). Restoring it verbatim would hand the recovered note a
+      // `$:/tags/trashbin` tag, and the next listing would show it as still
+      // binned — so peel the marker off. When the copy predates the fix and has
+      // nothing but the marker, fall back to the (never-populated) `fields.tags`
+      // block rather than inventing tags.
       const copyTags = Array.isArray(stored.tags) ? stored.tags : []
       if (copyTags.includes(TRASHBIN_TAG)) {
-        const original = Array.isArray(stored.fields?.tags) ? (stored.fields.tags as string[]) : []
-        restored.tags = original.filter((tag) => tag !== TRASHBIN_TAG)
+        const legacyField = Array.isArray(stored.fields?.tags) ? (stored.fields.tags as string[]) : []
+        const fromCopy = copyTags.filter((tag) => tag !== TRASHBIN_TAG)
+        const recovered = fromCopy.length > 0 ? fromCopy : legacyField.filter((tag) => tag !== TRASHBIN_TAG)
+        if (recovered.length > 0) restored.tags = recovered
+        else delete restored.tags
       }
       await wiki.put(restored)
       await wiki.delete(match.trash)
       // Only touch the legacy index when this restore came from it (a trashbin
       // copy needs no index bookkeeping at all).
       if (fromIndex) await writeTrashIndex(wiki, legacyEntries.filter((entry) => entry.trash !== match.trash))
-      deps.autoCommit()
+      deps.autoCommit(sessionIdOf(exec))
       return { action: 'restore', message: `已恢复「${match.of}」`, items: [] }
     },
   })

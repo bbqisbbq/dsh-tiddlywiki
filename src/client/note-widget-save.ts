@@ -161,8 +161,11 @@ export function createNoteSave(deps: NoteSaveDeps): NoteSave {
         toast(t('note.saveFailed', { message: payload?.error ?? `HTTP ${res.status}` }))
         return
       }
+      // 兜底标题必须在 `saveDone` **之前**取（v0.33.4）：它内部会 `resetForNewNote()`，
+      // 把 `titleInput` 换成下一条的时间戳标题 —— 之后再读就报错了名字。
+      const savedTitle = ui.titleInput.value.trim()
       saveDone(ui)
-      toast(t('note.saved', { title: payload.title ?? ui.titleInput.value }))
+      toast(t('note.saved', { title: payload.title ?? savedTitle }))
     } catch (err) {
       toast(t('note.saveFailed', { message: err instanceof Error ? err.message : String(err) }))
     } finally {

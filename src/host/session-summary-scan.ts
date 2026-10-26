@@ -32,6 +32,10 @@ const NOTE_TOOL_NAMES = new Set([
   'tiddlywiki_put',
   'tiddlywiki_batch_put',
   'tiddlywiki_append',
+  // v0.33.4: `replace` is the「读全文 → 改几处 → 整篇回写」mainstay, and it was
+  // missing from this set — a session that edited notes ONLY through `replace`
+  // was reported as「暂时没有产生、读取…任何笔记」.
+  'tiddlywiki_replace',
   'tiddlywiki_attach',
   'tiddlywiki_rename',
   'tiddlywiki_get',
@@ -64,7 +68,7 @@ export function isPlausibleTitle(title: string): boolean {
   if (title.length === 0 || title.length > 300) return false
   if (title.trim().length === 0) return false
   if (/[\u0000-\u001f\u007f]/.test(title)) return false // 控制字符 / 换行
-  if (/[\]|`#]/.test(title)) return false // 会破坏 [[…]] 链接语法
+  if (/[\]|[`#]/.test(title)) return false // 会破坏 [[…]] 链接语法（`[` 同样要挡）
   if (title.startsWith('…') || title === '标题') return false // 占位 / 示例写法
   return true
 }
@@ -103,12 +107,17 @@ export function trimTrailingClosers(raw: string): string {
   }
 }
 
-/** 扫助手回复文本里的 `/dsh-tiddlywiki/tw/#标题` 引用链接 → 读取。 */
+/** 扫助手回复文本里的 `/dsh-tiddlywiki/tw/[<库 id>/]#标题` 引用链接 → 读取。 */
 export function scanRefs(text: string, time: number, subagent: boolean, collected: Collected): void {
   // 只认到下一个 `#` / 空白为止（`#` 之后再出现 `#` 是 URL 片段分隔，标题里的 `#`
   // 按链接约定必须编码）；`)` / `]` 不再一律截断——它们是合法标题字符，只有落在
   // 末尾且无配对开启符时才当收尾符削掉（见 trimTrailingClosers）。
-  const re = /\/dsh-tiddlywiki\/tw\/#([^#\s]+)/g
+  //
+  // ⚠️ v0.33.4：**多库**时注入的提示词要求写成 `/tw/<库 id>/#标题`（prompt.ts 按
+  // 作用域拼 `linkBase`）。旧正则只认裸 `/tw/#标题`，于是在多库安装里助手回复的
+  // **每一条**笔记引用都扫不到，「知识库」Tab 的读取列表系统性为空 —— 而且看不出
+  // 是漏扫。库 id 的形状与 `seeds-registry.ts` 的 `isOurProxyBase` 保持一致。
+  const re = /\/dsh-tiddlywiki\/tw\/(?:[a-z0-9][a-z0-9._-]{0,63}\/)?#([^#\s]+)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(text)) !== null) {
     const raw = trimTrailingClosers(m[1] ?? '')

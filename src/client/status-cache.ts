@@ -103,7 +103,10 @@ export function fetchStatus(): Promise<StatusPayload | null> {
       const payload = (await res.json()) as StatusPayload
       // One place keeps the client's language in sync with the host's config
       // (v0.30.6): every surface already reads /status through this cache.
-      setLang(payload.lang)
+      // 只在 payload **真的带**语言时喂（v0.33.4）：旧宿主 / 错误态 / 未运行库的精简
+      // payload 没有 `lang`，而这里每 2s 无条件调用一次 —— 一次缺字段就会把用户选的
+      // `en` 永久打回 `zh`（`setLang()` 自身也拒绝空值，这里是第二道闸）。
+      if (typeof payload.lang === 'string' && payload.lang.trim().length > 0) setLang(payload.lang)
       return payload
     } catch {
       return null

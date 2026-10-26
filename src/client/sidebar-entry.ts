@@ -236,6 +236,10 @@ export function mountSidebarEntry(state: PanelState): () => void {
         rows.delete(key)
       }
       entry.hidden = false
+      // 从「>1 库」退回单库时也要**重新放置**（v0.33.4）：多库那次 `entry.hidden = true`
+      // 让入口离开了侧边栏，只把 hidden 改回来不会把它插回去 —— 此前要等下一次 DOM
+      // mutation 才回来（多库分支末尾这一句正是同一个理由）。
+      if (root !== undefined) { placed = false; tryPlace() }
       return
     }
     // 多库：默认那行让位给每个库自己的行（否则会出现一个没有库名的第 4 行）。

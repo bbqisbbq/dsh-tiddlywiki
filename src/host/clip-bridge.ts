@@ -46,7 +46,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from 'node:net'
 import type { Tiddler } from './tw-api.ts'
 import { readBody, safeTokenEqual } from './http.ts'
-import { MAX_CLIP_BODY_BYTES, MAX_IMAGE_BYTES } from './clip-bridge-limits.ts'
+import { MAX_CLIP_BODY_BYTES, MAX_CLIP_TEXT_LENGTH, MAX_IMAGE_BYTES } from './clip-bridge-limits.ts'
 import { assertPublicImageUrl } from './clip-bridge-ssrf.ts'
 
 // The v0.30.0 split must be INVISIBLE to callers: `src/index.ts` re-exports
@@ -331,10 +331,27 @@ export class ClipBridge {
     }
 
     let body: unknown
+    // v0.33.4: split「too large」from「not JSON」. The old single catch told a user
+    // whose selection was simply too big that their bookmarket sent invalid JSON,
+    // which points at the wrong thing entirely. `readBody` rejects with exactly
+    // `body too large` (host/http.ts).
+    let rawBody: string
     try {
-      body = JSON.parse(await readBody(req, MAX_CLIP_BODY_BYTES)) as unknown
+      rawBody = await readBody(req, MAX_CLIP_BODY_BYTES)
+    } catch (err) {
+      const tooLarge = err instanceof Error && /body too large/.test(err.message)
+      this.respond(res, {
+        ok: false,
+        error: tooLarge
+          ? `请求体超过 ${Math.floor(MAX_CLIP_BODY_BYTES / 1024)}KB 上限（正文最多 ${MAX_CLIP_TEXT_LENGTH} 字符）；请减少选中内容后重试`
+          : '请求体读取失败，请重试',
+      }, tooLarge ? 413 : 400)
+      return
+    }
+    try {
+      body = JSON.parse(rawBody) as unknown
     } catch {
-      this.respond(res, { ok: false, error: '请求体不是合法的 JSON（或过大）' }, 400)
+      this.respond(res, { ok: false, error: '请求体不是合法的 JSON' }, 400)
       return
     }
     const parsed = parseClipPayload(body)

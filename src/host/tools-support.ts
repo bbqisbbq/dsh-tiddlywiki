@@ -12,6 +12,7 @@ import { parseTiddlerDate } from './tw-api.ts'
 import type { Tiddler, TiddlyWebClient } from './tw-api.ts'
 import type { GitFace, GitStatusView, GitSyncTarget } from './git.ts'
 import { flattenTiddlerFields, normalizeFieldsArg } from './write-policy.ts'
+import { isBlockedProxyTitle } from './proxy-guard.ts'
 import { WORKSPACE_FIELD, workspaceMarkFromCwd } from './workspace.ts'
 
 /** Structural shape the collector needs from a registry-ready tool. */
@@ -70,8 +71,16 @@ export interface ToolsDeps {
    */
   scope: (sessionId: string | undefined) => ToolScope
   git: GitFace
-  /** Debounced auto-commit touch (fires after our writes). */
-  autoCommit: () => void
+  /**
+   * Debounced auto-commit touch (fires after our writes).
+   *
+   * v0.33.4: takes the CALLING session id, because the committer lives per
+   * REPOSITORY. The wiring used to ignore the argument entirely and touch the
+   * DEFAULT wiki's committer, so a session scoped to a wiki in its own repo left
+   * that repo's debounce unscheduled — its commits then depended on the fs
+   * watcher alone (which degrades to nothing on EPERM/ENOSPC by design).
+   */
+  autoCommit: (sessionId?: string) => void
   /**
    * After a pull moved HEAD: restart the running wikis whose CONTENT changed and
    * report their ids (v0.28.0).
@@ -81,7 +90,7 @@ export interface ToolsDeps {
    * wikis may share one repository, so "the pull changed something" is NOT the
    * same question as "this wiki needs a restart".
    */
-  restartAffected?: (dir: string, changedFiles: readonly string[] | undefined | undefined) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
+  restartAffected?: (dir: string, changedFiles: readonly string[] | undefined) => Promise<{ restarted: string[]; failed: Array<{ id: string; message: string }> }>
   /**
    * Every registered knowledge base that COULD be git-synced (v0.30.5), with
    * its repository root and effective `git.remote`. Absent in headless contexts
@@ -478,28 +487,32 @@ export function trashTitleFor(title: string, at = new Date()): string {
  * Swallowing the error into `[]` was the v0.19.4 defect: one transient failure
  * during `tiddlywiki_delete` rewrote the whole index to a single-entry array.
  */
-export async function readTrashIndex(wiki: TiddlyWebClient): Promise<{ readOk: boolean; corrupted: boolean; entries: TrashIndexEntry[] }> {
+export async function readTrashIndex(wiki: TiddlyWebClient): Promise<{ readOk: boolean; corrupted: boolean; exists: boolean; entries: TrashIndexEntry[] }> {
   let tiddler: Tiddler | undefined
   try {
     // Only 404 yields undefined (tw-api): any other throw is a real read failure.
     tiddler = await wiki.get(TRASH_INDEX_TITLE)
   } catch {
-    return { readOk: false, corrupted: false, entries: [] }
+    return { readOk: false, corrupted: false, exists: false, entries: [] }
   }
-  if (tiddler === undefined || typeof tiddler.text !== 'string' || tiddler.text.trim().length === 0) {
-    return { readOk: true, corrupted: false, entries: [] }
+  // v0.33.4: `exists` separates「the index tiddler is there」(rewriting it is
+  // bookkeeping) from「it never existed」(writing an empty one would CREATE a
+  // `$:/` tiddler the design says should not exist).
+  if (tiddler === undefined) return { readOk: true, corrupted: false, exists: false, entries: [] }
+  if (typeof tiddler.text !== 'string' || tiddler.text.trim().length === 0) {
+    return { readOk: true, corrupted: false, exists: true, entries: [] }
   }
   try {
     const parsed = JSON.parse(tiddler.text) as unknown
-    if (!Array.isArray(parsed)) return { readOk: true, corrupted: true, entries: [] }
+    if (!Array.isArray(parsed)) return { readOk: true, corrupted: true, exists: true, entries: [] }
     const entries = parsed.filter((entry): entry is TrashIndexEntry => {
       if (typeof entry !== 'object' || entry === null) return false
       const e = entry as Record<string, unknown>
       return typeof e.trash === 'string' && typeof e.of === 'string'
     }).map((e) => ({ trash: e.trash, of: e.of, at: typeof e.at === 'string' ? e.at : '' }))
-    return { readOk: true, corrupted: false, entries }
+    return { readOk: true, corrupted: false, exists: true, entries }
   } catch {
-    return { readOk: true, corrupted: true, entries: [] }
+    return { readOk: true, corrupted: true, exists: true, entries: [] }
   }
 }
 
@@ -604,9 +617,20 @@ export async function listTrashbin(wiki: TiddlyWebClient, renderFilter: (filter:
   for (let i = 0; i < titles.length; i += CONCURRENCY) {
     const slice = titles.slice(i, i + CONCURRENCY)
     const rows = await Promise.all(slice.map(async (trash): Promise<TrashbinEntry> => {
+      // The copy title is `<prefix><original title>`, so a failed field read
+      // still yields a usable entry. v0.33.4: one 5xx/timeout used to reject the
+      // whole `Promise.all` and escape `tiddlywiki_trash`, which hid the LEGACY
+      // index entries too — the function's contract says the caller may fall back
+      // when the wiki cannot answer, not that one bad copy blinds the bin.
+      const fallback: TrashbinEntry = { trash, of: trash.slice(TRASHBIN_PREFIX.length), at: '（条目字段读取失败，时间未知）' }
+      let t: Awaited<ReturnType<TiddlyWebClient['get']>>
+      try {
+        t = await wiki.get(trash)
+      } catch {
+        return fallback
+      }
       // `trash-of` is ours; trashbin's native copies fall back to the title
       // minus the prefix, which is how that plugin stores the original name.
-      const t = await wiki.get(trash)
       const of = typeof t?.fields?.[TRASHBIN_OF_FIELD] === 'string' ? t.fields[TRASHBIN_OF_FIELD] as string : trash.slice(TRASHBIN_PREFIX.length)
       // Read BOTH field names: copies written before v0.30.60 carry `trash-at`,
       // whose value TW has already rewritten into the wiki's LOCAL date format.
@@ -813,10 +837,35 @@ export function insertIntoSection(base: string, heading: string, addition: strin
   }
 }
 
+/**
+ * Refuse a WRITE into the plugin's own secret namespace (v0.33.4).
+ *
+ * `tiddlywiki_get` and `tiddlywiki_export` have always refused
+ * `$:/plugins/dsh-tiddlywiki/…`, and the clip bridge refuses `$:/` outright —
+ * but the write tools had no such check, so the model (or any instruction
+ * injected into a page) could `tiddlywiki_put` the config tiddler and rewrite
+ * `wechat.command` (spawned as a CLI), `git.remote` (used by the next sync) or
+ * the bridge token, or break its JSON and reproduce the「插件读不出自己的配置」
+ * accident. Same predicate, same boundary, one place: read AND write.
+ *
+ * Deliberately NARROW: ordinary `$:/…` writes stay allowed (the tools are
+ * documented to write system tiddlers without agent-written/markdown defaults).
+ */
+export function assertWritableTitle(title: string): void {
+  if (!isBlockedProxyTitle(title)) return
+  throw new Error(
+    `不允许通过工具改写「${title}」：它属于本插件自己的配置/密钥命名空间（与 tiddlywiki_get / tiddlywiki_export 同一条边界）。`
+    + '改插件设置请用 DSH 设置页，否则会直接改坏运行配置（可能被当成命令执行或用于下一次 git 推送）。',
+  )
+}
+
 /** Every read/write tool needs a live TW client — shared guard for the 8
  *  wiki-facing tools (git tools operate on the repo path instead). */
 export function requireWiki(deps: ToolsDeps, sessionId?: string): TiddlyWebClient {
   const scope = deps.scope(sessionId)
-  if (scope.client === undefined) throw new Error(scope.reason ?? 'TiddlyWiki 服务未运行（tiddlywiki_status 可查）')
+  // v0.33.4: the fallback sentence used to point at `tiddlywiki_status`, a tool
+  // that DOES NOT EXIST (v0.30.62 removed it from one message and this one was
+  // missed). A model following that hint burns a call on an unknown tool.
+  if (scope.client === undefined) throw new Error(scope.reason ?? '知识库服务当前没有运行：请确认 TiddlyWiki 子进程已启动（可在 DSH 设置页的知识库分区查看运行状态）')
   return scope.client
 }

@@ -380,8 +380,13 @@ export class ConfigStore {
    */
   async load(client: TiddlyWebClient | undefined): Promise<void> {
     if (client === undefined) {
-      this.overrides = {}
-      this.lastParseError = undefined
+      // v0.33.4: a TRUE no-op, as the docblock above always claimed. The old
+      // body cleared `overrides` while leaving `loaded = true`, and `set()` only
+      // refuses to write while `loaded` is false — so the next `set()` merged a
+      // patch into an EMPTY cache and persisted a config tiddler containing just
+      // that patch, silently dropping every other user setting (the accident
+      // `loaded` exists to prevent). Keeping the cache also matches how a
+      // transient read failure is handled two branches below.
       return
     }
     let tiddler

@@ -38,6 +38,25 @@ export function createSessionSummaryHandler(
   const SUMMARY_REUSE_MS = 3_000
   const summaryInFlight = new Map<string, { at: number; value: Promise<SessionSummaryResult> }>()
   /**
+   * Identity of the TW client a cached run was started for (v0.33.4).
+   *
+   * `session` alone is NOT a valid cache key: `client` is the TARGETED wiki's
+   * client, so within the 3s reuse window a request scoped to another wiki (the
+   * session's scope changed, or `?wiki=` differs) reused the previous wiki's
+   * summary — titles, tags and wikitext of the wrong knowledge base. A WeakMap
+   * gives each client instance a stable number without touching its API.
+   */
+  const clientIds = new WeakMap<TiddlyWebClient, number>()
+  let nextClientId = 1
+  const clientIdOf = (client: TiddlyWebClient): number => {
+    const known = clientIds.get(client)
+    if (known !== undefined) return known
+    const id = nextClientId
+    nextClientId += 1
+    clientIds.set(client, id)
+    return id
+  }
+  /**
    * POST /dsh-tiddlywiki/session/summary — 生成当前会话的 wiki 汇总页（「知识库」
    * Tab 的后端）。body `{ session: <会话ID> }`；后端用 sessionQuery 读本会话（含
    * 后代 subagent）的完整事件日志，按「产生/读取/检索」收集 tiddlywiki_* 笔记，
@@ -75,15 +94,16 @@ export function createSessionSummaryHandler(
         json(res, { ok: false, error: 'session query service unavailable' }, 503)
         return
       }
-      const cachedSummary = summaryInFlight.get(session)
+      const cacheKey = `${session}|${clientIdOf(client)}`
+      const cachedSummary = summaryInFlight.get(cacheKey)
       let pendingSummary: Promise<SessionSummaryResult>
       if (cachedSummary !== undefined && Date.now() - cachedSummary.at < SUMMARY_REUSE_MS) {
         pendingSummary = cachedSummary.value
       } else {
         pendingSummary = writeSessionSummary(client, sq, session)
-        summaryInFlight.set(session, { at: Date.now(), value: pendingSummary })
+        summaryInFlight.set(cacheKey, { at: Date.now(), value: pendingSummary })
         pendingSummary.catch(() => {
-          if (summaryInFlight.get(session)?.value === pendingSummary) summaryInFlight.delete(session)
+          if (summaryInFlight.get(cacheKey)?.value === pendingSummary) summaryInFlight.delete(cacheKey)
         })
       }
       const result = await pendingSummary

@@ -198,7 +198,11 @@ export function createAgentHandlers(deps: AgentRouteDeps): AgentRouteHandlers {
         AbortSignal.timeout(20_000),
       )
       // A refusal (session gone / busy) must not be reported as success.
-      if (accepted !== undefined && accepted.accepted === false) {
+      // v0.33.4: the declared contract is `Promise<{accepted: boolean}>`, so
+      // `accepted !== undefined` was a永真 condition — and a host that resolved
+      // `undefined` fell through to `{ok:true}` while nothing was queued. Only an
+      // explicit `true` proves acceptance.
+      if (accepted?.accepted !== true) {
         json(res, { ok: false, error: '会话未接受该消息（可能已结束或正忙）', requestId, sessionId }, 409)
         return
       }

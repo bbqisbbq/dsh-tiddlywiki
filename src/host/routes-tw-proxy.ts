@@ -228,6 +228,11 @@ export function createTwProxyRoutes(deps: TwProxyRouteDeps): TwProxyRouteHandler
       if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'
       const init: RequestInit = { method, headers, signal: AbortSignal.timeout(15_000) }
       if (method === 'PUT' || method === 'POST') init.body = await readBody(req, MAX_PROXY_BODY_BYTES)
+      // v0.33.4: drain a body the upstream fetch does not consume (a DELETE with
+      // a body, chiefly). The sibling `/tw` proxy has always done this; without it
+      // the request never drains and the client sits on a half-open socket until
+      // the 15s timeout.
+      else if (req.readableEnded === false && (req.headers['content-length'] !== undefined || req.headers['transfer-encoding'] !== undefined)) req.resume()
       const upstream = await fetch(`${server.url}${rest}${url.search}`, init)
       const data = await upstream.text()
       res.writeHead(upstream.status, {

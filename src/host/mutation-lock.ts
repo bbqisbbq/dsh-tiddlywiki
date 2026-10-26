@@ -18,7 +18,16 @@
  *
  * SEMANTICS: `begin()` returns false when something else holds it (the caller
  * answers 409 with the holder's label, so a user sees 「同步进行中」 instead of a
- * mystery failure). `end()` is idempotent and must run in a `finally`.
+ * mystery failure). `end(label)` releases ONLY when `label` is the current
+ * holder, so "always call it in a `finally`" is safe: a handler whose `begin()`
+ * never ran (or failed) cannot hand someone else's lock to the next caller.
+ *
+ * ⚠️ v0.33.4 — `end()` used to clear the holder unconditionally, and
+ * `admin-routes-seeds` calls it on EVERY response. The common path there
+ * (「重新初始化」 that rewrote nothing ⇒ no restart ⇒ `begin()` never ran) then
+ * freed a `/sync` lock mid-flight, letting `/admin/restart` start a second
+ * drain + child stop on the same queue — the exact write-loss overlap v0.30.12
+ * was built to prevent. Hence the label check (and a guard case for it).
  *
  * @module dsh-tiddlywiki/host/mutation-lock
  */
@@ -29,8 +38,12 @@ export interface MutationLock {
    * mutation is in flight; `current()` then names it.
    */
   begin: (label: string) => boolean
-  /** Release it. Idempotent — safe in a `finally` even if `begin` returned false. */
-  end: () => void
+  /**
+   * Release it. Pass the SAME label the `begin()` was called with: a mismatched
+   * label is ignored, so releasing is safe in a `finally` even when `begin()`
+   * returned false (or was never reached).
+   */
+  end: (label?: string) => void
   /** The label of the mutation currently in flight, if any. */
   current: () => string | undefined
 }
@@ -43,7 +56,12 @@ export function createMutationLock(): MutationLock {
       inFlight = label
       return true
     },
-    end: (): void => {
+    end: (label?: string): void => {
+      // `label === undefined` keeps the pre-v0.33.4 call shape working for a
+      // harness that holds the only lock it knows about. When a label IS given
+      // it must match the holder, which is what makes `finally` safe: a
+      // handler whose `begin()` never ran cannot free someone else's lock.
+      if (label !== undefined && inFlight !== label) return
       inFlight = undefined
     },
     current: (): string | undefined => inFlight,

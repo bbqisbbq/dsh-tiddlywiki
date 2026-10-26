@@ -41,13 +41,24 @@ export async function resolveClipTitle(
     if (!(await exists(candidate))) return candidate
   }
   const stamp = new Date(now()).toISOString().slice(0, 23).replace(/[T:]/g, '-')
-  let candidate = `${base}（${stamp}）`
   // 同一毫秒内再撞（连点、或书签被跑了两遍）时继续加序号 —— 每一轮都真的问一次
   // `exists`，绝不因为「时间戳不同了」就假设名字空着。
-  for (let i = 0; i < 100 && (await exists(candidate)); i++) {
-    candidate = `${base}（${stamp}-${i}）`
+  //
+  // v0.33.4: the old loop assigned the NEXT candidate AFTER the probe, so when it
+  // ran out of rounds it returned a name that had never been checked — the one
+  // thing this loop exists to guarantee. Probe each candidate BEFORE returning it.
+  for (let i = 0; i < 100; i++) {
+    const candidate = i === 0 ? `${base}（${stamp}）` : `${base}（${stamp}-${i}）`
+    if (!(await exists(candidate))) return candidate
   }
-  return candidate
+  // 100 collisions on one millisecond stamp should be impossible; if it ever
+  // happens, a random suffix is the only name that cannot be predicted — probed
+  // like every other candidate.
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const candidate = `${base}（${stamp}-${Math.random().toString(36).slice(2, 8)}）`
+    if (!(await exists(candidate))) return candidate
+  }
+  throw new Error('剪藏标题生成失败：同一毫秒内连续 200 次撞名，请稍后重试')
 }
 
 /** Build the markdown tiddler for ONE TEXT-ONLY clip (no images). */

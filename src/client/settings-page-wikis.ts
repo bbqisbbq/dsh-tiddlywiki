@@ -190,7 +190,7 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
         // 两个动作是一件事，收在 enterWikiScope/exitWikiScope 里（作用域与 Tab 的值都住在
         // settings-page-runtime.ts —— section 模块不能反向 import 组装文件）。
         if (configuring) exitWikiScope()
-        else enterWikiScope(wiki.id, configuring)
+        else enterWikiScope(wiki.id)
         void refresh()
       })
       const power = make('button', 'dsh-tw-settings-btn dsh-tw-settings-chipbtn', wiki.running ? t('settings.wikis.stop') : t('settings.wikis.start'))
@@ -232,9 +232,8 @@ export function renderWikiListSection(body: HTMLElement, isDisposed: () => boole
       const iconPicker = makeIconButton(currentIcon, t('settings.wikis.iconAria', { label: wiki.label }))
       iconPicker.addEventListener('click', () => {
         openIconPicker(iconPicker, currentIcon, (next) => {
-          void post(next.length > 0
-            ? { action: 'update', wiki: { ...wiki, icon: next } }
-            : { action: 'update', wiki: { ...wiki, icon: '' } }, t('settings.wikis.saving'))
+          // 两支产出同一个对象（进到 else 的前提就是 `next === ''`），合并成一支。
+          void post({ action: 'update', wiki: { ...wiki, icon: next } }, t('settings.wikis.saving'))
         })
       })
       // 「改目录」只在多库模式出现（v0.28.1）：单库模式下这件事由「知识库位置」负责

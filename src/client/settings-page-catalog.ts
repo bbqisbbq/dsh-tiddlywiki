@@ -209,7 +209,9 @@ export function renderCatalogSection(
   // 一样疑惑「TW 里明明启用着，这里怎么没有」。只读：启停/卸载去 TW 控制面板。
   if (runtimePlugins != null) {
     const catalogTitles = new Set(plugins.map((p) => p.title))
-    const externals = (runtimePlugins.wikiPlugins ?? []).filter((p) => !catalogTitles.has(p.title) || disabledTitles.has(p.title))
+    // 只列**目录之外**的（v0.33.4）：目录里但被 TW 禁用的插件，上面那块已经带着
+    // 「已禁用」徽标列一行了，这里再列一次 = 同一个插件两行（一行可勾、一行只读）。
+    const externals = (runtimePlugins.wikiPlugins ?? []).filter((p) => !catalogTitles.has(p.title))
     if (externals.length > 0) {
       const wikiSection = make('section', 'dsh-tw-settings-section')
       wikiSection.append(make('h3', 'dsh-tw-settings-h', t('settings.wikiPlugins.title')))
@@ -448,7 +450,10 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
         btn.type = 'button'
         btn.title = t('settings.seeds.rewriteTitle', { title: item.title })
         btn.addEventListener('click', () => {
-          if (item.updateAvailable === true) {
+          // 覆盖风险由 `userModified` 决定，**不是** `updateAvailable`（v0.33.4）：内置内容
+          // 没变（updateAvailable=false）但用户改过时，此前一声不响地 `force:true` 覆盖，
+          // 用户的改动就此消失。`undefined` = 旧标记，按"可能改过"提示。
+          if (item.updateAvailable === true || item.userModified !== false) {
             const warning = item.userModified === true
               ? t('settings.seeds.overwriteModified', { title: item.title })
               : item.userModified === undefined

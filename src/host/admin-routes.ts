@@ -104,10 +104,17 @@ export interface AdminDeps {
      * content hashes (v0.22.0): the page shows 「有更新」 and refuses to imply a
      * local edit was checked for when the marker predates hashes.
      */
-    checkAll: (client: TiddlyWebClient) => Promise<Array<{ id: string; title: string; description: string; present: boolean; removable: boolean; detail?: string; updateAvailable?: boolean; userModified?: boolean; legacyMarker?: boolean }>>
-    run: (client: TiddlyWebClient, id: string | undefined, force: boolean) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
+    checkAll: (client: TiddlyWebClient, req?: IncomingMessage) => Promise<Array<{ id: string; title: string; description: string; present: boolean; removable: boolean; detail?: string; updateAvailable?: boolean; userModified?: boolean; legacyMarker?: boolean }>>
+    /**
+     * v0.33.4: carries the REQUEST so the wiring can hand the seed context the
+     * TARGET wiki's same-origin proxy base (the `tw-web-host` seed writes it).
+     * This path used to omit it, so「重新初始化」on a multi-wiki install rewrote
+     * `$:/config/tiddlyweb/host` to the bare legacy path and that wiki's embedded
+     * editor then proxied every API call to the DEFAULT wiki.
+     */
+    run: (client: TiddlyWebClient, id: string | undefined, force: boolean, req?: IncomingMessage) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
     /** 反初始化: remove one (or all) optional seed's seeded tiddlers + markers. */
-    remove: (client: TiddlyWebClient, id: string | undefined) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
+    remove: (client: TiddlyWebClient, id: string | undefined, req?: IncomingMessage) => Promise<Array<{ id: string; ok: boolean; wrote: boolean; detail?: string; error?: string }>>
   }
 }
 
@@ -205,6 +212,14 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
       // that restarted nothing while the settings page scoped to that wiki
       // believed it had.
       if (refuseStoppedTarget(req, res)) return
+      // v0.33.4: no child behind this request ⇒ nothing to restart. The drain
+      // helper short-circuits on `client: undefined` and `server(req)?.restart()`
+      // swallows itself, so this route answered `{ok:true,drained:true}` while
+      // restarting nothing — the same fake success `/restart` used to return.
+      if (deps.server(req) === undefined) {
+        json(res, { ok: false, error: notRunning(req) }, 503)
+        return
+      }
       // v0.30.12: take the SHARED mutation lock. Before this, the settings page
       // could press 「重启」 while a `/sync` was draining the same queue (or while
       // another restart was in flight) — the two operations both stop the TW child.
@@ -214,17 +229,18 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
         return
       }
       try {
-      // v0.24.1: drain the syncer queue first (ironclad rule #1) — this route
-      // used to kill the child with writes still queued, losing them silently.
-      const drained = await drainThenStop({
-        client: deps.getClient(req),
-        tiddlersDir: join(deps.getWikiPath(req), 'tiddlers'),
-        stop: async () => { await deps.server(req)?.restart() },
-        log: (message) => console.warn('[dsh-tiddlywiki]', message),
-      })
-      json(res, { ok: true, status: deps.server(req)?.status().status, drained })
+        // v0.24.1: drain the syncer queue first (ironclad rule #1) — this route
+        // used to kill the child with writes still queued, losing them silently.
+        const drained = await drainThenStop({
+          client: deps.getClient(req),
+          tiddlersDir: join(deps.getWikiPath(req), 'tiddlers'),
+          stop: async () => { await deps.server(req)?.restart() },
+          log: (message) => console.warn('[dsh-tiddlywiki]', message),
+        })
+        json(res, { ok: true, status: deps.server(req)?.status().status, drained })
       } finally {
-        lock?.end()
+        // v0.33.4: labelled release — a lock we never took cannot be freed here.
+        lock?.end('admin-restart')
       }
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)

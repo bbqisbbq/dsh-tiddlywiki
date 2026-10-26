@@ -23,12 +23,15 @@ import { attachTool } from './tools-attach.ts'
 import { exportTool } from './tools-export.ts'
 import { gitResolveTool, gitSyncTool } from './tools-git.ts'
 
-export { AGENT_WRITTEN_TAG, DEFAULT_NOTE_TYPE, HUMAN_EDITED_TAG } from './write-policy.ts'
-
 // Re-exported from their new homes so this path keeps the exact public surface
 // it had before the split: src/index.ts and the verify-*.mjs guards import
 // these from here.
-export { MAX_ATTACH_BYTES, TRASH_INDEX_TITLE, TRASH_PREFIX, TrashIndexUnavailableError, isJunkTag } from './tools-support.ts'
+//
+// v0.33.4（死代码清理）：删掉 `AGENT_WRITTEN_TAG` / `DEFAULT_NOTE_TYPE` /
+// `HUMAN_EDITED_TAG` 那一整行，以及这里的 `MAX_ATTACH_BYTES` —— 全仓零消费者
+// （`index.ts` 直接从 write-policy.ts 取，`tools-attach.ts` 直接从
+// tools-support.ts 取），留着只会让「这个路径到底导出什么」越说越虚。
+export { TRASH_INDEX_TITLE, TRASH_PREFIX, TrashIndexUnavailableError, isJunkTag } from './tools-support.ts'
 export { type ToolScope, type ToolsCtx, type ToolsDeps }
 
 import type { PromptToolSummary } from './prompt.ts'

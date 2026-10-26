@@ -80,6 +80,16 @@ export function createNoteScope(deps: NoteScopeDeps): NoteScope {
   let focusOff: (() => void) | undefined
   let targetPromise: Promise<void> | undefined
   /**
+   * 上一次解析落地的时刻（v0.33.4）。
+   *
+   * 名册是**会变**的（新增 / 改名 / 启停库），而 `targetPromise` 一旦成功就曾永不失效
+   * ⇒ 页面开着的时候卡片永远看不到新库，`stoppedTarget()` 也一直按旧名册判断（库起来了
+   * 还说"未运行"、库没了还认旧名字）。TTL 取 10s，与侧边栏 / FAB 重读 `/status` 的节奏一致。
+   */
+  let targetResolvedAt = 0
+  /** `ensureTarget()` 的记忆有效期（与侧边栏轮询 /status 同节奏）。 */
+  const TARGET_TTL_MS = 10_000
+  /**
    * DOM half of `ensureTarget()`: repaint the 「写入」 selector from `roster`.
    *
    * A no-op until the Markdown card has been built — which is exactly why the
@@ -91,7 +101,12 @@ export function createNoteScope(deps: NoteScopeDeps): NoteScope {
   const wikiQuery = (url: string): string => withWikiQuery(url, targetWiki)
 
   const ensureTarget = (): Promise<void> => {
-    targetPromise ??= fetchStatus().then((payload) => {
+    // 过期（或还没有）就重新解析。⚠️ 刷新名册**不得**覆盖用户手选的目标库：
+    // `followFocus()` 里已经有 `if (!targetPicked)`，这里也只重读名册、只重画选择器。
+    const expired = targetPromise !== undefined && Date.now() - targetResolvedAt >= TARGET_TTL_MS
+    if (targetPromise !== undefined && !expired) return targetPromise
+    targetResolvedAt = Date.now()
+    targetPromise = fetchStatus().then((payload) => {
       if (isDisposed()) return
       // v0.29.0: a FAILED `/status` must not be memoized. `fetchStatus()`
       // resolves `null` when the request fails, and caching that verdict pinned

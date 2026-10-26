@@ -110,7 +110,9 @@ export function summarizeTid(parsed: ParsedTid): TidSummary {
  * 就丢内容 —— 预览器丢内容比显示得难看严重得多。
  */
 export function parseTidText(raw: unknown): ParsedTid {
-  const normalised = String(raw ?? '').replace(/\r\n/g, '\n')
+  // BOM 先剥掉（v0.33.4）：带 BOM 的文件首行是 `\uFEFFtitle: X`，`^([^\s:][^:]*):` 匹配不上，
+  // 于是"字段一条都没认出来"却被当成"全是字段"，整段内容被丢掉。
+  const normalised = String(raw ?? '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
   const splitAt = normalised.indexOf('\n\n')
   const head = splitAt < 0 ? normalised : normalised.slice(0, splitAt)
   const body = splitAt < 0 ? '' : normalised.slice(splitAt + 2)
@@ -130,8 +132,14 @@ export function parseTidText(raw: unknown): ParsedTid {
     if (key === 'title') title = value
     else fields.push([key, value])
   }
-  // 字段行一条都没认出来、或根本不是"全是字段"的样子 ⇒ 整份当正文。
-  if (splitAt < 0 && (!allLinesAreFields || (title === undefined && fields.length === 0))) {
+  // 字段行一条都没认出来、也没有 `title:` ⇒ **整份**当正文，**不看 splitAt**（v0.33.4）：
+  // 文件里有空行、但空行之前不是字段时（正文开头的 `.tiddler`、或 BOM 让 `title:` 失配），
+  // 先前只按 `splitAt >= 0` 判，空行之前的整段内容被当成"字段"丢掉。
+  if (fields.length === 0 && title === undefined) {
+    return { fields: [], text: normalised }
+  }
+  // 没有空行、而且头段也不是"全是 `key: value`"的样子 ⇒ 同样整份当正文。
+  if (splitAt < 0 && !allLinesAreFields) {
     return { fields: [], text: normalised }
   }
   return { ...(title !== undefined ? { title } : {}), fields, text: body }

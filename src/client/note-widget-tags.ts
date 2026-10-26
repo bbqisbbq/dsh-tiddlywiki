@@ -51,7 +51,7 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
       const x = document.createElement('span')
       x.className = 'dsh-tw-note-tagchip-x'
       x.textContent = '×'
-      x.title = `t('note.removeTag', { tag })`
+      x.title = t('note.removeTag', { tag })
       x.addEventListener('click', (event) => {
         event.stopPropagation()
         const i = chips.indexOf(tag)
@@ -67,9 +67,10 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
   }
 
   const addTag = (tag: string): void => {
-    const t = tag.trim()
-    if (t.length === 0 || chips.includes(t)) return
-    chips.push(t)
+    // 局部名不能叫 `t`：那会遮蔽 i18n 的 `t()`（上面的 chip/aria 文案要用它）。
+    const next = tag.trim()
+    if (next.length === 0 || chips.includes(next)) return
+    chips.push(next)
     input.value = ''
     renderChips()
     hideSuggest()
@@ -97,7 +98,9 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
         .then((r) => (r.ok ? (r.json() as Promise<{ tags?: string[] }>) : Promise.resolve<{ tags?: string[] }>({})))
         .then((p) => [...(p.tags ?? [])].sort((a, b) => a.localeCompare(b, 'zh')))
         .catch(() => [])
-      void tagsPromise.then((list) => { knownTags = list })
+      // 落回 `knownTags` 前必须核对**发起时**的 URL（v0.33.4）：换库后旧请求的 `.then`
+      // 仍会跑，无条件写入就是把 A 库的标签推荐给 B 库（跨库串味）。
+      void tagsPromise.then((list) => { if (tagsPromiseKey === url) knownTags = list })
     }
     return tagsPromise
   }
@@ -105,7 +108,7 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
   const showSuggest = (): void => {
     const q = input.value.trim().toLowerCase()
     const matches = knownTags
-      .filter((t) => !chips.includes(t) && (q.length === 0 || t.toLowerCase().includes(q)))
+      .filter((tag) => !chips.includes(tag) && (q.length === 0 || tag.toLowerCase().includes(q)))
       .slice(0, 8)
     suggest.replaceChildren()
     for (const tag of matches) {
@@ -115,7 +118,7 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
       // 键盘可达：div + mousedown 对键盘用户不可用，补 role/tabIndex/Enter·Space。
       item.setAttribute('role', 'button')
       item.tabIndex = 0
-      item.setAttribute('aria-label', `t('note.addTag', { tag })`)
+      item.setAttribute('aria-label', t('note.addTag', { tag }))
       item.addEventListener('mousedown', (event) => {
         event.preventDefault()
         addTag(tag)
@@ -163,9 +166,9 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
     setDefault: (tag: string) => {
       // Only pre-fill when nothing is chosen yet; never steal focus.
       if (chips.length === 0) {
-        const t = tag.trim()
-        if (t.length > 0) {
-          chips.push(t)
+        const next = tag.trim()
+        if (next.length > 0) {
+          chips.push(next)
           renderChips()
         }
       }
@@ -173,8 +176,8 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
     setTags: (tags: string[]) => {
       chips.length = 0
       for (const tag of Array.isArray(tags) ? tags : []) {
-        const t = typeof tag === 'string' ? tag.trim() : ''
-        if (t.length > 0 && !chips.includes(t)) chips.push(t)
+        const next = typeof tag === 'string' ? tag.trim() : ''
+        if (next.length > 0 && !chips.includes(next)) chips.push(next)
       }
       input.value = ''
       renderChips()

@@ -35,7 +35,7 @@ import { attachThemeSync, setThemeSyncConfig } from './theme-sync.ts'
 
 /** Cross-plugin activation event; detail is the activating panel name. */
 import { getTabLabel, setTabLabel, requestRestart, loadableFrameUrl, PANEL_RELOAD_EVENT } from './tw-frame-api.ts'
-// v0.30.28：公共 API 搬进 	w-frame-api.ts（纯搬迁），这里原样再导出，外部导入路径不变。
+// v0.30.28：公共 API 搬进 tw-frame-api.ts（纯搬迁），这里原样再导出，外部导入路径不变。
 export { reloadTwSurfaces, setTabLabel, getTabLabel, requestRestart, TwTabIcon, loadableFrameUrl, ACTIVATE_EVENT, PANEL_RELOAD_EVENT } from './tw-frame-api.ts'
 export type { FrameLoadedState } from './tw-frame-api.ts'
 
@@ -134,7 +134,6 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
    * 300–400 ms here), which used to sit BETWEEN the click and the start of the switch.
    */
   let lastStatus: StatusPayload | undefined
-  /** In-flight hash-readiness retry timers (cancelled by dispose, v0.19.1). */
   /**
    * 这个 surface 的**可变状态**（v0.30.38 起集中放这里）。
    *
@@ -196,7 +195,9 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     retry.addEventListener('click', () => {
       retry.disabled = true
       retry.textContent = t('frame.restarting')
-      void requestRestart().finally(() => { void doRefresh() })
+      // 重启的必须是**这个 surface 正在看的库**（v0.33.4）：宿主按 `?wiki=` 解析目标，
+      // 不带参数就永远重启默认库，指向其它库（尤其「已登记但未运行」的库）时错误态出不去。
+      void requestRestart(hooks.wikiId?.()).finally(() => { void doRefresh() })
     })
     errorArea.append(p, code, retry)
   }
@@ -369,7 +370,13 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     // less than showing stale content.
     if (frame === undefined) return
     const loaded = loadableFrameUrl(frame.dataset)
-    if (loaded !== null) frame.src = loaded
+    if (loaded !== null) {
+      // 重新赋值 src = 换了一份文档（v0.33.4）：必须同时把 `frameLoaded` 清零，否则紧接着
+      // 点笔记链接时 `applyPendingHash` 会在**旧文档**上成功写 hash 并清掉 `pendingHash`，
+      // 新文档加载完导航就丢了（与 showFrame 的 url 变化分支同一条不变量）。
+      surfaceState.frameLoaded = false
+      frame.src = loaded
+    }
   }
   document.addEventListener(PANEL_RELOAD_EVENT, onReloadRequest)
 

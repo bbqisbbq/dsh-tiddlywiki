@@ -44,7 +44,7 @@ export function createAdminSeedRoutes(
         json(res, { ok: false, error: notRunning(req) }, 503)
         return
       }
-      const items = await deps.seeds.checkAll(client)
+      const items = await deps.seeds.checkAll(client, req)
       json(res, { ok: true, items })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
@@ -68,7 +68,7 @@ export function createAdminSeedRoutes(
         return
       }
       const seedStartedAt = Date.now()
-      const results = await deps.seeds.run(client, id, force)
+      const results = await deps.seeds.run(client, id, force, req)
       // A seeded SERVER-route plugin (render) only loads at TW BOOT, and TW's
       // syncer flushes REST writes on a ~250ms timer. Without the flush-wait +
       // restart the settings page reported「已重新初始化」while /render kept
@@ -81,13 +81,22 @@ export function createAdminSeedRoutes(
       // v0.30.12：这一段会 drain + 重启 TW 子进程，所以必须拿**共享**的变更锁
       // （否则设置页「初始化」与 `/sync`、`/admin/restart` 会同时停子进程）。
       // 拿不到就如实报冲突，而不是排队硬上。
+      // v0.33.4：`end()` 只在真的拿到锁时才调，并且带上自己的 label —— 以前
+      // `seedLock?.end()` 在**每条**响应上都执行（最常见的「重新初始化但没改任何
+      // 东西」路径根本没 begin），于是会把此刻正持锁的 `/sync` 释放掉，让
+      // `/admin/restart` 拿到锁、两条路径同时排干 + 停同一个子进程。
       const seedLock = deps.mutationLock
-      if (needsRestartAfterSeeds(results) && seedLock !== undefined && !seedLock.begin('admin-seeds')) {
-        json(res, { ok: false, error: `另一个重启/同步正在进行中（${seedLock.current() ?? '?'}），请稍候` }, 429)
-        return
+      const needsRestart = needsRestartAfterSeeds(results)
+      let lockTaken = false
+      if (needsRestart && seedLock !== undefined) {
+        if (!seedLock.begin('admin-seeds')) {
+          json(res, { ok: false, error: `另一个重启/同步正在进行中（${seedLock.current() ?? '?'}），请稍候` }, 429)
+          return
+        }
+        lockTaken = true
       }
-      if (needsRestartAfterSeeds(results)) {
-        try {
+      try {
+        if (needsRestart) {
           const flushed = await waitForFileWrite(join(deps.getWikiPath(req), 'tiddlers', RENDER_PLUGIN_FILE), 8_000, 150, seedStartedAt)
           if (!flushed) console.warn('[dsh-tiddlywiki] seeded render plugin file not seen on disk before restart')
           // Drain the rest of the syncer queue too: force-all writes every seed,
@@ -102,13 +111,14 @@ export function createAdminSeedRoutes(
           })
           if (!drained) console.warn('[dsh-tiddlywiki] seed writes may not have been flushed before restart')
           restarted = true
-        } catch (err) {
-          restartError = err instanceof Error ? err.message : String(err)
-          console.warn('[dsh-tiddlywiki] restart after seeding failed:', restartError)
         }
+      } catch (err) {
+        restartError = err instanceof Error ? err.message : String(err)
+        console.warn('[dsh-tiddlywiki] restart after seeding failed:', restartError)
+      } finally {
+        if (lockTaken) seedLock?.end('admin-seeds')
       }
       const ok = results.every((r) => r.ok)
-      seedLock?.end()
       json(res, { ok, results, restarted, ...(restartError !== undefined ? { restartError } : {}) }, ok ? 200 : 400)
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
@@ -131,7 +141,7 @@ export function createAdminSeedRoutes(
         json(res, { ok: false, error: notRunning(req) }, 503)
         return
       }
-      const results = await deps.seeds.remove(client, id)
+      const results = await deps.seeds.remove(client, id, req)
       const ok = results.every((r) => r.ok)
       json(res, { ok, results }, ok ? 200 : 400)
     } catch (err) {

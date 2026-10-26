@@ -179,6 +179,12 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
     // 重建路径会再次调用 build()：旧的 document 监听必须先摘掉（同一个函数引用，
     // 重复 add 会让菜单外的每一次点击都多跑一遍处理器）。
     document.removeEventListener('click', onDocumentClick, true)
+    // 焦点订阅与重画闭包同样必须**无条件**先失效（v0.33.4）：此前只在
+    // `roster.wikis.length > 1` 分支里退订，名册缩回单库时旧监听器一直挂着、
+    // `repaintWikiMenu` 还指着上一份 roster/wikiItems 闭包（它会继续改已脱离文档的节点）。
+    focusOff?.()
+    focusOff = undefined
+    repaintWikiMenu = undefined
     root?.remove()
     root = document.createElement('div')
     root.className = 'dsh-tw-fab-wrap'
@@ -285,10 +291,7 @@ export function mountKnowledgeFab(state: PanelState, note: NoteWidgetHandle, syn
         }
         paint()
         // 焦点变化（可能来自别的入口：侧边栏某一行、快速笔记卡片）也要跟上。
-        // v0.29.0：`build()` 会因名册变化**再次**执行（见 FAB 点击处理），所以
-        // 必须先退订上一次再订阅 —— 否则每次重建都泄漏一个监听器 + 上一份
-        // roster/wikiItems 闭包，而那个旧 `paint()` 还会继续改已经脱离文档的节点。
-        focusOff?.()
+        // 退订在 `build()` 开头**无条件**做过（见那里的注释），这里只负责重新订阅。
         focusOff = subscribeFocusWiki(() => { paint() })
         // 每次打开菜单前重画一次，避免因为订阅时机错过而显示旧值。
         repaintWikiMenu = paint

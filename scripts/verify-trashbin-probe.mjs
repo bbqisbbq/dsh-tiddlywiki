@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
   TRASHBIN_AT_FIELD,
+  TRASHBIN_TAG,
   TRASHBIN_ITEM_TAG,
   TRASHBIN_PREFIX,
   TRASH_INDEX_TITLE,
@@ -216,6 +217,71 @@ await test('restore：旧副本的 `trash-at` 不得留在恢复后的笔记上�
   for (const key of ['trash-of', 'trash-iso', 'trash-at']) {
     assert.equal(restored[key], undefined, `恢复出来的笔记不得带 ${key}（那是副本的溯源字段，不是笔记的）`)
   }
+})
+
+// ── behaviour: a soft delete / restore round-trip keeps the note's TAGS ───
+/**
+ * v0.33.4 — the live data-loss defect this guard now pins.
+ *
+ * `delete` wrote the trashbin copy with `tags: [TRASHBIN_TAG]` (throwing the note's
+ * own tags away) and `restore` tried to recover them from `stored.fields.tags` —
+ * a key TW NEVER populates (`tags` is a known field, so it stays top-level). So on
+ * every trashbin wiki, deleting then restoring a note silently returned it
+ * UNTAGGED: no `inbox`, no `meeting`, no `agent-written`, no `ws/<project>`.
+ * The legacy-index path was untouched, which is why it went unnoticed.
+ */
+const deleteToolFrom = (client) => {
+  const tools = []
+  registerTiddlywikiTools(
+    { tools: { register: (tool) => { tools.push(tool); return () => {} } } },
+    { scope: () => ({ client, ambiguous: false }), git: {}, autoCommit: () => {} },
+  )
+  const tool = tools.find((t) => t.name === 'tiddlywiki_delete')
+  assert.ok(tool !== undefined, 'tiddlywiki_delete 没有被注册')
+  return tool
+}
+
+await test('delete → restore：trashbin 副本必须保住原标签，恢复后标签原样回来（v0.33.4）', async () => {
+  const NOTE = '会议纪要'
+  const copyTitle = `${TRASHBIN_PREFIX}${NOTE}`
+  const { store, client } = wikiHarness({
+    // `hasTrashbin` 的探针：标签定义条目存在即视为该库用 trashbin 格式。
+    '$:/tags/trashbin': { title: '$:/tags/trashbin', text: '' },
+    [NOTE]: { title: NOTE, text: 'body', tags: ['meeting', 'inbox', 'agent-written'], type: 'text/markdown' },
+  })
+  const del = deleteToolFrom(client)
+  const deleted = await del.execute({ title: NOTE }, {})
+  assert.equal(deleted.trashed, true, `应当软删除：${JSON.stringify(deleted)}`)
+  const copy = store.get(copyTitle)
+  assert.ok(copy !== undefined, '回收站里必须有同名副本')
+  assert.ok((copy.tags ?? []).includes(TRASHBIN_TAG), '副本必须带回收站标记')
+  for (const tag of ['meeting', 'inbox', 'agent-written']) {
+    assert.ok((copy.tags ?? []).includes(tag), `副本必须保住原标签 ${tag}（实际 ${JSON.stringify(copy.tags)}）`)
+  }
+  // 副本就是它自己的记录：列出它（listTrashbin 走 /render 的 filter 引擎）。
+  client.render = async () => `<p>${TRASHBIN_ITEM_TAG}${copyTitle}</li></p>`
+  const trash = trashToolFrom(client)
+  const restored = await trash.execute({ action: 'restore', title: NOTE }, {})
+  assert.match(restored.message, /已恢复/)
+  const back = store.get(NOTE)
+  assert.ok(back !== undefined, '笔记必须回到原标题')
+  const tags = back.tags ?? []
+  assert.ok(!tags.includes(TRASHBIN_TAG), '恢复出来的笔记不得带回收站标记')
+  for (const tag of ['meeting', 'inbox', 'agent-written']) {
+    assert.ok(tags.includes(tag), `恢复后的标签必须包含 ${tag}（实际 ${JSON.stringify(tags)}）`)
+  }
+})
+
+await test('restore：只有标记、没有原标签的旧副本 ⇒ 恢复成无标签，且不发明标签', async () => {
+  const copyTitle = `${TRASHBIN_PREFIX}old-copy`
+  const { store, client } = wikiHarness({
+    [copyTitle]: { text: 'body', tags: [TRASHBIN_TAG], fields: { 'trash-of': 'old note' } },
+  })
+  client.render = async () => `<p>${TRASHBIN_ITEM_TAG}${copyTitle}</li></p>`
+  await trashToolFrom(client).execute({ action: 'restore', title: 'old note' }, {})
+  const back = store.get('old note')
+  assert.ok(back !== undefined)
+  assert.deepEqual(back.tags ?? [], [], '不得凭空造标签')
 })
 
 console.log(failures === 0 ? `\nTRASHBIN PROBE CHECKS OK（${checks} 条）` : `\nTRASHBIN PROBE CHECKS FAILED（${failures}/${checks} 条）`)

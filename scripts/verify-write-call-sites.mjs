@@ -40,8 +40,14 @@ const check = (name, fn) => {
   }
 }
 
-/** 手拼 body 的形态：`client.put(` 紧跟对象字面量。 */
-const HAND_BUILT = /client\.put\(\s*\{/g
+/**
+ * 手拼 body 的形态：`client.put(` 紧跟对象字面量。
+ *
+ * v0.33.4：`client` 与 `.put` 之间允许换行 —— `/admin/info` 里的 `$:/theme` 写入
+ * 写成了 `await client\n  .put({ ... })`，旧正则 (`client\.put\(`) 匹配不到，于是那条
+ * 违反铁律 #2 的手拼 body 一直没被这条守门看见。
+ */
+const HAND_BUILT = /client\s*\.put\(\s*\{/g
 
 function collectHandBuilt() {
   const found = new Map()

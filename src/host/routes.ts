@@ -349,7 +349,9 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
   // single surface).
   const mutationLock = deps.mutationLock ?? createMutationLock()
   const beginMutation = (label: string): boolean => mutationLock.begin(label)
-  const endMutation = (): void => mutationLock.end()
+  // v0.33.4: release with the SAME label, so a caller whose `begin()` never ran
+  // cannot free a lock someone else holds (see host/mutation-lock.ts).
+  const endMutation = (label: string): void => mutationLock.end(label)
 
   /**
    * Absolute twin of `twProxy` for embedders whose own document is not on
@@ -505,6 +507,16 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       // Sync is a repository/folder operation on the target wiki's path: without
       // this check a stopped `?wiki=` would pull+commit+push the DEFAULT repo.
       if (refuseStoppedTarget(req, res)) return
+      // v0.33.4: no child behind this request ⇒ there is nothing to restart.
+      // `drainThenStop` treats `client: undefined` as "nothing queued" and the
+      // optional `server(req)?.restart()` swallows itself, so this used to
+      // answer `{ok:true,drained:true,status:undefined}` — a FAKE success that
+      // restarted nothing while the caller believed it had (same class as the
+      // `?wiki=<registered but stopped>` fake success fixed in v0.29.0).
+      if (deps.server(req) === undefined) {
+        json(res, { ok: false, error: notRunning(req) }, 503)
+        return
+      }
       if (!beginMutation('restart')) {
         json(res, { ok: false, error: '另一个重启/同步正在进行中，请稍候' }, 429)
         return
@@ -520,7 +532,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           stop: async () => { await deps.server(req)?.restart() },
           log: (message) => console.warn('[dsh-tiddlywiki]', message) })
       } finally {
-        endMutation()
+        endMutation('restart')
       }
       json(res, { ok: true, status: deps.server(req)?.status().status, drained })
     } catch (err) {
@@ -616,7 +628,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     } finally {
-      endMutation()
+      endMutation('sync')
     }
   }
 

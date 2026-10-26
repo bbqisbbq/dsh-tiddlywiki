@@ -38,7 +38,7 @@
  * @module dsh-tiddlywiki/host/wiki-farm
  */
 import { join } from 'node:path'
-import { isInsidePath } from './path-key.ts'
+import { isInsidePath, pathComparisonKey } from './path-key.ts'
 import { defaultEntry, entryPath, type WikiEntry, type WikiRegistry } from './wiki-registry.ts'
 
 /**
@@ -263,7 +263,7 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
    * pull from restarting — and interrupting whoever is editing — a wiki nothing
    * happened to.
    */
-  affectedBy(repoRoot: string, changedFiles: readonly string[] | undefined | undefined): T[] {
+  affectedBy(repoRoot: string, changedFiles: readonly string[] | undefined): T[] {
     // `undefined` = **不知道**哪些文件变了（diff 算不出来，v0.30.36）。这时必须
     // **保守重启该仓库下的全部库**：宁可多重启一个（只是多一次 TW 重启），也不能
     // 静默陈旧 —— 用户面前的 TW 是内存副本，磁盘被 pull 改过而没重启，就会一直
@@ -276,8 +276,14 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
     // 方向反了，同仓多库里更深的那些库不会重启。
     if (changedFiles === undefined) {
       const all: T[] = []
+      const key = pathComparisonKey(repoRoot)
       for (const runtime of this.runtimes.values()) {
-        if (isInsidePath(repoRoot, runtime.path)) all.push(runtime)
+        // v0.33.4: `isInsidePath` is STRICTLY inside, so a wiki whose folder IS
+        // the repository root — the common single-wiki layout — never matched and
+        // stayed stale after a pull whose diff could not be computed. The normal
+        // branch below does reach it (a changed file is inside its folder), so
+        // this branch must include it too.
+        if (isInsidePath(repoRoot, runtime.path) || pathComparisonKey(runtime.path) === key) all.push(runtime)
       }
       return all
     }

@@ -46,7 +46,7 @@ import {
 import { ConfigStore, type PluginConfigShape } from './host/config.ts'
 import type { GitFace } from './host/git.ts'
 import { checkAllSeeds, runSeedById, removeSeedById } from './host/seeds.ts'
-import { describePrompt, type PromptConfig } from './host/prompt.ts'
+import { describePrompt, withScopeBanner, TW_LINK_BASE, type PromptConfig } from './host/prompt.ts'
 import type { RepoCommitters } from './host/repo-committers.ts'
 import { normalizeWechatConfig, checkWechatReady, type WechatPublishRunner } from './host/wechat-publish.ts'
 import { tiddlywikiToolSummary } from './host/tools.ts'
@@ -181,7 +181,8 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
     // The roster the GUI selector + the settings page read. It reports what
     // the FARM serves right now (in single mode that is the one synthesized
     // entry); the control file's full candidate list is the admin route's job.
-    wikiSummaries: (req) => {
+    // 形参用 `_req`：`RouteDeps` 的签名统一带 req，这一条只用农场名册（v0.33.4 清理）。
+    wikiSummaries: (_req) => {
       const registry = deps.getFarm()?.registry
       return {
         mode: registry?.mode ?? 'single',
@@ -289,8 +290,38 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
     // No draft → the SAVED config of the TARGETED wiki (what is injected right
     // now); with a draft → the settings form's unsaved values (v0.22.7),
     // through the same builder.
-    getPrompt: (draft, req) =>
-      describePrompt(draft ?? deps.effectivePromptFor(req), tiddlywikiToolSummary()),
+    //
+    // v0.33.4: the preview now goes through the SAME assembly as the injected
+    // text. It used to pass only `cfg.prompt`, so it silently dropped three
+    // things the real path adds — `wechat.enabled`'s whole publishing rule block,
+    // the multi-wiki `linkBase` (`/tw/<id>/`), and the scope banner — which made
+    // the settings page a black box exactly where it claims to show「逐字」what
+    // gets injected.
+    getPrompt: (draft, req) => {
+      const savedCfg = (target(req)?.config.get() ?? deps.baseShape) as { prompt?: PromptConfig; wechat?: { enabled?: unknown } }
+      const cfg = draft ?? savedCfg.prompt ?? {}
+      const farm = deps.getFarm()
+      const runtime = target(req)
+      const registry = farm?.registry
+      const visible = (registry?.wikis ?? []).filter((entry) => entry.agentVisible)
+      const ambiguous = visible.length > 1
+      const entry = runtime === undefined ? undefined : registry?.wikis.find((item) => farm?.runtime(item.id) === runtime)
+      const scopeId = entry?.id
+      const linkBase = ambiguous && typeof scopeId === 'string' && scopeId.length > 0
+        ? `${TW_LINK_BASE}${scopeId}/`
+        : TW_LINK_BASE
+      const built = describePrompt(
+        { ...cfg, wechat: savedCfg.wechat?.enabled === true, linkBase },
+        tiddlywikiToolSummary(),
+      )
+      return {
+        ...built,
+        text: withScopeBanner(built.text, {
+          ...(scopeId === undefined ? {} : { id: scopeId, label: entry?.label }),
+          ambiguous,
+        }),
+      }
+    },
     // Runtime wiki location (v0.22.0): read the current folder + how it was
     // decided, switch to another one, or drop back to the cordis default.
     wiki: {
@@ -360,9 +391,23 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
     seeds: {
       // Tool summaries feed the GENERATED seed content (the doc note's tool
       // list, v0.22.0) — pass them everywhere the registry can be re-run.
-      checkAll: async (c) => checkAllSeeds({ client: c, tools: tiddlywikiToolSummary() }),
-      run: async (c, id, force) => runSeedById({ client: c, tools: tiddlywikiToolSummary() }, id, force),
-      remove: async (c, id) => removeSeedById({ client: c }, id),
+      //
+      // v0.33.4: also pass the TARGET wiki's proxy base and its wechat gate. The
+      // startup path (wiki-instance) always did; this one did not, so
+      // 「重新初始化」 rewrote `$:/config/tiddlyweb/host` to the bare legacy base on
+      // a multi-wiki install (that wiki's editor then proxied every API call to
+      // the DEFAULT wiki) and never saw the gated 公众号 seeds.
+      checkAll: async (c, req) => checkAllSeeds({
+        client: c,
+        tools: tiddlywikiToolSummary(),
+        ...(req === undefined ? {} : { proxyBase: target(req)?.proxyBasePath(), wechat: target(req)?.wechatEnabled() ?? false }),
+      }),
+      run: async (c, id, force, req) => runSeedById({
+        client: c,
+        tools: tiddlywikiToolSummary(),
+        ...(req === undefined ? {} : { proxyBase: target(req)?.proxyBasePath(), wechat: target(req)?.wechatEnabled() ?? false }),
+      }, id, force),
+      remove: async (c, id, req) => removeSeedById({ client: c }, id),
     },
   }
   const disposeAdmin = registerAdminRoutes({ webServer: ws }, adminDeps)

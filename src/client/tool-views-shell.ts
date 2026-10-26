@@ -152,10 +152,10 @@ export function useScopedWikiId(): string | undefined {
 export function useScopeProviderValue(sessionId: string | undefined): string | undefined {
   const [wikiId, setWikiId] = React.useState<string | undefined>(undefined)
   React.useEffect(() => {
-    if (typeof sessionId !== 'string' || sessionId.length === 0) {
-      setWikiId(undefined)
-      return
-    }
+    // 会话变了，旧的库 id 不再成立（v0.33.4）：不清掉它会一直挂到 B 的解析返回 ——
+    // 卡片上的库徽标、`data-dsh-tw-wiki` 与 ?wiki= 都还指着 A 的库。
+    setWikiId(undefined)
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return
     let alive = true
     void resolveSessionWikiId(sessionId).then((id) => {
       if (alive) setWikiId(id)

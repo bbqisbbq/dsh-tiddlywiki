@@ -423,6 +423,14 @@ export class WikiServer {
     // `scheduleRestart()` + `stop()`, and via the 3s teardown race in index.ts.
     if (this.stopping) {
       this.log('start aborted: stop() was requested while resolving the port')
+      // v0.33.4: put the health back. `stop()` already set it to 'stopped' and
+      // cleared the child/restart timer BEFORE this re-check ran, so returning
+      // without restoring it left `/status` reporting 'starting' forever — no
+      // child, no timer, and a panel/FAB that spins indefinitely. Reachable when
+      // a `/admin/restart` (stop() + start()) lands while the boot-time `start()`
+      // is still resolving the port: the single-flight `start()` reuses that very
+      // attempt, so the wiki never came up again.
+      this.health = 'stopped'
       return this.status()
     }
     const node = resolveNodeExecutable()

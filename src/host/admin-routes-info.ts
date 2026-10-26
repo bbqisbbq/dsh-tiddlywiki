@@ -21,11 +21,18 @@ import { join } from 'node:path'
 import { drainThenStop } from './seeds.ts'
 import { GitFace } from './git.ts'
 import { maskConfigSecrets } from './admin-secrets.ts'
+import { buildWriteTiddler } from './write-policy.ts'
 import { bundledCatalog, normalizeThemes, pinLanguageTiddler, readActiveThemeName, readWikiInfo, scanWikiRuntimePlugins, writeWikiInfo, type WikiInfo } from './admin-catalog.ts'
 import type { AdminDeps } from './admin-routes.ts'
 
-/** 这一组真正用到的 deps 成员（不是整个 AdminDeps）。 */
-export type AdminInfoRouteDeps = Pick<AdminDeps, 'config' | 'getClient' | 'getWikiPath' | 'server' | 'targetProblem' | 'twRoot'>
+/** 这一组真正用到的 deps 成员（不是整个 AdminDeps）。
+ *
+ *  v0.33.4：加上 `mutationLock` —— `handleInfo` 也会 `drainThenStop` + 重启子进程
+ *  （改插件/主题/语言），它是**第二组**会停子进程的 admin 路由，却一直没接共享锁，
+ *  于是能和 `/sync`、`/admin/restart` 同时停同一个 child（一方排干还没落地，另一方
+ *  就把 child 杀掉 ⇒ 排队写入丢失）。
+ */
+export type AdminInfoRouteDeps = Pick<AdminDeps, 'config' | 'getClient' | 'getWikiPath' | 'server' | 'targetProblem' | 'twRoot' | 'mutationLock'>
 
 export function createAdminInfoRoutes(
   deps: AdminInfoRouteDeps,
@@ -170,27 +177,51 @@ export function createAdminInfoRoutes(
       // same lists re-sent) used to rewrite tiddlywiki.info + restart TW — a
       // visible TW interruption for a request that asked for nothing.
       const changed = JSON.stringify(info) !== beforeInfo
-      if (changed) {
-        await writeWikiInfo(wikiPath, info)
-        // v0.24.1: plugins/themes/languages change → restart, but drain first.
-        // This path predates the "restarting over unflushed writes loses them"
-        // insight that the seed path below already documents (rule #1).
-        await drainThenStop({
-          client: deps.getClient(req),
-          tiddlersDir: join(deps.getWikiPath(req), 'tiddlers'),
-          stop: async () => { await deps.server(req)?.restart() },
-          log: (message) => console.warn('[dsh-tiddlywiki]', message),
-        })
+      // v0.33.4: this restart is one of the two admin paths that stop the TW
+      // child, so it takes the SHARED mutation lock like `/admin/restart` and
+      // the seed run do. `changed === false` never touches the lock.
+      const lock = deps.mutationLock
+      let lockTaken = false
+      if (changed && lock !== undefined) {
+        if (!lock.begin('admin-info')) {
+          json(res, { ok: false, error: `另一个重启/同步正在进行中（${lock.current() ?? '?'}），请稍候` }, 429)
+          return
+        }
+        lockTaken = true
+      }
+      try {
+        if (changed) {
+          await writeWikiInfo(wikiPath, info)
+          // v0.24.1: plugins/themes/languages change → restart, but drain first.
+          // This path predates the "restarting over unflushed writes loses them"
+          // insight that the seed path below already documents (rule #1).
+          await drainThenStop({
+            client: deps.getClient(req),
+            tiddlersDir: join(deps.getWikiPath(req), 'tiddlers'),
+            stop: async () => { await deps.server(req)?.restart() },
+            log: (message) => console.warn('[dsh-tiddlywiki]', message),
+          })
+        }
+      } finally {
+        if (lockTaken) lock?.end('admin-info')
       }
       // Activate the chosen theme tiddler (mirrors TW's own Control Panel).
       if (Array.isArray(body.themes) && activatedTheme !== undefined) {
         const client = deps.getClient(req)
         if (client !== undefined) {
+          // Ironclad rule #2 (v0.33.4): `$:/theme` is an EXISTING tiddler, so a
+          // hand-built body silently dropped its custom fields and forced
+          // `tags: []`. Read it first and go through the shared write policy —
+          // exactly what `$:/language` was fixed to do in v0.30.30.
+          const existingTheme = await client.get('$:/theme')
+          const { tiddler: themeTiddler } = buildWriteTiddler('$:/theme', `$:/themes/${activatedTheme}`, { existing: existingTheme })
           await client
-            .put({ title: '$:/theme', text: `$:/themes/${activatedTheme}`, type: 'text/vnd.tiddlywiki', tags: [] })
+            .put(themeTiddler)
             .catch((err) => { console.warn('[dsh-tiddlywiki] activating theme failed:', err) })
         }
       }
+      // Set when the uiLanguage hint could not be persisted (v0.33.4).
+      let languageHintError: string | undefined
       // After a languages change, pin the active language tiddler: first
       // enabled language, or en-GB when none is enabled. Only when the request
       // actually carried a languages array (plugins/themes restarts skip this).
@@ -211,11 +242,26 @@ export function createAdminInfoRoutes(
           // a language the user just disabled here.
           const hint = langs.length > 0 ? langs[0] : ''
           if ((deps.config(req).get().uiLanguage ?? '') !== hint) {
-            await deps.config(req).set(client, { uiLanguage: hint }).catch(() => undefined)
+            // v0.33.4: do NOT swallow this. The whole point of the write is that
+            // the next dsh-web restart must not re-enable the language the user
+            // just turned off; `ConfigUnreadableError` silently discarded made
+            // that benefit vanish with the response still saying ok:true. Report
+            // it, keep the request successful (the language pin already landed).
+            try {
+              await deps.config(req).set(client, { uiLanguage: hint })
+            } catch (err) {
+              languageHintError = `语言提示没写进配置（下次 dsh web 启动可能又启用「${hint === '' ? '默认语言' : hint}」）：${err instanceof Error ? err.message : String(err)}`
+              console.warn('[dsh-tiddlywiki]', languageHintError)
+            }
           }
         }
       }
-      json(res, { ok: true, changed, info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [] } })
+      json(res, {
+        ok: true,
+        changed,
+        info: { plugins: info.plugins, themes: info.themes, languages: info.languages ?? [] },
+        ...(languageHintError === undefined ? {} : { warning: languageHintError }),
+      })
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, 500)
     }
