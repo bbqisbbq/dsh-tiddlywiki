@@ -116,6 +116,20 @@ export interface SearchHit { title: string; tags: string[]; modified: string | n
 export interface SearchResult { query: string; tags: string[]; since: string | null; type: string | null; field: string | null; value: string | null; total: number; /** 自动缩范围用的工作区 id（v0.24.0）；null = 未启用/不可用。 */ workspace: string | null; /** 结果来自哪个范围。 */ scope: 'workspace' | 'all'; /** 工作区内 0 条、已扩大到全库（回执必须说出来）。 */ fellBack: boolean; results: SearchHit[] }
 export interface RecentResult { since: string | null; results: SearchHit[] }
 export interface TagListResult { count: number; total: number; truncated: boolean; tags: Array<{ tag: string; count: number }> }
+/** `tiddlywiki_export` 的返回值（v0.31.1）。字段与 EXPORT_RESULT 一一对应。 */
+export interface ExportResult {
+  ok: boolean
+  title: string
+  path: string
+  format: string
+  bytes: number
+  /** 只有「没这篇笔记」时为 true（此时 path 为空、不落盘）。 */
+  notFound?: boolean
+  reason?: string
+  /** 多库时由 withScopeHeader 追加。 */
+  wiki?: { id: string; label: string }
+}
+
 export interface GetResult {
   notFound: boolean
   title: string

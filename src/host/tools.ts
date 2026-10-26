@@ -20,6 +20,7 @@ import type { RegistrableTool, ToolEnv, ToolScope, ToolsCtx, ToolsDeps } from '.
 import { backlinksTool, lintTool, listTagsTool, recentTool, searchTool } from './tools-read.ts'
 import { appendTool, batchPutTool, deleteTool, getTool, putTool, renameTool, replaceTool, trashTool } from './tools-notes.ts'
 import { attachTool } from './tools-attach.ts'
+import { exportTool } from './tools-export.ts'
 import { gitResolveTool, gitSyncTool } from './tools-git.ts'
 
 export { AGENT_WRITTEN_TAG, DEFAULT_NOTE_TYPE, HUMAN_EDITED_TAG } from './write-policy.ts'
@@ -126,6 +127,7 @@ export function registerTiddlywikiTools(ctx: ToolsCtx, deps: ToolsDeps): Array<(
   register(backlinksTool(env))
   register(attachTool(env))
   register(lintTool(env))
+  register(exportTool(env))
   register(gitSyncTool(env))
   register(gitResolveTool(env))
 

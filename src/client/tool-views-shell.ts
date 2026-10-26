@@ -39,6 +39,7 @@ const TOOL_LABELS: Record<string, () => string> = {
   tiddlywiki_trash: () => t('card.toolTrash'),
   tiddlywiki_backlinks: () => t('card.toolBacklinks'),
   tiddlywiki_attach: () => t('card.toolAttach'),
+  tiddlywiki_export: () => t('card.toolExport'),
   tiddlywiki_lint: () => t('card.toolLint'),
   tiddlywiki_git_sync: () => t('card.toolGitSync'),
   tiddlywiki_git_resolve: () => t('card.toolGitResolve'),

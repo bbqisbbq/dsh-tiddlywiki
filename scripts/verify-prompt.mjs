@@ -96,8 +96,8 @@ test('默认形态是 slim 且与 section 名一致', () => {
   assert.equal(normalizePromptMode('full'), 'full')
 })
 
-test('工具注册表被真实填充（16 个 tiddlywiki_* 工具）', () => {
-  assert.equal(tools.length, 16, `工具数应为 16，实际 ${tools.length}`)
+test('工具注册表被真实填充（17 个 tiddlywiki_* 工具）', () => {
+  assert.equal(tools.length, 17, `工具数应为 17，实际 ${tools.length}`)
   for (const t of tools) {
     assert.ok(t.name.startsWith('tiddlywiki_'), `工具名异常：${t.name}`)
     assert.ok(t.params.length > 0, `${t.name} 未采集到参数`)

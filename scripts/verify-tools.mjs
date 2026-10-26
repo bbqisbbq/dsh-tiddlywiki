@@ -34,7 +34,7 @@
  * @module dsh-tiddlywiki/scripts/verify-tools
  */
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -959,6 +959,43 @@ try {
     assert.ok(lintText.length <= 13_000, `lint 回执必须受体量预算约束（实际 ${lintText.length} 字符）`)
     assert.match(lintText, /条示例省略/, 'lint 必须说明示例被省略了多少条')
     assert.match(lintText, /- junk-tags：400 处/, '计数是结论，不许被预算截掉')
+  })
+
+  // ── export（v0.31.1）─────────────────────────────────────────────────────
+  await test('export：md/tid/json 三种格式落盘、同名拒绝覆盖、系统条目拒绝', async () => {
+    await call('tiddlywiki_put', { title: '导出测试', text: '第一行\n第二行', tags: ['demo'], fields: { foo: 'bar' } })
+    const dir = join(root, 'exports')
+    const md = await call('tiddlywiki_export', { title: '导出测试', dir })
+    assert.equal(md.ok, true, `导出应成功：${JSON.stringify(md)}`)
+    assert.ok(md.path.endsWith('.md'), `默认格式必须是 md，实际 ${md.path}`)
+    assert.ok(md.bytes > 0, '必须回报字节数')
+    const mdText = await readFile(md.path, 'utf8')
+    assert.match(mdText, /^---\n/, 'md 必须以 YAML frontmatter 开头')
+    assert.match(mdText, /title: "导出测试"/, 'frontmatter 要带标题')
+    assert.match(mdText, /foo: "bar"/, '自定义字段必须带进 frontmatter')
+    assert.match(mdText, /第二行/, '正文不得丢')
+
+    const tid = await call('tiddlywiki_export', { title: '导出测试', format: 'tid', dir })
+    assert.ok(tid.path.endsWith('.tid'))
+    const tidText = await readFile(tid.path, 'utf8')
+    // tags 里会有工具自动补的 agent-written，所以只钉「标题行 + tags 行在前、空格分隔」。
+    assert.match(tidText, /^title: 导出测试\ntags: demo([ ]\S+)*\n/, 'tid 必须是 TW 原生字段行 + tags 空格分隔')
+    assert.match(tidText, /\n\n第一行\n第二行/, 'tid 的字段与正文之间必须有一个空行')
+
+    const js = await call('tiddlywiki_export', { title: '导出测试', format: 'json', dir })
+    assert.ok(js.path.endsWith('.json'))
+    assert.equal(JSON.parse(await readFile(js.path, 'utf8')).title, '导出测试')
+
+    // 同名不覆盖：这是「别毁掉人上一次导出」的唯一保障。
+    await assert.rejects(() => call('tiddlywiki_export', { title: '导出测试', dir }), /已经存在/)
+    // 不存在的笔记：回 notFound，而不是写一个空文件。
+    const missing = await call('tiddlywiki_export', { title: '根本没有这篇笔记', dir })
+    assert.equal(missing.notFound, true)
+    assert.equal(missing.path, '')
+    // 插件自身命名空间：可能含密钥（铁律 #6）。
+    await assert.rejects(() => call('tiddlywiki_export', { title: '$:/plugins/dsh-tiddlywiki/config', dir }), /命名空间/)
+    // 相对 dir 必须被拒（否则「导出到哪」变得不可预测）。
+    await assert.rejects(() => call('tiddlywiki_export', { title: '导出测试', dir: 'relative/path' }), /绝对路径/)
   })
 
   // ── 输出 schema（v0.30.66）────────────────────────────────────────────────

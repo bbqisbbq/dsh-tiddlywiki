@@ -233,3 +233,31 @@ export const GIT_RESULT: ValueSpec = {
   additionalProperties: true,
   properties: { ok: { type: 'boolean' }, message: { type: 'string' } },
 }
+
+/**
+ * `tiddlywiki_export`（v0.31.1）：落盘结果。
+ *
+ * `notFound` / `reason` 只在「没这篇笔记」时出现；`wiki` 由 withScopeHeader 在多库时
+ * 追加 —— 三者都不进 required，但必须在 properties 里声明（否则严格校验会拒）。
+ */
+export const EXPORT_RESULT: ValueSpec = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    title: { type: 'string' },
+    path: { type: 'string' },
+    format: { type: 'string' },
+    bytes: { type: 'number' },
+    notFound: { type: 'boolean' },
+    reason: { type: 'string' },
+    wiki: {
+      type: 'object',
+      // 嵌套对象**不能**声明 required 数组（ValueSpec 的 required 是布尔、按字段写）。
+      properties: { id: { type: 'string' }, label: { type: 'string' } },
+      additionalProperties: true,
+    },
+  },
+  // 与其它 16 份 schema 同规则：**不声明 required**（ObjectSpec 没有这个字段，
+  // 声明了 tsc 直接拒）。缺字段靠 `additionalProperties` 放行，类型错了才拦。
+  additionalProperties: true,
+}

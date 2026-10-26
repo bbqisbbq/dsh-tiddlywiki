@@ -165,6 +165,7 @@ const TOOL_VIEW_KEYS: readonly string[] = [
   'tiddlywiki_backlinks',
   'tiddlywiki_attach',
   'tiddlywiki_lint',
+  'tiddlywiki_export',
   'tiddlywiki_git_sync',
   'tiddlywiki_git_resolve',
 ]
