@@ -119,7 +119,7 @@ test('可选依赖：documentPreviews 由别的插件提供，等不到时优雅
   // 服务由**另一个插件** reflect.provide 提供，可能在本插件之后才出现 ⇒ 必须等，不能查一次就放弃。
   assert.match(source, /getter\('documentPreviews'\)/, '服务要按名字读')
   assert.match(source, /setTimeout\(attempt, 250\)/, '服务还没出现时必须短轮询等待，不能静默放弃')
-  assert.match(source, /documentPreviews 服务始终没出现/, '始终没出现要留一条可诊断的 warn')
+  assert.match(source, /documentPreviews never appeared after /, '始终没出现要留一条可诊断的 warn（英文，客户端守门不许中文字面量）')
   // 只有元数据、没有正文的一半注册必须整体撤回
   assert.match(source, /for \(const dispose of disposers\.splice\(0\)\) dispose\(\)/, '拿不到 slots 时必须回滚元数据，避免单边注册')
 })
