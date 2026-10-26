@@ -4,6 +4,12 @@
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.33.2**（2026-10-26）：**`.tid` 预览仍不生效 —— 这次是"服务还没出现就放弃"**。
+v0.33.1 修好了 `key` 配对，但用户实测仍是纯文本，且 devtools 里 `[class*="dsh-tw-tid"]` 数量为 0（正文组件压根没渲染）。
+根因在插件的**加载顺序**：`documentPreviews` 是另一个插件（宿主的 `dsh-client-ui-sidebar-documentpreview`）用 `ctx.reflect.provide(...)` 提供的，本插件若先加载，`ctx.get(...)` 那一瞬间拿到 `undefined`，v0.32/0.33.0/0.33.1 就**静默 return** 了 —— 界面上看不出差别（宿主用内置纯文本兜底），console 里也一条日志都没有，等于把失败藏起来。
+现在改成**短轮询等它出现**（250ms × 40 ≈ 10s），并给每一步补 `[dsh-tiddlywiki]` 前缀的诊断日志：`ctx.get`/`ctx.slots` 是否存在、第几次尝试注册上元数据、正文是否注册进 keyed 子槽、等不到时的 warn。正文外壳加 `data-dsh-tw-tid` 标记，devtools 里一条 `document.querySelectorAll('[data-dsh-tw-tid]').length` 就能判定我们的组件到底有没有渲染。
+守门同步改判据：不再钉"查一次就返回"，改钉 `setTimeout(attempt, 250)` 的轮询、`getter('documentPreviews')` 的取值形态、以及"服务始终没出现"那条可诊断 warn —— 静默跳过从这一版起是**被测出来的**行为，不再是遗漏。
+
 - **v0.33.1**（2026-10-26）：**`.tid` 预览改为真正生效**（v0.32.0 那一版静默失效：打开 `.tid` 仍显示纯文本）。
 根因是宿主契约里我读错的一处：DSH 的文件预览分「元数据 + keyed 正文」两半，**正文按 `key` 配对** ——
 宿主自己写的是 `ctx.slots.register({ name: sidebar.right.tab.document, key: BODY_ID }, Body)`，而 v0.32.0 写成了 `id:`。

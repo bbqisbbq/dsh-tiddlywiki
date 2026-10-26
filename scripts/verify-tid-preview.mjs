@@ -114,9 +114,12 @@ test('渲染走宿主净化管道（铁律 #7），且失败只是回 null 不�
   assert.match(source, /dangerouslySetInnerHTML/, '净化后的 HTML 才允许注入')
 })
 
-test('可选依赖：没有 documentPreviews 服务时静默跳过', () => {
-  assert.match(source, /ctx\.get\?\.\('documentPreviews'\)/, '服务要按可选读取')
-  assert.match(source, /if \(previews === undefined\) return disposers/, '没有服务就直接返回（老版本 DSH 不受影响）')
+test('可选依赖：documentPreviews 由别的插件提供，等不到时优雅跳过', () => {
+  assert.match(source, /typeof ctx\.get === 'function'/, '服务读取器要按可选能力检测（老版本 DSH 没有就不碰）')
+  // 服务由**另一个插件** reflect.provide 提供，可能在本插件之后才出现 ⇒ 必须等，不能查一次就放弃。
+  assert.match(source, /getter\('documentPreviews'\)/, '服务要按名字读')
+  assert.match(source, /setTimeout\(attempt, 250\)/, '服务还没出现时必须短轮询等待，不能静默放弃')
+  assert.match(source, /documentPreviews 服务始终没出现/, '始终没出现要留一条可诊断的 warn')
   // 只有元数据、没有正文的一半注册必须整体撤回
   assert.match(source, /for \(const dispose of disposers\.splice\(0\)\) dispose\(\)/, '拿不到 slots 时必须回滚元数据，避免单边注册')
 })

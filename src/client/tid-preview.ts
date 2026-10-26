@@ -148,7 +148,7 @@ export function createTidPreviewBody(): (props: unknown) => React.ReactElement {
       )
     }
 
-    return React.createElement('div', { className: 'dsh-tw-tid-preview' }, ...head, body)
+    return React.createElement('div', { className: 'dsh-tw-tid-preview', 'data-dsh-tw-tid': TID_PREVIEW_ID }, ...head, body)
   }
 }
 
@@ -187,40 +187,84 @@ interface PreviewCtx {
 /**
  * 注册 `.tid` 预览（元数据 + 正文**成对**）。
  *
- * 宿主没有 `documentPreviews` 服务时**什么都不做**（老版本 DSH 不受影响）。
- * 任何一步抛错都只记日志并回滚已注册的那一半 —— 单边注册会让宿主按 id 找不到正文。
+ * 为什么要「等」而不是查一次：`documentPreviews` 是**另一个插件**（宿主的
+ * `dsh-client-ui-sidebar-documentpreview`）用 `ctx.reflect.provide('documentPreviews', …)`
+ * 提供的。如果本插件先加载，`ctx.get('documentPreviews')` 那一刻还是 `undefined` ——
+ * v0.32/0.33.0 就是在这里**静默放弃**的（用户看到的仍是内置纯文本，console 里
+ * 一条日志都没有，排查成本极高）。现在改成**短轮询**（250ms × 40 ≈ 10s）：
+ * 服务一出现就注册；始终没出现才记一条 warn 说明原因。
+ *
+ * 诊断日志都带 `[dsh-tiddlywiki]` 前缀，方便在 devtools 里一眼认出是我们的。
  */
 export function registerTidPreview(ctx: PreviewCtx): Array<() => void> {
   const disposers: Array<() => void> = []
-  const previews = ctx.get?.('documentPreviews') as DocumentPreviewsFace | undefined
-  if (previews === undefined) return disposers
-  try {
-    disposers.push(
-      previews.register({
-        id: TID_PREVIEW_ID,
-        extensions: [...TID_EXTENSIONS],
-        // 外部实现压过宿主的纯文本兜底（宿主按 `priority === 'builtin'` 分档）。
-        priority: 'external',
-        // 宿主自己传的是函数（`) => t('viewer.text')`），语言切换时能重取。
-        title: () => t('frame.tidPreviewTitle'),
-        loading: 'text-pages',
-        wrap: false,
-      }),
+  const getter = typeof ctx.get === 'function' ? ctx.get.bind(ctx) : undefined
+  console.info('[dsh-tiddlywiki] tid preview: ctx.get=' + (getter === undefined ? 'missing' : 'present') + ', ctx.slots=' + (ctx.slots === undefined ? 'missing' : 'present'))
+  if (getter === undefined) {
+    // 没有服务读取器 ⇒ 这个宿主版本给不了 documentPreviews，按设计跳过。
+    return disposers
+  }
+
+  let attempts = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let done = false
+
+  const attempt = (): void => {
+    if (done) return
+    attempts += 1
+    const previews = getter('documentPreviews') as DocumentPreviewsFace | undefined
+    if (previews === undefined || previews === null) {
+      if (attempts >= 40) {
+        console.warn('[dsh-tiddlywiki] tid preview: documentPreviews 服务始终没出现（尝试 ' + attempts + ' 次），.tid 将显示内置纯文本')
+        return
+      }
+      timer = setTimeout(attempt, 250)
+      return
+    }
+    done = true
+    try {
+      disposers.push(
+        previews.register({
+          id: TID_PREVIEW_ID,
+          extensions: [...TID_EXTENSIONS],
+          // 外部实现压过宿主的纯文本兜底（宿主按 `priority === 'builtin'` 分档）。
+          priority: 'external',
+          // 宿主自己传的是函数（`) => t('viewer.text')`），语言切换时能重取。
+          title: () => t('frame.tidPreviewTitle'),
+          loading: 'text-pages',
+          wrap: false,
+        }),
+      )
+      console.info('[dsh-tiddlywiki] tid preview: 元数据已注册（第 ' + attempts + ' 次尝试）id=' + TID_PREVIEW_ID + ' 后缀=' + TID_EXTENSIONS.join('/'))
+    } catch (err) {
+      // 开发者日志，不是用户文案（与仓库其它模块的 console.warn 同一性质）。
+      console.warn('[dsh-tiddlywiki] tid preview registration failed:', err)
+      return
+    }
+    const slots = ctx.slots
+    if (slots === undefined) {
+      // 元数据已注册但没有正文 → 宿主会拿不到渲染器，宁可整体撤回。
+      console.warn('[dsh-tiddlywiki] tid preview: 没有 ctx.slots，撤回元数据')
+      for (const dispose of disposers.splice(0)) dispose()
+      return
+    }
+    const bodyDispose = slots.inject(TID_PREVIEW_SLOT, () =>
+      slots.register({ name: TID_PREVIEW_SLOT, key: TID_PREVIEW_ID }, createTidPreviewBody()),
     )
-  } catch (err) {
-    // 开发者日志，不是用户文案（与仓库其它模块的 console.warn 同一性质）。
-    console.warn('[dsh-tiddlywiki] tid preview registration failed:', err)
-    return disposers
+    if (bodyDispose === undefined) console.warn('[dsh-tiddlywiki] tid preview: 正文注册失败（slot ' + TID_PREVIEW_SLOT + '）')
+    else {
+      disposers.push(bodyDispose)
+      console.info('[dsh-tiddlywiki] tid preview: 正文已注册到 ' + TID_PREVIEW_SLOT + ' key=' + TID_PREVIEW_ID)
+    }
   }
-  const slots = ctx.slots
-  if (slots === undefined) {
-    // 元数据已注册但没有正文 → 宿主会拿不到渲染器，宁可整体撤回。
-    for (const dispose of disposers.splice(0)) dispose()
-    return disposers
-  }
-  const bodyDispose = slots.inject(TID_PREVIEW_SLOT, () =>
-    slots.register({ name: TID_PREVIEW_SLOT, key: TID_PREVIEW_ID }, createTidPreviewBody()),
-  )
-  if (bodyDispose !== undefined) disposers.push(bodyDispose)
-  return disposers
+
+  attempt()
+  // 清理：停掉还在等服务的定时器 + 回收已注册的两半。
+  return [
+    () => {
+      done = true
+      if (timer !== undefined) clearTimeout(timer)
+      for (const dispose of disposers.splice(0)) dispose()
+    },
+  ]
 }
