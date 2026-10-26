@@ -4,6 +4,15 @@
 
 > 最近几个主要版本的一句话记录（完整变更见 [Releases](https://github.com/bbqisbbq/dsh-tiddlywiki/releases) / git log）。
 
+- **v0.33.1**（2026-10-26）：**`.tid` 预览改为真正生效**（v0.32.0 那一版静默失效：打开 `.tid` 仍显示纯文本）。
+根因是宿主契约里我读错的一处：DSH 的文件预览分「元数据 + keyed 正文」两半，**正文按 `key` 配对** ——
+宿主自己写的是 `ctx.slots.register({ name: sidebar.right.tab.document, key: BODY_ID }, Body)`，而 v0.32.0 写成了 `id:`。
+**它不报错、不告警**，宿主找不到渲染器就安静地用内置纯文本兜底，于是症状看起来像「功能没做」。
+同一轮照抄宿主补齐另外三个形状：`priority` 是**字符串**（宿主只判 `=== builtin ? 0 : 1`，非 builtin 才压得过内置纯文本）、`title` 传**函数**（语言切换可重取）、`wrap: false`（我们产出 HTML 而不是按行折行的纯文本）；
+正文取文本也从「只认 `content.text`」改成读 `content.pages`（`loading: text-pages` 时宿主给 `{ kind: text, pages }`，每页 `{ offset, lines, text }`，按 offset 排序拼接）。
+守门同步加严（`verify-tid-preview` 12 条）：**正向**钉 `slots.register({ name, key: TID_PREVIEW_ID })`、**反向**钉「不许出现 `slots.register({ … id: TID_PREVIEW_ID })`」、外加 priority/title/wrap/loading 与 pages 读取四条。
+另：`i18n` 键数自述 467 → 475 对齐；`profiles/desktop/package-lock.json`（npm 事故遗留、含 `link: true` 软链记账）已删除。
+
 - **v0.33.0**（2026-10-26）：**客户端文案目录接进宿主 locale 服务（⑥b 的落地形态：注册，但不搬）**。原计划把 470+ 条键整体迁进 `ctx.locale.register(ns, {zh,en})`，但官方要求命名空间先并入 `LocaleNamespaceMap` 由**编译器**按类型化键并集校验 —— 本插件客户端是 esbuild 产出的单文件、无 `.d.ts`，参与不了那个类型合并，迁过去等于**放弃 `scripts/verify-client-i18n.mjs` 现有的键名校验**，去换一个「改语言即时生效」。现在两条都不放弃：**目录仍只有一份**（`i18n-catalog.ts` 的 7 个分片，宿主与本地共用同一个对象），启动时注册进宿主 locale 服务，并把宿主的 `bind(ns)` 接到 `t()` 前面 —— **宿主优先、本地表兜底**：服务缺失（老版本 DSH）、`register` 抛错、`bind` 不存在、宿主回空串 / 回键名本身 / 回非字符串，一律退回本地表，所以最差行为等于 v0.32.0。⚠️ 每次注册尝试都会先清掉上一次的绑定：留着旧解析器会让 `t()` 继续问一个已经不存在的命名空间（这一点是写守门时被自己的用例抓出来的）。**守门**：新增 `scripts/verify-locale-host.mjs`（进 `verify:unit`，7 条）—— 命名空间常量、无服务时静默跳过、注册的必须是**同一份** `MESSAGES`（另抄一份会慢慢分叉而界面看着正常）、`register` 的 disposer 必须回收、宿主优先、四类宿主异常必须回落、`t()` 必须委托给 `translate` 且保留本地兜底、接线必须在 `safeMount` 里。
 
 - **v0.32.0**（2026-10-26）：**新增 `.tid` / `.tiddler` 文件的侧栏预览**（⑦ 的第三项）。wiki 文件夹本身就是一堆 `.tid`，而 DSH 的文件预览把未知扩展名当纯文本 —— 打开一个 `.tid` 看到的是 `title: …` 字段行加原始 wikitext，`[[链接]]`/`<<宏>>` 几乎不可读。现在注册一个预览实现：元数据用 `ctx.documentPreviews.register({ id, extensions: ['tid','tiddler'], priority, title, loading: 'text-pages' })`，正文以**同一个 id** 注入 keyed、Session 作用域的 `sidebar.right.tab.document`；正文把 wikitext POST 到本插件自己的 `/dsh-tiddlywiki/render`（铁律 #7 的净化管道）换成真 TW 渲染结果，字段行单独排一行摘要。**绝不白屏**是这个功能的硬约束：拿不到内容 → "等待文件内容…"；只有字段没有正文 → 明确说明；渲染失败 → `<pre>` 原文 + 一句"渲染失败，下面是原文"。宿主没有 `documentPreviews` 服务时**什么都不做**（老版本 DSH 不受影响），且元数据与正文必须**成对**（拿不到 slots 就把已注册的元数据撤回，单边注册会让面板空白）。契约是从宿主 `app.asar` 的 `dsh-client-ui-sidebar-documentpreview/lib/client.js` 逐行核实后写的（含 `TextPreview` 的完整 props 签名与 `content` 三态），全部记在 `docs/development.md`。**守门**：新增 `scripts/verify-tid-preview.mjs`（进 `verify:unit`，10 条）——纯解析用例（字段/CRLF/没有字段必须整份当正文/只有字段/空文本）+ **成对注册**（两处必须用同一个 `TID_PREVIEW_ID` 常量、正文必须先 `slots.inject` 再 `register`）+ **绝不白屏**（`<pre>` 兜底、三种空态各自的 `t()` 文案）+ 渲染必须走 `RENDER_ENDPOINT` 且失败回 `null` 不抛 + 可选依赖的静默跳过与回滚。纯逻辑拆在 `client/tid-parse.ts`（宿主 barrel 也要导它，而宿主包里不能出现 `react`），`client/tid-preview.ts` 只放 UI。客户端 i18n 473 → 477 键。

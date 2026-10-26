@@ -41,7 +41,9 @@ interface ClientContextFace {
   slots?: {
     inject(name: string, register: () => unknown): (() => void) | undefined
     register(
-      opts: { name: string; id: string; order?: number; label?: string | (() => string) },
+      // keyed 子槽（如 `sidebar.right.tab.document`）按 `key` 配对；普通座位用 `id`。
+      // 两者都可选，由调用点按座位语义给其中一个（v0.33.1：`.tid` 预览就是 keyed 的）。
+      opts: { name: string; id?: string; key?: string; order?: number; label?: string | (() => string) },
       component: unknown,
     ): () => void
   }

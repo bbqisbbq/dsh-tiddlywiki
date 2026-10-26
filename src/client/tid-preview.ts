@@ -11,10 +11,15 @@
  *
  * 契约（2026-10-26 从宿主 `app.asar` 的
  * `dsh-client-ui-sidebar-documentpreview/lib/client.js` 逐行核实，见 docs/development.md）：
- *   · 元数据：`ctx.documentPreviews.register({ id, extensions, …, loading })`，
+ *   · 元数据：`ctx.documentPreviews.register({ id, extensions, priority, title, loading, wrap })`，
  *     **按 id 去重**，`binaryExtensions` 必须在 `extensions` 内；
- *   · 正文：以**同一个 id** 注入 keyed、Session 作用域的 `sidebar.right.tab.document`；
- *     正文拿到 `content: { kind: 'text', pages, text }`（`loading: 'text-pages'`）。
+ *     `priority` 是**字符串**（宿主只判 `=== 'builtin' ? 0 : 1`，非 builtin 压过内置）；
+ *     `title` 宿主自己传的是**函数**；`wrap` 表示是否按纯文本换行（我们要 HTML，用 false）。
+ *   · 正文：注入 keyed、Session 作用域的 `sidebar.right.tab.document`，**按 `key` 配对**：
+ *     `ctx.slots.register({ name: 'sidebar.right.tab.document', key: <与元数据同一个 id> }, Body)`。
+ *     ⚠️ 用 `id` 而不是 `key` 会**静默退化成内置纯文本**（v0.32.0 的实际症状）。
+ *   · 正文 props：`{ content, useTabInfo, … }`，`loading: 'text-pages'` 时
+ *     `content = { kind: 'text', pages }`，每页 `{ offset, lines, text }`。
  *
  * NEVER A BLANK PANEL
  * -------------------
@@ -33,12 +38,38 @@ import { parseTidText, TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT } from '
 export { parseTidText, TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT } from './tid-parse.ts'
 export type { ParsedTid } from './tid-parse.ts'
 
-/** 从预览正文的 props 里取文件文本（契约未公开，全部可选链）。 */
+/**
+ * 从正文 props 里取文件文本。
+ *
+ * `loading: 'text-pages'` 时宿主给的是 `content = { kind: 'text', pages }`，每页是
+ * `{ offset, lines, text }`（见宿主 `documentpreview/lib/client.js` 的 `linesOf`）。
+ * `pages` 既可能是数组、也可能是 `{ offset: page }` 记录，所以两种都收；
+ * 另外也支持更简单的 `content.text`（某些加载模式直接给整段）。
+ */
 function textOf(props: unknown): string {
-  const content = (props as { content?: { kind?: unknown; text?: unknown } } | undefined)?.content
-  if (typeof content?.text === 'string') return content.text
-  const raw = (props as { content?: unknown } | undefined)?.content
-  return typeof raw === 'string' ? raw : ''
+  const content = (props as { content?: unknown } | undefined)?.content
+  if (typeof content === 'string') return content
+  if (content === null || typeof content !== 'object') return ''
+  const bag = content as { text?: unknown; pages?: unknown }
+  if (typeof bag.text === 'string') return bag.text
+  const rawPages = bag.pages
+  const list: Array<{ offset: number; text: string }> = []
+  if (Array.isArray(rawPages)) {
+    for (const page of rawPages) {
+      if (page !== null && typeof page === 'object') {
+        const p = page as { offset?: unknown; text?: unknown }
+        list.push({ offset: typeof p.offset === 'number' ? p.offset : 0, text: typeof p.text === 'string' ? p.text : '' })
+      }
+    }
+  } else if (rawPages !== null && typeof rawPages === 'object') {
+    for (const [offset, page] of Object.entries(rawPages as Record<string, unknown>)) {
+      if (page !== null && typeof page === 'object') {
+        const p = page as { text?: unknown }
+        list.push({ offset: Number(offset) || 0, text: typeof p.text === 'string' ? p.text : '' })
+      }
+    }
+  }
+  return list.sort((a, b) => a.offset - b.offset).map((p) => p.text).join('')
 }
 
 /** 把一段 wikitext 换成宿主**净化过**的 HTML；失败回 null（调用方退回原文）。 */
@@ -127,8 +158,14 @@ interface DocumentPreviewsFace {
     id: string
     extensions: string[]
     binaryExtensions?: string[]
-    priority?: number
-    title?: string
+    /**
+     * **字符串**，不是数字：宿主只判 `priority === 'builtin' ? 0 : 1`，
+     * rank 高的先命中，也就是「非 builtin（外部实现）压过内置」。宿主内置的
+     * 纯文本/Markdown 都是 `'builtin'`，所以我们要声明 `'external'`。
+     */
+    priority?: 'builtin' | 'external'
+    /** 展示名。宿主自己的实现传的是**函数**（`() => t('viewer.text')`），照抄。 */
+    title?: string | (() => string)
     loading?: 'text-pages' | 'bytes-complete' | 'renderer'
     wrap?: boolean
   }): () => void
@@ -139,7 +176,11 @@ interface PreviewCtx {
   get?: (name: string) => unknown
   slots?: {
     inject(name: string, register: () => unknown): (() => void) | undefined
-    register(opts: { name: string; id: string }, component: unknown): (() => void) | undefined
+    /**
+     * keyed 子槽按 **`key`** 配对（宿主写的是 `register({ name, key: BODY_ID }, C)`）——
+     * 不是 `id`。用 `id` 会静默退化成内置纯文本，正是 v0.32.0 的实际症状。
+     */
+    register(opts: { name: string; key: string }, component: unknown): (() => void) | undefined
   }
 }
 
@@ -158,9 +199,12 @@ export function registerTidPreview(ctx: PreviewCtx): Array<() => void> {
       previews.register({
         id: TID_PREVIEW_ID,
         extensions: [...TID_EXTENSIONS],
-        priority: 100,
-        title: t('frame.tidPreviewTitle'),
+        // 外部实现压过宿主的纯文本兜底（宿主按 `priority === 'builtin'` 分档）。
+        priority: 'external',
+        // 宿主自己传的是函数（`) => t('viewer.text')`），语言切换时能重取。
+        title: () => t('frame.tidPreviewTitle'),
         loading: 'text-pages',
+        wrap: false,
       }),
     )
   } catch (err) {
@@ -175,7 +219,7 @@ export function registerTidPreview(ctx: PreviewCtx): Array<() => void> {
     return disposers
   }
   const bodyDispose = slots.inject(TID_PREVIEW_SLOT, () =>
-    slots.register({ name: TID_PREVIEW_SLOT, id: TID_PREVIEW_ID }, createTidPreviewBody()),
+    slots.register({ name: TID_PREVIEW_SLOT, key: TID_PREVIEW_ID }, createTidPreviewBody()),
   )
   if (bodyDispose !== undefined) disposers.push(bodyDispose)
   return disposers

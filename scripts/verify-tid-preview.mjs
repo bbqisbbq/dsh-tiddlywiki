@@ -80,8 +80,24 @@ test('注册成对：元数据与正文必须用同一个 id 常量', () => {
   const registers = source.match(/previews\.register\(\{[\s\S]*?\}\)/g) ?? []
   assert.equal(registers.length, 1, `元数据只应注册一次，实际 ${registers.length}`)
   assert.match(registers[0], /id:\s*TID_PREVIEW_ID/, '元数据的 id 必须用常量，不能写字面量')
-  assert.match(source, /slots\.register\(\{\s*name:\s*TID_PREVIEW_SLOT,\s*id:\s*TID_PREVIEW_ID\s*\}/, '正文必须用同一个 id 注册到 TID_PREVIEW_SLOT')
+  // 宿主写的是 register({ name, key: BODY_ID }, C)：keyed 子槽按 **key** 配对。
+  // 用 `id` 会静默退化成内置纯文本（v0.32.0 的真实事故），所以这里正反都钉。
+  assert.match(source, /slots\.register\(\{\s*name:\s*TID_PREVIEW_SLOT,\s*key:\s*TID_PREVIEW_ID\s*\}/, '正文必须以 key（不是 id）注册到 TID_PREVIEW_SLOT')
+  assert.ok(!/slots\.register\(\{[^}]*\bid:\s*TID_PREVIEW_ID/.test(source), '正文注册不许用 id —— 宿主不认，会静默退回纯文本')
   assert.match(source, /slots\.inject\(\s*TID_PREVIEW_SLOT/, 'keyed 子槽必须先 inject 再 register（宿主约定）')
+})
+
+test('元数据形状照抄宿主：priority 是字符串、title 是函数、wrap=false', () => {
+  assert.match(source, /priority:\s*'external'/, "priority 必须是字符串 'external'（宿主只判 === 'builtin'）")
+  assert.ok(!/priority:\s*\d/.test(source), 'priority 不能是数字')
+  assert.match(source, /title:\s*\(\)\s*=>\s*t\(/, 'title 要像宿主一样传函数，语言切换才能重取')
+  assert.match(source, /wrap:\s*false/, 'wrap=false：我们渲染的是 HTML，不是纯文本行')
+  assert.match(source, /loading:\s*'text-pages'/, 'loading 必须是 text-pages（正文拿 content.pages）')
+})
+
+test('正文从 content.pages 取文本（不是只认 content.text）', () => {
+  assert.match(source, /bag\.pages/, '必须读 content.pages')
+  assert.match(source, /offset/, '多页要按 offset 排序拼接')
 })
 
 test('绝不白屏：有 <pre> 原文兜底 + 失败时给一句人话', () => {
