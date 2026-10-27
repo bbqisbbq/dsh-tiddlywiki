@@ -77,7 +77,7 @@ await test('parseClipPayload validates and normalizes (incl. images cap)', () =>
   // 源里，加 Origin/Sec-Fetch-Site 检查会直接废掉这个功能），`bridge.token` 又
   // 默认空 —— 所以受理的标题至少要挡住系统命名空间。曾经原样收下，于是恶意页面
   // 可以 PUT `$:/plugins/dsh-tiddlywiki/config`（ConfigStore 随后会读它，
-  // `wechat.command` 会被当 CLI 起、`git.remote` 会用于下次同步）。
+  // `git.remote` 会用于下次同步）。
   assert.equal(parseClipPayload({ title: '$:/plugins/dsh-tiddlywiki/config', url: 'https://x' }).ok, false)
   assert.equal(parseClipPayload({ title: '$:/dsh-tiddlywiki/trash-index', url: 'https://x' }).ok, false)
   // 只是含 `$` 的普通标题不受影响。

@@ -23,9 +23,6 @@
  * | /dsh-tiddlywiki/agent/modes      | GET    | agent / permission preset rosters        |
  * | /dsh-tiddlywiki/agent/send       | POST   | deliver a note into a session            |
  * | /dsh-tiddlywiki/agent/create     | POST   | create session (+workspace) and deliver  |
- * | /dsh-tiddlywiki/wechat/ready     | GET    | publish precheck (opencli + adapters)    |
- * | /dsh-tiddlywiki/wechat/publish   | POST   | start a draft-box publish job (mutex)    |
- * | /dsh-tiddlywiki/wechat/publish/status | GET | poll one publish job                    |
  * | /dsh-tiddlywiki/api/*            | any    | passthrough to the TW service (JSON)     |
  * | /dsh-tiddlywiki/tw/*             | any    | SAME-ORIGIN TW proxy (index + files + API)|
  * | /dsh-tiddlywiki/admin/state      | GET    | settings page: info + catalog + config   |
@@ -60,11 +57,9 @@ import { readBody, json, guardHandler, errorStatus, rejectCrossSiteWrite, reject
 import { drainThenStop } from './seeds.ts'
 import { WriteConflictError } from './write-policy.ts'
 import { conflictTokens, resolveTags, timestampTitle } from './routes-helpers.ts'
-import type { WechatAdapter, WechatPublishConfig, WechatPublishJobView, WechatPublishStartResult, WechatReadyView } from './wechat-publish.ts'
 import { createSessionRoutes } from './routes-session.ts'
 import { createMutationLock, type MutationLock } from './mutation-lock.ts'
 import { createNoteRoutes } from './routes-note.ts'
-import { createWechatRoutes } from './routes-wechat.ts'
 // Face types the session routes were extracted with: `registerRoutes`'s own
 // deps interface still declares them, so they are re-imported here rather than
 // duplicated (duplicating is how the two would drift apart).
@@ -251,17 +246,6 @@ export interface RouteDeps {
   /** Optional shared token that must match `x-send-to-agent-token` when set. */
   sendToAgentToken: (req: IncomingMessage) => string
   /**
-   * Effective `wechat.*` config (v0.23.3) OF THE TARGETED WIKI: the opt-in
-   * 公众号发布 feature's switch, CLI override, optional token and default
-   * adapter. Read per request so a settings-page save applies without a dsh web
-   * restart.
-   */
-  wechatConfig: (req: IncomingMessage) => WechatPublishConfig
-  /** The publish runner (plugin-wide: one opencli child at a time). */
-  wechatRunner: () => WechatPublishFace | undefined
-  /** Readiness report (opencli + adapter files) for the button's precheck. */
-  wechatReady: (req: IncomingMessage) => Promise<WechatReadyView>
-  /**
    * Per-session knowledge-base scope (v0.28.0): what this conversation works on.
    * The composer's selector reads and writes it; the agent tools and the
    * injected prompt are driven by the same value, so what the user picks is what
@@ -273,15 +257,6 @@ export interface RouteDeps {
     /** Point the session at a wiki, or clear the choice with `undefined`. */
     set: (sessionId: string, wikiId: string | undefined) => Promise<void>
   }
-}
-
-/**
- * Structural face over the WeChat publish runner (host/wechat-publish.ts).
- * Declared here so the routes only depend on start/status, never on the class.
- */
-export interface WechatPublishFace {
-  start(request: { title: string; adapter?: WechatAdapter; dsn: string }): WechatPublishStartResult
-  status(id?: string): WechatPublishJobView | undefined
 }
 
 /**
@@ -644,23 +619,6 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     wikiIds: deps.wikiIds,
     getClient: deps.getClient })
 
-  /**
-   * Shared gate for the TW-side 公众号发布 routes (v0.23.3): opt-in feature
-   * switch (`wechat.enabled`, default OFF) then, when a shared token is
-   * configured, the `x-wechat-publish-token` header must match. Mirror of
-   * `guardSendToAgent` — the feature is off by default, so an unconfigured
-   * deployment answers 403 instead of starting browser automation.
-   */
-  // v0.30.9：公众号发布那三条路由（+ guardWechat/wechatDsn）搬进 routes-wechat.ts。
-  // 只把它真正用到的 deps 成员传进去 —— 依赖面写在那个文件里，改动可审。
-  const { handleWechatReady, handleWechatPublish, handleWechatPublishStatus } = createWechatRoutes({
-    getClient: deps.getClient,
-    wechatConfig: deps.wechatConfig,
-    wechatReady: deps.wechatReady,
-    wechatRunner: deps.wechatRunner,
-    wikiSummaries: deps.wikiSummaries }, refuseStoppedTarget)
-
-
   // v0.30.10：笔记读写那六条路由搬进 routes-note.ts（纯搬迁 + 工厂化）。只把它真正
   // 用到的 deps 成员与闭包 helper 传进去 —— 依赖面写在那个文件里，改动可审。
   const note = createNoteRoutes(
@@ -698,9 +656,6 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/modes`, handler: guardHandler(handleAgentModes) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/send`, handler: guardHandler(handleAgentSend) }),
     ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/agent/create`, handler: guardHandler(handleAgentCreate) }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/wechat/ready`, handler: guardHandler(handleWechatReady) }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/wechat/publish`, handler: guardHandler(handleWechatPublish) }),
-    ctx.webServer.register({ kind: 'exact', path: `${ROUTE_PREFIX}/wechat/publish/status`, handler: guardHandler(handleWechatPublishStatus) }),
     ctx.webServer.register({ kind: 'prefix', path: `${ROUTE_PREFIX}/api`, handler: guardHandler(handleApiProxy) }),
     ctx.webServer.register({ kind: 'prefix', path: `${TW_PROXY_PREFIX}`, handler: guardHandler(handleTwProxy) }),
   ]

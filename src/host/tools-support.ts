@@ -844,8 +844,8 @@ export function insertIntoSection(base: string, heading: string, addition: strin
  * `$:/plugins/dsh-tiddlywiki/…`, and the clip bridge refuses `$:/` outright —
  * but the write tools had no such check, so the model (or any instruction
  * injected into a page) could `tiddlywiki_put` the config tiddler and rewrite
- * `wechat.command` (spawned as a CLI), `git.remote` (used by the next sync) or
- * the bridge token, or break its JSON and reproduce the「插件读不出自己的配置」
+ * `git.remote` (used by the next sync) or the bridge token, or break its JSON
+ * and reproduce the「插件读不出自己的配置」
  * accident. Same predicate, same boundary, one place: read AND write.
  *
  * Deliberately NARROW: ordinary `$:/…` writes stay allowed (the tools are

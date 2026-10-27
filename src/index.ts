@@ -22,7 +22,6 @@ import { AutoCommitter, GitFace } from './host/git.ts'
 import { type SessionsFace, type WebServerFace } from './host/routes.ts'
 import { type PluginConfigShape } from './host/config.ts'
 import { TiddlyWebClient, isBinaryType, TEXT_LIST_FILTER } from './host/tw-api.ts'
-import { WechatPublishRunner } from './host/wechat-publish.ts'
 import { registerTiddlywikiTools, type ToolsDeps, type ToolScope } from './host/tools.ts'
 import {
   defaultLocationStateFile,
@@ -111,33 +110,6 @@ export { seedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MARKER_TITLE, ALL_ART
 export { seedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } from './host/seed-ui-styles.ts'
 export { seedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './host/seed-menubar-theme.ts'
 export { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT, CLIP_BRIDGE_BOOKMARKLET, CLIP_BRIDGE_DRAG_HREF } from './host/seed-clip-bridge.ts'
-export { seedWechatDocs, unseedWechatDocs, WECHAT_DOCS_TITLE, WECHAT_DOCS_MARKER_TITLE, WECHAT_DOCS_TEXT } from './host/seed-wechat-docs.ts'
-export { seedWechatPublish, unseedWechatPublish, WECHAT_PUBLISH_PLUGIN_TITLE, WECHAT_PUBLISH_MARKER_TITLE, WECHAT_PUBLISH_BUNDLE_TEXT } from './host/seed-wechat-publish.ts'
-export {
-  WechatPublishRunner,
-  checkWechatReady,
-  normalizeWechatConfig,
-  buildPublishInvocation,
-  buildVersionInvocation,
-  interpretPublishOutcome,
-  scanAdapterDir,
-  defaultAdaptersDir,
-  defaultWechatJobDir,
-  capOutput,
-  tailOf,
-  isSafeCliValue,
-  isSafeDsn,
-  WECHAT_ADAPTERS,
-  WECHAT_ADAPTER_FILES,
-  WECHAT_ADAPTER_MARKER,
-  DEFAULT_WECHAT_ADAPTER,
-  DEFAULT_WECHAT_COMMAND,
-  type WechatAdapter,
-  type WechatAdapterScan,
-  type WechatPublishConfig,
-  type WechatPublishJobView,
-  type WechatReadyView,
-} from './host/wechat-publish.ts'
 export { runAllSeeds, checkAllSeeds, runSeedById, removeSeedById, waitForFileWrite, flushPendingWrites, needsRestartAfterSeeds, drainThenStop, SEED_DEFS, type SeedStatus, type SeedRunResult } from './host/seeds.ts'
 export { registerTiddlywikiTools, TRASH_PREFIX, TRASH_INDEX_TITLE, TrashIndexUnavailableError, isJunkTag } from './host/tools.ts'
 export { tiddlywikiToolSummary } from './host/tools.ts'
@@ -409,7 +381,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   /** The multi-wiki control file: mode + the wiki list + the default id. */
   const registryFile = defaultRegistryFile()
   /** The cordis `config:` block, as the base layer of every wiki's config. */
-  const baseShape: PluginConfigShape = { note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge, startup: config.startup, wechat: config.wechat }
+  const baseShape: PluginConfigShape = { note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge, startup: config.startup }
   /** The cordis-level default location (last resort in the registry chain). */
   const defaultLocation: WikiLocation = { root: config.wikiRoot, name: config.wiki }
   const git = new GitFace()
@@ -433,7 +405,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     defaultPath: () => wikiViews.defaultPath(),
     registryFile: () => registryFile,
   })
-  const { repos, gitTargets, teardownCommitter, reapplyGitConfig, effectiveWorkspaceMark, effectiveBridge, effectiveWechat } = gitLayer
+  const { repos, gitTargets, teardownCommitter, reapplyGitConfig, effectiveWorkspaceMark, effectiveBridge } = gitLayer
 
   /** sessionId → wikiId (v0.28.0). Loaded at boot, written by the GUI selector. */
   let sessionScopes: Record<string, string> = {}
@@ -471,19 +443,6 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   const disposeAll = (): void => {
     for (const dispose of disposers.splice(0)) dispose()
   }
-
-  /**
-   * WeChat publish runner (v0.23.3): owns the opencli child process behind the
-   * TW toolbar button. Construction spawns nothing (the CLI is resolved per
-   * run), and it is disposed with the plugin so a running publish never
-   * outlives dsh web and leaves an orphan browser tab.
-   */
-  const wechatRunner = new WechatPublishRunner({
-    command: () => effectiveWechat().command,
-    adapter: () => effectiveWechat().adapter,
-    log: (message) => console.warn(message),
-  })
-  disposers.push(() => wechatRunner.dispose())
 
   // ── System prompt section (v0.21.0: configurable + live) ──────────────────
   // The section text is built from the EFFECTIVE config (cordis base + config
@@ -733,7 +692,6 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       },
       effectivePromptFor: (req) => ((req === undefined ? undefined : targetRuntimeFor(farm, req)?.eff()) ?? baseShape).prompt ?? {},
       mutationLock: createMutationLock(),
-      wechatRunner,
       isDisposed: () => disposed,
     })
     return () => routeStage.dispose()

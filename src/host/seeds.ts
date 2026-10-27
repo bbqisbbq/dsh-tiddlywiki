@@ -26,7 +26,7 @@
  *
  * Registry: doc-note / starter-docs / send-to-agent / render-route /
  * home-index / all-articles / ui-styles / menubar-theme / clip-bridge /
- * publish-spec / wechat-setup / wechat-publish / tw-web-host.
+ * tw-web-host.
  *
  * @module dsh-tiddlywiki/host/seeds
  */
@@ -83,13 +83,6 @@ export interface SeedContext {
    */
   tools?: readonly PromptToolSummary[]
   /**
-   * Whether the OPT-IN WeChat publishing feature is enabled (config
-   * `wechat.enabled`, default false, v0.23.0). Gates the「发布元数据规范」seed:
-   * users who never enabled the feature must not get that doc written into
-   * their wiki. Absent (headless callers) = false.
-   */
-  wechat?: boolean
-  /**
    * The same-origin proxy base THIS wiki's TW frontend must use (v0.28.0):
    * `/dsh-tiddlywiki/tw/` (the legacy bare path, single-wiki default) or
    * `/dsh-tiddlywiki/tw/<id>/` (one knowledge base among several).
@@ -136,14 +129,6 @@ export interface SeedDef {
    * which stay removable via「反初始化」. Meaningful only when `core` is false.
    */
   startup?: boolean
-  /**
-   * Optional gate for the STARTUP path only (v0.23.0). When present and it
-   * returns false, `runAllSeeds` skips this seed entirely — used by seeds that
-   * belong to an OPT-IN feature (微信公众号发布, config `wechat.enabled`,
-   * default off). A manual run ("初始化"/"重新初始化" from the settings page)
-   * ignores the gate: that is an explicit request.
-   */
-  gate?: (ctx: SeedContext) => boolean
   /**
    * One-shot marker tiddler (v0.22.0): its `hashes` record what the built-in
    * content looked like when this wiki was seeded, which is what lets the
@@ -224,10 +209,6 @@ export async function runAllSeeds(ctx: SeedContext): Promise<SeedRunResult[]> {
   const out: SeedRunResult[] = []
   for (const def of SEED_DEFS) {
     if (!def.core && def.startup !== true) continue
-    // Opt-in features (v0.23.0): a `gate` that returns false means "this seed
-    // belongs to a feature the user has NOT enabled" → skip silently. The
-    // settings page's manual 初始化 ignores gates (an explicit request wins).
-    if (def.gate !== undefined && !def.gate(ctx)) continue
     out.push(await def.run(ctx, false))
   }
   return out

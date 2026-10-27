@@ -90,7 +90,7 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
   const textField = (key: string, label: string, initial: string): void => {
     const input = make('input', 'dsh-tw-settings-input')
     // autocomplete=off（v0.26.4）：浏览器常把 URL 类配置框（ui.sendToAgent.endpoint、
-    // git.remote、wechat.dsn 等）当账号/URL 字段自动填充，用户一保存就把垃圾值写进 config
+    // git.remote 等）当账号/URL 字段自动填充，用户一保存就把垃圾值写进 config
     // （实测 ui.sendToAgent.endpoint 被填成 /dsh-tiddlywiki/tw/root，send-to-agent 请求拼成
     // /tw/root/agent/sessions → 404）。tokenField 已有此属性，这里补到所有普通文本框。
     input.autocomplete = 'off'
@@ -263,25 +263,6 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
   // 1–200 是「所有文章」分页的有效范围（超出后分页会失序），宿主不会替我们夹取，所以在这里挡住。
   numField('ui.allArticles.pageSize', t('config.ui.allArticles.pageSize'), typeof allArticles.pageSize === 'number' ? allArticles.pageSize : 10, { min: 1, max: 200, step: 1, integer: true })
 
-  // ── 可选功能：微信公众号发布（v0.23.0）────────────────────────────────────
-  // 默认关闭：这项能力需要**额外安装**（opencli + 浏览器扩展，见
-  // docs/wechat-publish-setup.md），插件本体不含它。关闭时不注入任何发布相关
-  // 提示词、也不自动写「发布元数据规范」文档，避免打扰不用它的用户。
-  section.append(make('h3', 'dsh-tw-settings-h', t('config.wechat.title')))
-  section.append(make('div', 'dsh-tw-settings-muted', t('config.wechat.hint')))
-  const wechat = (config.wechat ?? {}) as Record<string, unknown>
-  const wechatEnabled = checkField('wechat.enabled', t('config.wechat.enabled'), wechat.enabled === true)
-  // 以下四项 v0.23.3 宿主就支持，但设置页此前只暴露了 enabled —— 于是 token 这个安全开关
-  // 只能手改 wiki 里的 config tiddler。token 非空时 /wechat/ 下的路由要求 x-wechat-publish-token
-  // 头，防的是「任何能打开 DSH Web UI 的人都能用你本机 Chrome 对外发文」。
-  textField('wechat.command', t('config.wechat.command'), typeof wechat.command === 'string' && wechat.command.trim().length > 0 ? wechat.command.trim() : 'opencli')
-  selectField('wechat.adapter', t('config.wechat.adapter'), wechat.adapter === 'publish-note-imgs' ? 'publish-note-imgs' : 'publish-note', [
-    { value: 'publish-note', label: t('config.wechat.adapterDefault') },
-    { value: 'publish-note-imgs', label: t('config.wechat.adapterImgs') },
-  ])
-  tokenField('wechat.token', t('config.wechat.token'), typeof wechat.token === 'string' ? wechat.token : '')
-  textField('wechat.dsn', t('config.wechat.dsn'), typeof wechat.dsn === 'string' ? wechat.dsn : '')
-
   // ── 系统提示词（v0.21.0；草稿预览 v0.22.7）────────────────────────────────
   const prompt = (config.prompt ?? {}) as Record<string, unknown>
   section.append(make('h3', 'dsh-tw-settings-h', t('config.prompt.title')))
@@ -293,9 +274,9 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
   ])
   const promptExtra = areaField('prompt.extra', t('config.prompt.extra'), typeof prompt.extra === 'string' ? prompt.extra : '', 5)
   const promptOverride = areaField('prompt.override', t('config.prompt.override'), typeof prompt.override === 'string' ? prompt.override : '', 8)
-  /** Any prompt.* field (or the gating wechat.enabled) differs from saved. */
+  /** Any prompt.* field differs from what was saved. */
   const promptDirty = (): boolean =>
-    fields.some((f) => (f.key.startsWith('prompt.') || f.key === 'wechat.enabled') && f.changed())
+    fields.some((f) => f.key.startsWith('prompt.') && f.changed())
   const preview = make('button', 'dsh-tw-settings-btn', t('config.prompt.preview'))
   preview.type = 'button'
   preview.title = t('config.prompt.previewTitle')
@@ -321,9 +302,6 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
             mode: promptMode.value,
             extra: promptExtra.value,
             override: promptOverride.value,
-            // 可选功能的开关也会改变注入文本（是否含发布约定），所以一并送草稿
-            // （v0.23.0；否则勾选它再预览会看到旧文本）。
-            wechat: wechatEnabled.checked,
           }),
         })
         if (data.ok !== true) throw new Error(data.error ?? t('config.prompt.fetchFailed'))

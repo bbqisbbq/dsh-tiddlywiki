@@ -275,7 +275,7 @@ function renderStatus(row: HTMLElement, state: AdminState, refresh: () => Promis
  * 哪个库」。分类本身就是答案：
  *   · overview：状态 + 知识库列表（唯一的「全局」入口）
  *   · library ：**被选中那个库**的配置（含插件/主题/语言/初始化），多库时必须先选库
- *   · global  ：插件级、与具体库无关的开关（git 策略/注入提示词/UI/剪藏桥/公众号）
+ *   · global  ：插件级、与具体库无关的开关（git 策略/注入提示词/UI/剪藏桥）
  *
  * 单库模式下不显示 Tab 栏（DOM 与以前逐字相同），直接按 overview+library+global
  * 的顺序平铺——单库用户不需要为「哪个库」这个概念付任何认知成本。

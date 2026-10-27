@@ -48,7 +48,6 @@ import type { GitFace } from './host/git.ts'
 import { checkAllSeeds, runSeedById, removeSeedById } from './host/seeds.ts'
 import { describePrompt, withScopeBanner, TW_LINK_BASE, type PromptConfig } from './host/prompt.ts'
 import type { RepoCommitters } from './host/repo-committers.ts'
-import { normalizeWechatConfig, checkWechatReady, type WechatPublishRunner } from './host/wechat-publish.ts'
 import { tiddlywikiToolSummary } from './host/tools.ts'
 import {
   DEFAULT_WIKI_ID,
@@ -99,7 +98,7 @@ export interface RouteStageDeps {
   /** The cordis `config:` block, as the base layer of every wiki's config. */
   baseShape: PluginConfigShape
   /** The resolved cordis config (for the per-request fallbacks below). */
-  config: { note: { tag: string }; wechat?: unknown; ui: { sendToAgent: { enabled: boolean; token?: string } } }
+  config: { note: { tag: string }; ui: { sendToAgent: { enabled: boolean; token?: string } } }
   /** Wiki location surface: `locationInfo` / switch / reset / the list view. */
   wikiViews: WikiViews
   /** The settings-page save hook: prompt + server tuning + git reapply. */
@@ -108,8 +107,6 @@ export interface RouteStageDeps {
   effectivePromptFor: (req: IncomingMessage | undefined) => PromptConfig
   /** ONE lock for the whole plugin (v0.30.12) — built by the caller. */
   mutationLock: MutationLock
-  /** The WeChat publish runner (optional feature; owns the child process). */
-  wechatRunner: WechatPublishRunner
   /** Teardown-aware: start → stop must not be accepted mid-dispose. */
   isDisposed: () => boolean
 }
@@ -171,7 +168,6 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
     return entry === undefined ? undefined : stoppedWikiMessage(entry)
   }
   const fallbackUi = WikiInstance.uiDefaultsFrom(deps.config as never)
-  const fallbackWechat = normalizeWechatConfig((deps.config as { wechat?: unknown }).wechat)
   /** Used only while nothing runs: base defaults, no wiki tiddler to read. */
   const idleConfig = new ConfigStore(deps.baseShape)
 
@@ -266,16 +262,6 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
     getSessionQuery,
     sendToAgentEnabled: (req) => target(req)?.sendToAgent().enabled ?? deps.config.ui.sendToAgent.enabled,
     sendToAgentToken: (req) => target(req)?.sendToAgent().token ?? (deps.config.ui.sendToAgent.token ?? ''),
-    // 公众号发布（v0.23.3，可选功能）：config 每请求重读（开关/adapter/token
-    // 保存即生效，且每个知识库各有一份）；就绪探测每次都真跑一次
-    // `opencli --version`（几百毫秒），只在按钮预检与每次起任务前发生，
-    // 不做缓存以免装完 adapter 还要等 TTL。
-    wechatConfig: (req) => target(req)?.wechatConfig() ?? fallbackWechat,
-    wechatRunner: () => deps.wechatRunner,
-    wechatReady: async (req) => {
-      const cfg = target(req)?.wechatConfig() ?? fallbackWechat
-      return checkWechatReady({ enabled: cfg.enabled, command: cfg.command })
-    },
   })
 
   const adminDeps: AdminDeps = {
@@ -292,13 +278,13 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
     // through the same builder.
     //
     // v0.33.4: the preview now goes through the SAME assembly as the injected
-    // text. It used to pass only `cfg.prompt`, so it silently dropped three
-    // things the real path adds — `wechat.enabled`'s whole publishing rule block,
-    // the multi-wiki `linkBase` (`/tw/<id>/`), and the scope banner — which made
+    // text. It used to pass only `cfg.prompt`, so it silently dropped two
+    // things the real path adds — the multi-wiki `linkBase` (`/tw/<id>/`) and
+    // the scope banner — which made
     // the settings page a black box exactly where it claims to show「逐字」what
     // gets injected.
     getPrompt: (draft, req) => {
-      const savedCfg = (target(req)?.config.get() ?? deps.baseShape) as { prompt?: PromptConfig; wechat?: { enabled?: unknown } }
+      const savedCfg = (target(req)?.config.get() ?? deps.baseShape) as { prompt?: PromptConfig }
       const cfg = draft ?? savedCfg.prompt ?? {}
       const farm = deps.getFarm()
       const runtime = target(req)
@@ -311,7 +297,7 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
         ? `${TW_LINK_BASE}${scopeId}/`
         : TW_LINK_BASE
       const built = describePrompt(
-        { ...cfg, wechat: savedCfg.wechat?.enabled === true, linkBase },
+        { ...cfg, linkBase },
         tiddlywikiToolSummary(),
       )
       return {
@@ -392,20 +378,20 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
       // Tool summaries feed the GENERATED seed content (the doc note's tool
       // list, v0.22.0) — pass them everywhere the registry can be re-run.
       //
-      // v0.33.4: also pass the TARGET wiki's proxy base and its wechat gate. The
-      // startup path (wiki-instance) always did; this one did not, so
+      // v0.33.4: also pass the TARGET wiki's proxy base. The startup path
+      // (wiki-instance) always did; this one did not, so
       // 「重新初始化」 rewrote `$:/config/tiddlyweb/host` to the bare legacy base on
       // a multi-wiki install (that wiki's editor then proxied every API call to
-      // the DEFAULT wiki) and never saw the gated 公众号 seeds.
+      // the DEFAULT wiki).
       checkAll: async (c, req) => checkAllSeeds({
         client: c,
         tools: tiddlywikiToolSummary(),
-        ...(req === undefined ? {} : { proxyBase: target(req)?.proxyBasePath(), wechat: target(req)?.wechatEnabled() ?? false }),
+        ...(req === undefined ? {} : { proxyBase: target(req)?.proxyBasePath() }),
       }),
       run: async (c, id, force, req) => runSeedById({
         client: c,
         tools: tiddlywikiToolSummary(),
-        ...(req === undefined ? {} : { proxyBase: target(req)?.proxyBasePath(), wechat: target(req)?.wechatEnabled() ?? false }),
+        ...(req === undefined ? {} : { proxyBase: target(req)?.proxyBasePath() }),
       }, id, force),
       remove: async (c, id, req) => removeSeedById({ client: c }, id),
     },

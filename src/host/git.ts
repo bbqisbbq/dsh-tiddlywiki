@@ -20,7 +20,7 @@
  * AutoCommitter included) happily **commits and pushes them** — on 2026-09-17
  * that is exactly how `<<<<<<< Updated upstream` got permanently written into
  * this wiki's config tiddler, which in turn made the plugin unable to parse its
- * own config for a day (wechat stayed off + prompt.extra silently inactive).
+ * own config for a day (prompt.extra silently inactive).
  * `commit()` therefore REFUSES a conflicted tree up front (see
  * `conflictState()`), and `pull()` re-checks after its abort.
  *

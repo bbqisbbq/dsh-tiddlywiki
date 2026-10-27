@@ -2,7 +2,7 @@
 /**
  * 行尾守门（v0.30.17）—— 仓库铁律「**行尾必须 LF**」的**唯一执行者**。
  *
- * 为什么需要它（真实事故，2026-09-29）：`src/host/routes-wechat.ts` 的工作区副本
+ * 为什么需要它（真实事故，2026-09-29）：`src/host/routes-session.ts` 的工作区副本
  * 是 **CRLF**，而仓库 blob 是 LF（`.gitattributes` 在 commit 时把 CRLF 归一成 LF，
  * 于是 `git status` / `git diff` **什么都看不见** —— 这个状态可以一直躺着）。
  * 它造成的后果不是「难看」，而是**静默的**：

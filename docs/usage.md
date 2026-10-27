@@ -126,46 +126,6 @@
 
 `wikiRoot` / `wiki` 现在只是**默认值**——运行中的实际位置以指针文件优先。这也是为什么它能不改 cordis、不重装就切。
 
-### 📮 发布到微信公众号（**可选功能，默认关闭**，2026-09-17）
-
-> **这是可选功能**：需要额外安装 opencli + Browser Bridge 浏览器扩展，**插件不替你装**。
-> 开关 `wechat.enabled` **默认 `false`**——关闭时不注入任何发布相关提示词、也不往 wiki 写
-> 「发布元数据规范」。开启：DSH 设置 →「TiddlyWiki 知识库」→「可选功能：微信公众号发布」。
-> 完整安装步骤与排错见 [docs/wechat-publish-setup.md](wechat-publish-setup.md)。
-
-把 wiki 里的任意笔记**一键发到微信公众号草稿箱**（可选直接发表）。整套能力放在 `tools/wechat/`，**不依赖公众号服务端 API**——因为 2025-07 起官方已回收个人主体账号的「发布能力」接口权限；本方案改用**浏览器自动化复用你已登录的后台会话**，所以个人号也能用。
-
-**两条路，随便挑一条**：
-
-- **点按钮（v0.23.3，日常推荐）**：开启可选功能后，笔记工具栏出现「**发布到公众号**」。点它 → 先**预检**（opencli 在不在、adapter 缺不缺）→ 弹确认框（自动列出 `no-publish` / `pub-state` 警告）→「开始存草稿」→ 覆盖层每 2 秒显示进度与日志。**只到草稿箱为止**，发表请到后台点（需扫码）。背后是宿主进程起一个单并发的后台任务（`POST /dsh-tiddlywiki/wechat/publish` + 轮询 `…/status`），标题经 **UTF-8 文件**（`--title-file`）传给 adapter——不进 argv，避免 Windows `cmd.exe` shim 把 `&` 当命令分隔符、把中文解成乱码。
-- **敲命令**（等价，适合批量 / 脚本化）：
-
-```bash
-# ① 先按 docs/wechat-publish-setup.md 装好 opencli + 浏览器扩展，并登录公众号
-# ② 一次性：装 adapter 到本机 opencli（幂等，会自检扩展/登录状态）
-node tools/wechat/install-wechat-adapters.mjs
-
-# ③ 发布（注意必须带 --trace retain-on-failure，原因见下）
-opencli weixin publish-note "笔记标题" --trace retain-on-failure -f json
-opencli weixin publish-note "笔记标题" --cover ./cover.png -f json   # 带封面
-opencli weixin publish-note "笔记标题" --preview ./out -f json       # 先导出排版预览
-opencli weixin publish-note "笔记标题" --publish -f json             # 直接发表（需管理员扫码）
-
-# ④ 可选：回填存量「已发布」状态（默认 dry-run）
-node tools/wechat/backfill-publish-state.mjs          # 看
-node tools/wechat/backfill-publish-state.mjs --write  # 写
-```
-
-**流程**：笔记标题 → DSH 的 `/render`（TW 自己渲染成语义 HTML，含代码高亮）→ `wechat-html.js` 补**内联样式**（微信会剥 `<style>` 和 class，只认内联）→ opencli 驱动后台填表/写正文/传图/设封面/存草稿 →（可选）点发表。
-
-**三个要点**：
-
-1. **必须带 `--trace retain-on-failure`**——不带会对 `mp.weixin.qq.com` 稳定报 `Navigation rejected`（实测 trace 开 5/5 成功、关 8/8 失败；这是 opencli 1.8.7 的 bug，`--site-session ephemeral` 等绕法均无效）。
-2. **发表必须管理员扫码**——后台点「发表」后微信要求管理员微信扫码确认，无法自动化。「一键」的真实含义是「脚本做到填表/排版/上传，你只需扫一次码」。默认走**发表**（不推送粉丝、不占群发额度），群发请自行在后台操作。
-3. **图片上传用 DataTransfer 注入**，不用 `page.setFileInput`——后者依赖 CDP `Page.fileChooserOpened`，本机扩展版本组合下稳定失败；改用页面上下文直接塞 `input.files`，实测图片真进 `mmbiz.qpic.cn`。代价是单图 **8MB** 上限（字节要以 base64 穿过 evaluate）。
-
-**换机器还原**见 [docs/wechat-publish-setup.md](wechat-publish-setup.md)（含 opencli / Browser Bridge 扩展安装、扫码登录、排错表）。设计依据与全部实测细节见 [docs/plans/2026-09-17-wechat-publish-design.md](plans/2026-09-17-wechat-publish-design.md)。
-
 ### 🧩 初始化（一次性预置 seed）：哪些「必备」，哪些「可有可无」
 
 seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只写缺失）+ 安全跳过（同名 tiddler 已存在绝不覆盖你的数据）**，需要时可「重新初始化」恢复、可「反初始化」移除。详细见 [docs/seed-initialization.md](seed-initialization.md)。
@@ -177,7 +137,6 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
 | | `tw-web-host` | TW 前端 API 基址 → 同源代理（内嵌编辑器前提） | 自动写 |
 | 📖 **起步**（默认写、可移除，**想要完整体验建档案**） | `doc-note` | 「dsh-tiddlywiki 插件说明」笔记 | 自动写 |
 | | `starter-docs` | 「示例与文档」：主题汇总页·模板 + 教程 + 三个示例主题页（日志/决策记录/排障） | 自动写 |
-| | `publish-spec` / `wechat-setup` / `wechat-publish`（**带 gate**） | 只有开启「可选功能：微信公众号发布」才写：发布元数据规范 + 换机还原指南 + 「**发布到公众号**」工具栏按钮插件（v0.23.3） | 开启后自动写 |
 | 🎀 **可选**（默认不写、设置页手动、可移除，**可有可无**） | `home-index` | 首页（四象限待办 + 快速记笔记 + 所有标签/所有文章 + 📚 文档栏）——文档中心的「门面」 | 手动 |
 | | `all-articles` | 「所有文章」两列分页总览（🤖 Agent / 👤 人工） | 手动 |
 | | `ui-styles` | 自定义样式 5 张（编辑器美化 / 窄屏侧栏 / menubar 加高 / 批注弹窗等） | 手动 |
@@ -234,12 +193,6 @@ seed 是把「wiki 里预置内容」随插件分发的机制：**ONE-SHOT（只
       showSessionTab: true
       showRightbarTab: true            # DSH 右侧边栏提供 TiddlyWiki 入口/Tab
       sendToAgent: { enabled: true }
-    wechat:                            # 可选功能：微信公众号发布（默认关；三条 /wechat/* 路由在关时一律 403）
-      enabled: false                   # 开：注入发布约定 + 启动写 3 个 gated seed（元数据规范/换机指南/工具栏按钮）
-      adapter: "publish-note"          # publish-note-imgs = 正文内嵌多图版（需该 adapter 已装）
-      command: "opencli"               # CLI 路径（不在 PATH / 用了别名时填绝对路径）
-      token: ""                        # 非空时 /wechat/* 要求请求头 x-wechat-publish-token（按钮自动带）
-      dsn: ""                          # adapter 回连 DSH 的基址；空 = 按请求端口推导 loopback
     uiLanguage: ""                     # 留空不干预；"zh-Hans" 自动启用简体
     auth:
       username: ""                     # 默认 loopback 匿名；暴露到非回环才需要

@@ -212,7 +212,7 @@ export function parseClipPayload(body: unknown): { ok: true; value: ClipPayload 
   // default — so the title it accepts must at least stay out of the SYSTEM
   // namespace. It used to be taken verbatim, which let a malicious page
   // `PUT $:/plugins/dsh-tiddlywiki/config` with attacker JSON: the ConfigStore
-  // then reads it (`wechat.command` is spawned as a CLI, `git.remote` is used
+  // then reads it (`git.remote` is used
   // for the next sync) — or simply overwrite the plugin's own state. No
   // legitimate web clip lands under `$:/`.
   if (title.startsWith('$:/')) {

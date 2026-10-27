@@ -107,13 +107,6 @@ export interface PromptPreviewConfig {
   extra?: string
   override?: string
   /**
-   * config `wechat.enabled` — NOT a `prompt.*` field, but a legitimate input to
-   * the built text (it gates the publish rule), so the draft preview carries it
-   * too. Otherwise toggling 可选功能 in the form and previewing would show stale
-   * text — the exact class of bug v0.22.7 fixed for `mode` (v0.23.0).
-   */
-  wechat?: boolean
-  /**
    * Scope's proxy base for the link convention (v0.30.62).
    *
    * NOT part of the untrusted `POST /admin/prompt` draft (the preview always
@@ -137,7 +130,6 @@ export function normalizePromptPreview(input: unknown): PromptPreviewConfig {
   if (src.mode === 'slim' || src.mode === 'full') out.mode = src.mode
   if (typeof src.extra === 'string') out.extra = src.extra
   if (typeof src.override === 'string') out.override = src.override
-  if (typeof src.wechat === 'boolean') out.wechat = src.wechat
   return out
 }
 
@@ -161,7 +153,7 @@ export function describePrompt(config: PromptPreviewConfig, tools: readonly Prom
   return {
     enabled,
     mode: normalizePromptMode(config.mode),
-    text: buildPromptText({ enabled, mode: config.mode, extra: config.extra, override: config.override, tools, wechat: config.wechat, linkBase: config.linkBase }),
+    text: buildPromptText({ enabled, mode: config.mode, extra: config.extra, override: config.override, tools, linkBase: config.linkBase }),
   }
 }
 
@@ -295,20 +287,10 @@ function noteRules(linkBase: string): string {
 }
 
 /**
- * Publish-metadata rule, appended ONLY when `wechat.enabled` is on (v0.23.0).
- *
- * The WeChat publishing feature is opt-in and needs its own install (opencli +
- * a browser extension — see docs/wechat-publish-setup.md), so users who never
- * enabled it must not see this line: the slim prompt had ~5 characters of
- * headroom left and every line costs context in EVERY session.
- */
-const PUBLISH_RULE = `- **对外发布前**：先读 [[发布元数据规范]]（\`pub-state\`/\`no-publish\`），别重发或误发。`
-
-/**
  * Governance blocks that MUST survive in every mode — exported so
  * `scripts/verify-prompt.mjs` can assert a re-write never silently drops one.
  */
-export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = governanceBlocks(noteRules(TW_LINK_BASE), false)
+export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = governanceBlocks(noteRules(TW_LINK_BASE))
 
 /**
  * The governance blocks **in injection order** — the single source for both the
@@ -319,8 +301,8 @@ export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = governanceBlocks(note
  * produced a prompt the guard still considered complete. `verify-prompt.mjs`
  * caught exactly that when `READ_RULES` was added.
  */
-function governanceBlocks(notes: string, wechat: boolean): string[] {
-  return [READ_RULES, LIFECYCLE_RULES, WRITE_RULES, SYNC_RULES, wechat ? `${notes}\n${PUBLISH_RULE}` : notes]
+function governanceBlocks(notes: string): string[] {
+  return [READ_RULES, LIFECYCLE_RULES, WRITE_RULES, SYNC_RULES, notes]
 }
 
 
@@ -379,12 +361,6 @@ export function buildPromptText(options: {
   tools?: readonly PromptToolSummary[]
   enabled?: boolean
   /**
-   * Append the publish-metadata rule (config `wechat.enabled`, v0.23.0).
-   * The WeChat feature is opt-in + separately installed, so this defaults to
-   * FALSE: a user who never enabled it gets no publishing text at all.
-   */
-  wechat?: boolean
-  /**
    * Proxy base for the clickable-link convention (v0.30.62).
    *
    * Defaults to `TW_LINK_BASE` (single mode / the default-wiki alias). A session
@@ -398,13 +374,10 @@ export function buildPromptText(options: {
   const tools = options.tools ?? []
   const override = typeof options.override === 'string' ? options.override.trim() : ''
   const intro = normalizePromptMode(options.mode) === 'full' ? fullIntro(tools) : slimIntro(tools.length)
-  // The publish rule rides with noteRules() so it reads as part of 笔记约定;
-  // `override` replaces the whole body, so the rule is dropped there too (an
-  // override means "I'll say it myself").
   const notes = noteRules(options.linkBase ?? TW_LINK_BASE)
   const body = override.length > 0
     ? escapePromptBraces(override)
-    : [intro, ...governanceBlocks(notes, options.wechat === true)].join('\n\n')
+    : [intro, ...governanceBlocks(notes)].join('\n\n')
   const extra = typeof options.extra === 'string' ? escapePromptBraces(options.extra.trim()) : ''
   return extra.length > 0 ? `${body}\n\n${extra}` : body
 }

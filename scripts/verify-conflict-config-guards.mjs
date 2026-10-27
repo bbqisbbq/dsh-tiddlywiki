@@ -6,7 +6,7 @@
  * **autostash 重新应用**冲突后，`rebase --abort` 已经无事可 abort，冲突标记留在
  * 工作树里；随后 60s 的 AutoCommitter 照常 `git add -A && commit`，把
  * `<<<<<<< Updated upstream` **永久提交**进了 wiki 的配置 tiddler。后果：
- * ConfigStore 解析不了自己的配置（wechat 一直是关的、prompt.extra 静默失效），
+ * ConfigStore 解析不了自己的配置（prompt.extra 静默失效），
  * 而一次设置页保存又把整份配置写成了"残版"（只剩表单里那几个字段）。
  *
  * 因此本脚本分三段钉死：
@@ -303,7 +303,7 @@ await test('E2E：pull 失败时不得 abort「用户自己的」rebase（v0.23.
 })
 
 // ── B. ConfigStore：解析失败拒绝写 ─────────────────────────────────────────
-const CONFLICTED_CONFIG = '{\n  "wechat": { "enabled": true },\n<<<<<<< Updated upstream\n  "prompt": { "extra": "keep me" }\n=======\n  "ui": { "showQuickNote": true }\n>>>>>>> Stashed changes\n}\n'
+const CONFLICTED_CONFIG = '{\n  "uiLanguage": "zh-Hans",\n<<<<<<< Updated upstream\n  "prompt": { "extra": "keep me" }\n=======\n  "ui": { "showQuickNote": true }\n>>>>>>> Stashed changes\n}\n'
 
 function makeClient(behaviour) {
   const puts = []
@@ -332,7 +332,7 @@ await test('ConfigStore.set：解析失败必须拒绝写入（绝不能用空�
   const store = new ConfigStore({})
   await store.load(client)
   await assert.rejects(
-    () => store.set(client, { wechat: { enabled: true } }),
+    () => store.set(client, { uiLanguage: 'zh-Hans' }),
     (err) => err instanceof ConfigUnreadableError && err.raw === CONFLICTED_CONFIG,
   )
   assert.equal(client.puts.length, 0, '被拒绝时绝不能 PUT（那正是把配置写成残版的路径）')
@@ -376,7 +376,7 @@ await test('ConfigStore.set：**读到过**配置之后的瞬时读失败仍走�
   assert.equal(flaky.puts.length, 1, '读失败不该阻止写入（缓存是我们确认过的）')
   assert.equal(store.get().note?.tag, 'x')
   const written = JSON.parse(flaky.puts[0].text)
-  assert.equal(written.wechat, undefined, '这条不该凭空多出键')
+  assert.equal(written.uiLanguage, undefined, '这条不该凭空多出键')
   assert.equal(written.note.tag, 'x')
 })
 
@@ -384,12 +384,12 @@ await test('ConfigStore.set：正常配置合并写入，且保留 created', asy
   const client = makeClient('ok')
   const store = new ConfigStore({ uiLanguage: 'zh-Hans' })
   await store.load(client)
-  await store.set(client, { wechat: { enabled: true } })
+  await store.set(client, { uiLanguage: 'zh-Hans' })
   assert.equal(client.puts.length, 1)
   assert.equal(client.puts[0].created, '20200101000000000', 'created 必须沿用（v0.22.10）')
   const stored = JSON.parse(client.puts[0].text)
   assert.equal(stored.note.tag, 'kept', '未在 patch 里的键必须保留')
-  assert.equal(stored.wechat.enabled, true)
+  assert.equal(stored.uiLanguage, 'zh-Hans')
   assert.equal(store.parseError(), undefined, '写成功后必须清掉错误态')
 })
 

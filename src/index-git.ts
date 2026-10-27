@@ -8,8 +8,8 @@
  * repository rather than by wiki (several knowledge bases may be subfolders of
  * one repo), and the settings that drive it (`git.autoCommit` / `debounceMs` /
  * `remote`) are therefore resolved PER REPOSITORY — from the first wiki inside
- * it, in list order. The `eff()` / `workspaceMark()` / `bridgeConfig()` /
- * `wechatConfig()` accessors are the same question asked about the DEFAULT
+ * it, in list order. The `eff()` / `workspaceMark()` / `bridgeConfig()` accessors
+ * are the same question asked about the DEFAULT
  * wiki, so splitting them into a second file would have duplicated the
  * "resolve through the default runtime, fall back to the cordis base" rule.
  *
@@ -20,7 +20,6 @@
  */
 import type { AutoCommitter, GitFace, GitSyncTarget } from './host/git.ts'
 import { RepoCommitters } from './host/repo-committers.ts'
-import { normalizeWechatConfig, type WechatPublishConfig } from './host/wechat-publish.ts'
 import type { BridgeConfig } from './host/clip-bridge.ts'
 import type { PluginConfigShape } from './host/config.ts'
 import { entryPath, type WikiEntry } from './host/wiki-registry.ts'
@@ -106,15 +105,6 @@ export interface GitLayer {
   effectiveWorkspaceMark: () => boolean
   /** The clip bridge's effective config (default wiki's, else cordis base). */
   effectiveBridge: () => BridgeConfig
-  /**
-   * Effective 公众号发布 config (cordis base + settings-page overlay), read PER
-   * REQUEST: enabling the feature, switching the adapter or rotating the token
-   * applies without a dsh web restart. `normalizeWechatConfig` is the single
-   * place that turns the loose config-tiddler JSON into the typed shape — a
-   * garbage `adapter`/`command` falls back to the defaults instead of reaching
-   * the spawned command line.
-   */
-  effectiveWechat: () => ReturnType<typeof normalizeWechatConfig>
 }
 
 export function createGitLayer(deps: GitLayerDeps): GitLayer {
@@ -169,7 +159,6 @@ export function createGitLayer(deps: GitLayerDeps): GitLayer {
    * here is always built from `ResolvedConfig`, whose bridge block is complete.
    */
   const effectiveBridge = (): BridgeConfig => defaultInstance()?.bridgeConfig() ?? (deps.baseShape().bridge as BridgeConfig)
-  const effectiveWechat = (): WechatPublishConfig => normalizeWechatConfig(eff().wechat)
 
   const gitTargets = async (): Promise<GitSyncTarget[]> => {
     const live = farm()
@@ -243,7 +232,6 @@ export function createGitLayer(deps: GitLayerDeps): GitLayer {
     eff,
     effectiveWorkspaceMark,
     effectiveBridge,
-    effectiveWechat,
   }
 }
 

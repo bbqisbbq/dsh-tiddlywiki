@@ -6,6 +6,12 @@
 
 ## 最近版本（详细）
 
+- **v0.34.0**（2026-10-27）：**移除「发布到微信公众号」功能**（作者裁定：没必要）。
+- **删了什么**：三条路由 `/wechat/{ready,publish,publish/status}`；配置 `wechat{enabled,command,adapter,token,dsn,endpoint}` 与设置页「可选功能：微信公众号发布」整块（含提示词预览里随开关变化的草稿字段）；注入提示词里的发布前约定（`PUBLISH_RULE`）；三个 gated seed `publish-spec` / `wechat-setup` / `wechat-publish`；`WechatPublishRunner` + 契约层（`wechat-publish.ts` / `wechat-publish-contract.ts`，约 900 行）；TW 工具栏「发布到公众号」按钮 bundle 及其 `build-*` / `gen-*` / 三个 `verify-wechat-*` 守门；`tools/wechat/` 的 opencli adapter 全家（`wechat-html.js` / `weixin-flow.js` / `publish-note*` / 安装与回填脚本）；文档 `docs/wechat-publish-setup.md` 与设计稿。
+- **顺手拆掉的机制**：seed 的 `gate` 机制随最后一个使用者一起删除 —— `runAllSeeds` 不再有 gate 分支，`SeedContext.wechat` 也没了；seed 注册表 **13 → 10 项**（核心 3 + 起步 2 + 可选 5）。`admin-secrets` 不再打码 `wechat.token`，`STRING_CONFIG_PATHS` / `BOOLEAN_CONFIG_PATHS` 去掉五条 `wechat.*`。客户端 i18n 475 → 467 键，`index.ts` 公共面 −33 个名字（289 个）。
+- **旧 wiki 怎么办**：插件**不会**替你删已写进 wiki 的那几篇内容（`发布元数据规范` / `微信公众号发布指南` / `$:/plugins/dsh/wechat-publish`）——自行在 TW 里删除即可。旧配置 tiddler 里残留的 `wechat` 块按未知键透传保留、不再被读取。
+- **为什么一起删而不是留着**：它是本插件里唯一会**按配置去 spawn 外部 CLI** 的能力，牵着一整条 opencli + 浏览器扩展的安装链（插件替你装不了），维护面却是四个守门脚本加两份生成脚本；收益只在「一键存草稿箱」，而发表仍要人手扫码。
+
 - **v0.33.4**（2026-10-26）：**四路只读审计（host / 工具与数据路径 / 客户端 / 死代码）后的修复版**。
 - **数据安全**：trashbin 软删除把副本标签整体替换成 `$:/tags/trashbin`，恢复时又从 `fields.tags` 找原文——而 TW 的 `tags` 是已知字段、永远不进 `fields`，于是装了 trashbin 的库删完再恢复**标签全丢**且静默（现在副本写 `[标记, ...原标签]`，恢复只剥标记）；写工具（put / batch_put / delete / rename / append / replace / attach）**没有** `isBlockedProxyTitle()` 守卫，模型可直接改写 `$:/plugins/dsh-tiddlywiki/config`（`wechat.command` 会被 spawn、`git.remote` 下次同步生效）——读侧早就拦了，写侧一直敞着。
 - **互斥与假成功**：`MutationLock.end()` 没有所有权校验，而 `/admin/seeds/run` 对**每条**响应都调它（最常见的「重新初始化但什么都没改」压根没 begin）⇒ 会把此刻正持锁的 `/sync` 释放掉，`/admin/restart` 随即拿锁、两条路径同时排干 + 停子进程；现在 `end(label)` 校验持有者。`/admin/info`（改插件/主题/语言也会 drain + 重启）一直没接这把锁；`/restart` 与 `/admin/restart` 在目标库没在跑时回 `{ok:true,drained:true}`（什么都没重启）。
@@ -41,12 +47,12 @@ v0.33.1 修好了 `key` 配对，但用户实测仍是纯文本，且 devtools �
 
 - **v0.31.1**（2026-10-26）：**新增 `tiddlywiki_export`（笔记落盘，配合 `present` 交付）**。「把这条笔记给我」此前只有两条路：正文贴进回复（长笔记会撞回执预算，`get` 还得分页），或者让人类自己去 TW 里复制；DSH 的 `present` 能交付**文件**，但一直缺「把笔记变成文件」这一步。新工具 `export(title, format?, dir?)`：读一篇笔记 → 按格式落盘 → 回 `{path, bytes, format}`，助手紧接着 `present([{path, description}])` 即可。三种格式：`md`（YAML frontmatter + 正文，默认）、`tid`（TiddlyWiki 原生字段行 + 空行 + 正文）、`json`（完整 tiddler）。三条纪律都不是可选项：① **绝不覆盖同名文件**（导出是旁路产物，静默覆盖等于毁掉上次的交付物）；② **`$:/plugins/dsh-tiddlywiki/` 系统条目拒绝导出**（可能是密钥，走铁律 #6 的共享原语）；③ 读失败 ≠ 不存在（铁律 #3）。自定义字段两处都收（顶层键 + `fields`）—— 只收一处会让「导出丢字段」。守门 `scripts/verify-tools.mjs` 新增一条 7 组断言的 E2E（三格式内容逐项核对、同名拒绝、不存在回 `notFound` 且不写空文件、系统条目拒绝、相对 `dir` 拒绝），并与既有的「真实返回值必须通过 `output.schema`」自动联动。工具数 16 → 17（AGENTS §2、`verify-tool-views` / `verify-prompt` 的计数断言、`TOOL_VIEW_KEYS` + `TOOL_LABELS` + `i18n-card` 的 `card.toolExport` 同步）。
 
-- **v0.31.0**（2026-10-26）：**对齐 DSH 0.2.1 的一轮改造 + 两条真实回归修复**。① **选库入口搬到官方座位**：`conversation.input.selector.context` 在 0.2.1 里**不存在**（v0.28.8 起的 `scope-seat.ts` 整个是死代码），选库改挂官方内联座位 `conversation.input.left`（`id: 'wiki-scope'`），`scope-seat.ts` 删除、dock 里那套 `scope` 内联渲染与自测量一并清掉；右侧栏 guide 条目补 `id` + `keepMounted: true`（0.2.1 的分页约定）。② **新增 `scripts/verify-dsh-contract.mjs`**：解析宿主 `app.asar` 里的 `dsh-cordis-client-runner`，把 103 条官方座位目录与我们源码里注册的 6 个座位逐一比对（存在性 / kind / `tool.call.toolview` 的 54 个已占 key 是否撞车），并断言 `engines.dsh` 已声明 —— 此前"座位名写错"只会静默不渲染。③ **`tiddlywiki_get` 支持分页**（`offset`/`limit`，默认 12000 字符）：超长笔记一次读全会撞宿主的 12500 token 回执上限；回执明确写"正文 a–b / 共 N 字符"并给出下一步 `offset`。`search`/`lint` 的回执也加了同量级的体量预算（命中条数与计数结论**永不截断**，只截示例并说明省略了多少）。④ **16 个工具补 `output.schema`**：DSH 0.2.1 在每次调用后用 `validateJsonSchemaValue` 校验返回值，不过即抛 `ToolOutputError` —— 而 `sdk.ts` 的 `output.schema` 自 v0.20.0 起写死成 `{}`（当时注释断言"没人读它"，**实测为假**）。现在按"只声明必定存在且类型稳定"的规则为 16 个工具各写一份，并加两条守门：每个工具必须声明非空 object schema；**用 E2E 里每一次真实返回值反查声明**（抓"schema 比现实更严"这种线上致命错误）。⑤ **skill 改用 `ctx.skills.register`**：拆库 skill 过去只能往 `$DSH_HOME/skills` 写文件，现在优先注册到宿主 skill 注册表（内存、随插件卸载消失、不碰用户目录），只有宿主没有该服务时才回落写文件；新增 `scripts/verify-embedded-skill.mjs`（解析/坏输入/disposer/注册表抛错/**启动顺序必须"先注册后回落"**）。⑥ **新增 `/note` 斜杠命令**：一句话记笔记，直接写进当前会话的知识库、不产生模型消息；同名笔记**已存在就拒绝**并指路（"同一件事写多份互相矛盾"是最难收拾的失败形态），且写成 `inbox` + 工作站标记、**不打 `agent-written`**（那是人写的）；守门 `scripts/verify-note-command.mjs`。⑦ **提示词两处修订**：新增「### 先查再答」（模型可见工具从 57 涨到 243 之后，新会话不再主动检索 —— 注入本身没坏，`system/message` 里逐字可查，坏在提示词只讲"怎么写"、从不讲"什么时候该来查"）与「### 时效与去重」（作者原话：agent 爱写短命内容、同一件事写多份有差异的、正文里堆变更流水）—— 钉子：一件事只留一处权威表述（先搜、命中就**原地改那一节**）、每条笔记必须看得出"还有效到什么时候"（`valid-until`/`review-after`/"长期有效"，说不清时效的别写）、**不写流水账**、**读到就先判时效**。slim 正文 1079 → **1390 字符**（预算 1000 → 1470，与逐条断言绑定），并把提示词正文的拼装从"硬编码数组 + 导出的块清单"两份实现收成 `governanceBlocks()` 单一来源 —— 加规则时 `verify-prompt` 当场抓到这个双份实现。
 
-## 历史版本（一句话，150 条，新的在上）
+## 历史版本（一句话，151 条，新的在上）
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v0.31.0 | 2026-10-26 | 对齐 DSH 0.2.1 的改造（选库入口搬到 `conversation.input.left`、`verify-dsh-contract`、`get` 分页、16 个工具补 `output.schema`、skill 走 `ctx.skills.register`、新增 `/note` 命令、提示词加「先查再答」「时效与去重」） |
 | v0.30.65 | 2026-10-09 | 新增 tiddlywiki_replace 工具（笔记正文局部替换） |
 | v0.30.63 | 2026-10-09 | 默认提示词把「笔记内引用」与「聊天引用」拆成两条链接规则；`config.prompt.override` 设置页说明勘误 |
 | v0.30.62 | 2026-10-09 | 第二轮审查三类修复（回收站两种格式合并 / `git_sync`·`git_resolve` 改用会话作用域目录 / 剪藏目标库没在跑改 503 点名）+ 提示词 −14% |

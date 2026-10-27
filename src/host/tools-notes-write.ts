@@ -68,7 +68,7 @@ export function getTool(env: ToolEnv) {
       // Ironclad rule #6 (v0.29.0): every path that turns a caller-supplied
       // title into TW output runs the secret-namespace guard. `/get`, `/tw`,
       // `/api` and `/render` already did; the tool did not, so the MODEL could
-      // read `$:/plugins/dsh-tiddlywiki/config` (bridge/ui/wechat tokens +
+      // read `$:/plugins/dsh-tiddlywiki/config` (bridge/ui tokens +
       // a credentialed git remote) that those routes exist to hide.
       if (isBlockedProxyTitle(args.title)) {
         throw new Error(

@@ -20,7 +20,7 @@
  *
  *   - `GitFace`  — every method takes the directory as an argument, so it is
  *                  stateless; M2 keys the COMMITTER by repository, not by wiki;
- *   - the clip bridge (one listener on one port) and the WeChat runner;
+ *   - the clip bridge (one listener on one port);
  *   - the registered agent tools, routes and the prompt section (singletons by
  *     construction: the host rejects a duplicate tool/route/section name).
  *
@@ -48,7 +48,6 @@ import { RENDER_PLUGIN_FILE } from './seed-render.ts'
 import { WikiServer, TW_PROXY_PATH } from './wiki.ts'
 import { entryPath, type WikiEntry } from './wiki-registry.ts'
 import { tiddlywikiToolSummary } from './tools.ts'
-import { normalizeWechatConfig } from './wechat-publish.ts'
 import type { UiDefaultsPublic } from './routes.ts'
 import type { BridgeConfig } from './clip-bridge.ts'
 
@@ -68,7 +67,6 @@ export interface WikiInstanceBase {
   note: { tag: string; workspaceMark: boolean }
   bridge: { enabled: boolean; port: number; token: string; tag: string; wiki?: string }
   startup: { readyTimeoutMs: number }
-  wechat: { enabled: boolean; command: string; token: string; adapter: 'publish-note' | 'publish-note-imgs'; dsn: string }
   ui: {
     showQuickNote: boolean
     showQuickNoteDock: boolean
@@ -228,7 +226,6 @@ export class WikiInstance {
       uiLanguage: options.base.uiLanguage,
       bridge: options.base.bridge,
       startup: options.base.startup,
-      wechat: options.base.wechat,
     } satisfies PluginConfigShape)
   }
 
@@ -336,11 +333,6 @@ export class WikiInstance {
     return WikiInstance.uiDefaultsFrom(this.options.base, this.eff().ui)
   }
 
-  /** Effective 公众号发布 config for THIS wiki (read per request). */
-  wechatConfig(): ReturnType<typeof normalizeWechatConfig> {
-    return normalizeWechatConfig(this.eff().wechat)
-  }
-
   /** This wiki's send-to-agent switch / shared token. */
   sendToAgent(): { enabled: boolean; token: string } {
     const s2a = this.eff().ui?.sendToAgent ?? {}
@@ -348,11 +340,6 @@ export class WikiInstance {
       enabled: s2a.enabled !== false,
       token: typeof s2a.token === 'string' ? s2a.token : '',
     }
-  }
-
-  /** Whether the wechat feature is on for this wiki (gates seeds + prompt line). */
-  wechatEnabled(): boolean {
-    return (this.eff().wechat ?? {}).enabled === true
   }
 
   /**
@@ -493,9 +480,6 @@ export class WikiInstance {
     const results = await runAllSeeds({
       client: seedClient,
       tools: tiddlywikiToolSummary(),
-      // Opt-in feature gate (v0.23.0): the「发布元数据规范」seed is skipped unless
-      // THIS wiki turned 微信发布 on (its own config tiddler wins over the base).
-      wechat: this.wechatEnabled(),
       // Per-wiki same-origin base: `/tw/<id>/` in multi mode (see the option).
       proxyBase: this.options.proxyBase?.() ?? TW_PROXY_PATH,
     })

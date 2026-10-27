@@ -58,7 +58,6 @@ test('合法值原样通过（含字符串型 token / 未知扩展键）', () =>
     note: { tag: 'inbox', workspaceMark: false },
     bridge: { enabled: true, port: 8618, token: 'secret', wiki: 'books' },
     ui: { sendToAgent: { enabled: false, token: 't' } },
-    wechat: { enabled: true, adapter: 'publish-note-imgs' },
     futureThing: { anything: 1 },
   })
   assert.equal(patch.note.tag, 'inbox')
@@ -69,7 +68,6 @@ test('合法值原样通过（含字符串型 token / 未知扩展键）', () =>
   // 这条断言保证它确实在**已知字符串路径**里被校验。
   assert.equal(patch.bridge.wiki, 'books', 'bridge.wiki 必须原样通过（它是已知字符串字段）')
   assert.equal(patch.ui.sendToAgent.token, 't')
-  assert.equal(patch.wechat.adapter, 'publish-note-imgs')
   assert.deepEqual(patch.futureThing, { anything: 1 }, '未知键（未来字段）必须透传')
 })
 

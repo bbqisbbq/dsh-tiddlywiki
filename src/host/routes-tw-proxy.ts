@@ -79,7 +79,7 @@ export {
  * Every request-scoped dependency the three TW-facing routes use. Deliberately
  * NOT `RouteDeps`: passing this narrower face keeps the proxy module from
  * reaching for per-request services it has no business reading (sessions,
- * wechat, presets), so the extracted handlers can only use what they used
+ * presets), so the extracted handlers can only use what they used
  * before.
  */
 export interface TwProxyRouteDeps {

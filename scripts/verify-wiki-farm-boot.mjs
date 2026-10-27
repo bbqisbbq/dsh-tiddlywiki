@@ -40,7 +40,6 @@ const base = {
   note: { tag: 'inbox', workspaceMark: true },
   bridge: { enabled: false, port: 8618, token: '', tag: 'clip' },
   startup: { readyTimeoutMs: 90_000 },
-  wechat: { enabled: false, command: 'opencli', token: '', adapter: 'publish-note', dsn: '' },
   ui: {
     showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TW',
     showPanelStatus: true, showSyncButton: true, followDshTheme: true,

@@ -25,9 +25,6 @@ import { seedAllArticles, unseedAllArticles, ALL_ARTICLES_TITLE, ALL_ARTICLES_MA
 import { seedUiStyles, unseedUiStyles, UI_STYLE_ITEMS, UI_STYLES_MARKER_TITLE } from './seed-ui-styles.ts'
 import { seedMenubarTheme, unseedMenubarTheme, MENUBAR_THEME_TIDDLER, MENUBAR_THEME_MARKER_TITLE, MENUBAR_THEME_TEXT } from './seed-menubar-theme.ts'
 import { seedClipBridge, unseedClipBridge, CLIP_BRIDGE_DOC_TITLE, CLIP_BRIDGE_MARKER_TITLE, CLIP_BRIDGE_DOC_TEXT } from './seed-clip-bridge.ts'
-import { seedPublishSpec, unseedPublishSpec, PUBLISH_SPEC_TITLE, PUBLISH_SPEC_MARKER_TITLE, PUBLISH_SPEC_TEXT } from './seed-publish-spec.ts'
-import { seedWechatDocs, unseedWechatDocs, WECHAT_DOCS_TITLE, WECHAT_DOCS_MARKER_TITLE, WECHAT_DOCS_TEXT } from './seed-wechat-docs.ts'
-import { seedWechatPublish, unseedWechatPublish, WECHAT_PUBLISH_PLUGIN_TITLE, WECHAT_PUBLISH_MARKER_TITLE, WECHAT_PUBLISH_BUNDLE_TEXT } from './seed-wechat-publish.ts'
 import { seedRenderRoute, RENDER_PLUGIN_TITLE, RENDER_MARKER_TITLE, RENDER_BUNDLE_TEXT } from './seed-render.ts'
 import { TW_WEB_HOST_TIDDLER, TW_WEB_HOST_DEFAULT } from './config.ts'
 import { TW_PROXY_PATH } from './wiki.ts'
@@ -69,9 +66,6 @@ interface SeedMeta {
   startup?: boolean
   /** One-shot marker tiddler (enables content-hash bookkeeping). */
   markerTitle?: string
-  // ⚠️ 这里**故意没有** `gate`（v0.30.4）：它只被 `defineSeed` 的第二个参数（impl）
-  // 读取，写在 meta 字面量里的 gate 会被静默忽略 —— 三个微信公众号 seed 都写在 impl 里。
-  // 删掉这个字段后放错位置会变成编译错误，而不是「gate 永远为真」。
 }
 
 type SeedWriter = (client: TiddlyWebClient, opts?: { force?: boolean; tools?: readonly PromptToolSummary[] }) => Promise<boolean>
@@ -176,7 +170,6 @@ function defineSeed(meta: SeedMeta, impl: {
   run?: (ctx: SeedContext, force: boolean) => Promise<SeedRunResult>
   unseed?: SeedUnseeder
   content?: SeedContent
-  gate?: (ctx: SeedContext) => boolean
 }): SeedDef {
   const { id, title, description, core, startup, markerTitle } = meta
   const removable = !core
@@ -255,7 +248,6 @@ function defineSeed(meta: SeedMeta, impl: {
     id, title, description, core,
     ...(startup === undefined ? {} : { startup }),
     ...(markerTitle === undefined ? {} : { markerTitle }),
-    ...(impl.gate === undefined ? {} : { gate: impl.gate }),
     ...(impl.content === undefined ? {} : { content: impl.content }),
     check, run,
     ...(remove === undefined ? {} : { remove }),
@@ -332,36 +324,6 @@ export const SEED_DEFS: SeedDef[] = [
   defineSeed(
     { id: 'clip-bridge', title: '本地剪藏桥（书签小工具）', description: '「本地剪藏桥 + 书签小工具」使用说明（Markdown 文档，带书签代码/启用步骤/安全说明）：DSH 监听 127.0.0.1 端口接收剪藏请求，浏览器书签一键把当前页标题/URL/选中文字写进知识库（配置 bridge.*，默认 clip 标签）。真功能在插件运行时代码里，此 seed 只预置说明文档。', markerTitle: CLIP_BRIDGE_MARKER_TITLE, core: false },
     { content: async () => [{ title: CLIP_BRIDGE_DOC_TITLE, text: CLIP_BRIDGE_DOC_TEXT }], presentTitle: CLIP_BRIDGE_DOC_TITLE, write: seedClipBridge, unseed: unseedClipBridge },
-  ),
-  defineSeed(
-    { id: 'publish-spec', title: '发布元数据规范（可选：需开启微信公众号发布）', description: '「发布元数据规范」文档（Markdown）：约定用 pub-state / pub-platform / pub-wechat-* 等自定义字段记录每篇笔记的对外发布状态（已发/未发/不可发），以及 no-publish 标签约定；供发布流程与 agent 判断「这篇发过没有、能不能发」使用。**属于可选功能**：仅当设置页开启「微信发布」（wechat.enabled）时启动才会写入，否则完全跳过。', markerTitle: PUBLISH_SPEC_MARKER_TITLE, core: false, startup: true },
-    {
-      content: async () => [{ title: PUBLISH_SPEC_TITLE, text: PUBLISH_SPEC_TEXT }],
-      presentTitle: PUBLISH_SPEC_TITLE,
-      write: seedPublishSpec,
-      unseed: unseedPublishSpec,
-      gate: (ctx) => ctx.wechat === true,
-    },
-  ),
-  defineSeed(
-    { id: 'wechat-setup', title: '微信公众号发布指南（可选：需开启微信公众号发布）', description: '「微信公众号发布指南」文档（Markdown，逐字节等于仓库 docs/wechat-publish-setup.md）：在另一台机器上还原发布能力的完整步骤——opencli 安装、Browser Bridge 浏览器扩展、公众号登录、装 adapter、试跑命令、发布元数据、三个必须知道的坑（trace / 扫码 / 发表≠群发）、排错表。**属于可选功能**：仅当设置页开启「微信发布」（wechat.enabled）时启动才会写入，否则完全跳过（与发布元数据规范同进同退）。', markerTitle: WECHAT_DOCS_MARKER_TITLE, core: false, startup: true },
-    {
-      content: async () => [{ title: WECHAT_DOCS_TITLE, text: WECHAT_DOCS_TEXT }],
-      presentTitle: WECHAT_DOCS_TITLE,
-      write: seedWechatDocs,
-      unseed: unseedWechatDocs,
-      gate: (ctx) => ctx.wechat === true,
-    },
-  ),
-  defineSeed(
-    { id: 'wechat-publish', title: '「发布到公众号」按钮（可选：需开启微信公众号发布）', description: 'TW 笔记工具栏「发布到公众号」按钮插件（$:/plugins/dsh/wechat-publish）——把当前笔记一键存进公众号**草稿箱**（宿主进程调 opencli 驱动你已登录的浏览器；发表需人工扫码，脚本不做）。按钮先做预检（opencli + adapter 是否就位），再起一个可轮询的后台任务并显示进度。**属于可选功能**：仅当设置页开启「微信发布」（wechat.enabled）时启动才会写入，否则完全跳过（与发布元数据规范 / 公众号发布指南同进同退）。', markerTitle: WECHAT_PUBLISH_MARKER_TITLE, core: false, startup: true },
-    {
-      content: async () => [{ title: WECHAT_PUBLISH_PLUGIN_TITLE, text: WECHAT_PUBLISH_BUNDLE_TEXT }],
-      presentTitle: WECHAT_PUBLISH_PLUGIN_TITLE,
-      write: seedWechatPublish,
-      unseed: unseedWechatPublish,
-      gate: (ctx) => ctx.wechat === true,
-    },
   ),
   defineSeed(
     { id: 'tw-web-host', title: 'TW 前端 API 基址（同源代理）', description: '把 $:/config/tiddlyweb/host 指向 DSH 同源代理，嵌入式 TW 才能经 DSH origin 访问（远程访问模式的前提）。', core: true },

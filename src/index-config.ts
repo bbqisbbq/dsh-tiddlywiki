@@ -41,14 +41,6 @@ export interface TiddlywikiConfig {
   prompt?: { enabled?: boolean; mode?: 'slim' | 'full'; extra?: string; override?: string }
   /** TW 子进程启动策略（v0.22.5，见 host/ready-policy.ts）：软就绪窗口 ms。 */
   startup?: { readyTimeoutMs?: number }
-  /**
-   * 可选功能：微信公众号发布（v0.23.0，**默认关闭**）。该能力需额外安装
-   * opencli + Browser Bridge 浏览器扩展（见 docs/wechat-publish-setup.md），
-   * 插件本体不含它；关闭时不影响任何其他功能。
-   * v0.23.3 起 `command`/`adapter`/`token`/`dsn` 服务于 TW 工具栏「发布到公众号」
-   * 按钮（见 host/wechat-publish.ts）。
-   */
-  wechat?: { enabled?: boolean; command?: string; token?: string; adapter?: 'publish-note' | 'publish-note-imgs'; dsn?: string; endpoint?: string }
   ui?: { showQuickNote?: boolean; showQuickNoteDock?: boolean; quickNoteMode?: 'native' | 'card'; sidebarLabel?: string; showPanelStatus?: boolean; showSyncButton?: boolean; followDshTheme?: boolean; darkPalette?: string; tabLabel?: string; showSessionTab?: boolean; showRightbarTab?: boolean; sendToAgent?: { enabled?: boolean; endpoint?: string; token?: string }; allArticles?: { pageSize?: number } }
   /** 启动时自动启用的 TW 语言代码（如 "zh-Hans"），也受配置 tiddler 覆盖。 */
   uiLanguage?: string
@@ -65,13 +57,6 @@ export interface ResolvedConfig {
   bridge: { enabled: boolean; port: number; token: string; tag: string; wiki: string }
   ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
   startup: { readyTimeoutMs: number }
-  /**
-   * 可选功能：微信公众号发布（v0.23.0）。默认 `enabled: false`——该能力需要额外
-   * 安装（opencli + 浏览器扩展，见 docs/wechat-publish-setup.md），插件本体不含它。
-   * 关闭时不注入发布相关提示词、不写两个 gated seed，`/wechat/*` 三条路由也一律
-   * 403（v0.23.3）。`command`/`adapter`/`token`/`dsn` 供 TW 工具栏按钮使用。
-   */
-  wechat: { enabled: boolean; command: string; token: string; adapter: 'publish-note' | 'publish-note-imgs'; dsn: string; /** TW 侧读的请求基址覆盖（host 不用，同 ui.sendToAgent.endpoint） */ endpoint?: string }
   uiLanguage: string
   auth: { username?: string; password?: string }
 }
@@ -89,9 +74,6 @@ export const DEFAULTS: ResolvedConfig = {
   bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip', wiki: '' },
   ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
   startup: { readyTimeoutMs: READY_TIMEOUT_DEFAULT_MS },
-  // 可选功能默认关闭（v0.23.0）：需额外安装 opencli + 浏览器扩展才可用。
-  // v0.23.3：command/adapter/token/dsn 是 TW 工具栏「发布到公众号」按钮的旋钮。
-  wechat: { enabled: false, command: 'opencli', token: '', adapter: 'publish-note', dsn: '' },
   uiLanguage: '',
   auth: { username: '', password: '' },
 }
@@ -122,6 +104,5 @@ export function resolveConfig(rawConfig: TiddlywikiConfig): ResolvedConfig {
     uiLanguage: typeof rawConfig.uiLanguage === 'string' ? rawConfig.uiLanguage.trim() : DEFAULTS.uiLanguage,
     auth: { ...DEFAULTS.auth, ...(rawConfig.auth ?? {}) },
     startup: { ...DEFAULTS.startup, ...(rawConfig.startup ?? {}) },
-    wechat: { ...DEFAULTS.wechat, ...(rawConfig.wechat ?? {}) },
   }
 }

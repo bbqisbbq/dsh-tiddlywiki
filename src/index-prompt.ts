@@ -71,10 +71,6 @@ export function createPromptSurface(deps: PromptDeps): PromptSurface {
   const promptTextFor = (sessionId: string | undefined): string => {
     const scope = toolScope(sessionId)
     const cfg = effectiveConfigFor(sessionId)
-    // `wechat.enabled` (v0.23.0) is NOT a `prompt.*` field but it gates the
-    // publish rule, and the feature is opt-in + separately installed — users who
-    // never enabled it must see no publishing text.
-    //
     // `linkBase` (v0.30.62) is this session's own proxy base: with several wikis a
     // bare `/tw/` link opens the FOCUSED library (assistant prose) or sends the
     // embedded TW iframe to the DEFAULT one (a link inside a note), so a scoped
@@ -83,7 +79,7 @@ export function createPromptSurface(deps: PromptDeps): PromptSurface {
       ? `${TW_LINK_BASE}${scope.id}/`
       : TW_LINK_BASE
     const built = withScopeBanner(describePrompt(
-      { ...((cfg.prompt ?? {}) as PromptConfig), wechat: (cfg.wechat ?? {}).enabled === true, linkBase },
+      { ...((cfg.prompt ?? {}) as PromptConfig), linkBase },
       tiddlywikiToolSummary(),
     ).text, scope)
     return built

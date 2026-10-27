@@ -36,15 +36,9 @@ async function test(name, fn) {
     console.error(`FAIL  ${name}\n      ${err && err.message ? err.message : err}`)
   }
 }
+/** 启动路径会跑的 seed（core 3 + starter 2），与 runAllSeeds 的目标集合一致。 */
+const STARTUP_SEED_IDS = ['doc-note', 'starter-docs', 'send-to-agent', 'render-route', 'tw-web-host']
 
-/** 启动路径会跑的 seed（core 3 + starter 4 + 三个 gated 的可选功能项），与 runAllSeeds 的目标集合一致。 */
-const STARTUP_SEED_IDS = ['doc-note', 'starter-docs', 'send-to-agent', 'render-route', 'publish-spec', 'wechat-setup', 'wechat-publish', 'tw-web-host']
-
-/** 启动集合里带 gate 的可选功能 seed（从注册表派生，新增 gated seed 不用再改本脚本）。 */
-const GATED_STARTUP_IDS = SEED_DEFS
-  .filter((d) => (d.core || d.startup === true) && d.gate !== undefined)
-  .map((d) => d.id)
-  .sort()
 
 /**
  * 假 TiddlyWebClient：
@@ -110,11 +104,10 @@ for (const id of STARTUP_SEED_IDS) {
 }
 
 // ── 2. runAllSeeds：一个失败不拖累其余 ───────────────────────────────────────
-// 传 `wechat: true` → 可选功能的 seed 也参与，得到完整启动集合。
 await test('runAllSeeds 读取失败时逐个失败但**不中止**其余 seed，且零写', async () => {
   const client = makeClient('failing')
-  const results = await runAllSeeds({ client, wechat: true })
-  // 数量从 STARTUP_SEED_IDS 派生，别再写死数字——v0.23.0 加 publish-spec 时
+  const results = await runAllSeeds({ client })
+  // 数量从 STARTUP_SEED_IDS 派生，别再写死数字——v0.23.0 加 seed 时
   // 这个硬编码 5 就红过一次（而集合断言本来就会拦住漂移，数量断言是冗余的）。
   assert.equal(results.length, STARTUP_SEED_IDS.length, `启动路径应覆盖 ${STARTUP_SEED_IDS.length} 个 seed，实际 ${results.length}`)
   assert.deepEqual(
@@ -127,30 +120,6 @@ await test('runAllSeeds 读取失败时逐个失败但**不中止**其余 seed�
     assert.equal(r.wrote, false, `seed ${r.id} 读取失败时必须 wrote:false`)
   }
   assertNoWrite(client.calls, 'runAllSeeds')
-})
-
-// 可选功能默认关：不启用微信发布时，启动不该写发布相关文档（publish-spec / wechat-setup）。
-await test('可选功能 gate：wechat 未开启时跳过发布类 seed（不打扰不用该功能的用户）', async () => {
-  const client = makeClient('failing')
-  const off = await runAllSeeds({ client })
-  const gatedRan = off.filter((r) => GATED_STARTUP_IDS.includes(r.id))
-  assert.deepEqual(
-    gatedRan.map((r) => r.id),
-    [],
-    `默认（wechat 未开）不得跑 gated seed（${GATED_STARTUP_IDS.join(', ')}），实际跑了：${gatedRan.map((r) => r.id).join(', ')}`,
-  )
-  assert.equal(off.length, STARTUP_SEED_IDS.length - GATED_STARTUP_IDS.length, `默认应比全量少 ${GATED_STARTUP_IDS.length} 个（gated），实际 ${off.length}`)
-  // 开启后必须全部回来
-  const on = await runAllSeeds({ client, wechat: true })
-  assert.equal(on.length, STARTUP_SEED_IDS.length, `wechat:true 时启动应覆盖全部 ${STARTUP_SEED_IDS.length} 个 seed，实际 ${on.length}`)
-  for (const id of GATED_STARTUP_IDS) {
-    assert.ok(on.some((r) => r.id === id), `wechat:true 时 ${id} 必须参与启动`)
-  }
-  // gate 只影响启动路径；手动 runSeedById 是显式请求，不受 gate 约束
-  for (const id of GATED_STARTUP_IDS) {
-    const manual = await runSeedById({ client }, id, false)
-    assert.equal(manual[0].id, id, `手动初始化应能指定 ${id}（gate 不拦显式请求）`)
-  }
 })
 
 // ── 3. checkAllSeeds：失败 ≠ 缺失 ────────────────────────────────────────────

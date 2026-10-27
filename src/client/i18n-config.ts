@@ -44,16 +44,6 @@ export const CONFIG_MESSAGES: { zh: Record<string, string>; en: Record<string, s
     'config.ui.sendToAgent.endpoint': 'TW 端请求基址（空=自动取当前 DSH origin）',
     'config.ui.sendToAgent.token': '共享 token（非空时路由校验 x-send-to-agent-token 头；已设置时显示为 ********，原样保存=不改，清空=删除）',
     'config.ui.allArticles.pageSize': '「所有文章」每页条数（1–200）',
-    // ── 可选功能：微信公众号发布 ─────────────────────────────────────────
-    'config.wechat.title': '可选功能：微信公众号发布',
-    'config.wechat.hint': '把 wiki 笔记一键发到公众号草稿箱（可选点发表）。**需要额外安装**：opencli 与 Browser Bridge 浏览器扩展，并让浏览器登录 mp.weixin.qq.com；adapter 在本仓库 tools/wechat/，安装与排错见 docs/wechat-publish-setup.md。不安装／不开启它，插件其他功能完全不受影响。开启后：注入提示词会多一条「发布前先读发布元数据规范」的约定，并在启动时把「发布元数据规范」与「微信公众号发布指南」（安装/换机还原步骤，等于仓库 docs/wechat-publish-setup.md）两篇文档写进 wiki（同名不覆盖）。',
-    'config.wechat.enabled': '启用微信公众号发布（默认关；需先按 docs/wechat-publish-setup.md 安装 opencli + 浏览器扩展）',
-    'config.wechat.command': 'opencli 命令（默认 opencli；用别名或绝对路径时填这里。仅在启用微信发布时生效）',
-    'config.wechat.adapter': '发布适配器（仅在启用微信发布时生效）',
-    'config.wechat.adapterDefault': 'publish-note（默认）：图文排版，封面单图',
-    'config.wechat.adapterImgs': 'publish-note-imgs：正文内嵌图全部上传 CDN（需先重跑 install-wechat-adapters.mjs）',
-    'config.wechat.token': '发布 token（非空时 /wechat/* 校验 x-wechat-publish-token 头，强烈建议设置，否则任何能打开本页的人都能替你发文；已设置时显示为 ********，原样保存=不改，清空=删除。仅在启用微信发布时生效）',
-    'config.wechat.dsn': '渲染基址 dsn（adapter 回连 DSH 用，形如 http://127.0.0.1:<端口>/dsh-tiddlywiki；留空=按请求自动推导。仅在启用微信发布时生效）',
     // ── 系统提示词 ──────────────────────────────────────────────────────
     'config.prompt.title': '系统提示词（注入每个会话）',
     'config.prompt.hint': '插件把自己的约定（同步纪律 / 标签约定 / 链接格式等）注入每个会话的系统提示词。保存后**无需重启 dsh web**：section 会即时重新注册，当前会话从下一步起就使用新文本。',
@@ -126,16 +116,7 @@ export const CONFIG_MESSAGES: { zh: Record<string, string>; en: Record<string, s
     'config.ui.sendToAgent.endpoint': 'TW-side request base URL (empty = use the current DSH origin)',
     'config.ui.sendToAgent.token': 'Shared token (when non-empty the route checks the x-send-to-agent-token header; shown as ******** once set — saving it unchanged keeps it, clearing it deletes it)',
     'config.ui.allArticles.pageSize': 'Items per page in All articles (1–200)',
-    // ── optional feature: WeChat official-account publishing ──────────────
-    'config.wechat.title': 'Optional feature: publishing to WeChat official accounts',
-    'config.wechat.hint': 'Publish wiki notes to the official-account draft box in one click (publishing itself stays optional). **Extra installation required**: opencli and the Browser Bridge browser extension, plus a browser signed in to mp.weixin.qq.com; the adapter lives in tools/wechat/ of this repository, see docs/wechat-publish-setup.md for installation and troubleshooting. Not installing or not enabling it leaves every other feature untouched. Once enabled: the injected prompt gains a "read the publishing metadata spec first" convention, and two documents — the publishing metadata spec and the WeChat publishing guide (install / restore-on-a-new-machine steps, i.e. docs/wechat-publish-setup.md) — are written into the wiki at startup (existing files are never overwritten).',
-    'config.wechat.enabled': 'Enable WeChat official-account publishing (off by default; install opencli + the browser extension as described in docs/wechat-publish-setup.md first)',
-    'config.wechat.command': 'opencli command (default opencli; put an alias or absolute path here. Only used when WeChat publishing is enabled)',
-    'config.wechat.adapter': 'Publishing adapter (only used when WeChat publishing is enabled)',
-    'config.wechat.adapterDefault': 'publish-note (default): laid-out text with a single cover image',
-    'config.wechat.adapterImgs': 'publish-note-imgs: every inline image is uploaded to a CDN (re-run install-wechat-adapters.mjs first)',
-    'config.wechat.token': 'Publishing token (when non-empty /wechat/* checks the x-wechat-publish-token header; strongly recommended, otherwise anyone who can open this page can publish as you. Shown as ******** once set — saving it unchanged keeps it, clearing it deletes it. Only used when WeChat publishing is enabled)',
-    'config.wechat.dsn': 'Render base dsn (for the adapter to call back into DSH, e.g. http://127.0.0.1:<port>/dsh-tiddlywiki; empty = derived from the request. Only used when WeChat publishing is enabled)',
+    // ── system prompt ─────────────────────────────────────────────────────
     // ── system prompt ─────────────────────────────────────────────────────
     'config.prompt.title': 'System prompt (injected into every session)',
     'config.prompt.hint': 'The plugin injects its own conventions (sync discipline, tag rules, link format and so on) into every session system prompt. Saving needs **no dsh web restart**: the section is re-registered immediately and the current session uses the new text from its next step.',

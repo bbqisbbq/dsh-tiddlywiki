@@ -65,7 +65,6 @@ node scripts/gen-seed-ui-styles.mjs '<wiki>/tiddlers/<样式.css>' … src/host/
 | `/dsh-tiddlywiki/session/summary` | POST | 会话「知识库」Tab 汇总 |
 | `/dsh-tiddlywiki/session/wiki` | GET/POST | 会话级知识库作用域：读 = 当前选择 + 解析结果（`scope`/`resolved`/`reason`/`mode`，v0.29.0 起带 `mode`）；写 = 选择或清空（v0.28.0） |
 | `/dsh-tiddlywiki/agent/sessions` `/modes` `/send` `/create` | GET/POST | TW「发送给 Agent」：会话/模式/发送/新建 |
-| `/dsh-tiddlywiki/wechat/ready` `/publish` `/publish/status` | GET/POST | 公众号发布（可选功能，`wechat.enabled` 关闭时一律 403，v0.23.3） |
 | `/dsh-tiddlywiki/api/*` | any | 透传 TW 服务（JSON） |
 | `/dsh-tiddlywiki/tw/*` | any | 同源 TW 代理（远程访问核心）；`/tw/<id>/…` 按库定向，裸 `/tw/` = 默认库别名（v0.28.0） |
 | `/dsh-tiddlywiki/admin/state` `/info` `/config` `/restart` | GET/POST | 设置页：状态快照 / 插件·主题·语言 / 配置读写 / 重启（v0.28.0 起全部按 `?wiki=` 定向） |

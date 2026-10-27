@@ -4,7 +4,7 @@
 // end to end. v0.16.22: the startup path (runAllSeeds) seeds the CORE items
 // (send-to-agent / render-route / tw-web-host) PLUS the STARTER items (doc-note
 // / starter-docs, safe-skip); the optional seeds are opt-in from the settings
-// page, and gated ones (publish-spec ← wechat.enabled) stay out entirely.
+// page.
 // All expected sets are derived from SEED_DEFS so adding a seed cannot drift.
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'

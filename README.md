@@ -40,7 +40,6 @@ dsh plugin --profile web add dsh-tiddlywiki
 | 🚰 **重启不丢写入** | 停/重启 TW 只有一条路：先排干 syncer 队列再停，排不干净会如实报 `drained:false` |
 | 🕰 **可审计、可回溯** | 库本身就是 git 仓库（自动 commit + 一键同步）；反向链接、标签、体检（`lint`）；阶段性内容可标 `valid-until` / `superseded-by`，**淘汰永远由人决定，插件不自动删** |
 | 📦 **数据可带走** | 磁盘上就是 `.md` + `.meta` + `.tid` + `files/`，不需要这个插件也能读 |
-| 📮 **可选发布** | 打开后能把笔记一键发到微信公众号草稿箱（默认关闭，不打扰） |
 
 ## 🤖 Agent 工具（15 个）
 
@@ -50,7 +49,7 @@ dsh plugin --profile web add dsh-tiddlywiki
 
 ## 🔧 配置
 
-插件向每个会话注入一段可配置的提示词（默认精简版 ~1.9KB，可整体关掉或替换），其余配置在设置页：知识库位置、git（自动提交/远端/分支）、笔记标签与工作区标记、快速笔记、剪藏桥、公众号发布、界面语言、访问口令。
+插件向每个会话注入一段可配置的提示词（默认精简版 ~1.9KB，可整体关掉或替换），其余配置在设置页：知识库位置、git（自动提交/远端/分支）、笔记标签与工作区标记、快速笔记、剪藏桥、界面语言、访问口令。
 
 完整配置项与远程访问（Tailscale / 内网 / 域名）见 [docs/usage.md](docs/usage.md)。
 
@@ -60,7 +59,6 @@ dsh plugin --profile web add dsh-tiddlywiki
 |---|---|
 | 完整能力清单（每条的**为什么**） | [docs/features.md](docs/features.md) |
 | 使用指南 / 工具参考 / 配置 / 远程访问 | [docs/usage.md](docs/usage.md) |
-| 发布到微信公众号（可选，需额外安装） | [docs/wechat-publish-setup.md](docs/wechat-publish-setup.md) |
 | 把知识库拆成几个独立的小库（含可复制给 Agent 的提示词） | [docs/wiki-split.md](docs/wiki-split.md) |
 | 开发与发布流程（给维护者） | [docs/development.md](docs/development.md) |
 | 版本变更历史（逐版本、含"为什么"；**README 不再重复它**） | [docs/CHANGELOG.md](docs/CHANGELOG.md) |
@@ -69,4 +67,4 @@ dsh plugin --profile web add dsh-tiddlywiki
 
 - **GitHub**：https://github.com/bbqisbbq/dsh-tiddlywiki ｜ **npm**：`dsh-tiddlywiki`
 - **用得不顺请来提 issue**：https://github.com/bbqisbbq/dsh-tiddlywiki/issues —— 这插件原本是作者给自己做的，现在有同道人用；**你不报，我就不知道哪里不对**。
-- MIT；Node ≥ 22；GitHub topics：`dsh` `dsh-plugin` `tiddlywiki` `knowledge-base` `knowledge-management` `note-taking` `journal` `git-sync` `local-first` `agent-tools` `publishing` `wechat` 等
+- MIT；Node ≥ 22；GitHub topics：`dsh` `dsh-plugin` `tiddlywiki` `knowledge-base` `knowledge-management` `note-taking` `journal` `git-sync` `local-first` `agent-tools` 等

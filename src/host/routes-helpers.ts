@@ -3,7 +3,7 @@
  * `routes.ts`, bodies unchanged).
  *
  * WHY: `routes.ts` had grown to ~1400 lines because the seven note-area
- * handlers, the wechat/session/agent handlers AND a dozen module-level helpers
+ * handlers, the session/agent handlers AND a dozen module-level helpers
  * all lived in one file. The helpers have no dependency on `registerRoutes`'s
  * closure (only on `write-policy` / `tw-api` / `text-util`), so they move out
  * first — and `routes.ts` re-exports the public three

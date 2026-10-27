@@ -66,7 +66,6 @@ const full = buildPromptText({ mode: 'full', tools })
 
 /**
  * slim 正文字符预算（见下面「slim 有长度预算」用例的长注释）。
- * 单点定义：wechat 开关那条断言也必须用同一个数字，否则改一处漏一处。
  *
  * 2100 → 1200（v0.29.0）：这一版把与工具 description 逐字重复的句子删掉了
  * （写入/并发 4 条 → 1 条；工作区标记与「检索先窄后宽/AND」两条交还给
@@ -80,8 +79,8 @@ const full = buildPromptText({ mode: 'full', tools })
  *
  * 1000 → 1160 → 1470（v0.30.66，两次）：先加「### 先查再答」（工具面从 57 涨到
  * 243 之后模型想不起先检索），再加「### 时效与去重」（作者 2026-10-26：agent 爱写
- * 短命内容、同一件事写多份互相矛盾的说法、正文里堆变更流水）。**实测 1390 字符**
- * （微信开关打开时 1451）。这两块都是「时机与纪律」，schema 表达不了，因此不属于
+ * 短命内容、同一件事写多份互相矛盾的说法、正文里堆变更流水）。**实测 1390 字符**。
+ * 这两块都是「时机与纪律」，schema 表达不了，因此不属于
  * v0.29.0 要清理的那类重复；上调与「关键约定必须在场」以及下面「时效三条」的
  * 逐条断言绑定 —— 删掉任何一条，断言立刻红。
  */
@@ -185,29 +184,6 @@ test('委派给 schema 的规则必须在工具 description 里（从提示词�
   assert.ok(!slim.includes(needleOf('并发令牌（写入被拒后的动作）')), 'slim 不该再复述并发令牌（已在 put 的 schema 里）')
 })
 
-test('可选功能默认不打扰：不进提示词（v0.23.0）', () => {
-  // 微信发布是可选 + 需额外安装的：默认必须完全不出现发布相关文字。
-  assert.ok(!slim.includes('发布元数据规范'), '默认 slim 不得出现发布约定（微信发布默认关闭）')
-  assert.ok(!slim.includes('pub-state'), '默认 slim 不得出现 pub-state')
-  // 显式开启后才出现，且只多一行（~61 字符），仍在预算内。
-  const on = buildPromptText({ mode: 'slim', tools, wechat: true })
-  assert.ok(on.includes('发布元数据规范'), 'wechat:true 时必须带发布约定')
-  assert.ok(on.length <= SLIM_BUDGET, `开启后 slim 已 ${on.length} 字符，超出预算 ${SLIM_BUDGET}`)
-  const added = on.split('\n').filter((l) => !slim.split('\n').includes(l))
-  assert.equal(added.length, 1, `开关应当只增加 1 行，实际 ${added.length}`)
-  // 两种形态都受开关控制
-  assert.ok(!full.includes('发布元数据规范'), '默认 full 也不得出现发布约定')
-  assert.ok(buildPromptText({ mode: 'full', tools, wechat: true }).includes('发布元数据规范'))
-})
-
-test('草稿预览把 wechat 开关也算进去（否则勾选后预览是旧文本）', () => {
-  assert.deepEqual(normalizePromptPreview({ wechat: true }), { wechat: true })
-  assert.deepEqual(normalizePromptPreview({ wechat: 'yes' }), {}, '非布尔必须丢弃')
-  const dOff = describePrompt(normalizePromptPreview({ mode: 'slim' }), tools)
-  const dOn = describePrompt(normalizePromptPreview({ mode: 'slim', wechat: true }), tools)
-  assert.notEqual(dOff.text, dOn.text, '预览必须能区分可选功能开关')
-})
-
 test('full 的每个工具与每个参数都出现在文本里（自动生成、不会过期）', () => {
   for (const t of tools) {
     assert.ok(full.includes(`\`${t.name}\``), `full 缺少工具 ${t.name}`)
@@ -295,9 +271,10 @@ test('连续花括号（{{{…}}}）也必须被转义干净', () => {
 })
 
 // v0.22.7 — 草稿预览（设置页 POST /admin/prompt）的两个纯函数。
-test('normalizePromptPreview 只放行 5 个字段，未知键/错类型被丢弃', () => {
-  assert.deepEqual(normalizePromptPreview({ enabled: false, mode: 'full', extra: 'e', override: 'o', wechat: true }), { enabled: false, mode: 'full', extra: 'e', override: 'o', wechat: true })
-  assert.deepEqual(normalizePromptPreview({ mode: 'nonsense', extra: 42, enabled: 'yes', wechat: 'yes', nope: 'x' }), {}, '未知形态/错类型必须被丢弃（回落内置默认）')
+test('normalizePromptPreview 只放行 4 个字段，未知键/错类型被丢弃', () => {
+  assert.deepEqual(normalizePromptPreview({ enabled: false, mode: 'full', extra: 'e', override: 'o' }), { enabled: false, mode: 'full', extra: 'e', override: 'o' })
+  assert.deepEqual(normalizePromptPreview({ enabled: false, mode: 'full', extra: 'e', override: 'o', linkBase: '/x/' }), { enabled: false, mode: 'full', extra: 'e', override: 'o' }, 'linkBase 不属于草稿（预览只描述默认作用域）')
+  assert.deepEqual(normalizePromptPreview({ mode: 'nonsense', extra: 42, enabled: 'yes', nope: 'x' }), {}, '未知形态/错类型必须被丢弃（回落内置默认）')
   assert.deepEqual(normalizePromptPreview(undefined), {})
   assert.deepEqual(normalizePromptPreview('not-an-object'), {})
   assert.deepEqual(normalizePromptPreview(null), {})

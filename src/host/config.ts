@@ -139,34 +139,6 @@ export interface PluginConfigShape {
     showRightbarTab?: boolean
   }
   uiLanguage?: string
-  /**
-   * 微信公众号发布（**可选功能，默认关闭**，v0.23.0）。
-   *
-   * 这是一项**需要额外安装**的能力：真正干活的是仓库 `tools/wechat/` 下的
-   * opencli adapter + Browser Bridge 浏览器扩展（见 docs/wechat-publish-setup.md），
-   * 插件本体不含它、不装也不影响任何其他功能。
-   *
-   * 因此本开关默认 `false`——关闭时：
-   *   - 注入提示词**不含**发布相关的约定（不打扰不用该功能的用户）；
-   *   - 启动 seed **不写**「发布元数据规范」与「微信公众号发布指南」文档；
-   *   - `/wechat/*` 三条路由一律 403（TW 工具栏按钮也不会出现）。
-   * 打开后：提示词多一行发布前检查约定，并在启动时把这两篇文档写进 wiki。
-   * 保存后即时生效（提示词 section 会重注册），无需重启 dsh web。
-   *
-   * v0.23.3 新增三个可选字段，服务「TW 工具栏一键发布」：
-   *   - `command`：opencli 可执行文件（默认 `opencli`；装了别名/绝对路径时用）；
-   *   - `adapter`：`publish-note`（默认，支持 --cover 单图）或 `publish-note-imgs`
-   *     （正文内嵌图全部上传 CDN，需先重跑 install-wechat-adapters.mjs）；
-   *   - `token`：非空时 `/wechat/*` 要求请求头 `x-wechat-publish-token` 匹配
-   *     （按钮会把 token 带上；与 sendToAgent.token 同思路，防的是「任何能打开
-   *     DSH Web UI 的人都能用你本机 Chrome 对外发文」）；
-   *   - `dsn`：adapter 回连 DSH 的基址，留空 = 按请求端口自动推导
-   *     （`http://127.0.0.1:<端口>/dsh-tiddlywiki`）。
-   *   - `endpoint`（**只被 TW 侧读**，host 不用）：覆盖按钮自己的请求基址，
-   *     默认 `location.origin + /dsh-tiddlywiki`（同 sendToAgent.endpoint 的用途，
-   *     反向代理/远程访问场景）。
-   */
-  wechat?: { enabled?: boolean; command?: string; token?: string; adapter?: 'publish-note' | 'publish-note-imgs'; dsn?: string; endpoint?: string }
   [key: string]: unknown
 }
 
@@ -264,7 +236,6 @@ const BOOLEAN_CONFIG_PATHS = new Set<string>([
   'bridge.enabled', 'git.autoCommit', 'note.workspaceMark', 'prompt.enabled',
   'ui.followDshTheme', 'ui.showPanelStatus', 'ui.showQuickNote', 'ui.showQuickNoteDock',
   'ui.showRightbarTab', 'ui.showSessionTab', 'ui.showSyncButton', 'ui.sendToAgent.enabled',
-  'wechat.enabled',
 ])
 
 /** Known STRING paths (kept permissive about the VALUE; only the type is enforced). */
@@ -272,7 +243,7 @@ const STRING_CONFIG_PATHS = new Set<string>([
   'auth.password', 'auth.username', 'bridge.tag', 'bridge.token', 'bridge.wiki', 'git.branch', 'git.remote',
   'note.tag', 'prompt.extra', 'prompt.mode', 'prompt.override', 'ui.darkPalette',
   'ui.quickNoteMode', 'ui.sendToAgent.endpoint', 'ui.sendToAgent.token', 'ui.sidebarLabel',
-  'ui.tabLabel', 'uiLanguage', 'wechat.adapter', 'wechat.command', 'wechat.dsn', 'wechat.endpoint', 'wechat.token',
+  'ui.tabLabel', 'uiLanguage',
 ])
 
 /** Keys a patch must never carry (`deepMerge` would assign them onto the object). */
