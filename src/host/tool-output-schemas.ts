@@ -1,12 +1,14 @@
 /**
- * 工具**输出** schema（v0.30.66）。
+ * 工具**输出** schema（v0.31.0）。
  *
  * WHY THIS EXISTS
  * ---------------
  * `defineTool` 的 `output.schema` 以前被写死成 `{}`（v0.20.0 的判断是"注册表不读它"）。
- * DSH 0.2.1 的 `createSuccessResult` 会真的跑
+ * DSH 0.2.1+ 每次调用后都会真的跑
  * `validateJsonSchemaValue(tool.output.schema, value)` —— 校验不过就抛
- * `ToolOutputError`，工具调用直接失败。也就是说：**写实 schema 等于白送一层
+ * `ToolOutputError`，工具调用直接失败。（0.2.1 里这一步在 `createSuccessResult`，
+ * 0.2.2 起整个派发管线搬进了 `dsh-tools/lib/pipeline.js`，调用点与语义都没变；
+ * 校验器 `json-schema.js` 两版字节相同。）也就是说：**写实 schema 等于白送一层
  * 「execute 返回的形状」出口校验**，抓的是「render 与 value 漂移」这类事故
  * （返回了错 key / 错类型，而回执看着一切正常 —— v0.26.5 的 `fields` 按字符拆
  * 就是这一类的极端案例）。

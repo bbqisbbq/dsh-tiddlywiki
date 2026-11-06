@@ -2,7 +2,7 @@
  * Per-SESSION knowledge-base selector in the composer's tool row
  * (需求: 会话栏上面可动态选择当前会话能用的 wiki).
  *
- * SEAT (v0.30.66): `conversation.input.left` — DSH's documented seat for
+ * SEAT (v0.31.0): `conversation.input.left` — DSH's documented seat for
  * "compact controls at the left of the composer tool row" (`kind: 'list'`,
  * `scope: 'session'`, owner props `{}` plus the standard session-scoped props,
  * so `sessionId` still arrives).
@@ -15,11 +15,11 @@
  * · v0.28.7 rendered it INSIDE the quick-note dock row (a `scope` child), and
  *   v0.28.8 tried to upgrade blank sessions to
  *   `conversation.input.selector.context` next to the mode picker.
- * · v0.30.66 audit: **that seat does not exist in DSH 0.2.1** — not merely
- *   "undeclared by this shell": the string appears nowhere in the shipped
- *   client bundles nor in the host's slot catalogue. The blank-session branch
- *   was dead code that had never rendered, and the whole `blankSeat` hand-off
- *   dance existed only to stop two copies showing at once.
+ * · v0.31.0 audit: **that seat does not exist in DSH 0.2.1 (nor in 0.2.2)** — not
+ *   merely "undeclared by this shell": the string appears nowhere in either
+ *   version's slot catalogue nor in the shipped client bundles. The blank-session
+ *   branch was dead code that had never rendered, and the whole `blankSeat`
+ *   hand-off dance existed only to stop two copies showing at once.
  * · Now there is exactly ONE home: the tool row. No blank/active distinction,
  *   no second mount, no hand-off protocol.
  *
@@ -38,8 +38,8 @@ import * as React from 'react'
 import { t } from './i18n.ts'
 import { fetchStatus } from './status-cache.ts'
 import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
-// 切库后要立刻失效其它界面的作用域缓存（v0.28.8，见 wiki-scope.ts）。
-import { invalidateSessionWikiId } from './wiki-scope.ts'
+// 切库动作只有一份实现（v0.35.0）：POST /session/wiki + 成功后失效作用域缓存。
+import { switchSessionWiki } from './session-wiki.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
 
@@ -90,7 +90,7 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
     const [note, setNote] = React.useState<string | undefined>(undefined)
     const [busy, setBusy] = React.useState(false)
 
-    // 不测量、不补内边距（v0.30.66）：控件住在宿主的工具行里，那一行自己负责
+    // 不测量、不补内边距（v0.31.0）：控件住在宿主的工具行里，那一行自己负责
     // 与输入框对齐。历史上它塞在 dock 行里时需要 ref + 逐行测量，那套逻辑已随
     // 迁移退役（见 dock-align.ts 的模块头）。
 
@@ -142,38 +142,25 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
       const wanted = next === defaultId ? '' : next
       setBusy(true)
       void (async () => {
-        try {
-          const res = await fetch(SESSION_WIKI_ENDPOINT, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            // A generous budget: selecting a wiki that is not running STARTS it
-            // host-side (the tools resolve the scope synchronously and never start
-            // anything themselves), and a cold child can take tens of seconds.
-            body: JSON.stringify({ session: sessionId, wiki: wanted.length > 0 ? wanted : null }),
-            signal: AbortSignal.timeout(120_000),
-          })
-          const payload = (await res.json().catch(() => ({}))) as { ok?: boolean; scope?: string; resolved?: unknown; reason?: string; error?: string }
-          if (!res.ok || payload.ok !== true) {
-            setNote(payload.error ?? t('chrome.scopeSwitchFailed', { status: res.status }))
-            return
-          }
-          setScope(typeof payload.scope === 'string' ? payload.scope : wanted)
-          setDefaultWiki(readResolvedWiki(payload.resolved) ?? defaultWiki)
-          setNote(typeof payload.reason === 'string' ? payload.reason : undefined)
-          // 立即让工具卡/会话汇总重新解析作用域（v0.28.8）：它们按会话缓存 wiki id，
-          // 不失效的话切库后已显示的卡片仍带着旧库的 ?wiki= 与库徽标。
-          invalidateSessionWikiId(sessionId)
-        } catch (err) {
-          setNote(err instanceof Error ? err.message : String(err))
-        } finally {
+        // 切换动作只有一份实现（session-wiki.ts，v0.35.0）：POST /session/wiki +
+        // 解析回执 + 成功后 invalidateSessionWikiId。会话右键菜单用的是同一个函数，
+        // 这样"两套切库逻辑各自漂移"不可能发生。
+        const result = await switchSessionWiki(sessionId, wanted)
+        if (!result.ok) {
+          setNote(result.error)
           setBusy(false)
+          return
         }
+        setScope(result.scope)
+        if (result.resolved !== undefined) setDefaultWiki(result.resolved)
+        setNote(result.reason)
+        setBusy(false)
       })()
     }
 
     return React.createElement(
       'div',
-      // 不再挂 ref / 不再自己测量（v0.30.66）：这个控件现在住在宿主的工具行里，
+      // 不再挂 ref / 不再自己测量（v0.31.0）：这个控件现在住在宿主的工具行里，
       // 对齐由那一行负责。历史上这里挂 ref 是为了给 `alignDockEntry` 一个可测量
       // 的身份 —— 那套逻辑随「选择器塞进 dock 行」一起退役了。
       { className: 'dsh-tw-scope-dock' },

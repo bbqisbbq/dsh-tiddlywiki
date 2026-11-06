@@ -111,7 +111,7 @@ try {
     },
   )
   /**
-   * 每个工具的**真实返回值**（v0.30.66）。
+   * 每个工具的**真实返回值**（v0.31.0）。
    *
    * 用途：`output.schema` 现在会被 DSH 在每次调用后真的校验（不过即抛
    * `ToolOutputError`），所以"schema 写错了"不是风格问题，是**线上工具会坏**。
@@ -958,7 +958,7 @@ try {
     assert.ok(list.status !== undefined && typeof list.status.branch === 'string', 'list 应返回 git status')
   })
 
-  // ── 结果体量预算（v0.30.66）──────────────────────────────────────────────
+  // ── 结果体量预算（v0.31.0）──────────────────────────────────────────────
   //
   // 为什么要断这个：DSH 宿主对**单条**工具结果有两道闸（spill maxInlineTokens
   // 12500 / tool-result-pruner 8192 字符）。把整篇 25KB 笔记塞进一条结果，模型
@@ -1051,10 +1051,11 @@ try {
     await assert.rejects(() => call('tiddlywiki_export', { title: '导出测试', dir: 'relative/path' }), /绝对路径/)
   })
 
-  // ── 输出 schema（v0.30.66）────────────────────────────────────────────────
+  // ── 输出 schema（v0.31.0）────────────────────────────────────────────────
   //
-  // DSH 0.2.1 的注册表会在**每次调用之后**跑
-  // `validateJsonSchemaValue(tool.output.schema, value)`，不过就抛 ToolOutputError。
+  // DSH 0.2.1+ 的注册表会在**每次调用之后**跑
+  // `validateJsonSchemaValue(tool.output.schema, value)`，不过就抛 ToolOutputError
+  // （0.2.2 把整条派发管线搬进了 `dsh-tools/lib/pipeline.js`，校验点与校验器都没变）。
   // 所以 schema 写错不是风格问题，而是线上工具直接不可用。两条一起守：
   //   ① 每个工具都必须声明（新工具忘了补 → 红）；
   //   ② 用**本次 E2E 的真实返回值**反向校验声明 —— 抓「schema 比现实更严」。

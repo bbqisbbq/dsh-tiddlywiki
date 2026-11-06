@@ -100,7 +100,7 @@ export interface StartupStageDeps {
   /** The wiki's own location surface — only `defaultCurrentLocation` is read here. */
   defaultCurrentLocation: () => WikiLocation
   /**
-   * DSH's skill registry, when the host has one (v0.30.66).
+   * DSH's skill registry, when the host has one (v0.31.0).
    *
    * Present ⇒ the split-wiki skill is registered **in memory** (no file writes
    * into `$DSH_HOME`); absent ⇒ we keep the old file-install fallback.
@@ -125,7 +125,7 @@ export function createStartupStage(deps: StartupStageDeps): { start: () => Promi
   const start = async (): Promise<void> => {
     try {
       /**
-       * Ship the 「拆分知识库」 skill FIRST (v0.28.0; in-memory since v0.30.66).
+       * Ship the 「拆分知识库」 skill FIRST (v0.28.0; in-memory since v0.31.0).
        *
        * Two delivery paths, best one first:
        *   · **registry** (`ctx.skills.register`) — the skill lives in memory, is

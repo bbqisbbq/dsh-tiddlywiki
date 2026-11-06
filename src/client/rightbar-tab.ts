@@ -37,7 +37,7 @@ export const TW_RIGHTBAR_KIND = 'dsh-tiddlywiki'
 /** This implementation's identity in the tab system: the key its body registers under. */
 export const TW_RIGHTBAR_ID = 'dsh-tiddlywiki'
 /**
- * The guide-card identity (v0.30.66).
+ * The guide-card identity (v0.31.0).
  *
  * `sidebarRightTabs.register()` validates guide entries with
  * `new Set(entries.map(e => e.id))`, so an entry WITHOUT an `id` survives only
@@ -143,7 +143,7 @@ function rightbarDefinition(): Record<string, unknown> {
     kind: TW_RIGHTBAR_KIND,
     title: (): string => getTabLabel(),
     /**
-     * Keep the body mounted while the tab is hidden (v0.30.66).
+     * Keep the body mounted while the tab is hidden (v0.31.0).
      *
      * Without this flag the suite unmounts the body whenever the tab is hidden —
      * switching tabs, switching Session, collapsing the column — and our body

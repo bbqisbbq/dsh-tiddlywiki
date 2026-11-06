@@ -38,11 +38,25 @@ const SCOPE_TTL_MS = 15_000
 /** How long the very first `/session/wiki` read may take before we give up. */
 const FETCH_TIMEOUT_MS = 8_000
 
-interface ScopeEntry { wikiId: string | undefined; at: number }
+/**
+ * One resolved read. `wikiId` is what the CARDS use (the effective wiki, i.e.
+ * the explicit scope or the resolved default in multi mode). `scope` and
+ * `resolved` are the raw fields kept so a SYNCHRONOUS reader can tell the two
+ * apart — the session context menu (v0.35.0) has to mark "follow the default"
+ * and "the default wiki itself" as the same state, and it may not await.
+ */
+interface ScopeEntry {
+  wikiId: string | undefined
+  /** The explicit scope id, or `undefined` when the session follows the default. */
+  scope: string | undefined
+  /** The wiki the host resolved as effective, when it named one. */
+  resolved: string | undefined
+  at: number
+}
 
 const cache = new Map<string, ScopeEntry>()
 /** In-flight reads, so a card grid mounting at once makes ONE request. */
-const pending = new Map<string, Promise<string | undefined>>()
+const pending = new Map<string, Promise<ScopeEntry>>()
 /** Scope-invalidation subscribers (v0.29.0) — see invalidateSessionWikiId. */
 const scopeListeners = new Set<(sessionId?: string) => void>()
 
@@ -65,30 +79,70 @@ export async function resolveSessionWikiId(sessionId: string | undefined): Promi
   const hit = cache.get(sessionId)
   if (hit !== undefined && Date.now() - hit.at <= SCOPE_TTL_MS) return hit.wikiId
   const inFlight = pending.get(sessionId)
-  if (inFlight !== undefined) return inFlight
+  if (inFlight !== undefined) return (await inFlight).wikiId
 
-  const read = (async (): Promise<string | undefined> => {
+  const read = (async (): Promise<ScopeEntry> => {
+    const miss: ScopeEntry = { wikiId: undefined, scope: undefined, resolved: undefined, at: 0 }
     try {
       const res = await fetch(
         `${SESSION_WIKI_ENDPOINT}?session=${encodeURIComponent(sessionId)}`,
         { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) },
       )
-      if (!res.ok) return undefined
+      if (!res.ok) return miss
       const payload = (await res.json().catch(() => null)) as { scope?: unknown; resolved?: { id?: unknown }; mode?: unknown } | null
-      if (typeof payload?.scope === 'string' && payload.scope.length > 0) return payload.scope
+      const explicit = typeof payload?.scope === 'string' && payload.scope.length > 0 ? payload.scope : undefined
       const resolvedId = payload?.resolved?.id
-      if (payload?.mode === 'multi' && typeof resolvedId === 'string' && resolvedId.length > 0) return resolvedId
-      return undefined
+      const resolved = typeof resolvedId === 'string' && resolvedId.length > 0 ? resolvedId : undefined
+      const wikiId = explicit !== undefined
+        ? explicit
+        : (payload?.mode === 'multi' && resolved !== undefined ? resolved : undefined)
+      return { wikiId, scope: explicit, resolved, at: Date.now() }
     } catch {
-      return undefined
+      return miss
     } finally {
       pending.delete(sessionId)
     }
   })()
   pending.set(sessionId, read)
-  const wikiId = await read
-  cache.set(sessionId, { wikiId, at: Date.now() })
-  return wikiId
+  const entry = await read
+  // `at: 0` marks a FAILED read: caching it would freeze "no scope" for a whole
+  // TTL after one network hiccup. Only a real answer is trusted for a TTL.
+  if (entry.at > 0) cache.set(sessionId, entry)
+  return entry.wikiId
+}
+
+/** A synchronous view of one session's cached scope. */
+export interface SessionWikiScopePeek {
+  /** False when nothing has been read for this session yet (or the read failed). */
+  ready: boolean
+  /** Explicit scope id, absent when the session follows the registry default. */
+  scope?: string
+  /** The wiki the host resolved as effective, when it named one. */
+  resolved?: string
+}
+
+/**
+ * Read the cached scope WITHOUT awaiting anything (v0.35.0).
+ *
+ * WHY this exists: DSH 0.2.2's session context menu resolves its rows
+ * synchronously inside a 1s host budget, and awaiting `/session/wiki` there
+ * would either miss the budget or freeze the menu. The menu therefore reads
+ * this snapshot and, on a miss, fires `resolveSessionWikiId()` in the
+ * background so the NEXT open has data.
+ *
+ * A session with no fresh entry reports `ready: false` — deliberately NOT
+ * "no scope", because the two mean different things in the menu (one shows
+ * 「跟随默认」 as active, the other shows nothing at all and retries later).
+ */
+export function peekSessionWikiScope(sessionId: string | undefined): SessionWikiScopePeek {
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return { ready: false }
+  const hit = cache.get(sessionId)
+  if (hit === undefined || Date.now() - hit.at > SCOPE_TTL_MS) return { ready: false }
+  return {
+    ready: true,
+    ...(hit.scope === undefined ? {} : { scope: hit.scope }),
+    ...(hit.resolved === undefined ? {} : { resolved: hit.resolved }),
+  }
 }
 
 /**

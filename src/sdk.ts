@@ -166,7 +166,7 @@ export interface DefineToolOptions<A, V> {
   normalizeArgs?(args: Record<string, unknown>): Record<string, unknown>
   readonly output: {
     /**
-     * 可选：**返回值**的 schema（v0.30.66）。
+     * 可选：**返回值**的 schema（v0.31.0）。
      *
      * DSH 的注册表会用它在每次调用后校验 `execute` 的返回值
      * （`validateJsonSchemaValue` → `ToolOutputError`），所以这是唯一一处
@@ -206,7 +206,7 @@ export function defineTool<A extends Record<string, unknown>, V>(options: Define
     parameters,
     output: {
       /**
-       * The registry DOES read this (v0.30.66): DSH validates the returned value
+       * The registry DOES read this (v0.31.0): DSH validates the returned value
        * against it on every call. Unset → `{}` = no constraint, i.e. the old
        * behaviour. Tools that declare a schema get an exit check for free.
        */

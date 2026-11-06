@@ -46,7 +46,7 @@ export function defaultSkillRoot(): string {
 }
 
 /**
- * Structural face over DSH's skill registry (v0.30.66) — no `@deepseek-ai` import.
+ * Structural face over DSH's skill registry (v0.31.0) — no `@deepseek-ai` import.
  *
  * `ctx.skills.register()` keeps the skill **in memory**: it disappears when the
  * plugin unloads, it never touches the user's `$DSH_HOME`, and uninstalling

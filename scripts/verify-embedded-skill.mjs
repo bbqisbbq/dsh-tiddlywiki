@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * 嵌入式 skill 守门（v0.30.66）。
+ * 嵌入式 skill 守门（v0.31.0）。
  *
  * 背景：拆库 skill 过去只能靠**往用户目录写文件**（`$DSH_HOME/skills/<dir>/SKILL.md`），
- * 因为"插件无法注册 skill 根"。DSH 0.2.1 提供了 `ctx.skills.register()` ——
+ * 因为"插件无法注册 skill 根"。DSH 0.2.1 起提供了 `ctx.skills.register()`（0.2.2
+ * 复核：该服务与 `register()` 契约逐字未变）——
  * skill 可以只存在于内存里：随插件卸载消失、不碰用户 home、卸载后不会留残骸。
  *
  * 这条守门钉三件事：

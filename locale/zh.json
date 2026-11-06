@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "TiddlyWiki 知识库",
+    "description": "把 TiddlyWiki 5 变成你和 Agent 共用的本地文档中心：17 个 tiddlywiki_* 工具读写同一批纯文本笔记，每条都能读、能改、能审计，放在 git 里随时带走。"
+  }
+}

@@ -535,7 +535,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     workspaceMarkEnabled: () => effectiveWorkspaceMark(),
   }
   disposers.push(...registerTiddlywikiTools(ctx, toolsDeps))
-  // `/note` 斜杠命令（v0.30.66）：直接写一条笔记，不产生模型消息。宿主没有
+  // `/note` 斜杠命令（v0.31.0）：直接写一条笔记，不产生模型消息。宿主没有
   // `commands` 服务时静默跳过（老版本 DSH 仍然可用，只是没有这个命令）。
   try {
     const commands = ctx.get('commands') as CommandRegistryFace | undefined
@@ -600,7 +600,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     clipBridge,
     effectiveBridge,
     defaultCurrentLocation: () => wikiViews.defaultCurrentLocation(),
-    // 嵌入式 skill（v0.30.66）：宿主有 skill 注册表就注册到内存（不写用户目录），
+    // 嵌入式 skill（v0.31.0）：宿主有 skill 注册表就注册到内存（不写用户目录），
     // 没有就由 startup 回落到文件安装。
     skills: () => ctx.get('skills') as SkillRegistryFace | undefined,
     pushDisposer: (dispose) => disposers.push(dispose),

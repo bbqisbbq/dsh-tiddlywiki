@@ -105,7 +105,7 @@ export function getTool(env: ToolEnv) {
 }
 
 /**
- * 单条工具结果的字符预算（v0.30.66）。
+ * 单条工具结果的字符预算（v0.31.0）。
  *
  * 为什么是 12,000：DSH 宿主对**单条**工具结果有两道闸 —— `spill-policy` 的
  * `maxInlineTokens: 12500`（超了换成「首尾预览 + Omitted N bytes + 落盘路径」）

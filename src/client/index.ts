@@ -29,6 +29,8 @@ import { registerToolViews, installWikiLinkInterceptor } from './tool-views.ts'
 import { mountRightbarTab, type RightbarSlotsFace } from './rightbar-tab.ts'
 import { registerTidPreview } from './tid-preview.ts'
 import { registerLocaleWithHost } from './locale-host.ts'
+import { registerSessionWikiMenu } from './session-menu.ts'
+import { SETTINGS_SECTION_ID, SETTINGS_SECTION_ORDER, SettingsSectionIcon } from './settings-section-icon.ts'
 
 /** Client plugin name. */
 export const name = 'dsh-tiddlywiki/client'
@@ -116,9 +118,10 @@ export function apply(ctx: ClientContextFace): void {
     //   v0.28.0 独立 dock 条目 → 两边永远上下两行（dock 是纵向 flex，一个条目一整行）；
     //   v0.28.7 塞进快速笔记那一行（`scope` 参数）→ 能并排，但靠逐行测量对齐；
     //   v0.28.8 想给空白会话一个「模式选择器旁边」的座位 → 那个座位
-    //   `conversation.input.selector.context` 在 DSH 0.2.1 里**根本不存在**
-    //   （宿主座位表里没有，随包 client bundle 里连字符串都没有），那一支从未渲染。
-    //   v0.30.66：改挂 `conversation.input.left` —— 宿主为「输入工具行左侧的小控件」
+    //   `conversation.input.selector.context` 在 DSH 0.2.1 和 0.2.2 里**根本就不存在**
+    //   （0.2.1/0.2.2 的宿主座位表里都没有，随包 client bundle 里也搜不到这个字符串），
+    //   那一支从未渲染。
+    //   v0.31.0：改挂 `conversation.input.left` —— 宿主为「输入工具行左侧的小控件」
     //   提供的正式座位，空白/活动会话都有，一个家、无重复、由宿主负责对齐。
     if (ctx.slots !== undefined) {
       void fetchUiConfig().then((cfg) => {
@@ -135,7 +138,7 @@ export function apply(ctx: ClientContextFace): void {
             if (removeDock !== undefined) disposers.push(removeDock)
           })
         }
-        // 会话级知识库选择器：输入框工具行左侧（v0.30.66）。
+        // 会话级知识库选择器：输入框工具行左侧（v0.31.0）。
         // 组件自身在「可见库 ≤ 1」时返回 null —— 单库安装这一块 DOM 不存在。
         safeMount('wiki scope seat', () => {
           const removeScope = ctx.slots?.inject('conversation.input.left', () =>
@@ -198,15 +201,34 @@ export function apply(ctx: ClientContextFace): void {
     // 文案目录注册进宿主 locale 服务（v0.33.0）：目录**不搬家**，只是让宿主的语言
     // 运行时也能解析它；没有该服务时静默跳过（老版本 DSH 行为一个字节都不变）。
     safeMount('locale registration', () => disposers.push(...registerLocaleWithHost(ctx.get)))
+    // Sessions' right-click menu → 「绑定本会话知识库」(v0.35.0, DSH 0.2.2).
+    // `contextMenus` 是 shell 的可选服务（老宿主没有），所以走 ctx.get 的可选读法 +
+    // 有限重试，绝不写进 `inject`（写进去就成了「没有该服务就整个插件不加载」）。
+    safeMount('session context menu', () => disposers.push(...registerSessionWikiMenu(ctx.get)))
     // Settings page → Settings → 「TiddlyWiki 知识库」(config panel §13).
     safeMount('settings section', () => {
       const removeSettings = ctx.slots?.inject('settings.section', () =>
         ctx.slots?.register(
-          { name: 'settings.section', id: 'dsh-tiddlywiki', order: 50, label: t('frame.settingsSection') },
+          { name: 'settings.section', id: SETTINGS_SECTION_ID, order: SETTINGS_SECTION_ORDER, label: t('frame.settingsSection') },
           SettingsSection,
         ),
       )
       if (removeSettings !== undefined) disposers.push(removeSettings)
+    })
+    // 设置导航行的图标（v0.35.0, DSH 0.2.2 新座位 `settings.section.icon`）。
+    // 与上面那个座位是**两条注册、同一个 id**（宿主按 `only: row.id` 精确匹配），
+    // 所以 id 只能是 SETTINGS_SECTION_ID 这一个常量 —— 改一个忘一个就会静默回落
+    // 到宿主的默认齿轮。宿主没有该座位时 inject 拿不到声明，这里什么也不会注册，
+    // 卸载/未注册则由宿主的 `fallback: navIcon(row.id)` 恢复默认图标。
+    // 不传 `label`：宿主明说这个座位的 label 不显示（那是给导航行的，不是给图标的）。
+    safeMount('settings section icon', () => {
+      const removeIcon = ctx.slots?.inject('settings.section.icon', () =>
+        ctx.slots?.register(
+          { name: 'settings.section.icon', id: SETTINGS_SECTION_ID, order: SETTINGS_SECTION_ORDER },
+          SettingsSectionIcon,
+        ),
+      )
+      if (removeIcon !== undefined) disposers.push(removeIcon)
     })
     if (ctx.effect !== undefined) {
       ctx.effect(() => disposeAll, 'dsh-tiddlywiki: client mount')

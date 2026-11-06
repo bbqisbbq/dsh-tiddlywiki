@@ -155,9 +155,15 @@ test('会话选择器：走 /session/wiki，清空选择发 null 而不是空字
   assert.match(endpointsSrc, /SESSION_WIKI_ENDPOINT = `\$\{ROUTE_PREFIX\}\/session\/wiki`/, '端点定义必须是 /session/wiki')
   // v0.28.12：选中「默认库那一项」= 清空显式作用域 → 发 null（不再是 value='' 的占位选项，
   // 但"清空"的语义与对应的报文完全没变）。
-  assert.match(dockSrc, /wiki: wanted\.length > 0 \? wanted : null/, '清除选择（选中默认库那一项）必须发 null')
+  //
+  // v0.35.0：切库实现搬进 `session-wiki.ts`（会话右键菜单与选择器共用同一份，
+  // 免得长成两套会各自漂移的切库逻辑）⇒ 这两条规则改为在**新家**上断言。
+  const switchSrc = readFileSync(path.join(repoRoot, 'src/client/session-wiki.ts'), 'utf8')
+  assert.match(switchSrc, /wiki: wanted\.length > 0 \? wanted : null/, '清除选择（选中默认库那一项）必须发 null')
   // 选中一个没在跑的库会在宿主侧把它起起来，冷启动可能几十秒——预算必须够。
-  assert.match(dockSrc, /AbortSignal\.timeout\(120_000\)/, '启动一个库可能要几十秒，超时不能太短')
+  assert.match(switchSrc, /AbortSignal\.timeout\(120_000\)/, '启动一个库可能要几十秒，超时不能太短')
+  // 选择器本身不得再自己 POST：切库只有一份实现。
+  assert.match(dockSrc, /switchSessionWiki\(sessionId, wanted\)/, '选择器必须调用共享的 switchSessionWiki')
 })
 
 test('设置页：多库模式下**不再渲染**「知识库位置」（与列表重复，作者 2026-09-28 反馈）', () => {
@@ -171,11 +177,11 @@ test('设置页：多库模式下**不再渲染**「知识库位置」（与列�
   assert.match(settings, /WIKI_SWITCH_ENDPOINT/, '默认库改目录仍走 /admin/wiki/switch')
 })
 
-test('会话选择器：住在 conversation.input.left（工具行），快速笔记仍独占 dock 一行（v0.30.66）', () => {
+test('会话选择器：住在 conversation.input.left（工具行），快速笔记仍独占 dock 一行（v0.31.0）', () => {
   // 演进：v0.28.0 起选择器是**独立的** conversation.input.dock 条目 →
   // dock 是竖向 flex 列、**每个条目独占一整行**，两个条目永远上下两行；
   // v0.28.7 把它塞进 quick-note 条目（`scope` 参数）→ 能并排但要自己测量对齐；
-  // v0.30.66 改为挂宿主的 `conversation.input.left`（"Compact controls at the left
+  // v0.31.0 改为挂宿主的 `conversation.input.left`（"Compact controls at the left
   // of the composer tool row"），一个家、空白会话也有、对齐由宿主负责。
   const leftRegs = indexSrc.match(/name: 'conversation\.input\.left'/g) ?? []
   assert.equal(leftRegs.length, 1, `选择器必须且只能注册一个 conversation.input.left 条目（实际 ${leftRegs.length}）`)
@@ -190,13 +196,14 @@ test('会话选择器：住在 conversation.input.left（工具行），快速�
   assert.match(dockSrc, /sessionId\?: string/, '选择器组件的 props 必须含 sessionId（该槽位 scope=session）')
 })
 
-test('死座位必须彻底消失：conversation.input.selector.context 与它的让位协议（v0.30.66）', () => {
+test('死座位必须彻底消失：conversation.input.selector.context 与它的让位协议（v0.31.0）', () => {
   // 背景：v0.28.8 的需求是「新会话时在模式选择后面加个知识库选择」，参考实现用的是
-  // `conversation.input.selector.context`。**那个座位在 DSH 0.2.1 里根本不存在** ——
+  // `conversation.input.selector.context`。**那个座位在 DSH 0.2.1 里根本不存在**
+  // （0.2.2-rc.1 复核：仍然不存在）——
   // 宿主座位表（103 条）里没有它，随包 client bundle 里连字符串都搜不到。于是
   // scope-seat.ts 的 slots.inject() 永远等不到声明 -> 那一支从未渲染，而为了防"两个
   // 选择器"长出来的一整套 blankSeat 让位协议，服务的也是一个不会出现的局面。
-  // v0.30.66 把选择器移到 conversation.input.left 后，这些全部删除。
+  // v0.31.0 把选择器移到 conversation.input.left 后，这些全部删除。
   assert.ok(
     !existsSync(path.join(repoRoot, 'src/client/scope-seat.ts')),
     'scope-seat.ts 必须删掉：它注册的座位在宿主里不存在，等于死代码',
@@ -240,7 +247,7 @@ test('快速笔记：单库模式不得露出「写入」选择器（作者 2026
   assert.ok(guardBlock.includes('wikiSelect.disabled = true'), '单库时选择器必须被禁用')
 })
 
-test('dock 条目仍与 composer 输入框对齐；选择器已不参与行内测量（v0.30.66）', () => {
+test('dock 条目仍与 composer 输入框对齐；选择器已不参与行内测量（v0.31.0）', () => {
   const align = readFileSync(path.join(repoRoot, 'src/client/dock-align.ts'), 'utf8')
   const quick = readFileSync(path.join(repoRoot, 'src/client/quick-note-dock.ts'), 'utf8')
   const scope = readFileSync(path.join(repoRoot, 'src/client/wiki-scope-dock.ts'), 'utf8')
@@ -251,7 +258,7 @@ test('dock 条目仍与 composer 输入框对齐；选择器已不参与行内�
   assert.match(align, /paddingRight/, '对齐靠给条目补右内边距')
   assert.match(align, /ResizeObserver/, '侧栏开合会移动输入框卡片 → 必须观察祖先链重测')
 
-  // 只剩快速笔记这一个 dock 条目需要对（v0.30.66）：选择器搬去了工具行，
+  // 只剩快速笔记这一个 dock 条目需要对（v0.31.0）：选择器搬去了工具行，
   // 由宿主那一行负责对齐，因此它**不再**测任何东西。
   assert.match(quick, /alignDockEntry\(/, '快速笔记条目必须用共享对齐')
   assert.match(quick, /const wrap = wrapRef\.current[\s\S]{0,80}return alignDockEntry\(wrap\)/, '对齐必须挂在这一行的根元素上')

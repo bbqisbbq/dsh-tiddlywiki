@@ -31,7 +31,7 @@ import type {
 } from './tools-support.ts'
 
 /**
- * 单条工具回执的文本预算（v0.30.66）。
+ * 单条工具回执的文本预算（v0.31.0）。
  *
  * 与 `tiddlywiki_get` 的分页同一个理由：DSH 宿主对单条工具结果有 `spill-policy`
  * （`maxInlineTokens: 12500`，超了换成首尾预览 + 落盘）与
@@ -290,7 +290,7 @@ export function lintTool(env: ToolEnv) {
             ? '没有运行任何检查（请求的检查名全部无法识别）。'
             : '没有发现问题。')
         }
-        // 同一个回执预算（v0.30.66）：`limit` 是"每类几条"，管不住总字节数。
+        // 同一个回执预算（v0.31.0）：`limit` 是"每类几条"，管不住总字节数。
         let usedChars = lines.join('\n').length
         for (const issue of value.issues) {
           lines.push(`- ${issue.kind}：${issue.count} 处 — ${issue.hint}`)

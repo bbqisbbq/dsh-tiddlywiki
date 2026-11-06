@@ -53,6 +53,10 @@ export const CHROME_MESSAGES: { zh: Record<string, string>; en: Record<string, s
     'chrome.summaryBarHint': '产生 / 读取 / 检索过的笔记（含子代理）',
     'chrome.summaryRefreshTitle': '重新生成并刷新汇总',
     'chrome.summaryRefresh': '🔄 刷新',
+    // 会话右键菜单（v0.35.0，DSH 0.2.2 的 contextMenus 服务）：一行父项 + 子项。
+    // 「默认库」不作为名字出现：那一项叫「跟随默认」，勾选态就是默认库本身。
+    'chrome.menuWikiParent': '知识库',
+    'chrome.menuWikiFollowDefault': '跟随默认库',
   },
   en: {
     'chrome.scopeSlotLabel': 'Knowledge base',
@@ -99,5 +103,7 @@ export const CHROME_MESSAGES: { zh: Record<string, string>; en: Record<string, s
     'chrome.summaryBarHint': 'Notes created / read / searched (subagents included)',
     'chrome.summaryRefreshTitle': 'Regenerate and refresh the summary',
     'chrome.summaryRefresh': '🔄 Refresh',
+    'chrome.menuWikiParent': 'Knowledge base',
+    'chrome.menuWikiFollowDefault': 'Follow the default knowledge base',
   },
 }

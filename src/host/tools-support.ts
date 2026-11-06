@@ -142,7 +142,7 @@ export interface ExportResult {
 export interface GetResult {
   notFound: boolean
   title: string
-  /** The requested PAGE of the body (v0.30.66 — see `offset`/`textTotalChars`). */
+  /** The requested PAGE of the body (v0.31.0 — see `offset`/`textTotalChars`). */
   text: string
   /** Full body length in characters; `text.length` may be smaller (paging). */
   textTotalChars: number

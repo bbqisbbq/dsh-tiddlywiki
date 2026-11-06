@@ -516,7 +516,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 }
 .dsh-tw-fab-item[data-current="1"] { font-weight: 600; }
 
-/* ── 会话级知识库选择器（v0.28.0；v0.30.66 起住在 conversation.input.left）──
+/* ── 会话级知识库选择器（v0.28.0；v0.31.0 起住在 conversation.input.left）──
    它现在渲染在**输入框工具行**里（宿主的行内座位），所以：
    - inline-flex（行内小控件，宽度由内容决定，绝不 width:100%）；
    - 不自己测量/补 padding —— 对齐由宿主那一行负责（旧的逐行测量随 dock 内嵌

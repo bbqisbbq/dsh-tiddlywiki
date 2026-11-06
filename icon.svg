@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="64" height="64" role="img" aria-label="TiddlyWiki knowledge base">
+  <!-- Same motif as the Settings section icon (src/client/settings-section-icon.ts):
+       a note card with a bookmark ribbon and two text lines. Self-contained colours
+       because this file is rendered as an <img> data URL, where the CSS keyword that
+       inherits the surrounding text colour would resolve to black on any theme. -->
+  <rect width="16" height="16" rx="3.5" fill="#6b7280"/>
+  <path d="M4.6 3.6h6.8a1 1 0 0 1 1 1v7.8a1 1 0 0 1-1 1H4.6a1 1 0 0 1-1-1V4.6a1 1 0 0 1 1-1Z" fill="#ffffff" fill-opacity="0.93"/>
+  <path d="M9.9 3.6v3.4l1.15-.9 1.15.9V3.6" fill="#6b7280"/>
+  <path d="M5.7 9.2h4.6M5.7 11.1h2.9" stroke="#6b7280" stroke-width="1.1" stroke-linecap="round" fill="none"/>
+</svg>

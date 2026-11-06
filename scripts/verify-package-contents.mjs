@@ -35,6 +35,12 @@ const REQUIRED = [
   // from an installed copy, `docs/` carries the seed-initialization design doc.
   'src/index.ts',
   'docs/seed-initialization.md',
+  // 展示元数据（v0.35.0）：插件管理页在**不激活插件**的前提下读这两个——
+  // `locale/<lang>.json` 的 meta.title/description 与包根导出 `./icon`。
+  // 漏了不会报错，只会让插件卡静默退回 package.json 的英文描述与默认图标。
+  'locale/zh.json',
+  'locale/en.json',
+  'icon.svg',
 ]
 const FORBIDDEN = ['lib/client.bundle.js']
 /** package.json `files` 里声明的 lib/ 白名单。 */

@@ -201,7 +201,7 @@ const WRITE_RULES = `### 写入约定
 - 写入被拒（说明刚有人（在 TW 编辑器里）改过）时**重读一遍再决定**，不要用 \`force\` 硬覆盖。`
 
 /**
- * Governance block: WHEN to come and look (v0.30.66).
+ * Governance block: WHEN to come and look (v0.31.0).
  *
  * WHY IT HAS TO BE HERE, AND WHY IT IS FIRST
  * ------------------------------------------
@@ -219,7 +219,7 @@ const READ_RULES = `### 先查再答
 - 问题可能已沉淀成笔记（项目背景、历史决策、"之前记过的东西"）：**先 \`tiddlywiki_search\`**，命中不足再放宽词或换 tag/field，别凭记忆答；读整篇用 \`tiddlywiki_get\`，超长会分页、按回执里的 offset 续读。`
 
 /**
- * Governance block: 时效 / 去重 / 不写流水账 (v0.30.66, 作者 2026-10-26 提出)。
+ * Governance block: 时效 / 去重 / 不写流水账 (v0.31.0, 作者 2026-10-26 提出)。
  *
  * THE FAILURE IT FIXES
  * --------------------
@@ -294,7 +294,7 @@ export const PROMPT_GOVERNANCE_BLOCKS: readonly string[] = governanceBlocks(note
 
 /**
  * The governance blocks **in injection order** — the single source for both the
- * built body and the exported list the guard iterates (v0.30.66).
+ * built body and the exported list the guard iterates (v0.31.0).
  *
  * Why a function: the previous code had the exported list AND a hand-written
  * array inside `buildPromptText`, so adding a block to one of them silently

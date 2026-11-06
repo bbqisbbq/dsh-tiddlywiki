@@ -31,7 +31,7 @@ import { isEditorPopupOpen, isEditorPopupBlank, closeEditorPopup } from './edito
  * 最右端。注意 dock 槽位会把各条目包在一个容器里、与输入栏是兄弟节点，所以
  * 必须逐级往上爬祖先才能找到输入框。
  *
- * 这个条目**只**负责快速笔记按钮（v0.30.66）：会话级知识库选择器已迁到
+ * 这个条目**只**负责快速笔记按钮（v0.31.0）：会话级知识库选择器已迁到
  * `conversation.input.left`（宿主的工具行），不再由这里用 `scope` 参数带出来。
  * 它不再需要窗口 props，因此签名没有参数（slot 传什么都不会用到）。
  */
@@ -63,7 +63,7 @@ export function createQuickNoteDock(
       }
     }, [])
     // 与 composer 输入框右缘对齐：测量逻辑在 client/dock-align.ts（v0.28.2）。
-    // 这里仍然是 dock 的**整行**条目，所以仍需一次测量（v0.30.66：知识库选择器
+    // 这里仍然是 dock 的**整行**条目，所以仍需一次测量（v0.31.0：知识库选择器
     // 迁去工具行之后，"同一行里两个元素"的对齐问题整体消失了）。
     React.useLayoutEffect(() => {
       const wrap = wrapRef.current

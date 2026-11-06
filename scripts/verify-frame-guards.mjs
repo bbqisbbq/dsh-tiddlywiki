@@ -267,7 +267,7 @@ await test('死标记不再出现：dataset.visible / data-dsh-tw-rightbar', () 
   assertNo(rightbar, /data-dsh-tw-rightbar/, 'data-dsh-tw-rightbar 没有任何消费者')
 })
 
-await test('rightbar tab 类型：keepMounted + guide 条目 id（v0.30.66 对齐 DSH 0.2.1 契约）', () => {
+await test('rightbar tab 类型：keepMounted + guide 条目 id（v0.31.0 对齐 DSH 0.2.1 契约）', () => {
   // 切成「定义对象」那一段再断言：bodyOf() 会跳到签名里的第一个 `{`，而这里的
   // 签名带返回类型 `Record<string, unknown>`（本身就是花括号），用它必然取错区域。
   const defStart = rightbar.indexOf('function rightbarDefinition(')

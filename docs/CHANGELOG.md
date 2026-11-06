@@ -6,6 +6,15 @@
 
 ## 最近版本（详细）
 
+- **v0.35.0**（2026-11-06）：**对齐 DSH 0.2.2-rc.1（当时 npm `latest`）的契约审计与两批落地**。先说结论：17 个工具、5 个宿主挂点（`tools` / `systemPrompt.section` / `commands` / `skills` / `webServer`）、6 个客户端座位**一个都没有被破坏**——`ToolDefinition`、`ToolOutputDefinition`、`json-schema.js`（出口校验器）、`dsh-commands`、`dsh-skill` 两版**字节相同**，座位表 103 → 109 **零删除**。所以这一版没有"修 bug"，全是"跟上前进 + 用上新能力"。
+- **A：契约与元数据校准**。① `engines.dsh` 从 `>=0.2.1-rc.3` 改成 `>=0.2.1-rc.3 <0.3.0`——0.2.2 的 `dsh-app-boot` 会**真校验**它（`engines.dsh` 一旦存在，`peerDependencies` 就被完全忽略），没有上界等于对未来任何破坏版都声明兼容；下限**故意不抬到 0.2.2**：图标/右键菜单都是可选座位，老宿主上静默跳过、别的功能一切照旧。② 插件卡展示元数据补齐：`locale/{zh,en}.json` 只放 `meta.title`/`meta.description`（插件管理页在不激活插件的前提下读它），包根 `icon.svg` 走 `exports["./icon"]`；⚠️ 两样都必须同时在 `exports` 里开出来才生效（宿主用 Node ESM 解析器读，没导出就静默当"没有"）。③ 设置页导航拿到自己的图标：新座位 `settings.section.icon`（0.2.2 才有，`{id, order}` + `{size, active}`；与 `settings.section` **同一个 id**，宿主按 `only: row.id` 精确匹配、卸载即回落默认齿轮）——为此把 id/order 抽成 `SETTINGS_SECTION_ID` / `SETTINGS_SECTION_ORDER` 常量，改一个忘一个会静默失效。
+- **B：会话右键菜单「绑定本会话知识库」**（此前只能靠输入框左侧那个下拉）。用 0.2.2 的 `contextMenus` 服务注册一个 `target: 'session'` 的 provider（`resolve` 返回父项 + 可见库子项 + 「跟随默认库」），**不是**占用 `contextMenu.content` 的 key——那个座位的 key 是 target.kind，占 `'session'` 会**顶掉工作区自己的菜单内容**（`replaceRisk: shadows-shipped-ui`）。三条硬约束：解析器**全程同步**（宿主对 Promise 有 1000 ms 竞速预算，超时它会自己弹失败 toast）、可见库 ≤1 时返回 `[]`（单库安装没有"绑定"可言）、以及 `contextMenus` **只能 `ctx.get()` 可选读、绝不能进 `dsh.client.inject`**（进去就等于"没有该服务的宿主上整个插件不加载"）。切库动作抽成 `client/session-wiki.ts` 一份实现，与 composer 选择器共用（选择器那 30 行内联 POST 一并删掉）。
+- **顺手修掉的两处真问题**：① `verify-dsh-contract.mjs` 的工具视图切片用 `'] as const'` 当右界，而真实声明是 `: readonly string[] = [`——该子串不存在，`indexOf` 返回 **-1**，切片一路吃到文件尾（当前计数正确纯属巧合）；② 采集器只认 `name: '…'` 字面量，而 `sidebar.right.tab.document` 写在 `tid-parse.ts` 的常量里跨文件传递 ⇒ **v0.33.1 出事的那个 keyed 子槽从来没被守门覆盖过**。现在改成两段式（先建"值带点的字符串常量"表、按目录聚合，再解析 `name: <字面量|常量>`），并加一条**点名断言**——因为总数下限抓不住它：加完新座位是 8 个，常量解析失效会掉回 7，下限 7 照样绿（实测）。
+- **清理一个从未发布过的版本号**：全仓 41 处注释写 `v0.30.66`，而 CHANGELOG 从 v0.30.65 直接跳到 v0.31.0、git tag 也没有它。`git log -S` 逐条核对后**全部属于 v0.31.0 那批**，已统一改正（含 `rightbar-tab.ts` 两处、`sdk.ts` 的出口 schema、`/note` 与 skill 内存注册）——留着它，下次考古会找不到任何东西。
+- **一处行为变化（改善）**：`wiki-scope.ts` 原本把**失败**的 `/session/wiki` 读也写进 15 s 缓存，一次网络抖动会让"本会话作用域"15 秒内被当成"没有作用域"；现在只缓存真实答案，失败下次立刻重试。
+- **守门**：新增 `scripts/verify-context-menu.mjs`（进 `verify:unit`，12 条：可选读法不进 inject、有界重试、resolver 无 await/fetch、预热是 fire-and-forget、单库早退、只取 `agentVisible`、切库只有一份实现、分区与图标共用 id 常量、图标不传 label 且 `{size, active}` 只改描边、`locale/*.json` 只放 meta、`icon.svg` 在 256 KiB 内）；`verify-dsh-contract.mjs` 降低限 7 → 8 并加点名断言；`verify-package-contents.mjs` 把 `locale/{zh,en}.json` 与 `icon.svg` 列入必需（漏了不报错，只会让插件卡静默退回英文描述与默认图标）；`verify-wiki-focus.mjs` 的两条切库规则**原样**跟到 `session-wiki.ts`（不放宽）。反向验证：5 次注入（resolver 加 await / `contextMenus` 塞进 inject / 单库阈值改 ≤0 / 图标 id 改回硬编码 / 选择器自己再 POST）全部精确变红。
+- **刻意没做的**：① 「选中聊天文字 → 存成笔记」——0.2.2 只有**用户气泡**和 **reasoning 正文**带 `data-text-interaction-source`，助手 Markdown 正文没有，做了会有"有时候能选中、有时候不能"的观感，留待后续；② `contextMenu.icon`——宿主实现传 `{icon}`、契约目录写 `{key, src?}`，两者矛盾，菜单行没图标不会坏，所以不赌；③ `ToolRegistrationOptions.when`——省的那点声明 token 抵不上"工具声明与注入提示词不一致"的风险；④ `/tw/*`、`/upload`、`/render` 改 `WebResource`——它以 Fetch 语义只答 GET/HEAD，而 TW 写操作要 PUT/DELETE，`/session/wiki` 还是 GET+POST 同路径。
+
 - **v0.34.1**（2026-11-06）：**修 `tiddlywiki_search` 的「纯标签筛选」**（issue #1，用户实测报告）。
 - **症状**：只传 `tags` / `tag`、不传 `query` 时**三层坏**，一层修完才露出下一层 —— ① `Cannot read properties of undefined (reading 'split')`；② 崩溃修掉后**恒返回 0 条**（标签过滤等于没生效）；③ 再修报 `tool "tiddlywiki_search" returned invalid output: value is not lossless JSON`。带 `query` 时一切正常，所以「按标签列出」这条日常用法一直没被任何用例走过。
 - **三处根因**：① `TiddlyWikiClient.search()` 签名写死 `query: string` 且首行裸调 `query.split(…)`，而工具 schema 里 `query` 本就是可选的（`snippetAround` 同源，正文 > 160 字时同样炸）；② 空查询的短路 `if (terms.length === 0) return { items: [], total: 0 }` 写在 `wantedTags` 过滤**之前** ⇒ 标签判断永远执行不到；③ 回执里 `query: args.query` 把 `undefined` 回给宿主，DSH 的 lossless-JSON 校验因此判整次调用 invalid output。
@@ -49,14 +58,11 @@ v0.33.1 修好了 `key` 配对，但用户实测仍是纯文本，且 devtools �
 
 - **v0.33.0**（2026-10-26）：**客户端文案目录接进宿主 locale 服务（⑥b 的落地形态：注册，但不搬）**。原计划把 470+ 条键整体迁进 `ctx.locale.register(ns, {zh,en})`，但官方要求命名空间先并入 `LocaleNamespaceMap` 由**编译器**按类型化键并集校验 —— 本插件客户端是 esbuild 产出的单文件、无 `.d.ts`，参与不了那个类型合并，迁过去等于**放弃 `scripts/verify-client-i18n.mjs` 现有的键名校验**，去换一个「改语言即时生效」。现在两条都不放弃：**目录仍只有一份**（`i18n-catalog.ts` 的 7 个分片，宿主与本地共用同一个对象），启动时注册进宿主 locale 服务，并把宿主的 `bind(ns)` 接到 `t()` 前面 —— **宿主优先、本地表兜底**：服务缺失（老版本 DSH）、`register` 抛错、`bind` 不存在、宿主回空串 / 回键名本身 / 回非字符串，一律退回本地表，所以最差行为等于 v0.32.0。⚠️ 每次注册尝试都会先清掉上一次的绑定：留着旧解析器会让 `t()` 继续问一个已经不存在的命名空间（这一点是写守门时被自己的用例抓出来的）。**守门**：新增 `scripts/verify-locale-host.mjs`（进 `verify:unit`，7 条）—— 命名空间常量、无服务时静默跳过、注册的必须是**同一份** `MESSAGES`（另抄一份会慢慢分叉而界面看着正常）、`register` 的 disposer 必须回收、宿主优先、四类宿主异常必须回落、`t()` 必须委托给 `translate` 且保留本地兜底、接线必须在 `safeMount` 里。
 
-- **v0.32.0**（2026-10-26）：**新增 `.tid` / `.tiddler` 文件的侧栏预览**（⑦ 的第三项）。wiki 文件夹本身就是一堆 `.tid`，而 DSH 的文件预览把未知扩展名当纯文本 —— 打开一个 `.tid` 看到的是 `title: …` 字段行加原始 wikitext，`[[链接]]`/`<<宏>>` 几乎不可读。现在注册一个预览实现：元数据用 `ctx.documentPreviews.register({ id, extensions: ['tid','tiddler'], priority, title, loading: 'text-pages' })`，正文以**同一个 id** 注入 keyed、Session 作用域的 `sidebar.right.tab.document`；正文把 wikitext POST 到本插件自己的 `/dsh-tiddlywiki/render`（铁律 #7 的净化管道）换成真 TW 渲染结果，字段行单独排一行摘要。**绝不白屏**是这个功能的硬约束：拿不到内容 → "等待文件内容…"；只有字段没有正文 → 明确说明；渲染失败 → `<pre>` 原文 + 一句"渲染失败，下面是原文"。宿主没有 `documentPreviews` 服务时**什么都不做**（老版本 DSH 不受影响），且元数据与正文必须**成对**（拿不到 slots 就把已注册的元数据撤回，单边注册会让面板空白）。契约是从宿主 `app.asar` 的 `dsh-client-ui-sidebar-documentpreview/lib/client.js` 逐行核实后写的（含 `TextPreview` 的完整 props 签名与 `content` 三态），全部记在 `docs/development.md`。**守门**：新增 `scripts/verify-tid-preview.mjs`（进 `verify:unit`，10 条）——纯解析用例（字段/CRLF/没有字段必须整份当正文/只有字段/空文本）+ **成对注册**（两处必须用同一个 `TID_PREVIEW_ID` 常量、正文必须先 `slots.inject` 再 `register`）+ **绝不白屏**（`<pre>` 兜底、三种空态各自的 `t()` 文案）+ 渲染必须走 `RENDER_ENDPOINT` 且失败回 `null` 不抛 + 可选依赖的静默跳过与回滚。纯逻辑拆在 `client/tid-parse.ts`（宿主 barrel 也要导它，而宿主包里不能出现 `react`），`client/tid-preview.ts` 只放 UI。客户端 i18n 473 → 477 键。
-
-
-
-## 历史版本（一句话，152 条，新的在上）
+## 历史版本（一句话，153 条，新的在上）
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v0.32.0 | 2026-10-26 | 新增 `.tid`/`.tiddler` 侧栏预览（元数据 + 正文成对注册，正文走 `/render` 净化管道换成真 TW 渲染；绝不白屏） |
 | v0.31.1 | 2026-10-26 | 新增 `tiddlywiki_export`（笔记落盘：md/tid/json，同名拒绝覆盖、系统条目拒绝）+ 工具数 16→17 |
 | v0.31.0 | 2026-10-26 | 对齐 DSH 0.2.1 的改造（选库入口搬到 `conversation.input.left`、`verify-dsh-contract`、`get` 分页、16 个工具补 `output.schema`、skill 走 `ctx.skills.register`、新增 `/note` 命令、提示词加「先查再答」「时效与去重」） |
 | v0.30.65 | 2026-10-09 | 新增 tiddlywiki_replace 工具（笔记正文局部替换） |

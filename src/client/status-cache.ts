@@ -87,7 +87,24 @@ export interface StatusPayload {
 /** TTL for the shared status cache (the host itself caches git status 2s). */
 const STATUS_TTL_MS = 2_000
 
+/**
+ * How long a SYNCHRONOUS snapshot stays readable (v0.35.0).
+ *
+ * Longer than {@link STATUS_TTL_MS} on purpose: this is not a request cache but
+ * a "what did we last learn" memo for callers that may not await (the session
+ * context menu, whose resolver runs inside a 1 s host budget). 60 s is short
+ * enough that a wiki added/removed in the settings page shows up quickly, and
+ * long enough that a menu opened between polls never comes up empty.
+ */
+const SNAPSHOT_TTL_MS = 60_000
+
 let cache: { at: number; value: Promise<StatusPayload | null> } | undefined
+
+/**
+ * Last successfully parsed payload, kept for {@link peekStatus}. `at` is the
+ * moment THAT payload arrived, not the moment of the peek.
+ */
+let snapshot: { at: number; value: StatusPayload } | undefined
 
 /**
  * Fetch `/status`, coalescing concurrent callers and reusing a response for
@@ -107,6 +124,8 @@ export function fetchStatus(): Promise<StatusPayload | null> {
       // payload 没有 `lang`，而这里每 2s 无条件调用一次 —— 一次缺字段就会把用户选的
       // `en` 永久打回 `zh`（`setLang()` 自身也拒绝空值，这里是第二道闸）。
       if (typeof payload.lang === 'string' && payload.lang.trim().length > 0) setLang(payload.lang)
+      // A real answer is the only thing `peekStatus` may ever hand out.
+      snapshot = { at: Date.now(), value: payload }
       return payload
     } catch {
       return null
@@ -121,4 +140,20 @@ export function fetchStatus(): Promise<StatusPayload | null> {
 /** Drop the cached probe (settings saved / explicit refresh). */
 export function invalidateStatus(): void {
   cache = undefined
+  snapshot = undefined
+}
+
+/**
+ * Read the most recent `/status` payload WITHOUT awaiting (v0.35.0).
+ *
+ * Returns `undefined` when nothing has been read yet, when the last read
+ * failed, or when the snapshot is older than {@link SNAPSHOT_TTL_MS}. Callers
+ * that need data but may not block (the session context menu) treat
+ * `undefined` as "not now" and warm the cache for the next attempt with
+ * `void fetchStatus()`; they never invent a payload.
+ */
+export function peekStatus(): StatusPayload | undefined {
+  if (snapshot === undefined) return undefined
+  if (Date.now() - snapshot.at > SNAPSHOT_TTL_MS) return undefined
+  return snapshot.value
 }
