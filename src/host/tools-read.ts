@@ -47,9 +47,9 @@ export function searchTool(env: ToolEnv) {
   // ── tiddlywiki_search ────────────────────────────────────────────────────
   return defineTool({
     name: 'tiddlywiki_search',
-    description: '检索 TiddlyWiki 持久知识库：按关键词（可选 tags 数组 / since 修改时间 / type / field+value / limit）搜索非系统 tiddler，按相关度排序返回标题、标签、修改时间与命中处上下文片段。二进制 tiddler（图片等附件，正文为 base64）不参与检索。查询按空白切词、**所有词都必须命中**（AND）。若当前会话属于某个工作区，会**先在该工作区内检索、命中为空才自动扩大到全库**，回执会写明用了哪个范围（传了 tags / tag / field / value 时视为调用方已给出明确范围，不再自动收窄）。',
+    description: '检索 TiddlyWiki 持久知识库：按关键词（可选 tags 数组 / since 修改时间 / type / field+value / limit）搜索非系统 tiddler，按相关度排序返回标题、标签、修改时间与命中处上下文片段。**query 可省略**——只传 tags/tag/field/since/type 时就是「按条件列出」（v0.34.1），此时按修改时间倒序。二进制 tiddler（图片等附件，正文为 base64）不参与检索。查询按空白切词、**所有词都必须命中**（AND）。若当前会话属于某个工作区，会**先在该工作区内检索、命中为空才自动扩大到全库**，回执会写明用了哪个范围（传了 tags / tag / field / value 时视为调用方已给出明确范围，不再自动收窄）。',
     parameters: {
-      query: { type: 'string', description: '搜索关键词（大小写不敏感，子串匹配；命中标题/标签/正文，标题命中权重最高）。多词按空白切分，**全部词都要命中**才算（AND）——例如「部署 步骤」只返回同时含这两词的笔记' },
+      query: { type: 'string', description: '搜索关键词（大小写不敏感，子串匹配；命中标题/标签/正文，标题命中权重最高）。多词按空白切分，**全部词都要命中**才算（AND）——例如「部署 步骤」只返回同时含这两词的笔记。⚠️ 省略 query 且给了 tags/tag/field/since/type 时＝按这些条件列出（不是空结果）' },
       tags: { type: 'array', items: { type: 'string' }, description: '可选：要求同时包含的标签（AND）' },
       tag: { type: 'string', description: '可选：单个精确标签（与 tags 同为 AND）' },
       since: { type: 'string', description: '可选：ISO 时间（如 2026-09-01 或 2026-09-01T00:00:00Z），只返回修改时间不早于它的 tiddler' },
@@ -75,7 +75,12 @@ export function searchTool(env: ToolEnv) {
         } else if (value.workspace !== null && value.fellBack) {
           scope = ` · 工作区 ${WORKSPACE_TAG_PREFIX}${value.workspace} 内 0 条，已扩大到全库`
         }
-        const head = `TiddlyWiki 搜索「${value.query}」${filters.length > 0 ? ` (${filters.join(' · ')})` : ''}：命中 ${value.total} 条${scope}（按相关度排序）。`
+        // v0.34.1：query 可为空（纯标签/字段列出）。用 ?? '' 兜底，免得渲染路径
+        // 因为「回执里没有关键词」而崩掉整张工具卡。
+        const query = value.query ?? ''
+        const head = query.length > 0
+          ? `TiddlyWiki 搜索「${query}」${filters.length > 0 ? ` (${filters.join(' · ')})` : ''}：命中 ${value.total} 条${scope}（按相关度排序）。`
+          : `TiddlyWiki 按条件列出${filters.length > 0 ? ` (${filters.join(' · ')})` : ''}：命中 ${value.total} 条${scope}（按修改时间倒序）。`
         const lines = [head]
         if (value.results.length === 0) lines.push('没有匹配的 tiddler。')
         // `limit` 管"查多少条"，这里管"回执多大"（见 RENDER_TEXT_BUDGET_CHARS）。
@@ -100,8 +105,12 @@ export function searchTool(env: ToolEnv) {
         return [{ type: 'text', text: lines.join('\n') }]
       },
     },
-    execute: async (args: { query: string; tags?: string[]; tag?: string; since?: string; type?: string; field?: string; value?: string; limit?: number }, exec: unknown): Promise<SearchResult> => {
+    execute: async (args: { query?: string; tags?: string[]; tag?: string; since?: string; type?: string; field?: string; value?: string; limit?: number }, exec: unknown): Promise<SearchResult> => {
       const wiki = requireWiki(sessionIdOf(exec))
+      // v0.34.1（issue #1）：`query` 在 schema 里是可选的，纯标签筛选时调用方不传它。
+      // 这里归一成 ''，下游（search / snippetAround / 回执）就不用各自判空 ——
+      // 尤其是回执里塞 undefined 会让 DSH 的 lossless-JSON 校验整次判 invalid。
+      const query = args.query ?? ''
       const options = {
         tags: args.tags,
         tag: args.tag,
@@ -120,12 +129,12 @@ export function searchTool(env: ToolEnv) {
       const mark = explicitScope ? undefined : workspaceMarkFor(deps, exec)
       let narrowed: { items: Tiddler[]; total: number } | undefined
       if (mark !== undefined) {
-        narrowed = await wiki.search(args.query, { ...options, tags: [mark.tag] })
+        narrowed = await wiki.search(query, { ...options, tags: [mark.tag] })
       }
       const usedWorkspace = narrowed !== undefined && narrowed.total > 0
-      const { items, total } = usedWorkspace ? narrowed as { items: Tiddler[]; total: number } : await wiki.search(args.query, options)
+      const { items, total } = usedWorkspace ? narrowed as { items: Tiddler[]; total: number } : await wiki.search(query, options)
       return {
-        query: args.query,
+        query,
         tags: args.tags ?? [],
         since: args.since ?? null,
         type: args.type ?? null,
@@ -135,7 +144,7 @@ export function searchTool(env: ToolEnv) {
         workspace: mark?.id ?? null,
         scope: usedWorkspace ? 'workspace' : 'all',
         fellBack: mark !== undefined && !usedWorkspace,
-        results: items.map((t) => ({ title: t.title, tags: t.tags ?? [], modified: toIsoDateString(t.modified), snippet: snippetAround(t.text ?? '', args.query) })),
+        results: items.map((t) => ({ title: t.title, tags: t.tags ?? [], modified: toIsoDateString(t.modified), snippet: snippetAround(t.text ?? '', query) })),
       }
     },
   })

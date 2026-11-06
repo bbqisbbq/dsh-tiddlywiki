@@ -467,18 +467,37 @@ export class TiddlyWebClient {
    * `书籍 索引` (with the space) and returned 0 hits while each word matched
    * dozens — a query shape every model produces naturally, and one that reads
    * as "the knowledge base is empty" rather than as a syntax error.
+   *
+   * v0.34.1 — TAGS-ONLY (issue #1): `query` is OPTIONAL in the tool schema, but
+   * this signature said `string` and the body called `query.split(…)` — so
+   * `tiddlywiki_search({ tags: ['x'] })` died with
+   * `Cannot read properties of undefined (reading 'split')`. Worse, even with
+   * the crash gone, the empty-query short-circuit sat ABOVE `wantedTags`, so a
+   * "list by tag" call could never reach the tag filter and returned 0 rows.
+   * The rule now is: an empty query matches nothing **only when it is the only
+   * filter** — with tags / since / type / field present, "list by condition" is
+   * the whole point (and `for (const term of terms)` simply leaves allTerms
+   * true, so ranking falls back to newest-first).
    */
-  async search(query: string, options: SearchOptions = {}): Promise<{ items: Tiddler[]; total: number }> {
+  async search(query: string | undefined, options: SearchOptions = {}): Promise<{ items: Tiddler[]; total: number }> {
     const items = await this.list(undefined, true)
-    const terms = query.split(/\s+/).map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0)
-    // An empty query matched nothing before (every hit flag was gated on a
-    // non-empty needle) — keep that, rather than "match everything".
-    if (terms.length === 0) return { items: [], total: 0 }
+    const terms = (query ?? '').split(/\s+/).map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0)
     const sinceTime = parseSince(options.since)
     const wantedTags = [...(options.tags ?? []), options.tag].filter((t): t is string => typeof t === 'string' && t.trim().length > 0)
     const limit = clampLimit(options.limit, 30)
+    const typeFilter = typeof options.type === 'string' && options.type.length > 0 ? options.type : undefined
     const fieldName = typeof options.field === 'string' && options.field.length > 0 ? options.field : undefined
     const fieldValue = typeof options.value === 'string' ? options.value : undefined
+    // An empty query matched nothing before (every hit flag was gated on a
+    // non-empty needle) — keep that, rather than "match everything" — but only
+    // while there is no other condition the caller asked for.
+    if (
+      terms.length === 0
+      && wantedTags.length === 0
+      && sinceTime === undefined
+      && typeFilter === undefined
+      && fieldName === undefined
+    ) return { items: [], total: 0 }
     const matched: Array<{ t: Tiddler; score: number }> = []
     for (const t of items) {
       if (t.title.startsWith('$:/')) continue
@@ -501,7 +520,7 @@ export class TiddlyWebClient {
         const modified = parseTiddlerDate(t.modified)
         if (modified === undefined || modified < sinceTime) continue
       }
-      if (options.type !== undefined && options.type.length > 0 && (t.type ?? 'text/vnd.tiddlywiki') !== options.type) continue
+      if (typeFilter !== undefined && (t.type ?? 'text/vnd.tiddlywiki') !== typeFilter) continue
       if (wantedTags.length > 0) {
         if (!wantedTags.every((w) => lowerTags.includes(w.toLowerCase()))) continue
       }

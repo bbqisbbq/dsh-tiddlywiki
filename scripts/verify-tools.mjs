@@ -577,6 +577,56 @@ try {
     assert.ok(recPast.results.some((x) => x.title === 'SinceProbeNew'), 'recent 的 since=2020 应保留未来的那条探针')
   })
 
+  // ── search：纯标签筛选（v0.34.1，issue #1）───────────────────────────────
+  //
+  // 现场（用户 0.34.0 实测）：只传 tags / tag、不传 query 时**三层坏**，一层修完
+  // 才露出下一层：
+  //   ① `TiddlyWikiClient.search` 的签名是 `query: string` 且第一行裸调
+  //      `query.split(…)` ⇒ `Cannot read properties of undefined (reading 'split')`；
+  //   ② 空查询的短路 `if (terms.length === 0) return { items: [], total: 0 }` 写在
+  //      `wantedTags` 过滤**之前** ⇒ 「按标签列出」永远执行不到标签判断，修掉崩溃
+  //      后仍稳定返回 0 条；
+  //   ③ 回执里 `query: args.query` 直接把 undefined 回给宿主 ⇒ DSH 的
+  //      lossless-JSON 校验判 `returned invalid output`，整次调用作废。
+  // 带 query 时一切正常，所以「纯标签筛选」这条常用路径从来没被任何用例走过。
+  // 下面三层一起钉：能跑通（不抛）、条数对（不是 0）、回执可 JSON 无损往返。
+  await test('search：纯标签筛选不崩、不为 0 条、回执可 JSON 无损往返（issue #1 三层）', async () => {
+    const longBody = 'tagprobe 前缀'.repeat(30) // > 160 字符，必须走 snippetAround 的命中定位分支
+    await api.put({ title: 'TagOnlyA', text: longBody, type: 'text/markdown', tags: ['tag-only-probe', 'shared-tag'] })
+    await api.put({ title: 'TagOnlyB', text: 'tag only b', type: 'text/markdown', tags: ['tag-only-probe'] })
+    await api.put({ title: 'TagOnlyC', text: 'tag only c', type: 'text/markdown', tags: ['shared-tag'], workspace: 'tagprobe-ws' })
+
+    // ① 不崩 + ② 有结果：tags 数组
+    const byTags = await call('tiddlywiki_search', { tags: ['tag-only-probe'], limit: 50 })
+    assert.equal(byTags.total, 2, `纯 tags 筛选必须真的按标签过滤（旧实现固定 0 条）：${JSON.stringify(byTags.results.map((r) => r.title))}`)
+    assert.ok(byTags.results.some((r) => r.title === 'TagOnlyA'), `长正文条目也要能摘要出来（旧实现在 snippetAround 里同样崩）：${JSON.stringify(byTags.results)}`)
+    assert.ok(!byTags.results.some((r) => r.title === 'TagOnlyC'), `不带该标签的条目不得混进来：${JSON.stringify(byTags.results.map((r) => r.title))}`)
+    // ③ 回执必须可无损往返（undefined 属性会让 JSON.stringify 丢掉键 ⇒ 这里会红）
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(byTags)),
+      byTags,
+      `回执必须能被 JSON 无损往返（query 不得是 undefined，DSH 的 lossless-JSON 校验会因此判 invalid output）：${JSON.stringify(byTags)}`,
+    )
+    assert.equal(byTags.query, '', '回执里的 query 必须是空字符串而不是 undefined/null')
+
+    // 单值 tag 与 tags 同口径
+    const byTag = await call('tiddlywiki_search', { tag: 'tag-only-probe', limit: 50 })
+    assert.equal(byTag.total, 2, `单值 tag 应与 tags:[…] 同口径，实际 ${byTag.total}（${JSON.stringify(byTag.results.map((r) => r.title))}）`)
+    // 多标签仍是 AND
+    const andTags = await call('tiddlywiki_search', { tags: ['tag-only-probe', 'shared-tag'], limit: 50 })
+    assert.deepEqual(andTags.results.map((r) => r.title), ['TagOnlyA'], `多标签必须 AND（只留同时带两标签的）：${JSON.stringify(andTags.results.map((r) => r.title))}`)
+    // tags + field/value 仍能一起用
+    const withField = await call('tiddlywiki_search', { tags: ['shared-tag'], field: 'workspace', value: 'tagprobe-ws', limit: 50 })
+    assert.deepEqual(withField.results.map((r) => r.title), ['TagOnlyC'], `tags + field/value 应同时生效：${JSON.stringify(withField.results.map((r) => r.title))}`)
+    // 只给 since / type（同样没有 query）也不能退化成「空结果」
+    const byType = await call('tiddlywiki_search', { type: 'text/markdown', tag: 'shared-tag', limit: 50 })
+    assert.ok(byType.total >= 2, `type + tag 无 query 时也应列出：${byType.total}`)
+    // 纯标签筛选的渲染不得写出空的「搜索「」」
+    const rendered = tools.get('tiddlywiki_search').output.render({}, byTags).map((b) => b.text).join('\n')
+    assert.ok(!rendered.includes('搜索「」'), `无关键词时回执不该写成「搜索「」」：${rendered.split('\n')[0]}`)
+    assert.match(rendered.split('\n')[0], /按条件列出/, `无关键词时回执应说明这是按条件列出：${rendered.split('\n')[0]}`)
+  })
+
   // ── delete / rename ──────────────────────────────────────────────────────
   await test('delete：幂等（重复删除与删除不存在都不报错）', async () => {
     const d1 = await call('tiddlywiki_delete', { title: 'ToolsNew' })
@@ -729,9 +779,12 @@ try {
       !both.results.some((r) => r.title === 'AndProbeOnly'),
       `只命中一个词的笔记不得出现（那会退化成 OR）：${JSON.stringify(both.results.map((r) => r.title))}`,
     )
-    // 空查询保持旧的「空结果」语义（别把空串切成 '' 后匹配一切）
-    const empty = await call('tiddlywiki_search', { query: '   ', tag: 'and-probe' })
-    assert.equal(empty.total, 0, `空白查询必须返回 0 条，实际 ${empty.total}`)
+    // 空查询 + 其它过滤条件 = 「按条件列出」（v0.34.1，issue #1）；只有「光有空查询、
+    // 没有任何其它条件」才是「不匹配任何东西」。
+    const blank = await call('tiddlywiki_search', { query: '   ', tag: 'and-probe' })
+    assert.ok(blank.total >= 2, `空白 query + tag 应按标签列出（v0.34.1 前这里恒为 0）：${JSON.stringify(blank)}`)
+    const bare = await call('tiddlywiki_search', { query: '   ' })
+    assert.equal(bare.total, 0, `光有空查询（无任何其它条件）仍必须返回 0 条，实际 ${bare.total}`)
   })
 
   await test('search：先在工作区内查，命中就报 scope=workspace 且不带出别的工作区', async () => {

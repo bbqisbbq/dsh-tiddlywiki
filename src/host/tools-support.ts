@@ -351,7 +351,7 @@ export function withWorkspaceMark(
  * literally. Fall back to the earliest individual term before giving up, or a
  * perfectly good hit would still render the head of the note.
  */
-export function snippetAround(text: string, query: string, max = 160): string {
+export function snippetAround(text: string, query = '', max = 160): string {
   const flat = text.replace(/\s+/g, ' ').trim()
   if (flat.length <= max) return flat
   const lower = flat.toLowerCase()

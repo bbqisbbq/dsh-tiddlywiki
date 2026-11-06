@@ -6,7 +6,7 @@
 
 | 工具 | 说明 |
 |---|---|
-| `tiddlywiki_search` | 检索（`query` + 可选 `tags[]/tag/since/type/field/value/limit`），**按相关度排序**（标题命中 > 标签 > 正文命中次数），摘要取自**命中处上下文**而不是正文开头。v0.24.0：`query` 按空白切词、**全部词命中**才算（AND）；默认**先在工作区内查、区内 0 条才自动扩大到全库**，回执里写明实际范围 |
+| `tiddlywiki_search` | 检索（`query` + 可选 `tags[]/tag/since/type/field/value/limit`），**按相关度排序**（标题命中 > 标签 > 正文命中次数），摘要取自**命中处上下文**而不是正文开头。v0.24.0：`query` 按空白切词、**全部词命中**才算（AND）；默认**先在工作区内查、区内 0 条才自动扩大到全库**，回执里写明实际范围。**v0.34.1：`query` 可以省略** —— 只传 `tags` / `tag` / `since` / `type` / `field(+value)` 时就是「按条件列出」（按修改时间倒序），不再报错、也不再恒返 0 条 |
 | `tiddlywiki_recent` | 最近修改的笔记（倒序，支持 `limit`/`since`），开工快速了解动态 |
 | `tiddlywiki_list_tags` | 现有非系统 tag 及计数（已排除只挂在二进制附件上的 tag）；默认列使用最多的 200 个（`limit` 可调、上限 1000），截断时返回 `total`/`truncated` |
 | `tiddlywiki_get` | 读单个 tiddler 全文（`modified` 以 ISO 返回，可直接用作 `expectedModified`） |

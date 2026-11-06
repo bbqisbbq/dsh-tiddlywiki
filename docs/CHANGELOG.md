@@ -6,6 +6,12 @@
 
 ## 最近版本（详细）
 
+- **v0.34.1**（2026-11-06）：**修 `tiddlywiki_search` 的「纯标签筛选」**（issue #1，用户实测报告）。
+- **症状**：只传 `tags` / `tag`、不传 `query` 时**三层坏**，一层修完才露出下一层 —— ① `Cannot read properties of undefined (reading 'split')`；② 崩溃修掉后**恒返回 0 条**（标签过滤等于没生效）；③ 再修报 `tool "tiddlywiki_search" returned invalid output: value is not lossless JSON`。带 `query` 时一切正常，所以「按标签列出」这条日常用法一直没被任何用例走过。
+- **三处根因**：① `TiddlyWikiClient.search()` 签名写死 `query: string` 且首行裸调 `query.split(…)`，而工具 schema 里 `query` 本就是可选的（`snippetAround` 同源，正文 > 160 字时同样炸）；② 空查询的短路 `if (terms.length === 0) return { items: [], total: 0 }` 写在 `wantedTags` 过滤**之前** ⇒ 标签判断永远执行不到；③ 回执里 `query: args.query` 把 `undefined` 回给宿主，DSH 的 lossless-JSON 校验因此判整次调用 invalid output。
+- **修法**（原则：空 query 仍不匹配任何东西，但**有其它过滤条件时不短路**）：`search(query: string | undefined)` + `(query ?? '')`；短路条件收窄成「terms 为空**且** tags/since/type/field 都没有」；工具层先把 `args.query ?? ''` 归一，回执与 `snippetAround` 都用归一后的值；回执渲染在无关键词时改写成「按条件列出（按修改时间倒序）」，不再出现空的「搜索「」」。
+- **守门**：`scripts/verify-tools.mjs` 新增一组 E2E（`tags` / 单值 `tag` / 多标签 AND / `tags`+`field:value` / `type`+`tag` / 长正文摘要 / 回执可 JSON 无损往返 / 渲染不含「搜索「」」），并把旧的「空白 query + tag 必须 0 条」断言改判成「**光有空查询**才 0 条」。反向验证：把归一去掉 ⇒ 无损往返断言 + schema 反查（`query 应为 string，实际 undefined`）双双变红；把短路条件还原 ⇒ 新用例与旧的多词 AND 用例变红。
+
 - **v0.34.0**（2026-10-27）：**移除「发布到微信公众号」功能**（作者裁定：没必要）。
 - **删了什么**：三条路由 `/wechat/{ready,publish,publish/status}`；配置 `wechat{enabled,command,adapter,token,dsn,endpoint}` 与设置页「可选功能：微信公众号发布」整块（含提示词预览里随开关变化的草稿字段）；注入提示词里的发布前约定（`PUBLISH_RULE`）；三个 gated seed `publish-spec` / `wechat-setup` / `wechat-publish`；`WechatPublishRunner` + 契约层（`wechat-publish.ts` / `wechat-publish-contract.ts`，约 900 行）；TW 工具栏「发布到公众号」按钮 bundle 及其 `build-*` / `gen-*` / 三个 `verify-wechat-*` 守门；`tools/wechat/` 的 opencli adapter 全家（`wechat-html.js` / `weixin-flow.js` / `publish-note*` / 安装与回填脚本）；文档 `docs/wechat-publish-setup.md` 与设计稿。
 - **顺手拆掉的机制**：seed 的 `gate` 机制随最后一个使用者一起删除 —— `runAllSeeds` 不再有 gate 分支，`SeedContext.wechat` 也没了；seed 注册表 **13 → 10 项**（核心 3 + 起步 2 + 可选 5）。`admin-secrets` 不再打码 `wechat.token`，`STRING_CONFIG_PATHS` / `BOOLEAN_CONFIG_PATHS` 去掉五条 `wechat.*`。客户端 i18n 475 → 467 键，`index.ts` 公共面 −33 个名字（289 个）。
@@ -45,13 +51,13 @@ v0.33.1 修好了 `key` 配对，但用户实测仍是纯文本，且 devtools �
 
 - **v0.32.0**（2026-10-26）：**新增 `.tid` / `.tiddler` 文件的侧栏预览**（⑦ 的第三项）。wiki 文件夹本身就是一堆 `.tid`，而 DSH 的文件预览把未知扩展名当纯文本 —— 打开一个 `.tid` 看到的是 `title: …` 字段行加原始 wikitext，`[[链接]]`/`<<宏>>` 几乎不可读。现在注册一个预览实现：元数据用 `ctx.documentPreviews.register({ id, extensions: ['tid','tiddler'], priority, title, loading: 'text-pages' })`，正文以**同一个 id** 注入 keyed、Session 作用域的 `sidebar.right.tab.document`；正文把 wikitext POST 到本插件自己的 `/dsh-tiddlywiki/render`（铁律 #7 的净化管道）换成真 TW 渲染结果，字段行单独排一行摘要。**绝不白屏**是这个功能的硬约束：拿不到内容 → "等待文件内容…"；只有字段没有正文 → 明确说明；渲染失败 → `<pre>` 原文 + 一句"渲染失败，下面是原文"。宿主没有 `documentPreviews` 服务时**什么都不做**（老版本 DSH 不受影响），且元数据与正文必须**成对**（拿不到 slots 就把已注册的元数据撤回，单边注册会让面板空白）。契约是从宿主 `app.asar` 的 `dsh-client-ui-sidebar-documentpreview/lib/client.js` 逐行核实后写的（含 `TextPreview` 的完整 props 签名与 `content` 三态），全部记在 `docs/development.md`。**守门**：新增 `scripts/verify-tid-preview.mjs`（进 `verify:unit`，10 条）——纯解析用例（字段/CRLF/没有字段必须整份当正文/只有字段/空文本）+ **成对注册**（两处必须用同一个 `TID_PREVIEW_ID` 常量、正文必须先 `slots.inject` 再 `register`）+ **绝不白屏**（`<pre>` 兜底、三种空态各自的 `t()` 文案）+ 渲染必须走 `RENDER_ENDPOINT` 且失败回 `null` 不抛 + 可选依赖的静默跳过与回滚。纯逻辑拆在 `client/tid-parse.ts`（宿主 barrel 也要导它，而宿主包里不能出现 `react`），`client/tid-preview.ts` 只放 UI。客户端 i18n 473 → 477 键。
 
-- **v0.31.1**（2026-10-26）：**新增 `tiddlywiki_export`（笔记落盘，配合 `present` 交付）**。「把这条笔记给我」此前只有两条路：正文贴进回复（长笔记会撞回执预算，`get` 还得分页），或者让人类自己去 TW 里复制；DSH 的 `present` 能交付**文件**，但一直缺「把笔记变成文件」这一步。新工具 `export(title, format?, dir?)`：读一篇笔记 → 按格式落盘 → 回 `{path, bytes, format}`，助手紧接着 `present([{path, description}])` 即可。三种格式：`md`（YAML frontmatter + 正文，默认）、`tid`（TiddlyWiki 原生字段行 + 空行 + 正文）、`json`（完整 tiddler）。三条纪律都不是可选项：① **绝不覆盖同名文件**（导出是旁路产物，静默覆盖等于毁掉上次的交付物）；② **`$:/plugins/dsh-tiddlywiki/` 系统条目拒绝导出**（可能是密钥，走铁律 #6 的共享原语）；③ 读失败 ≠ 不存在（铁律 #3）。自定义字段两处都收（顶层键 + `fields`）—— 只收一处会让「导出丢字段」。守门 `scripts/verify-tools.mjs` 新增一条 7 组断言的 E2E（三格式内容逐项核对、同名拒绝、不存在回 `notFound` 且不写空文件、系统条目拒绝、相对 `dir` 拒绝），并与既有的「真实返回值必须通过 `output.schema`」自动联动。工具数 16 → 17（AGENTS §2、`verify-tool-views` / `verify-prompt` 的计数断言、`TOOL_VIEW_KEYS` + `TOOL_LABELS` + `i18n-card` 的 `card.toolExport` 同步）。
 
 
-## 历史版本（一句话，151 条，新的在上）
+## 历史版本（一句话，152 条，新的在上）
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v0.31.1 | 2026-10-26 | 新增 `tiddlywiki_export`（笔记落盘：md/tid/json，同名拒绝覆盖、系统条目拒绝）+ 工具数 16→17 |
 | v0.31.0 | 2026-10-26 | 对齐 DSH 0.2.1 的改造（选库入口搬到 `conversation.input.left`、`verify-dsh-contract`、`get` 分页、16 个工具补 `output.schema`、skill 走 `ctx.skills.register`、新增 `/note` 命令、提示词加「先查再答」「时效与去重」） |
 | v0.30.65 | 2026-10-09 | 新增 tiddlywiki_replace 工具（笔记正文局部替换） |
 | v0.30.63 | 2026-10-09 | 默认提示词把「笔记内引用」与「聊天引用」拆成两条链接规则；`config.prompt.override` 设置页说明勘误 |
