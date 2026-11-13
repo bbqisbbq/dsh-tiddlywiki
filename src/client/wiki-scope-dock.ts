@@ -39,24 +39,10 @@ import { t } from './i18n.ts'
 import { fetchStatus } from './status-cache.ts'
 import { SESSION_WIKI_ENDPOINT } from './endpoints.ts'
 // 切库动作只有一份实现（v0.35.0）：POST /session/wiki + 成功后失效作用域缓存。
-import { switchSessionWiki } from './session-wiki.ts'
+import { readResolvedWiki, switchSessionWiki, type ResolvedWiki } from './session-wiki.ts'
+import { subscribeSessionWikiId } from './wiki-scope.ts'
 
 interface WikiOption { id: string; label: string; running: boolean }
-
-/** `resolved` of `/session/wiki`: the wiki a session EFFECTIVELY uses. */
-interface ResolvedWiki { id: string; label: string }
-
-/**
- * Read `{id,label}` out of a `/session/wiki` payload, tolerating every shape we
- * may be handed (absent field, wrong types, id-only). `undefined` = unknown.
- */
-function readResolvedWiki(value: unknown): ResolvedWiki | undefined {
-  if (typeof value !== 'object' || value === null) return undefined
-  const id = (value as { id?: unknown }).id
-  if (typeof id !== 'string' || id.length === 0) return undefined
-  const label = (value as { label?: unknown }).label
-  return { id, label: typeof label === 'string' && label.length > 0 ? label : id }
-}
 
 /** Props the shell passes to a session-scoped `conversation.input.left` entry. */
 interface DockProps {
@@ -89,10 +75,25 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
     const [defaultWiki, setDefaultWiki] = React.useState<ResolvedWiki | undefined>(undefined)
     const [note, setNote] = React.useState<string | undefined>(undefined)
     const [busy, setBusy] = React.useState(false)
+    /** 右键菜单/另一标签页切库后，bump 一次重新读 `/session/wiki`。 */
+    const [reloadSeq, setReloadSeq] = React.useState(0)
+    const mountedRef = React.useRef(true)
+    const sessionIdRef = React.useRef(sessionId)
+    React.useEffect(() => { sessionIdRef.current = sessionId }, [sessionId])
 
     // 不测量、不补内边距（v0.31.0）：控件住在宿主的工具行里，那一行自己负责
     // 与输入框对齐。历史上它塞在 dock 行里时需要 ref + 逐行测量，那套逻辑已随
     // 迁移退役（见 dock-align.ts 的模块头）。
+
+    React.useEffect(() => {
+      mountedRef.current = true
+      return () => { mountedRef.current = false }
+    }, [])
+
+    React.useEffect(() => subscribeSessionWikiId((changed) => {
+      if (changed !== undefined && changed !== sessionId) return
+      setReloadSeq((value) => value + 1)
+    }), [sessionId])
 
     React.useEffect(() => {
       if (sessionId === undefined) return
@@ -108,11 +109,26 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
         const visible = (status?.wikis ?? []).filter((wiki) => wiki.agentVisible)
         setWikis(visible.map((wiki) => ({ id: wiki.id, label: wiki.label, running: wiki.running })))
         setScope(typeof current?.scope === 'string' ? current.scope : '')
-        setDefaultWiki(readResolvedWiki(current?.resolved))
+        // `resolved` is the EFFECTIVE wiki, not the default: with an explicit
+        // scope it is that very wiki. Using it as `defaultId` made the selected
+        // non-default wiki wear the「（默认）」badge, and clicking it sent `''`
+        // (follow default), silently jumping to the real default. Take the
+        // default from the roster's `defaultId`; only fall back to `resolved`
+        // when the session has no explicit scope and the roster is unavailable.
+        const defaultId = typeof status?.defaultId === 'string' ? status.defaultId : ''
+        const defaultItem = defaultId.length > 0
+          ? (status?.wikis ?? []).find((wiki) => wiki.id === defaultId)
+          : undefined
+        const fallbackDefault = typeof current?.scope === 'string' && current.scope.length === 0
+          ? readResolvedWiki(current?.resolved)
+          : undefined
+        setDefaultWiki(defaultItem !== undefined
+          ? { id: defaultItem.id, label: defaultItem.label }
+          : fallbackDefault)
         setNote(typeof current?.reason === 'string' ? current.reason : undefined)
       })()
       return () => { alive = false }
-    }, [sessionId])
+    }, [sessionId, reloadSeq])
 
     if (sessionId === undefined || wikis.length <= 1) return null
 
@@ -140,19 +156,26 @@ export function createWikiScopeDock(): (props: DockProps) => React.ReactElement 
     const apply = (next: string): void => {
       // 选中默认库那一项 = 清空显式作用域，仍然跟随默认（默认库改了也跟着改）。
       const wanted = next === defaultId ? '' : next
+      const requestSession = sessionId
       setBusy(true)
       void (async () => {
         // 切换动作只有一份实现（session-wiki.ts，v0.35.0）：POST /session/wiki +
         // 解析回执 + 成功后 invalidateSessionWikiId。会话右键菜单用的是同一个函数，
         // 这样"两套切库逻辑各自漂移"不可能发生。
         const result = await switchSessionWiki(sessionId, wanted)
+        // The switch budget is 120s and the component may unmount or be reused
+        // for another session in the meantime; never write the old answer into
+        // the new selector.
+        if (!mountedRef.current || sessionIdRef.current !== requestSession) return
         if (!result.ok) {
           setNote(result.error)
           setBusy(false)
           return
         }
         setScope(result.scope)
-        if (result.resolved !== undefined) setDefaultWiki(result.resolved)
+        // Do NOT setDefaultWiki(result.resolved): it is the EFFECTIVE wiki, not
+        // the registry default. The next `/session/wiki` read (triggered by the
+        // invalidation) refreshes the badge from `/status.defaultId`.
         setNote(result.reason)
         setBusy(false)
       })()

@@ -224,6 +224,10 @@ export function createWikiViews(deps: WikiViewsDeps): WikiViews {
     const next = normalized.location
     const current = defaultEntry(live.registry)
     if (current === undefined) return { ok: false, error: '清单里没有默认知识库', rolledBack: true }
+    const previousRegistry = live.registry
+    // A manually started autostart=false wiki must be brought back by the
+    // rollback too; apply() alone only restarts entries shouldRun() says yes.
+    const wasRunning = live.runtime(current.id)?.isRunning() === true
     const moved: WikiEntry = { ...current, root: next.root, name: next.name }
     const nextRegistry: WikiRegistry = { ...live.registry, wikis: live.registry.wikis.map((entry) => (entry.id === moved.id ? moved : entry)) }
     // Re-validate: moving a folder can collide with (or nest inside) another
@@ -232,7 +236,21 @@ export function createWikiViews(deps: WikiViewsDeps): WikiViews {
     if (validated.registry === undefined) return { ok: false, error: validated.fatal.join('；'), rolledBack: true }
     deps.setSwitching(true)
     try {
-      await live.apply(validated.registry)
+      const change = await live.apply(validated.registry)
+      const failed = change.errors.find((item) => item.id === moved.id)
+      if (failed !== undefined) {
+        // `apply()` reported a per-wiki failure but still returned normally;
+        // the old child is gone and the new one did not start. Roll the entry
+        // back so the settings page does not claim a working switch and the
+        // control file is not persisted with a broken folder.
+        let rolledBack = false
+        try {
+          await live.apply(previousRegistry)
+          if (wasRunning) await live.startEntry(current)
+          rolledBack = true
+        } catch { /* keep rolledBack=false */ }
+        return { ok: false, error: `知识库「${moved.label}」切换失败：${failed.message}`, rolledBack }
+      }
       const applied: WikiSwitchResult = { ok: true, location: { root: moved.root, name: moved.name }, path: entryPath(moved) }
       try {
         await writeRegistry(validated.registry, deps.registryFile())
@@ -284,7 +302,7 @@ export function createWikiViews(deps: WikiViewsDeps): WikiViews {
           path: entryPath(entry),
           agentVisible: entry.agentVisible,
           autostart: entry.autostart,
-          running: runtime !== undefined,
+          running: runtime?.isRunning() === true,
           status: runtime?.server.status().status ?? 'stopped',
           // 每库图标（v0.28.8）：设置页的图标选择器发的是 `{ ...wiki, icon }` ——
           // 这里的 `wiki` 就是本函数的输出。漏掉这个字段时 `wiki.icon` 恒为

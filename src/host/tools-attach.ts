@@ -174,7 +174,10 @@ export function attachTool(env: ToolEnv) {
         // sequence) instead of silently producing a broken embed.
         const safeTitle = title.replace(/\]\]/g, '] ]')
         const embed = mime.startsWith('image/') ? `[img[${safeTitle}]]` : `[[${safeTitle}]]`
-        const text = note === undefined ? embed : `${(note.text ?? '').replace(/\s+$/, '')}\n\n${embed}`
+        const noteText = note?.text ?? ''
+        const eol = noteText.includes('\r\n') ? '\r\n' : '\n'
+        const embedText = eol === '\n' ? embed : embed.replace(/\r\n/g, '\n').split('\n').join('\r\n')
+        const text = note === undefined ? embedText : `${noteText.replace(/\s+$/, '')}${eol}${eol}${embedText}`
         // Same read-modify-write policy as everywhere else: preserve the note's
         // tags/custom fields/type, only append the embed.
         const { tiddler: noteTiddler } = buildWriteTiddler(embedInto, text, { existing: note })

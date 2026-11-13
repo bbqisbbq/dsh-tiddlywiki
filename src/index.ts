@@ -381,7 +381,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
   /** The multi-wiki control file: mode + the wiki list + the default id. */
   const registryFile = defaultRegistryFile()
   /** The cordis `config:` block, as the base layer of every wiki's config. */
-  const baseShape: PluginConfigShape = { note: config.note, git: config.git, ui: config.ui, uiLanguage: config.uiLanguage, bridge: config.bridge, startup: config.startup }
+  const baseShape: PluginConfigShape = { note: config.note, git: config.git, ui: config.ui, prompt: config.prompt, uiLanguage: config.uiLanguage, bridge: config.bridge, startup: config.startup }
   /** The cordis-level default location (last resort in the registry chain). */
   const defaultLocation: WikiLocation = { root: config.wikiRoot, name: config.wiki }
   const git = new GitFace()
@@ -432,6 +432,7 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
       ...(client !== undefined ? { client } : {}),
       ...(dir !== undefined ? { dir } : {}),
       ...(resolution.entry !== undefined ? { id: resolution.entry.id, label: resolution.entry.label } : {}),
+      ...(resolution.runtime !== undefined ? { noteTag: resolution.runtime.eff().note?.tag } : {}),
       // No client ⇒ say WHY (the resolver's sentence is actionable); a bare
       // "service not running" would send the user looking in the wrong place.
       ...(client === undefined ? { reason: resolution.reason ?? '知识库服务尚未就绪，请稍后重试' } : {}),
@@ -599,7 +600,6 @@ export function apply(ctx: HostCtx, rawConfig: TiddlywikiConfig = {}): void {
     applyPrompt,
     clipBridge,
     effectiveBridge,
-    defaultCurrentLocation: () => wikiViews.defaultCurrentLocation(),
     // 嵌入式 skill（v0.31.0）：宿主有 skill 注册表就注册到内存（不写用户目录），
     // 没有就由 startup 回落到文件安装。
     skills: () => ctx.get('skills') as SkillRegistryFace | undefined,

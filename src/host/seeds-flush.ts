@@ -33,11 +33,16 @@ import type { TiddlyWebClient } from './tw-api.ts'
  */
 export async function waitForFileWrite(filePath: string, timeoutMs = 8_000, pollMs = 150, newerThanMs?: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
+  // Filesystem mtime granularity can be one second (FAT/SMB) and some systems
+  // round DOWN; `mtimeMs >= seedStartedAt` then never matches even though the
+  // file landed. A small slop keeps the old "was it written after we started?"
+  // intent without turning every re-init into an 8s wait.
+  const mtimeSlopMs = 2_000
   for (;;) {
     try {
       if (existsSync(filePath)) {
         if (newerThanMs === undefined) return true
-        if (statSync(filePath).mtimeMs >= newerThanMs) return true
+        if (statSync(filePath).mtimeMs >= newerThanMs - mtimeSlopMs) return true
       }
     } catch { /* transient */ }
     if (Date.now() >= deadline) return false

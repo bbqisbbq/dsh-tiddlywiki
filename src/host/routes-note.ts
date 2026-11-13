@@ -96,9 +96,13 @@ export function createNoteRoutes(deps: NoteRouteDeps, helpers: NoteRouteHelpers)
       // concurrency tokens the quick-note card sends for a note it loaded.
       const existing = await client.get(title)
       assertNoConflict(title, existing, conflictTokens(body))
+      // An explicit empty array means "clear every tag" on an EXISTING note,
+      // but for a NEW note it should still get the configured default tag
+      // (the card initialises with that tag and users rarely clear it).
+      const writeTags = existing === undefined && tags !== undefined && tags.length === 0 ? undefined : tags
       const { tiddler } = buildWriteTiddler(title, text, {
         existing,
-        tags,
+        tags: writeTags,
         defaultTags: [deps.noteDefaults(req).tag],
         agentTag: false,
       })

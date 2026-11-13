@@ -533,7 +533,13 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
     invalidateGitStatus()
     const dir = deps.getWikiPath(req)
     const status = async (): Promise<GitStatusViewPublic | null> => {
-      try { return await deps.git.status(dir) } catch { return null }
+      try {
+        const view = await deps.git.status(dir)
+        // This route is unauthenticated like /status: a remote URL may carry a
+        // PAT. `/status` and `/admin/state` already redact it; this path was
+        // the one that handed the raw `git remote -v` line to the browser.
+        return { ...view, remote: redactRemoteUrl(typeof view.remote === 'string' ? view.remote : '') }
+      } catch { return null }
     }
     try {
       const pulled = await deps.git.pull(dir)
@@ -541,7 +547,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         json(res, {
           ok: false,
           action: 'sync',
-          message: pulled.message,
+          message: redactRemoteUrl(pulled.message),
           ...(pulled.conflictFiles !== undefined ? { conflictFiles: pulled.conflictFiles } : {}),
           status: await status() }, 409)
         return
@@ -575,7 +581,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
           json(res, {
             ok: false,
             action: 'sync',
-            message: err.message,
+            message: redactRemoteUrl(err.message),
             conflictFiles: err.files,
             pull: 'ok',
             status: await status() }, 409)
@@ -588,7 +594,7 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
       json(res, {
         ok: pushed.ok,
         action: 'sync',
-        message: pushed.ok ? '同步完成' : pushed.message,
+        message: pushed.ok ? '同步完成' : redactRemoteUrl(pushed.message),
         pull: 'ok',
         ...(pulled.changed === true ? { changed: true } : {}),
         restarted,
@@ -597,11 +603,11 @@ export function registerRoutes(ctx: { webServer: WebServerFace }, deps: RouteDep
         ...(restartedWikis !== undefined ? { restartedWikis } : {}),
         ...(restartError !== undefined ? { restartError } : {}),
         commit: committed.message,
-        push: pushed.message,
+        push: redactRemoteUrl(pushed.message),
         status: fresh,
         lastSync: new Date().toISOString() }, pushed.ok ? 200 : 502)
     } catch (err) {
-      json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
+      json(res, { ok: false, error: redactRemoteUrl(err instanceof Error ? err.message : String(err)) }, errorStatus(err))
     } finally {
       endMutation('sync')
     }

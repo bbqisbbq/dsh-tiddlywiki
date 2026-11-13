@@ -182,6 +182,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
   const showError = (message: string): void => {
     if (frame === undefined || errorArea === undefined) return
     hideSwitching()
+    invalidateFrameDocument()
     frame.hidden = true
     errorArea.hidden = false
     errorArea.replaceChildren()
@@ -205,6 +206,7 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
   const showStarting = (): void => {
     if (frame === undefined || errorArea === undefined) return
     hideSwitching()
+    invalidateFrameDocument()
     frame.hidden = true
     errorArea.hidden = false
     errorArea.replaceChildren()
@@ -219,6 +221,19 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
       window.clearTimeout(switchTimer)
       switchTimer = undefined
     }
+  }
+
+  /**
+   * The iframe is about to show an error/starting placeholder or a new URL:
+   * forget the old document stamp so a later `showFrame()` re-assigns `src`
+   * instead of treating the stale dataset entry as "already loaded". Without
+   * this, the error panel's retry called doRefresh(), showFrame() saw the same
+   * URL and never reloaded the iframe.
+   */
+  const invalidateFrameDocument = (): void => {
+    if (frame === undefined) return
+    delete frame.dataset.loaded
+    surfaceState.frameLoaded = false
   }
 
   /** Drop the "loading another wiki" hint (the new document arrived, or we gave up). */
@@ -264,6 +279,12 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
     if (frame.dataset.loaded !== url) {
       frame.dataset.loaded = url
       surfaceState.frameLoaded = false
+      // A hash-navigation retry chain armed against the OLD document must not
+      // survive this URL change: it only checks `pendingHash`, so it could
+      // write the hash into the old `$tw` and clear it before the new document
+      // loads. The new `load` event will restart navigation from pendingHash.
+      for (const timer of surfaceState.hashWaitTimers) window.clearTimeout(timer)
+      surfaceState.hashWaitTimers.clear()
       frame.src = url
       // 换了文档 = 重新下载整份 wiki（10–30MB、no-store）：这段时间必须给个可见说明。
       if (label !== undefined) showSwitching(label)
@@ -503,12 +524,10 @@ export function createTwFrameSurface(skin: TwFrameSkin, hooks: TwFrameHooks = {}
         void doRefresh()
       }
       surfaceState.pendingHash = `#${encodeURIComponent(title)}`
-      if (!started) {
-        started = true
-        void doRefresh()
-      } else {
-        applyPendingHash()
-      }
+      // `visible` is true only after setVisible(true), which already sets
+      // `started` and kicks a status refresh; the old `if (!started)` branch was
+      // unreachable in the normal lifecycle.
+      applyPendingHash()
       return true
     },
     dispose(): void {

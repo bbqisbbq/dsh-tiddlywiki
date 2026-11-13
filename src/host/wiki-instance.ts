@@ -66,6 +66,7 @@ export interface WikiInstanceBase {
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string; workspaceMark: boolean }
   bridge: { enabled: boolean; port: number; token: string; tag: string; wiki?: string }
+  prompt?: { enabled?: boolean; mode?: 'slim' | 'full'; extra?: string; override?: string }
   startup: { readyTimeoutMs: number }
   ui: {
     showQuickNote: boolean
@@ -223,6 +224,7 @@ export class WikiInstance {
       note: options.base.note,
       git: options.base.git,
       ui: options.base.ui,
+      prompt: options.base.prompt,
       uiLanguage: options.base.uiLanguage,
       bridge: options.base.bridge,
       startup: options.base.startup,
@@ -422,6 +424,10 @@ export class WikiInstance {
    * this wiki's folder" to it.
    */
   setupExtras(): void {
+    // `reapplyGitConfig()` can be called twice in a burst (two settings saves);
+    // the old watcher must be closed before installing a new one, otherwise the
+    // first handle leaks and keeps touching the rebuilt committer.
+    this.unwatch?.()
     this.unwatch = watchWiki(this.wikiPath, () => this.touchAutoCommit())
   }
 
@@ -533,6 +539,12 @@ export class WikiInstance {
         this.log(`applying uiLanguage: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
+  }
+
+  /** True while the child is serving or still starting (used by farm/UI). */
+  isRunning(): boolean {
+    const status = this.server.status().status
+    return status === 'running' || status === 'starting'
   }
 
   /**

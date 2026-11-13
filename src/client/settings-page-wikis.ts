@@ -15,6 +15,8 @@
  */
 import { toast } from './toast.ts'
 import { invalidateUiConfig } from './ui-config.ts'
+import { reloadTwSurfaces } from './tw-frame.ts'
+import { invalidateStatus } from './status-cache.ts'
 import { makeIconButton, openIconPicker } from './settings-icon-picker.ts'
 import { make } from './dom.ts'
 import { t } from './i18n.ts'
@@ -408,6 +410,12 @@ function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => bool
         if (data.warning !== undefined) toast(t('settings.wikis.switchedWarn', { path: data.path ?? '', warning: data.warning }))
         else toast(t('settings.wikis.switched', { path: data.path ?? '' }))
         invalidateUiConfig()
+        // The switch replaced/restarted the TW child. A loaded iframe still has
+        // the old dataset.loaded URL and showFrame() will not re-assign it;
+        // without an explicit reload the panel keeps showing (and saving into)
+        // the old document while the proxy now points at the new wiki.
+        reloadTwSurfaces()
+        invalidateStatus()
         await load()
         await refresh()
       } catch (err) {
@@ -435,6 +443,8 @@ function renderWikiLocationSectionBody(body: HTMLElement, isDisposed: () => bool
           ? t('settings.wikis.resetWarn', { warning: data.warning })
           : t('settings.wikis.resetDone', { path: data.path ?? '' }))
         invalidateUiConfig()
+        reloadTwSurfaces()
+        invalidateStatus()
         await load()
         await refresh()
       } catch (err) {

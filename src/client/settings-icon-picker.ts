@@ -160,9 +160,14 @@ export function makeIconButton(current: string, ariaLabel: string): HTMLButtonEl
  * @param current - the wiki's current icon value.
  * @param onPick - called with the new value (the caller persists + re-renders).
  */
-export function openIconPicker(anchor: HTMLElement, current: string, onPick: (next: string) => void): void {
+/** Close the currently mounted picker (if any), including its document listeners. */
+let activePickerClose: (() => void) | undefined
+
+export function openIconPicker(anchor: HTMLElement, current: string, onPick: (next: string) => void): () => void {
   // Only one popup at a time: clicking a second row's 图标 must move it, not
-  // stack another layer on top of the first.
+  // stack another layer on top of the first. Call the previous close() too:
+  // `.remove()` alone left its keydown/mousedown listeners on `document`.
+  activePickerClose?.()
   document.querySelector('.dsh-tw-iconpicker')?.remove()
 
   const choices = iconChoices(current)
@@ -176,10 +181,14 @@ export function openIconPicker(anchor: HTMLElement, current: string, onPick: (ne
   const pager = make('div', 'dsh-tw-iconpicker-pager')
   popup.append(grid, pager)
 
+  let observer: MutationObserver | undefined
   const close = (): void => {
     popup.remove()
+    observer?.disconnect()
+    observer = undefined
     document.removeEventListener('keydown', onKeyDown, true)
     document.removeEventListener('mousedown', onOutside, true)
+    if (activePickerClose === close) activePickerClose = undefined
   }
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key === 'Escape') {
@@ -242,5 +251,15 @@ export function openIconPicker(anchor: HTMLElement, current: string, onPick: (ne
 
   document.addEventListener('keydown', onKeyDown, true)
   document.addEventListener('mousedown', onOutside, true)
+  // The settings page replaces its DOM wholesale on some refreshes; the popup
+  // lives on document.body, so removing the anchor does NOT remove it. Watch
+  // for the anchor leaving the document and close ourselves instead of leaving
+  // an orphan dialog + two document listeners behind.
+  observer = new MutationObserver(() => {
+    if (!anchor.isConnected) close()
+  })
+  observer.observe(document.body, { childList: true, subtree: true })
+  activePickerClose = close
+  return close
 }
 

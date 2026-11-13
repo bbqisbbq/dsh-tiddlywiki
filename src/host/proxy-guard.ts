@@ -71,3 +71,51 @@ export const isBlockedProxyPath = (pathname: string): boolean => {
  */
 export const referencesBlockedTitle = (value: string | undefined): boolean =>
   value !== undefined && BLOCKED_PROXY_TITLE_PREFIXES.some((prefix) => value.includes(prefix))
+
+/**
+ * Extract secret-bearing values from the plugin config tiddler.
+ *
+ * The render route's title/`text` guard used to be a literal-substring check;
+ * a TW filter can split the blocked title into pieces and re-join it, so the
+ * input-side check alone is not a boundary. This helper lets the host reject a
+ * rendered fragment that demonstrably contains the config dump or one of its
+ * non-empty secrets. It is a defence for wikis still running the old render
+ * bundle; new bundles also hide blocked titles inside the TW renderer.
+ */
+export function configSecretsFromText(text: string | undefined): string[] {
+  if (typeof text !== 'string' || text.trim().length === 0) return []
+  let parsed: unknown
+  try { parsed = JSON.parse(text) } catch { return [] }
+  const out: string[] = []
+  const walk = (value: unknown, path: string): void => {
+    if (typeof value === 'string') {
+      if (value.length >= 4 && /(?:token|password|secret|remote)$/i.test(path)) out.push(value)
+      return
+    }
+    if (Array.isArray(value)) { value.forEach((item, index) => walk(item, `${path}.${index}`)); return }
+    if (typeof value === 'object' && value !== null) {
+      for (const [key, child] of Object.entries(value)) walk(child, path.length === 0 ? key : `${path}.${key}`)
+    }
+  }
+  walk(parsed, '')
+  return [...new Set(out)]
+}
+
+/** Does a rendered fragment look like the config tiddler (or contain a secret)? */
+export function renderedConfigLeak(html: string, configText: string | undefined): boolean {
+  if (typeof configText !== 'string' || configText.trim().length === 0) return false
+  const decode = (value: string): string => value
+    .replace(/<[^>]*>/g, '')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0*34;|&#x0*22;/gi, '"')
+    .replace(/&#0*39;|&#x0*27;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+  const compact = (value: string): string => decode(value).replace(/\s+/g, '')
+  const configCompact = compact(configText)
+  // Config JSON is pretty-printed; comparing a compact prefix catches the
+  // syntax-highlighted `<pre><code>` output without matching ordinary prose.
+  if (configCompact.length >= 40 && compact(html).includes(configCompact.slice(0, Math.min(160, configCompact.length)))) return true
+  return configSecretsFromText(configText).some((secret) => html.includes(secret) || decode(html).includes(secret))
+}

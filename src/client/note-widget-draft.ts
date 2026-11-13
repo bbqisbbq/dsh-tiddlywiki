@@ -121,9 +121,16 @@ export function draftSignature(title: string, text: string, tags: string[]): str
   return `${title}\u0000${text}\u0000${tags.join('\u0001')}`
 }
 
-/** Default note title: `YYYY-MM-DD HH:mm`. */
+/**
+ * Default note title: `YYYY-MM-DD HH:mm:ss`.
+ *
+ * Seconds are load-bearing: the title is the update key for `/note`, so a
+ * minute-precision default made two quick notes saved in the same minute
+ * silently replace each other. Keep this in sync with
+ * `host/routes-helpers.ts::timestampTitle`.
+ */
 export function timestampTitle(date = new Date()): string {
-  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`
 }
 
 /**

@@ -55,6 +55,7 @@ export interface ResolvedConfig {
   git: { autoCommit: boolean; debounceMs: number; remote: string; branch: string }
   note: { tag: string; workspaceMark: boolean }
   bridge: { enabled: boolean; port: number; token: string; tag: string; wiki: string }
+  prompt: { enabled?: boolean; mode?: 'slim' | 'full'; extra?: string; override?: string }
   ui: { showQuickNote: boolean; showQuickNoteDock: boolean; quickNoteMode: 'native' | 'card'; sidebarLabel: string; showPanelStatus: boolean; showSyncButton: boolean; followDshTheme: boolean; darkPalette: string; tabLabel: string; showSessionTab: boolean; showRightbarTab: boolean; sendToAgent: { enabled: boolean; endpoint?: string; token?: string }; allArticles: { pageSize: number } }
   startup: { readyTimeoutMs: number }
   uiLanguage: string
@@ -72,6 +73,7 @@ export const DEFAULTS: ResolvedConfig = {
   git: { autoCommit: true, debounceMs: 60_000, remote: '', branch: 'main' },
   note: { tag: 'inbox', workspaceMark: true },
   bridge: { enabled: false, port: CLIP_BRIDGE_DEFAULT_PORT, token: '', tag: 'clip', wiki: '' },
+  prompt: {},
   ui: { showQuickNote: true, showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', showPanelStatus: true, showSyncButton: true, followDshTheme: true, darkPalette: DARK_PALETTE_DEFAULT, tabLabel: '知识库', showSessionTab: true, showRightbarTab: true, sendToAgent: { enabled: true }, allArticles: { pageSize: 10 } },
   startup: { readyTimeoutMs: READY_TIMEOUT_DEFAULT_MS },
   uiLanguage: '',
@@ -93,6 +95,7 @@ export function resolveConfig(rawConfig: TiddlywikiConfig): ResolvedConfig {
     git: { ...DEFAULTS.git, ...(rawConfig.git ?? {}) },
     note: { ...DEFAULTS.note, ...(rawConfig.note ?? {}) },
     bridge: { ...DEFAULTS.bridge, ...(rawConfig.bridge ?? {}) },
+    prompt: { ...DEFAULTS.prompt, ...(rawConfig.prompt ?? {}) },
     ui: {
       ...DEFAULTS.ui,
       ...(rawConfig.ui ?? {}),

@@ -1180,6 +1180,23 @@ try {
     renderContext,
   )
   assert(renderContext._status === 403, `host /render refuses a protected contextTitle (got ${renderContext._status})`)
+  // SECURITY REGRESSION (v0.35.1): the title guard was still string-based. A TW
+  // filter can split a protected title into harmless pieces and join them:
+  // `[[$:]] [[/plugins/dsh-tiddlywiki/config]] +[join[]]` bypassed
+  // referencesBlockedTitle() and returned the config JSON. The render bundle
+  // must hide the namespace while rendering (old 0.2.0 bundles are covered by
+  // the host's output-secret scan; the proxy also refuses direct /render).
+  const renderSplit = makeRes()
+  await callRaw(
+    hostRenderHandler,
+    makeReq('/dsh-tiddlywiki/render', Buffer.from(JSON.stringify({
+      text: '<$transclude $tiddler={{{ [[$:]] [[/plugins/dsh-tiddlywiki/config]] +[join[]] }}}/>',
+      type: 'text/vnd.tiddlywiki',
+    })), 'POST'),
+    renderSplit,
+  )
+  const splitPayload = String(renderSplit._payload)
+  assert(renderSplit._status === 403 || !splitPayload.includes('sendToAgent'), `split-title filter must not leak config (status ${renderSplit._status}, ${splitPayload.slice(0, 160)})`)
   // The guard must not be a blanket ban on `{{…}}`: ordinary transclusions work.
   const renderNormal = makeRes()
   await callRaw(

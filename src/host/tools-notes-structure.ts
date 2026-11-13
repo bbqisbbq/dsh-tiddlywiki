@@ -11,7 +11,7 @@ import { APPEND_RESULT, RENAME_RESULT, REPLACE_RESULT } from './tool-output-sche
 import { isBinaryType } from './tw-api.ts'
 import { assertNoConflict, buildWriteTiddler, normalizeTagArg } from './write-policy.ts'
 import { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX } from './workspace.ts'
-import { assertWritableTitle, insertIntoSection, normalizeFieldsInArgs, rewriteRefs, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
+import { assertTextWritable, assertWritableTitle, insertIntoSection, normalizeFieldsInArgs, rewriteRefs, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
 import type { AppendResult, RenameResult, ReplaceResult, ToolEnv } from './tools-support.ts'
 
 export function renameTool(env: ToolEnv) {
@@ -59,6 +59,16 @@ export function renameTool(env: ToolEnv) {
       })
       const target = await wiki.get(newTitle)
       if (target !== undefined) throw new Error(`新标题「${newTitle}」已存在（可先用 tiddlywiki_delete 删除）`)
+      // Write the new title FIRST. The old order updated every referrer before
+      // this PUT; if the PUT failed, the wiki was left with links to a title
+      // that did not exist. The source tiddler is still untouched at this point,
+      // so a failure here is a clean no-op for referrers.
+      //
+      // Renaming is an overwrite from the new title's point of view: TW's own
+      // rename keeps the source's `created` and stamps a fresh `modified`
+      // (`new $tw.Tiddler(getCreationFields(), tiddler, {...}, getModificationFields())`).
+      const { tiddler: renamed } = buildWriteTiddler(newTitle, existing.text ?? '', { existing })
+      await wiki.put(renamed)
       let refsUpdated = 0
       let refsTiddlers = 0
       let refsSkipped = 0
@@ -95,14 +105,9 @@ export function renameTool(env: ToolEnv) {
           }
         }
       }
-      // Renaming is an overwrite from the new title's point of view: TW's own
-      // rename keeps the source's `created` and stamps a fresh `modified`
-      // (`new $tw.Tiddler(getCreationFields(), tiddler, {...}, getModificationFields())`).
-      const { tiddler: renamed } = buildWriteTiddler(newTitle, existing.text ?? '', { existing })
-      await wiki.put(renamed)
-      // The new title is already written; a failure here leaves BOTH copies on
-      // disk, so report the partial state instead of throwing a bare error (the
-      // caller would otherwise assume the rename never happened) — v0.19.5.
+      // A failure here leaves BOTH copies on disk (the new title is already
+      // written); report the partial state instead of throwing a bare error —
+      // v0.19.5.
       let deleteFailed: string | undefined
       try {
         await wiki.delete(oldTitle)
@@ -196,19 +201,29 @@ export function appendTool(env: ToolEnv) {
       if (existing === undefined && args.createIfMissing === false) {
         throw new Error(`tiddler「${title}」不存在（createIfMissing=false）`)
       }
+      // Appending is a text write: without this, base64 attachments were
+      // silently turned into invalid images/PDFs (same class as put/batch_put).
+      assertTextWritable(title, existing, args.fields)
       const mode = args.mode === 'prepend' ? 'prepend' : 'append'
       const base = existing?.text ?? ''
       const addition = args.text
+      const eol = base.includes('\r\n') ? '\r\n' : '\n'
+      // Keep the note's own line endings. The heading branch already did this
+      // through insertIntoSection; the plain append/prepend branch hardcoded
+      // `\n\n` and mixed CRLF notes.
+      const block = eol === '\n'
+        ? addition.replace(/\r\n/g, '\n')
+        : addition.replace(/\r\n/g, '\n').split('\n').join('\r\n')
       let next: string
       let headingMatched: boolean | undefined
       if (mode === 'append' && typeof args.heading === 'string' && args.heading.trim().length > 0) {
-        const placed = insertIntoSection(base, args.heading.trim(), addition)
+        const placed = insertIntoSection(base, args.heading.trim(), block)
         next = placed.text
         headingMatched = placed.matched
       } else if (mode === 'prepend') {
-        next = base.trim().length === 0 ? addition : `${addition}\n\n${base}`
+        next = base.trim().length === 0 ? block : `${block}${eol}${eol}${base}`
       } else {
-        next = base.trim().length === 0 ? addition : `${base.replace(/\s+$/, '')}\n\n${addition}`
+        next = base.trim().length === 0 ? block : `${base.replace(/\s+$/, '')}${eol}${eol}${block}`
       }
       // v0.20.1: ONE write policy for every write path. The old append built its
       // PUT by hand, which (a) dropped the existing tiddler's `type` and

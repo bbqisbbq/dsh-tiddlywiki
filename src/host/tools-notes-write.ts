@@ -12,7 +12,7 @@ import { isBinaryType, toIsoDateString } from './tw-api.ts'
 import { isBlockedProxyTitle } from './proxy-guard.ts'
 import { assertNoConflict, buildWriteTiddler, normalizeTagArg } from './write-policy.ts'
 import { WORKSPACE_FIELD, WORKSPACE_TAG_PREFIX } from './workspace.ts'
-import { assertWritableTitle, normalizeBatchItemsFields, normalizeFieldsInArgs, pickFields, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
+import { assertTextWritable, assertWritableTitle, normalizeBatchItemsFields, normalizeFieldsInArgs, pickFields, sessionIdOf, typeChangeOf, withWorkspaceMark, workspaceMarkFor } from './tools-support.ts'
 import type { BatchItemResult, BatchResult, GetResult, PutResult, ToolEnv } from './tools-support.ts'
 
 export function getTool(env: ToolEnv) {
@@ -183,24 +183,12 @@ export function putTool(env: ToolEnv) {
         force: args.force,
       })
       const tags = normalizeTagArg(args.tags)
-      // DATA SAFETY (v0.23.5): a binary tiddler (image/PDF/…) holds base64 in
-      // `text`. Writing prose into it keeps `type: image/png` (the write policy
-      // preserves the base type on purpose), so the result is an attachment whose
-      // base64 no longer decodes — the image breaks and the receipt reports
-      // "type unchanged". Refusing is the only honest answer: overwriting an
-      // attachment is `tiddlywiki_attach`'s job. An explicit `fields.type` that
-      // leaves the binary family (or force) is treated as a deliberate conversion.
-      if (existing !== undefined && isBinaryType(typeof existing.type === 'string' ? existing.type : undefined)) {
-        const wantedType = typeof args.fields?.type === 'string' ? args.fields.type : undefined
-        const deliberate = args.force === true || (wantedType !== undefined && !isBinaryType(wantedType))
-        if (!deliberate) {
-          throw new Error(
-            `tiddlywiki_put: 「${args.title}」是二进制附件（type=${String(existing.type)}，正文为 base64），`
-            + '直接写文本会把附件写坏。要替换附件请用 tiddlywiki_attach；'
-            + '确实要转成文本条目，请显式传 fields: {"type":"text/markdown"}（或 force: true）。',
-          )
-        }
-      }
+      // DATA SAFETY: a binary tiddler (image/PDF/…) holds base64 in `text`.
+      // Writing prose into it keeps `type: image/png` (the write policy
+      // preserves the base type on purpose), so the result is an attachment
+      // whose base64 no longer decodes. `force` is a concurrency token, NOT a
+      // type conversion; only an explicit non-binary `fields.type` may convert.
+      assertTextWritable(args.title, existing, args.fields)
       const marked = existing === undefined && !args.title.startsWith('$:/')
         ? withWorkspaceMark(workspaceMarkFor(deps, exec), tags, args.fields)
         : { tags, fields: args.fields }
@@ -291,6 +279,8 @@ export function batchPutTool(env: ToolEnv) {
         try {
           if (title.length === 0) throw new Error('缺少非空 title')
           if (typeof item.text !== 'string') throw new Error('缺少 text')
+          const normalizeError = (item as { __fieldsNormalizeError?: unknown }).__fieldsNormalizeError
+          if (typeof normalizeError === 'string') throw new Error(normalizeError)
           // v0.33.4: same secret-namespace boundary as put/get/export.
           assertWritableTitle(title)
           // Read WITHOUT swallowing errors: only a 404 means "new tiddler".
@@ -305,6 +295,7 @@ export function batchPutTool(env: ToolEnv) {
           // fails THIS item only (the batch contract keeps the others) — which is
           // why the check lives inside the per-item try, not before the loop.
           assertNoConflict(title, existing, { expectedModified: item.expectedModified })
+          assertTextWritable(title, existing, item.fields)
           const marked = existing === undefined && !title.startsWith('$:/')
             ? withWorkspaceMark(workspaceMarkFor(deps, exec), normalizeTagArg(item.tags), item.fields)
             : { tags: normalizeTagArg(item.tags), fields: item.fields }

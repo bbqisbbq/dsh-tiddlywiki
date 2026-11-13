@@ -94,6 +94,11 @@ export function buildTagEditor(opts: { onChange?: () => void; wikiQuery?: (url: 
     const url = opts.wikiQuery?.(TAGS_ENDPOINT) ?? TAGS_ENDPOINT
     if (tagsPromise === undefined || tagsPromiseKey !== url) {
       tagsPromiseKey = url
+      // Do not let the previous wiki's suggestions leak into this one while
+      // the new request is in flight (the `.then` guard only protects the
+      // eventual write, not the immediate `showSuggest()` on input).
+      knownTags = []
+      suggest.hidden = true
       tagsPromise = fetch(url, { signal: AbortSignal.timeout(5_000) })
         .then((r) => (r.ok ? (r.json() as Promise<{ tags?: string[] }>) : Promise.resolve<{ tags?: string[] }>({})))
         .then((p) => [...(p.tags ?? [])].sort((a, b) => a.localeCompare(b, 'zh')))

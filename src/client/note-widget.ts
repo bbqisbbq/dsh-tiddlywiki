@@ -453,6 +453,10 @@ export function createNoteWidget(): NoteWidgetHandle {
       build()
       if (ui === undefined || opened) return
       opened = true
+      // `build()` only runs once; without this, a card opened after the wiki
+      // roster changed kept the old `running` flags (a wiki started since the
+      // first build still looked stopped and `doSave()` refused it).
+      void scope.ensureTarget().then(() => { if (!disposed) scope.syncDom() })
       ui.root.hidden = false
       // With an anchor (input-dock button) the card pops up right above it;
       // without one it sits in the default bottom-right corner.

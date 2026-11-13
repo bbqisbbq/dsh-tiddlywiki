@@ -153,6 +153,32 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
   // selector (and an unknown id falls back instead of 404ing). Every accessor
   // falls back to the cordis BASE when nothing is running, so a stopped farm
   // degrades to "base defaults + 503 on writes" instead of throwing.
+  /**
+   * Send-to-agent auth is a PLUGIN-level gate, not a per-request wiki feature.
+   *
+   * v0.35.1: the two callbacks used to read `target(req)?.sendToAgent()`; a
+   * request with `?wiki=other` therefore chose the *other* wiki's (possibly
+   * empty) token and bypassed the default wiki's token. `/agent/*` is not
+   * wiki-scoped at all, so collect the strictest policy from every registered
+   * runtime: if any wiki has a token, one of those tokens is required; if any
+   * wiki disables the feature, it stays disabled. The base config is the
+   * fallback when nothing is running.
+   */
+  const sendToAgentPolicy = (): { enabled: boolean; token: string } => {
+    const live = deps.getFarm()
+    const base = deps.config.ui.sendToAgent
+    const policies = (live?.registry.wikis ?? [])
+      .map((entry) => live?.runtime(entry.id)?.sendToAgent())
+      .filter((policy): policy is { enabled: boolean; token: string } => policy !== undefined)
+    const token = policies
+      .map((policy) => (typeof policy.token === 'string' ? policy.token.trim() : ''))
+      .find((candidate) => candidate.length > 0)
+      ?? (typeof base.token === 'string' ? base.token.trim() : '')
+    return {
+      enabled: base.enabled !== false && policies.every((policy) => policy.enabled !== false),
+      token,
+    }
+  }
   const target = (req: IncomingMessage): WikiInstance | undefined => targetRuntimeFor(deps.getFarm(), req)
   /**
    * Why this request cannot be served (v0.29.0): set when `?wiki=<id>` names a
@@ -191,7 +217,7 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
             status: runtime?.server.status().status ?? 'stopped',
             agentVisible: entry.agentVisible,
             autostart: entry.autostart,
-            running: runtime !== undefined,
+            running: runtime?.isRunning() === true,
             path: entryPathOf(deps.getFarm(), entry.id),
             // 每库图标（v0.28.4）：侧边栏入口与设置页选择器共用这个来源。
             icon: entry.icon,
@@ -260,8 +286,8 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
     getPermissionPresets,
     getSessions,
     getSessionQuery,
-    sendToAgentEnabled: (req) => target(req)?.sendToAgent().enabled ?? deps.config.ui.sendToAgent.enabled,
-    sendToAgentToken: (req) => target(req)?.sendToAgent().token ?? (deps.config.ui.sendToAgent.token ?? ''),
+    sendToAgentEnabled: () => sendToAgentPolicy().enabled,
+    sendToAgentToken: () => sendToAgentPolicy().token,
   })
 
   const adminDeps: AdminDeps = {
@@ -337,7 +363,7 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
           if (entry === undefined) return { ok: false, error: `知识库「${String(id)}」不在清单里` }
           const change = { started: [] as string[], stopped: [] as string[], updated: [] as string[], running: farm.runningIds(), errors: [] as Array<{ id: string; message: string }> }
           if (runtimeAction === 'start') {
-            if (farm.runtime(entry.id) === undefined) {
+            if (farm.runtime(entry.id)?.isRunning() !== true) {
               await farm.startEntry(entry)
               change.started.push(entry.id)
             }
@@ -362,13 +388,22 @@ export function createRouteStage(deps: RouteStageDeps): RouteStage {
         // synthesized run-registry is used and the pointer is kept in step
         // (otherwise a restart in single mode would land somewhere else).
         const single = defaultEntry(registry)
+        const actionName = (body as { action?: unknown } | null)?.action
+        // In single mode the RUNNING wiki is the location pointer, not the
+        // control file's defaultId. Editing an unrelated candidate's label must
+        // not silently stop the pointer wiki and start another one. Only an
+        // explicit mode/default action may repoint the pointer.
+        const singleRunLocation = actionName === 'set-default' || actionName === 'set-mode'
+          ? (single === undefined ? defaultCurrentLocation() : { root: single.root, name: single.name })
+          : defaultCurrentLocation()
         const runRegistry = registry.mode === 'multi'
           ? registry
-          : singleEntryRegistry(single === undefined ? defaultCurrentLocation() : { root: single.root, name: single.name }, DEFAULT_WIKI_ID, 'single')
+          : singleEntryRegistry(singleRunLocation, DEFAULT_WIKI_ID, 'single')
         const change = farm === undefined
           ? { started: [], stopped: [], updated: [], running: [], errors: [] }
           : await farm.apply(runRegistry)
-        if (registry.mode === 'single' && single !== undefined) {
+        if (registry.mode === 'single' && single !== undefined
+          && (actionName === 'set-default' || actionName === 'set-mode')) {
           await writeLocationState({ root: single.root, name: single.name }, deps.locationStateFile).catch(() => undefined)
         }
         return { ok: true, info: buildWikisView(), change }

@@ -104,11 +104,27 @@ const BINARY_TYPE_EXACT = new Set([
   'application/x-gzip', 'application/x-7z-compressed', 'application/x-rar-compressed',
   'application/epub+zip', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ])
+/** Known text MIME types (plus `text/*` and `+json`/`+xml` suffixes below). */
+const TEXT_TYPE_EXACT = new Set([
+  'application/json', 'application/xml', 'application/xhtml+xml',
+  'application/javascript', 'application/x-javascript', 'application/ecmascript',
+  'application/x-yaml', 'application/yaml', 'application/toml', 'application/sql',
+])
 
-/** True when a tiddler's `type` marks it as binary (base64 in `text`). */
+/** True when a tiddler's `type` marks it as binary (base64 in `text`).
+ *
+ * The old code used a small allowlist of binary types; xlsx/pptx/doc/… were
+ * then treated as text and could be overwritten with prose while their type
+ * stayed binary (the attachment broke silently). Unknown MIME types are now
+ * binary by default; only text/* (and the explicit text family above) are
+ * writable as text. */
 export function isBinaryType(type: string | undefined): boolean {
   if (typeof type !== 'string' || type.length === 0) return false
-  return BINARY_TYPE_PREFIXES.some((p) => type.startsWith(p)) || BINARY_TYPE_EXACT.has(type)
+  if (BINARY_TYPE_PREFIXES.some((p) => type.startsWith(p))) return true
+  if (BINARY_TYPE_EXACT.has(type)) return true
+  if (type.startsWith('text/')) return false
+  if (type.endsWith('+json') || type.endsWith('+xml')) return false
+  return !TEXT_TYPE_EXACT.has(type)
 }
 
 /**

@@ -141,7 +141,17 @@ export function exportTool(env: ToolEnv) {
       }
       const content = renderExport(tiddler, format)
       await mkdir(dir, { recursive: true })
-      await writeFile(path, content, 'utf8')
+      try {
+        // `wx` closes the check-then-write race: the old existsSync + writeFile
+        // pair could let two concurrent exports (or an external writer) both
+        // pass the check and the second silently overwrite the first.
+        await writeFile(path, content, { encoding: 'utf8', flag: 'wx' })
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+          throw new Error(`tiddlywiki_export: ${path} 已经存在，未覆盖。换一个 dir、或先自己删掉/改名再导出。`)
+        }
+        throw err
+      }
       return { ok: true, title, path, format, bytes: Buffer.byteLength(content, 'utf8') } satisfies ExportResult
     },
   })

@@ -48,10 +48,57 @@ const MAX_CONFLICT_SCAN_FILE_BYTES = 2 * 1024 * 1024
 export interface ExecResult { ok: boolean; stdout: string; stderr: string }
 export type ExecFn = (args: string[], options: { cwd?: string; timeout?: number }) => Promise<ExecResult>
 
+/**
+ * Git is executed by name (`git`) and relies on the host process PATH. A DSH
+ * desktop/launcher process can inherit a broken PATH while the user's shell
+ * still has Git; every git call then fails with ENOENT and the old error path
+ * returned an empty stderr (`e.stderr` is `''`, not `undefined`), so users saw
+ * only `pull failed: `. Probe a few conventional locations and cache the
+ * working binary for the life of the process.
+ */
+const GIT_FALLBACK_CANDIDATES: string[] = [
+  process.env.DSH_TIDDLYWIKI_GIT,
+  'C:/Program Files/Git/cmd/git.exe',
+  'C:/Program Files (x86)/Git/cmd/git.exe',
+  'C:/Git/cmd/git.exe',
+  process.env.LOCALAPPDATA === undefined ? undefined : `${process.env.LOCALAPPDATA}/Programs/Git/cmd/git.exe`,
+].filter((value): value is string => typeof value === 'string' && value.length > 0)
+
+let gitBinaryCache: string | undefined
+let gitBinaryProbe: Promise<string> | undefined
+
+const probeGitBinary = async (bin: string): Promise<boolean> => {
+  try {
+    await execFileP(bin, ['--version'], {
+      timeout: QUICK_TIMEOUT_MS,
+      windowsHide: true,
+      encoding: 'utf8',
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+const resolveGitBinary = (): Promise<string> => {
+  if (gitBinaryCache !== undefined) return Promise.resolve(gitBinaryCache)
+  if (gitBinaryProbe !== undefined) return gitBinaryProbe
+  gitBinaryProbe = (async (): Promise<string> => {
+    if (await probeGitBinary('git')) return (gitBinaryCache = 'git')
+    for (const candidate of GIT_FALLBACK_CANDIDATES) {
+      if (!existsSync(candidate)) continue
+      if (await probeGitBinary(candidate)) return (gitBinaryCache = candidate)
+    }
+    return (gitBinaryCache = 'git')
+  })()
+  return gitBinaryProbe
+}
+
 /** Default exec layer: run `git <args>` under a cwd with a timeout. */
 const defaultExec: ExecFn = async (args, options) => {
+  const gitBin = await resolveGitBinary()
   try {
-    const { stdout, stderr } = await execFileP('git', args, {
+    const { stdout, stderr } = await execFileP(gitBin, args, {
       cwd: options.cwd,
       timeout: options.timeout ?? QUICK_TIMEOUT_MS,
       windowsHide: true,
@@ -61,7 +108,13 @@ const defaultExec: ExecFn = async (args, options) => {
     return { ok: true, stdout, stderr }
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string }
-    return { ok: false, stdout: e.stdout ?? '', stderr: e.stderr ?? String(e.message ?? err) }
+    const rawStderr = e.stderr === undefined || e.stderr === null ? '' : String(e.stderr)
+    const fallback = `${String(e.message ?? err)}${gitBin === 'git' ? '（PATH 里找不到 git；可用环境变量 DSH_TIDDLYWIKI_GIT 指向 git.exe）' : `（git: ${gitBin}）`}`
+    return {
+      ok: false,
+      stdout: e.stdout ?? '',
+      stderr: rawStderr.trim().length > 0 ? rawStderr : fallback,
+    }
   }
 }
 

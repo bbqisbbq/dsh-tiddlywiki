@@ -38,6 +38,8 @@ export interface NoteCommandDeps {
     client?: { get(title: string): Promise<Tiddler | undefined>; put(tiddler: Tiddler): Promise<unknown> }
     label?: string
     reason?: string
+    /** Per-wiki `note.tag`; absent = legacy `inbox`. */
+    noteTag?: string
   }
   /** Project cwd of the session (the same accessor the write tools use). */
   workspaceName?: (sessionId: string) => string | undefined
@@ -97,6 +99,11 @@ export function registerNoteCommand(commands: CommandRegistryFace, deps: NoteCom
       if (parsed === undefined) {
         return { kind: 'error', text: '用法：/note <标题>\n<正文>（至少要有一行文字）' }
       }
+      // Same boundary as the HTTP `/note` route: a command must not create or
+      // overwrite a TW system tiddler (theme/config/plugin internals).
+      if (parsed.title.startsWith('$:/')) {
+        return { kind: 'error', text: `「${parsed.title}」落在系统命名空间（$:/…），/note 不会写系统条目。` }
+      }
       const sessionId = typeof agent?.id === 'string' && agent.id.length > 0 ? agent.id : undefined
       const scope = deps.scope(sessionId)
       if (scope.client === undefined) {
@@ -117,7 +124,7 @@ export function registerNoteCommand(commands: CommandRegistryFace, deps: NoteCom
         ? workspaceMarkFromCwd(deps.workspaceName?.(sessionId))
         : undefined
       const fields: Record<string, unknown> = {}
-      const tags = ['inbox']
+      const tags = [scope.noteTag?.trim() || 'inbox']
       if (mark !== undefined) {
         tags.push(mark.tag)
         fields[WORKSPACE_FIELD] = mark.id

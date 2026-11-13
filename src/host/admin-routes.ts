@@ -191,6 +191,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     server: deps.server,
     targetProblem: deps.targetProblem,
     twRoot: deps.twRoot,
+    mutationLock: deps.mutationLock,
   }, { refuseStoppedTarget })
 
 
@@ -264,6 +265,7 @@ export function registerAdminRoutes(ctx: { webServer: WebServerFace }, deps: Adm
     server: deps.server,
     wiki: deps.wiki,
     wikis: deps.wikis,
+    mutationLock: deps.mutationLock,
   })
 
 

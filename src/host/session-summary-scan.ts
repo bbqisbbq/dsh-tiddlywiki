@@ -174,6 +174,14 @@ export function scanSnapshot(snap: SessionLogSnapshot | undefined, subagent: boo
             record(collected.produced, { title: args.title, action: 'produced', time: t, detail: '增量写入', subagent })
           }
           break
+        case 'tiddlywiki_replace':
+          // v0.33.4 added it to NOTE_TOOL_NAMES but forgot this case: a session
+          // that edited notes only through replace was still reported as having
+          // touched nothing.
+          if (typeof args.title === 'string' && args.title.length > 0) {
+            record(collected.produced, { title: args.title, action: 'produced', time: t, detail: '局部替换', subagent })
+          }
+          break
         case 'tiddlywiki_attach':
           // 附件写成二进制 tiddler（标题 = args.title），同样是本会话产生的内容。
           if (typeof args.title === 'string' && args.title.length > 0) {

@@ -445,14 +445,16 @@ export class ConfigStore {
     }
     const merged = deepMerge(stored, patch) as PluginConfigShape
     const nextText = JSON.stringify(merged, null, 2)
-    this.overrides = merged
     // Skip a byte-identical write (v0.25.0): the settings page saves whatever
     // changed, but an empty/unchanged patch still reached here and re-PUT the
     // tiddler — which bumps `.meta`'s `modified` on disk, so every「保存配置」
     // click produced a git diff and two machines clicking it conflicted on a file
     // whose CONTENT never differed. Same class the $:/language pin fixed in
     // v0.24.2; the config tiddler had no such guard.
-    if (storedText !== undefined && storedText === nextText) return this.get()
+    if (storedText !== undefined && storedText === nextText) {
+      this.overrides = merged
+      return this.get()
+    }
     await client.put({
       title: CONFIG_TIDDLER,
       text: nextText,
@@ -460,6 +462,10 @@ export class ConfigStore {
       tags: [],
       ...(existingCreated !== undefined ? { created: existingCreated } : {}),
     })
+    // Only publish the cache AFTER the PUT succeeded. Updating it first made a
+    // failed save (network/413/409) leave `get()` returning values that were
+    // never persisted; the next patch then merged onto that phantom state.
+    this.overrides = merged
     return this.get()
   }
 }

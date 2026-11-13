@@ -50,8 +50,12 @@ function readBodyStream(req: IncomingMessage, limit: number, encoding: boolean):
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
       if (size > limit) {
+        // Do NOT destroy the socket here: the route's catch writes a 413, and
+        // `req.destroy()` closes the connection before that response can be
+        // delivered (clients saw ECONNRESET instead of the documented 413).
+        // Stop accumulating and drain the rest so the request can finish.
         fail(new Error('body too large'))
-        req.destroy()
+        req.resume()
         return
       }
       chunks.push(chunk)

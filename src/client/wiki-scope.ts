@@ -57,6 +57,8 @@ interface ScopeEntry {
 const cache = new Map<string, ScopeEntry>()
 /** In-flight reads, so a card grid mounting at once makes ONE request. */
 const pending = new Map<string, Promise<ScopeEntry>>()
+/** Monotonic per-session generation; invalidation makes an older read stale. */
+const generations = new Map<string, number>()
 /** Scope-invalidation subscribers (v0.29.0) — see invalidateSessionWikiId. */
 const scopeListeners = new Set<(sessionId?: string) => void>()
 
@@ -80,8 +82,10 @@ export async function resolveSessionWikiId(sessionId: string | undefined): Promi
   if (hit !== undefined && Date.now() - hit.at <= SCOPE_TTL_MS) return hit.wikiId
   const inFlight = pending.get(sessionId)
   if (inFlight !== undefined) return (await inFlight).wikiId
+  const generation = generations.get(sessionId) ?? 0
 
-  const read = (async (): Promise<ScopeEntry> => {
+  let read!: Promise<ScopeEntry>
+  read = (async (): Promise<ScopeEntry> => {
     const miss: ScopeEntry = { wikiId: undefined, scope: undefined, resolved: undefined, at: 0 }
     try {
       const res = await fetch(
@@ -100,14 +104,18 @@ export async function resolveSessionWikiId(sessionId: string | undefined): Promi
     } catch {
       return miss
     } finally {
-      pending.delete(sessionId)
+      // Only remove OUR entry: an invalidate/new read may have replaced it while
+      // this request was in flight.
+      if (pending.get(sessionId) === read) pending.delete(sessionId)
     }
   })()
   pending.set(sessionId, read)
   const entry = await read
   // `at: 0` marks a FAILED read: caching it would freeze "no scope" for a whole
-  // TTL after one network hiccup. Only a real answer is trusted for a TTL.
-  if (entry.at > 0) cache.set(sessionId, entry)
+  // TTL after one network hiccup. Only a real answer is trusted for a TTL — and
+  // only if no invalidation happened while it was in flight (switching a wiki
+  // while a card was reading used to re-cache the OLD scope for 15s).
+  if (entry.at > 0 && (generations.get(sessionId) ?? 0) === generation) cache.set(sessionId, entry)
   return entry.wikiId
 }
 
@@ -159,8 +167,17 @@ export function peekSessionWikiScope(sessionId: string | undefined): SessionWiki
  * previous wiki's notes (and its `data-dsh-tw-wiki`) after a switch.
  */
 export function invalidateSessionWikiId(sessionId?: string): void {
-  if (typeof sessionId === 'string' && sessionId.length > 0) cache.delete(sessionId)
-  else cache.clear()
+  if (typeof sessionId === 'string' && sessionId.length > 0) {
+    cache.delete(sessionId)
+    generations.set(sessionId, (generations.get(sessionId) ?? 0) + 1)
+    pending.delete(sessionId)
+  } else {
+    for (const id of new Set([...cache.keys(), ...pending.keys(), ...generations.keys()])) {
+      generations.set(id, (generations.get(id) ?? 0) + 1)
+    }
+    cache.clear()
+    pending.clear()
+  }
   const id = typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined
   for (const listener of [...scopeListeners]) listener(id)
 }

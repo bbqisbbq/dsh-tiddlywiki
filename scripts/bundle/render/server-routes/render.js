@@ -24,6 +24,44 @@ no post-hoc string rewriting needed.
 */
 var WIKILINK_TEMPLATE = "/dsh-tiddlywiki/tw/#$uri_encoded$";
 
+/*
+The host route blocks the plugin's secret namespace by title, but a TW filter
+can split a title into pieces and join it again (verified: `[[$:]] [[/plugins/
+dsh-tiddlywiki/config]] +[join[]]` rendered the config JSON). The final
+boundary must therefore be inside the renderer: while rendering one fragment,
+hide every title under the plugin namespace from `getTiddler`/`getTiddlerText`.
+The patch is synchronous and restored in `finally`, so no other request can
+observe it.
+*/
+var BLOCKED_TITLE_PREFIX = "$:/plugins/dsh-tiddlywiki/";
+
+function isBlockedTitle(title) {
+	return typeof title === "string" && title.indexOf(BLOCKED_TITLE_PREFIX) === 0;
+}
+
+function renderWithoutBlockedTitles(wiki, render) {
+	var originalGetTiddler = wiki.getTiddler;
+	var originalGetTiddlerText = wiki.getTiddlerText;
+	wiki.getTiddler = function(title) {
+		if(isBlockedTitle(title)) {
+			return undefined;
+		}
+		return originalGetTiddler.apply(wiki,arguments);
+	};
+	wiki.getTiddlerText = function(title) {
+		if(isBlockedTitle(title)) {
+			return arguments.length > 1 ? arguments[1] : undefined;
+		}
+		return originalGetTiddlerText.apply(wiki,arguments);
+	};
+	try {
+		return render();
+	} finally {
+		wiki.getTiddler = originalGetTiddler;
+		wiki.getTiddlerText = originalGetTiddlerText;
+	}
+}
+
 exports.methods = ["POST"];
 
 exports.path = /^\/render$/;
@@ -50,6 +88,10 @@ exports.handler = function(request,response,state) {
 			"tv-wikilink-template": WIKILINK_TEMPLATE
 		};
 		if(typeof body.title === "string" && body.title.length > 0) {
+			if(isBlockedTitle(body.title)) {
+				sendJson(response,403,{ok:false,error:"system tiddler not exposed"});
+				return;
+			}
 			// Render an existing tiddler's body with ITS OWN content type (block
 			// parse, so headings / tables / lists render natively). The type must
 			// be honored: dsh-tiddlywiki writes agent notes as `text/markdown`
@@ -66,9 +108,11 @@ exports.handler = function(request,response,state) {
 			var tiddlerType = typeof tiddler.fields.type === "string" && tiddler.fields.type.length > 0
 				? tiddler.fields.type
 				: "text/vnd.tiddlywiki";
-			var html = state.wiki.renderText("text/html",tiddlerType,tiddler.fields.text,{
-				parseAsInline: false,
-				variables: variables
+			var html = renderWithoutBlockedTitles(state.wiki,function() {
+				return state.wiki.renderText("text/html",tiddlerType,tiddler.fields.text,{
+					parseAsInline: false,
+					variables: variables
+				});
 			});
 			response.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"});
 			response.end(html);
@@ -80,13 +124,19 @@ exports.handler = function(request,response,state) {
 			// optionally selects the parser (e.g. text/markdown); the default is
 			// wikitext, and unknown types fall back to it inside TW.
 			if(typeof body.contextTitle === "string" && body.contextTitle.length > 0) {
+				if(isBlockedTitle(body.contextTitle)) {
+					sendJson(response,403,{ok:false,error:"system tiddler not exposed"});
+					return;
+				}
 				variables.currentTiddler = body.contextTitle;
 			}
 			var inline = body.parseAsInline === true;
 			var bodyType = typeof body.type === "string" && body.type.length > 0 ? body.type : "text/vnd.tiddlywiki";
-			var textHtml = state.wiki.renderText("text/html",bodyType,body.text,{
-				parseAsInline: inline,
-				variables: variables
+			var textHtml = renderWithoutBlockedTitles(state.wiki,function() {
+				return state.wiki.renderText("text/html",bodyType,body.text,{
+					parseAsInline: inline,
+					variables: variables
+				});
 			});
 			response.writeHead(200,{"Content-Type":"text/html; charset=utf-8","Cache-Control":"no-store"});
 			response.end(textHtml);

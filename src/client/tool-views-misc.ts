@@ -51,7 +51,11 @@ export function TagsCard(props: { toolName: string }): React.ReactElement {
   const shown = chips.slice(0, TAGS_CARD_LIMIT)
   const total = typeof payload?.total === 'number' ? (payload.total as number) : chips.length
   let body: React.ReactNode
-  if (chips.length === 0) {
+  if (data.loading) {
+    body = React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, t('card.loading'))
+  } else if (payload === null) {
+    body = React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, t('card.loadFailed'))
+  } else if (chips.length === 0) {
     body = React.createElement('div', { className: 'dsh-tw-toolcard-empty' }, t('card.noTags'))
   } else {
     body = React.createElement(

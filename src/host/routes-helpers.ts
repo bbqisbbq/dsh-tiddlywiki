@@ -16,7 +16,7 @@
 import { basename } from 'node:path'
 import type { TiddlyWebClient } from './tw-api.ts'
 import { formatTiddlerDate } from './tw-api.ts'
-import { formatLocalMinute } from './text-util.ts'
+import { formatLocalSecond } from './text-util.ts'
 import { assertNoConflict, buildWriteTiddler } from './write-policy.ts'
 
 /** Tiddler type for quick-notes: Markdown, so the uploaded images/links and
@@ -102,10 +102,13 @@ export function readOptionalLimit(url: URL, max: number): number | undefined {
   return Math.max(1, Math.min(Math.floor(parsed), max))
 }
 
-/** Default note title: `YYYY-MM-DD HH:mm` (design doc D6). Shared formatter —
- *  session-summary.ts used to carry a second, byte-identical copy (v0.22.8). */
+/** Default note title: `YYYY-MM-DD HH:mm:ss` (design doc D6). Shared formatter —
+ *  session-summary.ts used to carry a second, byte-identical copy (v0.22.8).
+ *  Seconds (not minutes) are deliberate: `/note` treats an existing title as
+ *  an update, so minute precision let two quick notes saved in the same minute
+ *  silently overwrite each other. */
 export function timestampTitle(date = new Date()): string {
-  return formatLocalMinute(date)
+  return formatLocalSecond(date)
 }
 
 /**
@@ -135,7 +138,9 @@ export async function openInTwEditor(
     // and (because `tags` defaulted to the note tag) its tags too.
     const { tiddler } = buildWriteTiddler(title, text, {
       existing,
-      tags,
+      // Preserve the configured default tag for a NEW note; an explicit empty
+      // array on an EXISTING note still means "clear all tags".
+      tags: existing === undefined && tags !== undefined && tags.length === 0 ? undefined : tags,
       defaultTags: options.defaultTags,
       agentTag: false,
     })
@@ -245,8 +250,10 @@ export async function openInTwEditor(
  */
 export function resolveTags(body: { tag?: unknown; tags?: unknown }): string[] | undefined {
   if (Array.isArray(body.tags)) {
-    const tags = body.tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim())
-    if (tags.length > 0) return tags
+    // An explicitly supplied array wins even when empty: `[]` means "clear all
+    // tags" on an existing note. Falling through on empty made the quick-note
+    // card's "remove every tag" action silently preserve the old tags.
+    return body.tags.filter((t): t is string => typeof t === 'string' && t.trim().length > 0).map((t) => t.trim())
   }
   if (typeof body.tag === 'string' && body.tag.trim().length > 0) {
     return body.tag.trim().split(/\s+/).filter(Boolean)

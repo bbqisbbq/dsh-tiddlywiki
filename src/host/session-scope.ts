@@ -24,7 +24,7 @@
  *
  * @module dsh-tiddlywiki/host/session-scope
  */
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { dshHomePath } from '../sdk.ts'
 
@@ -138,9 +138,37 @@ export async function readSessionScopes(file: string = defaultSessionScopeFile()
 export async function writeSessionScopes(state: SessionScopeState, file: string = defaultSessionScopeFile()): Promise<void> {
   const payload = JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2)
   await mkdir(dirname(file), { recursive: true })
-  const tmp = `${file}.tmp`
-  await writeFile(tmp, payload, 'utf8')
-  await rename(tmp, file)
+  // A fixed `.tmp` name lets two concurrent writers clobber each other: one
+  // rename can publish the other writer's bytes (or fail ENOENT after the
+  // other rename). Unique suffixes make the rename atomic per writer.
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+  try {
+    await writeFile(tmp, payload, 'utf8')
+    await rename(tmp, file)
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => undefined)
+    throw err
+  }
+}
+
+/**
+ * Serialize `setSessionScope` read-modify-writes per file. Two selector clicks
+ * in different tabs used to read the same old file and each write a whole new
+ * one; the last rename won and one session's scope disappeared. The queue keeps
+ * the operation single-flight within this process (cross-process writes are
+ * still last-writer-wins, but they are not the common UI case).
+ */
+const scopeWriteQueues = new Map<string, Promise<void>>()
+
+function enqueueScopeWrite<T>(file: string, task: () => Promise<T>): Promise<T> {
+  const previous = scopeWriteQueues.get(file) ?? Promise.resolve()
+  const run = previous.then(task, task)
+  const tail = run.then(() => undefined, () => undefined)
+  scopeWriteQueues.set(file, tail)
+  void tail.finally(() => {
+    if (scopeWriteQueues.get(file) === tail) scopeWriteQueues.delete(file)
+  })
+  return run
 }
 
 /**
@@ -151,7 +179,13 @@ export async function writeSessionScopes(state: SessionScopeState, file: string 
  * A write failure is REPORTED (the caller surfaces it) but changes nothing else:
  * the session simply keeps falling back to the default.
  */
-export async function setSessionScope(sessionId: string, wikiId: string | undefined, file: string = defaultSessionScopeFile()): Promise<void> {
+export function setSessionScope(sessionId: string, wikiId: string | undefined, file: string = defaultSessionScopeFile()): Promise<void> {
+  if (!isSafeSessionId(sessionId)) return Promise.reject(new Error(`会话 id 非法：${JSON.stringify(sessionId)}`))
+  if (wikiId !== undefined && !isSafeWikiId(wikiId)) return Promise.reject(new Error(`知识库 id 非法：${JSON.stringify(wikiId)}`))
+  return enqueueScopeWrite(file, () => setSessionScopeUnlocked(sessionId, wikiId, file))
+}
+
+async function setSessionScopeUnlocked(sessionId: string, wikiId: string | undefined, file: string = defaultSessionScopeFile()): Promise<void> {
   if (!isSafeSessionId(sessionId)) throw new Error(`会话 id 非法：${JSON.stringify(sessionId)}`)
   if (wikiId !== undefined && !isSafeWikiId(wikiId)) throw new Error(`知识库 id 非法：${JSON.stringify(wikiId)}`)
   /**

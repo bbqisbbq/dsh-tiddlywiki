@@ -128,7 +128,7 @@ function TiddlywikiToolViewBody(props: ToolCallOwnerProps): React.ReactNode {
     case 'tiddlywiki_attach':
       return React.createElement(AttachCard, { toolName: name, title: str(args.title) })
     case 'tiddlywiki_batch_put':
-      return React.createElement(BatchCard, { toolName: name, args })
+      return React.createElement(BatchCard, { toolName: name, args, text })
     case 'tiddlywiki_search':
       // `text` carries the scope note the tool rendered (v0.25.0).
       return React.createElement(SearchCard, { toolName: name, args, text })

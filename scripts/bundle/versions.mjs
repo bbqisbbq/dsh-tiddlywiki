@@ -15,5 +15,7 @@
 export const SEND_TO_AGENT_BUNDLE_VERSION = '0.3.6'
 
 // Bumped 0.1.0 → 0.2.0: render.js behavior changed (see the route source).
-export const RENDER_BUNDLE_VERSION = '0.2.0'
+// Bumped 0.2.0 → 0.2.1 (v0.35.1): render hides the plugin's secret namespace
+// inside the TW renderer too — a split filter could otherwise transclude it.
+export const RENDER_BUNDLE_VERSION = '0.2.1'
 

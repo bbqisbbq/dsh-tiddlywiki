@@ -32,6 +32,8 @@ export interface ConfigField {
   initial: string | boolean | number
   read: () => string | boolean | number
   changed: () => boolean
+  /** Re-baseline after a successful save (v0.35.1). */
+  reset?: () => void
   /**
    * 数值字段专用：返回「当前输入不能提交」的原因，`undefined` = 可用。
    * 保存前用它拦截 —— 宿主对越界/非数字是静默回落（bridge.port 掉回 8618、
@@ -97,7 +99,8 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     input.value = initial
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)
-    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
+    let baseline = initial
+    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== baseline, reset: () => { baseline = input.value.trim() } })
     target.append(wrap)
   }
   /**
@@ -123,7 +126,8 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     })
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input, toggle)
-    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
+    let baseline = initial
+    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== baseline, reset: () => { baseline = input.value.trim() } })
     target.append(wrap)
   }
   const checkField = (key: string, label: string, initial: boolean): HTMLInputElement => {
@@ -132,7 +136,8 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     input.checked = initial
     const wrap = make('label', 'dsh-tw-settings-field dsh-tw-settings-field-check')
     wrap.append(input, make('span', 'dsh-tw-settings-label', label))
-    fields.push({ key, initial, read: () => input.checked, changed: () => input.checked !== initial })
+    let baseline = initial
+    fields.push({ key, initial, read: () => input.checked, changed: () => input.checked !== baseline, reset: () => { baseline = input.checked } })
     target.append(wrap)
     return input
   }
@@ -181,7 +186,8 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     }
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input, hint)
-    fields.push({ key, initial, read, changed: () => read() !== initial, invalid: violation })
+    let baseline: string | number = initial
+    fields.push({ key, initial, read, changed: () => read() !== baseline, reset: () => { baseline = read() }, invalid: violation })
     // 先跑一次：config tiddler 里本来就存着越界值（宿主已静默夹取）时，进页面就该看见
     // 提示，而不是等用户改动过才亮。
     sync()
@@ -198,7 +204,8 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     }
     const wrap = make('label', 'dsh-tw-settings-field')
     wrap.append(make('span', 'dsh-tw-settings-label', label), select)
-    fields.push({ key, initial, read: () => select.value, changed: () => select.value !== initial })
+    let baseline = initial
+    fields.push({ key, initial, read: () => select.value, changed: () => select.value !== baseline, reset: () => { baseline = select.value } })
     target.append(wrap)
     return select
   }
@@ -214,7 +221,8 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
     input.value = initial
     const wrap = make('label', 'dsh-tw-settings-field dsh-tw-settings-field-area')
     wrap.append(make('span', 'dsh-tw-settings-label', label), input)
-    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== initial })
+    let baseline = initial
+    fields.push({ key, initial, read: () => input.value.trim(), changed: () => input.value.trim() !== baseline, reset: () => { baseline = input.value.trim() } })
     target.append(wrap)
     return input
   }
@@ -437,6 +445,13 @@ export function renderConfigSection(body: HTMLElement, config: Record<string, un
       }
       try {
         await fetchJson(withWiki(CONFIG_ENDPOINT), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
+        // The form's baseline was the pre-save value. Without this, every
+        // successful save leaves `changed()` true; the next refresh sees
+        // `serverChanged && dirty` and permanently shows the「配置在别处被改动过」
+        // banner while refusing to rebuild with the host's clamped values.
+        // Re-baseline the SAME mutable baseline the changed() closures compare
+        // against; assigning `field.initial` alone would not affect them.
+        for (const field of fields) field.reset?.()
         // ui.* 已落盘：清掉客户端缓存，下一次读取立即拿到新值（否则最长 15s 才生效）。
         invalidateUiConfig()
         configState.saveError = undefined

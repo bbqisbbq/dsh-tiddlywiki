@@ -222,7 +222,10 @@ export function mountSidebarEntry(state: PanelState): () => void {
   const applyRoster = async (): Promise<void> => {
     const payload = await fetchStatus()
     if (disposed) return
-    const list = Array.isArray(payload?.wikis) ? payload.wikis : []
+    // A failed /status is "unknown", not "zero wikis": the old fallback deleted
+    // every multi-wiki row and showed the single entry for the next 10s.
+    if (payload == null) return
+    const list = Array.isArray(payload.wikis) ? payload.wikis : []
     const running = list.filter((w) => w.running)
     // 点击判定与高亮都要用同一份名册（v0.28.13）：存下来，`shownWiki()` 据此解析。
     // 行只给"在运行"的库建（见函数头），但"显示的是哪个库"要按完整名册判断（v0.29.0）。

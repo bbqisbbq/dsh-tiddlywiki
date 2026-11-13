@@ -283,17 +283,21 @@ export class ClipBridge {
     const cfg = this.deps.getConfig()
     const urlPath = (req.url ?? '/').split('?')[0] ?? '/'
 
-    // CORS preflight is answered unconditionally (Cross-Origin requests from a
-    // bookmarklet always preflight: content-type application/json is not a
-    // "simple" header, and Chromium's PNA wants Access-Control-Allow-Private-Network).
+    // DNS-rebinding defense BEFORE anything else: only loopback Host headers.
+    // Doing this after OPTIONS let a rebinding page probe the port and read the
+    // permissive preflight (ACAO:* + Allow-Private-Network) for free.
+    if (!hostAllowed(req.headers.host, this.boundPort)) {
+      this.respond(res, { ok: false, error: 'Forbidden host' }, 403)
+      return
+    }
+
+    // CORS preflight is answered for legitimate loopback Hosts (Cross-Origin
+    // requests from a bookmarklet always preflight: content-type
+    // application/json is not a "simple" header, and Chromium's PNA wants
+    // Access-Control-Allow-Private-Network).
     if (req.method === 'OPTIONS') {
       res.writeHead(204, CORS_HEADERS)
       res.end()
-      return
-    }
-    // DNS-rebinding defense BEFORE anything else: only loopback Host headers.
-    if (!hostAllowed(req.headers.host, this.boundPort)) {
-      this.respond(res, { ok: false, error: 'Forbidden host' }, 403)
       return
     }
 

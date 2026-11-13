@@ -52,6 +52,8 @@ export interface WikiRuntime {
   readonly path: string
   /** True once `dispose()` ran: such a runtime must never be started again. */
   readonly isDisposed: boolean
+  /** True while the child is serving (or still starting). Optional for fakes. */
+  isRunning?(): boolean
   start(): Promise<void>
   stop(): Promise<void>
   dispose(): Promise<void>
@@ -128,8 +130,8 @@ export function targetRuntimeFor<T extends WikiRuntime>(farm: WikiFarm<T> | unde
   const id = wikiIdFromRequest(req)
   if (id === undefined) return farm.defaultRuntime()
   const runtime = farm.runtime(id)
-  if (runtime !== undefined) return runtime
-  // Registered but stopped → refuse (never act on a different knowledge base).
+  if (runtime !== undefined && runtime.isRunning?.() !== false) return runtime
+  // Registered but stopped/failed → refuse (never act on a different knowledge base).
   if (farm.registry.wikis.some((entry) => entry.id === id)) return undefined
   return farm.defaultRuntime()
 }
@@ -205,7 +207,7 @@ export function resolveAgentScope<T extends WikiRuntime>(
     const explicit = wantedId === undefined ? undefined : byId.get(wantedId)
     if (explicit !== undefined && explicit.agentVisible) {
       const runtime = farm.runtime(explicit.id)
-      if (runtime !== undefined) return { runtime, entry: explicit }
+      if (runtime !== undefined && runtime.isRunning?.() !== false) return { runtime, entry: explicit }
       return { entry: explicit, reason: `本会话作用域指定的知识库「${explicit.label}」当前没有运行，请先在界面上启动它再试` }
     }
   }
@@ -216,7 +218,7 @@ export function resolveAgentScope<T extends WikiRuntime>(
   const order = preferred === undefined ? visible : [preferred, ...visible.filter((entry) => entry.id !== preferred.id)]
   for (const entry of order) {
     const runtime = farm.runtime(entry.id)
-    if (runtime !== undefined) return { runtime, entry }
+    if (runtime !== undefined && runtime.isRunning?.() !== false) return { runtime, entry }
   }
   // Nothing visible is running: name the one we WOULD use so the sentence is
   // actionable ("start X"), rather than a vague "no wiki".
@@ -303,9 +305,9 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
     const preferred = defaultEntry(this.registryValue)
     if (preferred !== undefined) {
       const match = this.runtimes.get(preferred.id)
-      if (match !== undefined) return match
+      if (match !== undefined && match.isRunning?.() !== false) return match
     }
-    return this.runtimes.values().next().value
+    return [...this.runtimes.values()].find((runtime) => runtime.isRunning?.() !== false)
   }
 
   /**
@@ -406,10 +408,13 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
         continue
       }
       if (runtime.path !== entryPath(entry)) {
-        // Folder change: recycle (see the module header).
+        // Folder change: recycle (see the module header). Preserve a manually
+        // started autostart=false wiki: `shouldRun()` only answers "at boot",
+        // and the old code stopped it and then declined to start it again.
+        const wasRunning = runtime.isRunning?.() !== false
         await this.stopEntry(entry.id)
         change.stopped.push(entry.id)
-        if (this.shouldRun(entry)) {
+        if (wasRunning || this.shouldRun(entry)) {
           await this.startEntry(entry)
           change.started.push(entry.id)
         }
@@ -429,7 +434,15 @@ export class WikiFarm<T extends WikiRuntime = WikiRuntime> {
    * route named it). No-op when it is already running.
    */
   async startEntry(entry: WikiEntry): Promise<void> {
-    if (this.runtimes.has(entry.id)) return
+    const existing = this.runtimes.get(entry.id)
+    if (existing !== undefined) {
+      // A runtime can remain in the map after start() failed (it is kept so
+      // status can name the error and a late-ready child can still be stopped).
+      // Treating that object as "running" made the settings page's start button
+      // a no-op forever. Recycle it instead.
+      if (existing.isRunning?.() !== false) return
+      await this.stopEntry(entry.id)
+    }
     let runtime: T
     try {
       runtime = this.options.createRuntime(entry)

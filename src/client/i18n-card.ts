@@ -54,6 +54,8 @@ export const CARD_MESSAGES: { zh: Record<string, string>; en: Record<string, str
     'card.totalHits': ' · 共 {total} 条',
     'card.searchTitle': '检索',
     'card.noMatches': '没有匹配的笔记',
+    'card.loading': '加载中…',
+    'card.loadFailed': '加载失败（wiki 服务不可用）',
     // ── 附件卡 ──────────────────────────────────────────────────────────────
     'card.attachSavedRendered': '附件已保存进 wiki（二进制条目，卡片不内联渲染）。',
     'card.attachSaved': '附件已保存。',
@@ -115,6 +117,8 @@ export const CARD_MESSAGES: { zh: Record<string, string>; en: Record<string, str
     'card.totalHits': ' · {total} total',
     'card.searchTitle': 'Search',
     'card.noMatches': 'No matching notes',
+    'card.loading': 'Loading…',
+    'card.loadFailed': 'Failed to load (wiki service unavailable)',
     'card.attachSavedRendered': 'Attachment saved into the wiki (a binary tiddler; the card does not inline it).',
     'card.attachSaved': 'Attachment saved.',
     'card.recentTitle': 'Recently changed',

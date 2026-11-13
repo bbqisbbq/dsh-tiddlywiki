@@ -8,7 +8,7 @@
  *
  * @module dsh-tiddlywiki/host/tools-support
  */
-import { parseTiddlerDate } from './tw-api.ts'
+import { isBinaryType, parseTiddlerDate } from './tw-api.ts'
 import type { Tiddler, TiddlyWebClient } from './tw-api.ts'
 import type { GitFace, GitStatusView, GitSyncTarget } from './git.ts'
 import { flattenTiddlerFields, normalizeFieldsArg } from './write-policy.ts'
@@ -58,6 +58,8 @@ export interface ToolScope {
   reason?: string
   /** More than one visible wiki ⇒ results must name the one they used. */
   ambiguous: boolean
+  /** Default tag for a new note in this wiki (v0.35.1: `/note` used to hardcode inbox). */
+  noteTag?: string
 }
 
 export interface ToolsDeps {
@@ -312,9 +314,17 @@ export function normalizeFieldsInArgs(args: Record<string, unknown>): Record<str
 /** batch_put 专用：逐条目归一化 `fields`（非对象条目原样留给逐条校验报错）。 */
 export function normalizeBatchItemsFields(items: unknown): unknown {
   if (!Array.isArray(items)) return items
-  return items.map((item) => (item !== null && typeof item === 'object' && !Array.isArray(item))
-    ? normalizeFieldsInArgs(item as Record<string, unknown>)
-    : item)
+  return items.map((item) => {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return item
+    try {
+      return normalizeFieldsInArgs(item as Record<string, unknown>)
+    } catch (err) {
+      // Keep the batch contract: one malformed `fields` string must fail THAT
+      // item, not abort normalization for every other item before execute()'s
+      // per-item try/catch can report the rest.
+      return { ...(item as Record<string, unknown>), __fieldsNormalizeError: err instanceof Error ? err.message : String(err) }
+    }
+  })
 }
 
 /**
@@ -835,6 +845,33 @@ export function insertIntoSection(base: string, heading: string, addition: strin
     text: after.trim().length === 0 ? head : `${head}${eol}${eol}${after.replace(/^\s+/, '')}`,
     matched: true,
   }
+}
+
+/**
+ * Refuse a TEXT overwrite of a binary attachment.
+ *
+ * A binary tiddler keeps its base64 in `text`; writing prose into it while
+ * `type` stays `image/png`/`application/pdf` silently breaks the attachment.
+ * This guard must cover EVERY text-writing tool: `put` (including its
+ * `force:true` branch), `append` and `batch_put` each had their own gap
+ * (v0.35.1 audit). A deliberate conversion is allowed only when the caller
+ * explicitly supplies a non-binary `fields.type`; `force` is a concurrency
+ * escape hatch, never a type conversion.
+ */
+export function assertTextWritable(
+  title: string,
+  existing: Tiddler | undefined,
+  fields?: Record<string, unknown>,
+): void {
+  const currentType = typeof existing?.type === 'string' ? existing.type : undefined
+  if (!isBinaryType(currentType)) return
+  const wantedType = typeof fields?.type === 'string' ? fields.type : undefined
+  if (wantedType !== undefined && !isBinaryType(wantedType)) return
+  throw new Error(
+    `「${title}」是二进制附件（type=${currentType ?? '?'}，正文为 base64），`
+    + '直接写文本会把附件写坏。要替换附件请用 tiddlywiki_attach；'
+    + '确实要转成文本条目，请显式传 fields: {"type":"text/markdown"}（force 不会改变内容类型）。',
+  )
 }
 
 /**

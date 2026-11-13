@@ -97,8 +97,8 @@ export interface StartupStageDeps {
   clipBridge: { start: (port: number) => Promise<void>; stop: () => Promise<void>; port: number }
   /** The EFFECTIVE bridge config (per-wiki override else the cordis base). */
   effectiveBridge: () => BridgeConfig
-  /** The wiki's own location surface — only `defaultCurrentLocation` is read here. */
-  defaultCurrentLocation: () => WikiLocation
+  // Removed v0.35.1: `defaultCurrentLocation` was never read; single-mode
+  // registry synthesis lives in index-routes.ts and uses the location pointer.
   /**
    * DSH's skill registry, when the host has one (v0.31.0).
    *
@@ -138,6 +138,7 @@ export function createStartupStage(deps: StartupStageDeps): { start: () => Promi
        */
       try {
         const text = await readBundledSkillText()
+        if (deps.isDisposed()) return
         const skills = deps.skills?.()
         const dispose = skills !== undefined && text !== undefined ? registerSplitSkill(skills, text) : undefined
         if (dispose !== undefined) {
@@ -151,14 +152,17 @@ export function createStartupStage(deps: StartupStageDeps): { start: () => Promi
       } catch (err) {
         console.warn('[dsh-tiddlywiki] 拆库 skill 安装异常：', err)
       }
+      if (deps.isDisposed()) return
       // THE CONTROL FILE FIRST (v0.28.0): it carries the mode (single/multi), the
       // wiki list and the default id, and it must be read before anything starts
       // — which is exactly why it lives OUTSIDE every wiki (wiki-registry.ts).
       // The control file decides: mode + the wiki list.
       const read = await readRegistry({ file: deps.registryFile, legacyFile: deps.locationStateFile, fallback: deps.defaultLocation })
+      if (deps.isDisposed()) return
       // Per-session scopes are a PREFERENCE: an unreadable file just means "no
       // explicit scope" and every session falls back to the default wiki.
       const scopes = await readSessionScopes(deps.sessionScopeFile)
+      if (deps.isDisposed()) return
       if (scopes.error !== undefined) console.warn('[dsh-tiddlywiki]', scopes.error)
       deps.setSessionScopes(scopes.scopes)
       deps.setControl({ registry: read.registry, source: read.source, warnings: read.warnings, error: read.error })
@@ -170,6 +174,7 @@ export function createStartupStage(deps: StartupStageDeps): { start: () => Promi
       const runRegistry = read.registry.mode === 'multi'
         ? read.registry
         : singleEntryRegistry(await singleModeLocation(), DEFAULT_WIKI_ID, DEFAULT_WIKI_MODE)
+      if (deps.isDisposed()) return
       const farm = new WikiFarm<WikiInstance>(runRegistry, {
         createRuntime: (entry) => new WikiInstance({
           entry,
@@ -182,10 +187,12 @@ export function createStartupStage(deps: StartupStageDeps): { start: () => Promi
         }),
         log: (message) => console.warn('[dsh-tiddlywiki]', message),
       })
+      if (deps.isDisposed()) return
       deps.setFarm(farm)
       // Every instance brings ITSELF up (child → its config tiddler → seeds →
       // git → committer), so this one call replaces the old step-by-step startup.
       // One wiki failing never stops the others (the farm reports it).
+      if (deps.isDisposed()) return
       const change = await farm.startAll()
       if (change.started.length > 0) console.info(`[dsh-tiddlywiki] 已启动：${change.started.join(', ')}`)
       // The prompt section is a plugin-level singleton: rebuild it now that the

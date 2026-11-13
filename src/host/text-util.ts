@@ -33,3 +33,20 @@ export function formatLocalMinute(value: Date | number): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} `
     + `${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
+
+/**
+ * Local `YYYY-MM-DD HH:mm:ss` for a Date or an epoch-ms value.
+ *
+ * Default NOTE titles use this shape instead of {@link formatLocalMinute}:
+ * two quick notes saved in the same minute used to get the same title and the
+ * second silently overwrote the first (`/note` treats the title as an update
+ * target). Seconds make an accidental collision practically impossible while
+ * staying human-readable; `formatLocalMinute` is still used for DISPLAY
+ * timestamps (session summary) where seconds are noise.
+ */
+export function formatLocalSecond(value: Date | number): string {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (n: number): string => (n < 10 ? `0${n}` : String(n))
+  return `${formatLocalMinute(date)}:${pad(date.getSeconds())}`
+}

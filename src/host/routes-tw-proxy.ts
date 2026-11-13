@@ -66,7 +66,9 @@ import {
   isBlockedProxyPath,
   isBlockedProxyTitle,
   referencesBlockedTitle,
+  renderedConfigLeak,
 } from './proxy-guard.ts'
+import { CONFIG_TIDDLER } from './config.ts'
 
 export {
   BLOCKED_PROXY_TITLE_PREFIXES,
@@ -180,6 +182,21 @@ export function createTwProxyRoutes(deps: TwProxyRouteDeps): TwProxyRouteHandler
             ...(body.parseAsInline === true ? { parseAsInline: true } : {}),
           }
       const html = await client.render(request)
+      // Defence for wikis still running the pre-v0.35.1 render bundle: the
+      // input-side substring guard can be bypassed by a split TW filter. Read
+      // the config tiddler and reject a fragment that clearly contains its
+      // dump or a non-empty secret. A read failure must not make every card
+      // unrenderable, so it only logs; the bundle-side guard covers new wikis.
+      let configText: string | undefined
+      try {
+        configText = (await client.get(CONFIG_TIDDLER))?.text
+      } catch (err) {
+        console.warn('[dsh-tiddlywiki] render leak check: config read failed:', err instanceof Error ? err.message : String(err))
+      }
+      if (renderedConfigLeak(html, configText)) {
+        json(res, { ok: false, error: 'system tiddler not exposed' }, 403)
+        return
+      }
       const safe = sanitizeTwFragment(html)
       res.writeHead(200, {
         'content-type': 'text/html; charset=utf-8',
@@ -286,6 +303,17 @@ export function createTwProxyRoutes(deps: TwProxyRouteDeps): TwProxyRouteHandler
     }
     try {
       const method = (req.method ?? 'GET').toUpperCase()
+      // TW's own `/render` route is an internal host-to-child API (the GUI uses
+      // /dsh-tiddlywiki/render, never the proxy). Leaving it reachable let a
+      // caller bypass the host sanitizer and, on an old 0.2.0 render bundle,
+      // transclude the plugin config by splitting its title in a filter. The
+      // host route calls the child directly, so blocking the browser-facing
+      // proxy path costs nothing and protects wikis that have not re-seeded.
+      const restPath = rest.split('?')[0] ?? ''
+      if (method === 'POST' && (restPath === '/render' || restPath === '/render/')) {
+        json(res, { ok: false, error: 'render is only available through /dsh-tiddlywiki/render' }, 403)
+        return
+      }
       const headers = forwardHeaders(req.headers)
       // TW's CSRF gate requires X-Requested-With on writes; forward it through.
       if (method === 'PUT' || method === 'DELETE' || method === 'POST') headers['x-requested-with'] = 'TiddlyWiki'

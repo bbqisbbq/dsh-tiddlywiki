@@ -36,7 +36,14 @@ export function createAdminConfigRoutes(
   const handleConfig = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     try {
       if (rejectCrossSiteWrite(req, res, ['POST'])) return
-      const body = JSON.parse(await readBody(req)) as unknown
+      const raw = await readBody(req)
+      let body: unknown
+      try {
+        body = JSON.parse(raw) as unknown
+      } catch {
+        json(res, { ok: false, error: '请求体必须是合法 JSON' }, 400)
+        return
+      }
       const client = deps.getClient(req)
       if (client === undefined) {
         json(res, { ok: false, error: notRunning(req) }, 503)

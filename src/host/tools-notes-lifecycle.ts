@@ -114,7 +114,15 @@ export function deleteTool(env: ToolEnv) {
         copy[TRASHBIN_OF_FIELD] = args.title
         copy[TRASHBIN_AT_FIELD] = at
         await wiki.put(copy)
-        await wiki.delete(args.title)
+        try {
+          await wiki.delete(args.title)
+        } catch (err) {
+          // The original is still there; do not leave a copy that `restore`
+          // refuses (it checks the original title first) and `empty` would later
+          // delete. Best effort rollback, then surface the real failure.
+          await wiki.delete(trashTitle).catch(() => undefined)
+          throw err
+        }
         deps.autoCommit(sessionIdOf(exec))
         return { ok: true, title: args.title, trashed: true, trashTitle }
       }
@@ -139,10 +147,31 @@ export function deleteTool(env: ToolEnv) {
       // Same field names as the trashbin format, and the same constant as every
       // other writer (v0.30.62): `*-at` fields get re-serialized by TW into the
       // wiki's local format, which is why the name moved to `trash-iso`.
+      // Snapshot first, then INDEX, then delete the original. The old order
+      // wrote the index AFTER deleting; a failed index write left the note gone
+      // and the snapshot unreachable (`trash list` only reads the index).
+      // If the index write fails we remove the snapshot again and abort before
+      // touching the original; if the delete fails we roll both back.
       await wiki.put({ ...trashTiddler, [TRASHBIN_OF_FIELD]: args.title, [TRASHBIN_AT_FIELD]: at })
-      await wiki.delete(args.title)
-      index.entries.push({ trash: trashTitle, of: args.title, at })
-      await writeTrashIndex(wiki, index.entries)
+      const entry: TrashIndexEntry = { trash: trashTitle, of: args.title, at }
+      index.entries.push(entry)
+      try {
+        await writeTrashIndex(wiki, index.entries)
+      } catch (err) {
+        index.entries = index.entries.filter((item) => item.trash !== trashTitle)
+        await wiki.delete(trashTitle).catch(() => undefined)
+        throw err
+      }
+      try {
+        await wiki.delete(args.title)
+      } catch (err) {
+        // The original is still there. Roll the snapshot/index back so a retry
+        // starts clean instead of leaving a phantom trash entry.
+        index.entries = index.entries.filter((item) => item.trash !== trashTitle)
+        await writeTrashIndex(wiki, index.entries).catch(() => undefined)
+        await wiki.delete(trashTitle).catch(() => undefined)
+        throw err
+      }
       deps.autoCommit(sessionIdOf(exec))
       return { ok: true, title: args.title, trashed: true, trashTitle }
     },

@@ -476,6 +476,8 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
                 toast(t('settings.seeds.reinitFailed', { message: payload?.error ?? payload?.results?.[0]?.error ?? `HTTP ${res.status}` }))
               } else {
                 toast(t('settings.seeds.reinitDone', { title: item.title }))
+                reloadTwSurfaces()
+                invalidateStatus()
               }
               void load()
             } catch (err) {
@@ -537,6 +539,7 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
   runAll.type = 'button'
   runAll.title = t('settings.seeds.runAllTitle')
   runAll.addEventListener('click', () => {
+    if (!window.confirm(t('settings.seeds.runAllConfirm'))) return
     runAll.disabled = true
     runAll.textContent = t('settings.seeds.running')
     void (async () => {
@@ -549,7 +552,11 @@ export function renderSeedsSection(body: HTMLElement, isDisposed: () => boolean)
         })
         const payload = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null
         if (!res.ok || payload?.ok !== true) toast(t('settings.seeds.reinitFailed', { message: payload?.error ?? `HTTP ${res.status}` }))
-        else toast(t('settings.seeds.allReinitDone'))
+        else {
+          toast(t('settings.seeds.allReinitDone'))
+          reloadTwSurfaces()
+          invalidateStatus()
+        }
         void load()
       } catch (err) {
         toast(t('settings.seeds.reinitFailed', { message: err instanceof Error ? err.message : String(err) }))

@@ -82,7 +82,7 @@ export function SearchCard(props: { toolName: string; args: Record<string, unkno
     title: query.length > 0 ? query : t('card.searchTitle'),
     subtitle,
     rows,
-    fallbackText: t('card.noMatches'),
+    fallbackText: data.loading ? t('card.loading') : payload === null ? t('card.loadFailed') : t('card.noMatches'),
   })
 }
 
@@ -106,11 +106,11 @@ export function RecentCard(props: { toolName: string; args: Record<string, unkno
     title: t('card.recentTitle'),
     subtitle: rows.length > 0 ? t('card.recentCount', { count: rows.length }) : '',
     rows,
-    fallbackText: t('card.noNotes'),
+    fallbackText: data.loading ? t('card.loading') : payload === null ? t('card.loadFailed') : t('card.noNotes'),
   })
 }
 
-export function BatchCard(props: { toolName: string; args: Record<string, unknown> }): React.ReactElement {
+export function BatchCard(props: { toolName: string; args: Record<string, unknown>; text: string }): React.ReactElement {
   const rawItems = Array.isArray(props.args.items) ? (props.args.items as unknown[]) : []
   const rows = rawItems
     .map((item): string | null => (typeof item === 'object' && item !== null && typeof (item as Record<string, unknown>).title === 'string' ? str((item as Record<string, unknown>).title) : null))
@@ -120,10 +120,15 @@ export function BatchCard(props: { toolName: string; args: Record<string, unknow
   // wikiId 必须带上（v0.29.0）：缓存键是 `wikiId\0title`，只按标题清会留下
   // `A\0X`，之后同一篇的读取卡还能拿回被覆盖前的旧正文。
   useInvalidateBodies(rows.map((row) => row.title), useScopedWikiId())
+  const firstLine = props.text.split('\n')[0]?.trim() ?? ''
   return React.createElement(ListCard, {
     toolName: props.toolName,
     title: t('card.toolBatchPut'),
-    subtitle: rows.length > 0 ? t('card.batchCount', { count: rows.length }) : t('card.batchNoItems'),
+    // The host's receipt is authoritative for skipped/failed counts; the old
+    // card only counted `args.items`, so a partial batch looked like “N written”.
+    subtitle: firstLine.length > 0
+      ? firstLine
+      : rows.length > 0 ? t('card.batchCount', { count: rows.length }) : t('card.batchNoItems'),
     rows,
     fallbackText: t('card.batchEmpty'),
   })

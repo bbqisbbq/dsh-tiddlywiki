@@ -121,7 +121,8 @@ export function isPrivateAddress(address: string): boolean {
   if (isZero(bytes)) return true // ::
   if (isZero(bytes.slice(0, 15)) && at(15) === 1) return true // ::1
   if ((at(0) & 0xfe) === 0xfc) return true // fc00::/7 unique-local
-  if (at(0) === 0xfe && (at(1) & 0xc0) === 0x80) return true // fe80::/10
+  if (at(0) === 0xfe && (at(1) & 0xc0) === 0x80) return true // fe80::/10 link-local
+  if (at(0) === 0xfe && (at(1) & 0xc0) === 0xc0) return true // fec0::/10 site-local (deprecated, still routed)
   if (at(0) === 0xff) return true // ff00::/8 multicast
   if (at(0) === 0x20 && at(1) === 0x01 && at(2) === 0x0d && at(3) === 0xb8) return true // 2001:db8::/32
   // IPv4-mapped ::ffff:a.b.c.d

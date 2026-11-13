@@ -15,7 +15,7 @@ import { errorStatus, json, readBody, rejectCrossSiteWrite, rejectNonRead } from
 import type { AdminDeps } from './admin-routes.ts'
 
 /** 这一组真正用到的 deps 成员（不是整个 AdminDeps）。 */
-export type AdminWikiRouteDeps = Pick<AdminDeps, 'server' | 'wiki' | 'wikis'>
+export type AdminWikiRouteDeps = Pick<AdminDeps, 'server' | 'wiki' | 'wikis' | 'mutationLock'>
 
 export function createAdminWikiRoutes(deps: AdminWikiRouteDeps) {
   /**
@@ -50,9 +50,18 @@ export function createAdminWikiRoutes(deps: AdminWikiRouteDeps) {
         json(res, { ok: false, error: 'wiki location is not available' }, 503)
         return
       }
-      const body = JSON.parse(await readBody(req)) as { root?: unknown; name?: unknown }
-      const result = await deps.wiki.switch({ root: body.root, name: body.name })
-      json(res, result.ok ? { ...result, status: deps.server(req)?.status().status } : result, result.ok ? 200 : 400)
+      const lock = deps.mutationLock
+      if (lock !== undefined && !lock.begin('admin-wiki-switch')) {
+        json(res, { ok: false, error: `另一个重启/同步正在进行中（${lock.current() ?? '?'}），请稍候` }, 429)
+        return
+      }
+      try {
+        const body = JSON.parse(await readBody(req)) as { root?: unknown; name?: unknown }
+        const result = await deps.wiki.switch({ root: body.root, name: body.name })
+        json(res, result.ok ? { ...result, status: deps.server(req)?.status().status } : result, result.ok ? 200 : 400)
+      } finally {
+        lock?.end('admin-wiki-switch')
+      }
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
@@ -69,8 +78,17 @@ export function createAdminWikiRoutes(deps: AdminWikiRouteDeps) {
         json(res, { ok: false, error: 'wiki location is not available' }, 503)
         return
       }
-      const result = await deps.wiki.reset()
-      json(res, result.ok ? { ...result, status: deps.server(req)?.status().status } : result, result.ok ? 200 : 400)
+      const lock = deps.mutationLock
+      if (lock !== undefined && !lock.begin('admin-wiki-reset')) {
+        json(res, { ok: false, error: `另一个重启/同步正在进行中（${lock.current() ?? '?'}），请稍候` }, 429)
+        return
+      }
+      try {
+        const result = await deps.wiki.reset()
+        json(res, result.ok ? { ...result, status: deps.server(req)?.status().status } : result, result.ok ? 200 : 400)
+      } finally {
+        lock?.end('admin-wiki-reset')
+      }
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }
@@ -118,12 +136,21 @@ export function createAdminWikiRoutes(deps: AdminWikiRouteDeps) {
         json(res, { ok: false, error: '请求体必须是 JSON' }, 400)
         return
       }
-      const result = await deps.wikis.apply(body)
-      if (!result.ok) {
-        json(res, { ok: false, error: result.error }, 400)
+      const lock = deps.mutationLock
+      if (lock !== undefined && !lock.begin('admin-wikis')) {
+        json(res, { ok: false, error: `另一个重启/同步正在进行中（${lock.current() ?? '?'}），请稍候` }, 429)
         return
       }
-      json(res, { ok: true, ...result.info, change: result.change })
+      try {
+        const result = await deps.wikis.apply(body)
+        if (!result.ok) {
+          json(res, { ok: false, error: result.error }, 400)
+          return
+        }
+        json(res, { ok: true, ...result.info, change: result.change })
+      } finally {
+        lock?.end('admin-wikis')
+      }
     } catch (err) {
       json(res, { ok: false, error: err instanceof Error ? err.message : String(err) }, errorStatus(err))
     }

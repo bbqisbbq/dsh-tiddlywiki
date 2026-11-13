@@ -29,6 +29,7 @@ import { flushPendingWrites } from './seeds.ts'
 import { sessionIdOf } from './tools-support.ts'
 import type { ResolveResult, SyncRepoResult, SyncResult, ToolEnv, ToolsDeps } from './tools-support.ts'
 import { GIT_RESULT } from './tool-output-schemas.ts'
+import { redactRemoteUrl } from './routes-helpers.ts'
 
 /** One-line 状态 summary: 分支 … 领先 … 落后 … 工作区未提交 … 最近提交. */
 function gitStatusBits(s: GitStatusView): string {
@@ -121,7 +122,7 @@ async function syncOneRepo(
     // origin is exactly the case the receipt must not hide.
     ...(group.targets[0] !== undefined && group.targets[0].remote.length > 0
       ? {
-          remote: group.targets[0].remote,
+          remote: redactRemoteUrl(group.targets[0].remote),
           // A non-empty remote can only have come from one of the two sources
           // ('none' means empty), so this is a narrowing, not a guess.
           remoteSource: group.targets[0].remoteSource === 'origin' ? ('origin' as const) : ('config' as const),

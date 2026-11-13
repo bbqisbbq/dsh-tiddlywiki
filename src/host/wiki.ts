@@ -623,6 +623,15 @@ export class WikiServer {
     if (this.restartPromise !== undefined) return this.restartPromise
     const run = (async (): Promise<WikiStatusView> => {
       await this.stop()
+      // A boot-time start() may still be in flight (ensureWiki/findFreePort or
+      // readiness). stop() only saw `child === undefined` and returned, while
+      // start() would otherwise reuse the OLD startPromise, whose startOnce()
+      // sees `stopping` and returns `health='stopped'` — the wiki never came
+      // back. Let that attempt settle first, then start a genuinely new one.
+      const pending = this.startPromise
+      if (pending !== undefined) {
+        try { await pending } catch { /* the old attempt's failure is expected here */ }
+      }
       return this.start()
     })()
     this.restartPromise = run

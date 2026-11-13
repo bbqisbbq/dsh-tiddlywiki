@@ -26,6 +26,7 @@ import { entryPath, type WikiEntry } from './host/wiki-registry.ts'
 import type { WikiFarm } from './host/wiki-farm.ts'
 import type { WikiInstance } from './host/wiki-instance.ts'
 import { entryIsInRepo } from './index-wikis.ts'
+import { pathComparisonKey } from './host/path-key.ts'
 
 /** The resolved `git` block the cordis `config:` block carried. */
 export interface ResolvedGitConfig {
@@ -211,13 +212,28 @@ export function createGitLayer(deps: GitLayerDeps): GitLayer {
 
   const reapplyGitConfig = async (): Promise<void> => {
     await teardownCommitter()
-    const g = eff().git ?? {}
     const base = deps.gitConfig()
-    const remote = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : base.remote).trim()
-    if (remote.length > 0) {
-      // Repo-level operation: running it inside any wiki folder of that
-      // repository sets the repository's `origin` (there is only one).
-      const ensured = await git.ensureRemote(deps.defaultPath(), remote)
+    // Resolve the remote per REPOSITORY, not from the default wiki only: a
+    // settings save for a non-default wiki used to call ensureRemote() on
+    // defaultPath(), so that wiki's git.remote never reached its own origin
+    // (the receipt then reported the new remote while push still used the old
+    // one until the wiki was restarted).
+    const remotes = new Map<string, { dir: string; remote: string }>()
+    for (const runtime of farm()?.allRuntimes() ?? []) {
+      const g = runtime.eff().git ?? {}
+      const remote = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : base.remote).trim()
+      if (remote.length === 0) continue
+      const repoRoot = await repos.repoRootOf(runtime.path)
+      const dir = repoRoot ?? runtime.path
+      remotes.set(pathComparisonKey(dir), { dir, remote })
+    }
+    if (remotes.size === 0) {
+      const g = eff().git ?? {}
+      const remote = (typeof g.remote === 'string' && g.remote.trim().length > 0 ? g.remote : base.remote).trim()
+      if (remote.length > 0) remotes.set(pathComparisonKey(deps.defaultPath()), { dir: deps.defaultPath(), remote })
+    }
+    for (const { dir, remote } of remotes.values()) {
+      const ensured = await git.ensureRemote(dir, remote)
       if (!ensured.ok) console.warn('[dsh-tiddlywiki] git remote update:', ensured.message)
     }
     repos.rebuild()

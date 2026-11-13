@@ -41,7 +41,10 @@ export interface UiConfig {
 }
 
 const FALLBACK: UiConfig = {
-  showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: t('frame.tabLabelDefault'),
+  // `tabLabel` is filled lazily by `fetchUiConfig()`: a module-load-time
+  // `t()` freezes the language that happened to be active when the bundle
+  // loaded, so a later `setLang('en')` + failed /status reverted to Chinese.
+  showQuickNoteDock: true, quickNoteMode: 'native', sidebarLabel: 'TiddlyWiki', tabLabel: '',
   showSessionTab: true, showRightbarTab: true, showQuickNote: true, showPanelStatus: true, showSyncButton: true,
 }
 
@@ -89,7 +92,7 @@ export function fetchUiConfig(): Promise<UiConfig> {
   const pending = (async (): Promise<UiConfig> => {
     const status = await fetchStatus()
     const ui = status?.ui
-    if (status === null || ui === undefined) return FALLBACK
+    if (status === null || ui === undefined) return { ...FALLBACK, tabLabel: t('frame.tabLabelDefault') }
     return {
       showQuickNoteDock: ui.showQuickNoteDock !== false,
       quickNoteMode: ui.quickNoteMode === 'card' ? 'card' : 'native',
