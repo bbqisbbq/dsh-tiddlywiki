@@ -798,6 +798,7 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
 .dsh-tw-settings-btn:focus-visible,
 .dsh-tw-settings-check:focus-visible,
 .dsh-tw-summary-btn:focus-visible,
+.dsh-tw-fence-toggle:focus-visible,
 .dsh-tw-toolcard-open:focus-visible,
 .dsh-tw-toolcard-row:focus-visible,
 .dsh-tw-panel-error button:focus-visible,
@@ -907,5 +908,46 @@ html[data-dsh-tw-active] .dshDesktopConversationSurface > :not([data-dsh-tw-view
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
   margin-top: 8px; padding-top: 8px;
   border-top: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.12));
+}
+
+/* ── 消息内 tid / tiddlywiki 代码块预览（v0.36.0）────────────────────────
+   conversation.chat.markdown.fence 是**包裹型（hoc）**座位：我们的外壳包住宿主
+   自己的原始代码块（它通过 children 传进来）。正文复用 .dsh-tw-toolcard-native 的
+   tc-* 重主题 —— 与回复流工具卡、会话「知识库」Tab 走同一条渲染管线与样式。 */
+.dsh-tw-fence {
+  margin: 8px 0; border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.1));
+  border-radius: 8px; overflow: hidden;
+  background: var(--dsw-alias-bg-layer-1, #fff);
+}
+.dsh-tw-fence-head {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.1));
+  font-size: 12px; color: var(--dsw-alias-label-secondary, #666);
+}
+.dsh-tw-fence-label { flex: none; font-weight: 600; color: var(--dsw-alias-label-primary, #222); }
+.dsh-tw-fence-title {
+  flex: 0 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.dsh-tw-fence-spacer { flex: 1; }
+.dsh-tw-fence-toggle {
+  flex: none; border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-2, #fff); color: var(--dsw-alias-label-primary, #222);
+  font: inherit; font-size: 11px; padding: 2px 10px; border-radius: 999px; cursor: pointer;
+}
+.dsh-tw-fence-toggle:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.12)); }
+.dsh-tw-fence-body {
+  padding: 8px 12px; font-size: 13px; line-height: 1.6;
+  color: var(--dsw-alias-label-primary, #222);
+}
+.dsh-tw-fence-body > :first-child { margin-top: 0; }
+.dsh-tw-fence-body > :last-child { margin-bottom: 0; }
+.dsh-tw-fence-note {
+  padding: 6px 12px 0; font-size: 11px;
+  color: color-mix(in srgb, var(--dsw-alias-label-primary, #222) 60%, transparent);
+}
+.dsh-tw-fence-source {
+  margin: 0; padding: 8px 12px; font-size: 12px; overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
 }
 `

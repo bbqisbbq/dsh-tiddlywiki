@@ -6,6 +6,12 @@
 
 ## 最近版本（详细）
 
+- **v0.36.0**（2026-11-16）：**跟上 DSH 0.2.2-rc.3，并用上它的新座位：助手消息里的 `tid` / `tiddlywiki` 代码块就地渲染成真 TiddlyWiki**。
+- **新功能**：`conversation.chat.markdown.fence`（0.2.2-rc.3 才有的**按语言**包裹型座位，`kind: hoc`）注册两层（`tid` / `tiddlywiki`；官方已占 `diff`/`math`/`patch`，一个不撞）：回复里贴的 tiddler 从「一堆 `title:` 字段行加原始 wikitext」变成真渲染（链接 / 宏 / 样式都生效），右上角「看源码」切回原文；`tid` 语言先用 `parseTidText()` 剥 frontmatter，标题单独显示。三条硬约束：**流式输出期间不预览**（每个 token 都重渲染 = 请求风暴 + 闪烁，直接还宿主的原始代码块）、**请求中 / 失败 / 空正文一律退回原始代码块**（绝不空白）、渲染仍只走宿主 `/render` 净化管线（铁律 #7）。老宿主（rc.2 之前）没有这个座位 ⇒ `slots.inject` 拿不到声明，什么都不注册，聊天里只见原始代码块。
+- **这次升级的实测结论（rc.1 → rc.3）**：19 条官方升级指南逐条核过，**0 条硬性必改**。座位表 109 → 116（7 个新增、**零删除、零 kind/scope 变化**），官方 `tool.call.toolview` key 58 → 62（`office_render` / `office_recalculate` / `office_convert` + `subagent_fork`），我们那 17 个 `tiddlywiki_*` 一个不撞；`tools` / `systemPrompt.section` / `commands.register` / `skills.register` / `webServer` / `documentPreviews` / `contextMenus` / 客户端 locale 全部照旧；工具出口校验（`validateJsonSchemaValue` + `ToolOutputError`）仍在 `dsh-tools/lib/pipeline.js`（校验实现挪进了哈希命名的 `lib/shared-<hash>.js` 分块，`lib/json-schema.js` 这个路径已经不存在）。`engines.dsh = ">=0.2.1-rc.3 <0.3.0"` 天然覆盖 rc.3，**不抬下限**（新座位全是可选的）。
+- **修掉一个假绿**：`verify-dsh-contract.mjs` 的座位目录解析器写死了双引号，而 rc.3 的构建产物换成了**反引号模板串** ⇒ 解析出 **0 条**座位（「目录解析成功」「我们的座位都在宿主里」两条红），更糟的是 `parseTakenToolKeys` 失效后返回**空集**，于是「17 个工具视图没撞官方已占用的 key」从真检查退化成**永远绿**。现在两种引号都收、值按「切到下一个引号字符」取（不依赖条目边界），并加两条防假绿断言：taken-key 列表**非空**、fence 座位**点名**存在（`MIN_OUR_SLOTS` 8 → 9）。
+- **守门**：新增 `scripts/verify-tid-fence.mjs`（进 `verify:unit`，11 条：hoc 三件套 `id`/`key`/`order`、语言表与非官方占用、所有 hook 都在早退之前、流式短路在发请求之前、只走 `/render`、失败与请求中都不空白、`safeMount` 接线与 disposer 回收、外壳 CSS 与 `:focus-visible`、文案全走 `t()` 且键在 `i18n-frame.ts` 两侧齐备）。`npm run build` 后 client bundle 783.7 KB（< 1 MB 上限）。
+
 - **v0.35.1**（2026-11-13）：**代码审计修复批次（48 项中的 P0/P1/P2 与大部分 P3）**。重点不是新增功能，而是把「静默丢数据 / 静默泄露 / 状态假成功」这一类问题逐条封死，并给关键路径补回归断言。
 - **安全**：① `/render` 的命名空间封锁不再只靠标题字符串——TW 过滤器可把 `$:/plugins/dsh-tiddlywiki/config` 拆成片段再 `join`，现由 render bundle 0.2.1 在渲染期间临时隐藏整个 `$:/plugins/dsh-tiddlywiki/` 命名空间（`getTiddler`/`getTiddlerText`），host 仍保留配置前缀/密钥输出扫描兜底，并拒绝浏览器直连 `/tw/.../render`（GUI 只走 host `/render`）。② `/sync` 的 `repos[].remote` 也过 `redactRemoteUrl`，不再只打码顶层字段。③ `/admin/info` 真正传入共享 `mutationLock`。④ `/agent/*` 的 send-to-agent 开关/token 改为「所有运行中库都启用才启用」的全局策略，不能再借 `?wiki=` 绕过某个库的关闭状态。
 - **数据安全**：① `put`/`append`/`batch_put` 统一 `assertTextWritable()`；`force` 不再被当作二进制→文本的转换许可，只有显式 `fields.type` 才能转换。② `rename` 先写新标题再改引用者，失败不会留下指向不存在标题的链接；`append`/`attach` 的非 heading 路径按目标笔记的 CRLF/LF 写入。③ 内置回收站先写快照和索引、最后删原条目，任一步失败回滚，不再产生不可恢复的孤儿。④ `ConfigStore` 仅在 PUT 成功后更新缓存；会话作用域文件用唯一临时名 + 进程内串行写。⑤ 快速笔记默认标题精确到秒，避免同一分钟覆盖。
@@ -54,21 +60,12 @@ v0.33.1 修好了 `key` 配对，但用户实测仍是纯文本，且 devtools �
 现在改成**短轮询等它出现**（250ms × 40 ≈ 10s），并给每一步补 `[dsh-tiddlywiki]` 前缀的诊断日志：`ctx.get`/`ctx.slots` 是否存在、第几次尝试注册上元数据、正文是否注册进 keyed 子槽、等不到时的 warn。正文外壳加 `data-dsh-tw-tid` 标记，devtools 里一条 `document.querySelectorAll('[data-dsh-tw-tid]').length` 就能判定我们的组件到底有没有渲染。
 守门同步改判据：不再钉"查一次就返回"，改钉 `setTimeout(attempt, 250)` 的轮询、`getter('documentPreviews')` 的取值形态、以及"服务始终没出现"那条可诊断 warn —— 静默跳过从这一版起是**被测出来的**行为，不再是遗漏。
 
-- **v0.33.1**（2026-10-26）：**`.tid` 预览改为真正生效**（v0.32.0 那一版静默失效：打开 `.tid` 仍显示纯文本）。
-根因是宿主契约里我读错的一处：DSH 的文件预览分「元数据 + keyed 正文」两半，**正文按 `key` 配对** ——
-宿主自己写的是 `ctx.slots.register({ name: sidebar.right.tab.document, key: BODY_ID }, Body)`，而 v0.32.0 写成了 `id:`。
-**它不报错、不告警**，宿主找不到渲染器就安静地用内置纯文本兜底，于是症状看起来像「功能没做」。
-同一轮照抄宿主补齐另外三个形状：`priority` 是**字符串**（宿主只判 `=== builtin ? 0 : 1`，非 builtin 才压得过内置纯文本）、`title` 传**函数**（语言切换可重取）、`wrap: false`（我们产出 HTML 而不是按行折行的纯文本）；
-正文取文本也从「只认 `content.text`」改成读 `content.pages`（`loading: text-pages` 时宿主给 `{ kind: text, pages }`，每页 `{ offset, lines, text }`，按 offset 排序拼接）。
-守门同步加严（`verify-tid-preview` 12 条）：**正向**钉 `slots.register({ name, key: TID_PREVIEW_ID })`、**反向**钉「不许出现 `slots.register({ … id: TID_PREVIEW_ID })`」、外加 priority/title/wrap/loading 与 pages 读取四条。
-另：`i18n` 键数自述 467 → 475 对齐；`profiles/desktop/package-lock.json`（npm 事故遗留、含 `link: true` 软链记账）已删除。
-
-- **v0.33.0**（2026-10-26）：**客户端文案目录接进宿主 locale 服务（⑥b 的落地形态：注册，但不搬）**。原计划把 470+ 条键整体迁进 `ctx.locale.register(ns, {zh,en})`，但官方要求命名空间先并入 `LocaleNamespaceMap` 由**编译器**按类型化键并集校验 —— 本插件客户端是 esbuild 产出的单文件、无 `.d.ts`，参与不了那个类型合并，迁过去等于**放弃 `scripts/verify-client-i18n.mjs` 现有的键名校验**，去换一个「改语言即时生效」。现在两条都不放弃：**目录仍只有一份**（`i18n-catalog.ts` 的 7 个分片，宿主与本地共用同一个对象），启动时注册进宿主 locale 服务，并把宿主的 `bind(ns)` 接到 `t()` 前面 —— **宿主优先、本地表兜底**：服务缺失（老版本 DSH）、`register` 抛错、`bind` 不存在、宿主回空串 / 回键名本身 / 回非字符串，一律退回本地表，所以最差行为等于 v0.32.0。⚠️ 每次注册尝试都会先清掉上一次的绑定：留着旧解析器会让 `t()` 继续问一个已经不存在的命名空间（这一点是写守门时被自己的用例抓出来的）。**守门**：新增 `scripts/verify-locale-host.mjs`（进 `verify:unit`，7 条）—— 命名空间常量、无服务时静默跳过、注册的必须是**同一份** `MESSAGES`（另抄一份会慢慢分叉而界面看着正常）、`register` 的 disposer 必须回收、宿主优先、四类宿主异常必须回落、`t()` 必须委托给 `translate` 且保留本地兜底、接线必须在 `safeMount` 里。
-
-## 历史版本（一句话，153 条，新的在上）
+## 历史版本（一句话，155 条，新的在上）
 
 | 版本 | 日期 | 变更 |
 |---|---|---|
+| v0.33.1 | 2026-10-26 | `.tid` 预览真正生效：正文改成按 `key` 注册（写成 `id:` 会静默退化成内置纯文本），priority/title/wrap/pages 四个形状照抄宿主 |
+| v0.33.0 | 2026-10-26 | 客户端文案目录注册进宿主 locale 服务（宿主优先、本地表兜底）；目录仍只有一份 |
 | v0.32.0 | 2026-10-26 | 新增 `.tid`/`.tiddler` 侧栏预览（元数据 + 正文成对注册，正文走 `/render` 净化管道换成真 TW 渲染；绝不白屏） |
 | v0.31.1 | 2026-10-26 | 新增 `tiddlywiki_export`（笔记落盘：md/tid/json，同名拒绝覆盖、系统条目拒绝）+ 工具数 16→17 |
 | v0.31.0 | 2026-10-26 | 对齐 DSH 0.2.1 的改造（选库入口搬到 `conversation.input.left`、`verify-dsh-contract`、`get` 分页、16 个工具补 `output.schema`、skill 走 `ctx.skills.register`、新增 `/note` 命令、提示词加「先查再答」「时效与去重」） |

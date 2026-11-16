@@ -14,6 +14,17 @@
  * 自己跟自己比永远绿。所以这里把宿主当成被测对象：读出宿主**自己**的座位目录，
  * 再反过来断言我们注册的每个 name 都在里面、kind 也对得上。
  *
+ * ⚠️ 解析器必须**引号无关**（v0.36.0，实测于 DSH 0.2.2-rc.3）
+ * --------------------------------------------------------
+ * 宿主的座位目录是构建产物，**序列化风格会随版本变**：0.2.2-rc.1 里是双引号
+ * （`key: "tool.call.toolview", kind: "keyed", scope: "session"`），0.2.2-rc.3 变成
+ * 反引号模板串（``key:`tool.call.toolview`,kind:`keyed`,scope:`session` ``）。只认双
+ * 引号的解析器在 rc.3 上解析出 **0 条**座位，于是「宿主目录解析成功」红了、而
+ * 「我们的座位都在宿主里」也红了 —— 这两条是响亮的。真正危险的是**第三条**：
+ * `parseTakenToolKeys` 的锚点同样写死了双引号，失效后返回**空集**，于是
+ * 「17 个工具视图没有撞上官方已占用的 key」从"真检查"退化成**永远绿**。
+ * 所以现在：① 两种引号都收；② 给 taken-key 列表加一条**非空**断言（假绿比红更贵）。
+ *
  * 数据来源（宿主自带的座位契约目录，不是我们猜的）
  * ----------------------------------------------
  * `@deepseek-ai/dsh-cordis-client-runner/lib/client.js` 里内嵌了一张
@@ -85,8 +96,10 @@ const MIN_CATALOGUE_ENTRIES = 80
  * 加上 `settings.section.icon` 后实际是 8 个，把常量解析路径打断会让它掉回 7，
  * 而下限 7 照样绿。所以真正的判据是下面那条**点名断言**
  * （「常量间接传递的座位也被采到」），下限只是兜底。
+ *
+ * v0.36.0 加了 `conversation.chat.markdown.fence`（消息内代码块预览）⇒ 9。
  */
-const MIN_OUR_SLOTS = 8
+const MIN_OUR_SLOTS = 9
 
 let failures = 0
 function test(name, fn) {
@@ -206,10 +219,21 @@ console.log(`DSH 座位目录来源：${host.source}`)
 
 // ── 2. 解析宿主的座位表 ───────────────────────────────────────────────────────
 
+/**
+ * 一个引号字符（双引号 / 单引号 / 反引号）。
+ *
+ * 宿主的座位目录是**构建产物**：0.2.2-rc.1 用双引号，0.2.2-rc.3 用反引号模板串。
+ * 写死任何一种都会在另一次的构建风格变化后**静默解析出 0 条** —— 见模块头。
+ */
+const Q = '[`"\']'
+
 /** `{ key, kind, scope }` for every entry in the host's own slot catalogue. */
 function parseCatalogue(text) {
   const entries = new Map()
-  const re = /key:\s*"([A-Za-z][\w.\-/]*)",\s*kind:\s*"([a-z]+)",\s*scope:\s*"([\w-]+)"/g
+  const re = new RegExp(
+    `key:\\s*${Q}([A-Za-z][\\w.\\-/]*)${Q},\\s*kind:\\s*${Q}([a-z]+)${Q},\\s*scope:\\s*${Q}([\\w-]+)${Q}`,
+    'g',
+  )
   let match
   while ((match = re.exec(text)) !== null) entries.set(match[1], { kind: match[2], scope: match[3] })
   return entries
@@ -222,19 +246,27 @@ function parseCatalogue(text) {
  * appears in the keyDomain of other keyed seats (`conversation.chat.node` lists
  * turn kinds there), and reading the first occurrence yields a plausible-looking
  * but wrong list — a check that can never fail.
+ *
+ * 引号同样要与 parseCatalogue 一样宽松：锚点写死双引号时，rc.3 上会**返回空集**，
+ * 于是下游那条「没撞上官方 key」永远绿（v0.36.0 修）。值本身按「切片到下一个引号
+ * 字符」取，不依赖条目边界 —— 目录里条目之间有没有换行、是 JSON 还是模板串都一样。
  */
 function parseTakenToolKeys(text) {
-  const entryAt = text.indexOf('key: "tool.call.toolview"')
-  if (entryAt < 0) return new Set()
-  const nextEntryAt = text.indexOf('key: "', entryAt + 10)
-  const block = text.slice(entryAt, nextEntryAt < 0 ? text.length : nextEntryAt)
-  const domainAt = block.indexOf('keyDomain:')
-  if (domainAt < 0) return new Set()
-  const at = block.indexOf('already taken:', domainAt)
+  const anchor = new RegExp(`key:\\s*${Q}tool\\.call\\.toolview${Q}`).exec(text)
+  if (anchor === null) return new Set()
+  const block = text.slice(anchor.index, anchor.index + 8000)
+  const at = block.indexOf('already taken:', block.indexOf('keyDomain:'))
   if (at < 0) return new Set()
   const tail = block.slice(at + 'already taken:'.length)
-  const end = tail.search(/"/)
-  return new Set(tail.slice(0, end < 0 ? tail.length : end).split(',').map((s) => s.trim()).filter(Boolean))
+  // 值的右界 = 下一个引号字符；`none are taken yet` 这类自然语言用「只收蛇形名」滤掉。
+  const end = tail.search(/[`"']/)
+  return new Set(
+    tail
+      .slice(0, end < 0 ? tail.length : end)
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => /^[a-z][a-z0-9_]*$/.test(s)),
+  )
 }
 
 const catalogue = parseCatalogue(host.text)
@@ -349,6 +381,28 @@ test('常量间接传递的座位也被采到（sidebar.right.tab.document）', 
   )
 })
 
+test('消息内代码块预览的座位也被采到（conversation.chat.markdown.fence）', () => {
+  // 与上一条同理：这是 v0.36.0 新增的座位，名字同样只出现在常量里（`FENCE_SLOT`），
+  // 采集器的常量解析路径一断就会静默少一个。
+  assert.ok(
+    ourSlots.has('conversation.chat.markdown.fence'),
+    '座位名经常量传递时没被采集到（`src/client/tid-fence.ts` 的 FENCE_SLOT）—— ' +
+      `已采到：${[...ourSlots.keys()].sort().join(', ')}`,
+  )
+})
+
+test('官方已占用的 toolview key 列表解析非空（防假绿）', () => {
+  // 这条守的是**解析器本身**：宿主的座位目录换成反引号后，`already taken:` 的锚点
+  // 失效会返回空集，下面那条「没撞上官方 key」就永远绿。空列表只可能意味着解析失败
+  // —— DSH 每个版本都有几十个官方 toolview key（0.2.2-rc.3 实测 62 个）。
+  assert.ok(
+    takenToolKeys.size >= 10,
+    `只解析出 ${takenToolKeys.size} 个官方 toolview key —— 宿主的契约目录格式又变了，` +
+      '请更新 parseTakenToolKeys 的锚点（否则「没撞上官方 key」这条会永远绿）',
+  )
+})
+
+
 test('我们注册的每个座位都存在于宿主座位表里', () => {
   const missing = [...ourSlots.keys()].filter((slot) => !catalogue.has(slot))
   assert.deepEqual(
@@ -362,9 +416,17 @@ test('座位 kind 对得上：列表/单值座位按 id 注册，键控座位按
   // 这三个在宿主里是 keyed（宿主自己用 `register({ name, key })`），所以我们按 key 注册。
   // `sidebar.right.tab.document` 过去一直没被采集到（常量间接传递）：宿主 `kind: "keyed"`。
   const expectKeyed = new Set(['tool.call.toolview', 'sidebar.right.pane.tab', 'sidebar.right.tab.document'])
+  // v0.36.0：`conversation.chat.markdown.fence` 是 **hoc**（包裹型）座位 —— 注册形状是
+  // `{ name, id, key, order }`（id = 层标识、key = 派发键 = 代码块语言）。宿主若把它
+  // 改成 keyed/single，我们这套形状会**静默失效**，所以这里把 kind 钉住。
+  const expectHoc = new Set(['conversation.chat.markdown.fence'])
   for (const [slot, files] of ourSlots) {
     const entry = catalogue.get(slot)
     if (entry === undefined) continue // 上一条已经报过
+    if (expectHoc.has(slot)) {
+      assert.equal(entry.kind, 'hoc', `${slot} 在宿主里变成了 ${entry.kind}（应为 hoc，${[...files].join(',')}）`)
+      continue
+    }
     if (expectKeyed.has(slot)) {
       assert.equal(entry.kind, 'keyed', `${slot} 在宿主里是 ${entry.kind}，我们按 key 注册（${[...files].join(',')}）`)
     } else if (entry.kind === 'keyed') {

@@ -28,6 +28,7 @@ import { SettingsSection } from './settings-page.ts'
 import { registerToolViews, installWikiLinkInterceptor } from './tool-views.ts'
 import { mountRightbarTab, type RightbarSlotsFace } from './rightbar-tab.ts'
 import { registerTidPreview } from './tid-preview.ts'
+import { registerTidFences, type FenceSlotsFace } from './tid-fence.ts'
 import { registerLocaleWithHost } from './locale-host.ts'
 import { registerSessionWikiMenu } from './session-menu.ts'
 import { SETTINGS_SECTION_ID, SETTINGS_SECTION_ORDER, SettingsSectionIcon } from './settings-section-icon.ts'
@@ -198,6 +199,12 @@ export function apply(ctx: ClientContextFace): void {
     // `.tid` / `.tiddler` 文件的侧栏预览（v0.32.0）：元数据 + 正文成对注册。
     // 宿主没有 `documentPreviews` 服务时它自己什么都不做（老版本 DSH 不受影响）。
     safeMount('tid preview', () => disposers.push(...registerTidPreview(ctx)))
+    // 消息里 ```tid / ```tiddlywiki 代码块 → 真 TW 预览（v0.36.0，DSH 0.2.2-rc.3 新座位
+    // `conversation.chat.markdown.fence`）。宿主没这个座位（rc.2 之前）时 inject 拿不到
+    // 声明、`registerTidFences` 什么都不注册 —— 聊天流退回原始代码块，其余功能不变。
+    safeMount('tid fence layers', () => {
+      if (ctx.slots !== undefined) disposers.push(...registerTidFences(ctx.slots as unknown as FenceSlotsFace))
+    })
     // 文案目录注册进宿主 locale 服务（v0.33.0）：目录**不搬家**，只是让宿主的语言
     // 运行时也能解析它；没有该服务时静默跳过（老版本 DSH 行为一个字节都不变）。
     safeMount('locale registration', () => disposers.push(...registerLocaleWithHost(ctx.get)))

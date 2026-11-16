@@ -30,7 +30,7 @@
  */
 import * as React from 'react'
 import { t } from './i18n.ts'
-import { RENDER_ENDPOINT, withWikiQuery } from './endpoints.ts'
+import { fetchRenderText } from './render-fetch.ts'
 
 import { parseTidText, summarizeTid, TID_EXTENSIONS, TID_PREVIEW_ID, TID_PREVIEW_SLOT } from './tid-parse.ts'
 
@@ -73,21 +73,16 @@ function textOf(props: unknown): string {
   return list.sort((a, b) => a.offset - b.offset).map((p) => p.text).join('')
 }
 
-/** 把一段 wikitext 换成宿主**净化过**的 HTML；失败回 null（调用方退回原文）。 */
+/**
+ * 把一段 wikitext 换成宿主**净化过**的 HTML；失败回 null（调用方退回原文）。
+ *
+ * v0.36.0 起请求本体搬进 `render-fetch.ts` 的 `fetchRenderText()`：`.tid` 预览与
+ * 消息内代码块两处用的是同一份 `POST /render` 的 text 分支，**一个模块拥有那个端点**
+ * 才不会哪天冒出一份直连 TW 的复制品（`verify-render-sanitizer.mjs` 钉着这条）。
+ * 这里保留原名，是因为它是这个模块对外说过的话（导出面别无故改名）。
+ */
 export async function renderTidHtml(text: string, wikiId?: string): Promise<string | null> {
-  try {
-    const res = await fetch(withWikiQuery(RENDER_ENDPOINT, wikiId), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-requested-with': 'TiddlyWiki' },
-      body: JSON.stringify({ text }),
-      signal: AbortSignal.timeout(15_000),
-    })
-    if (!res.ok) return null
-    const html = await res.text()
-    return html.trim().length > 0 ? html : null
-  } catch {
-    return null
-  }
+  return fetchRenderText(text, 15_000, wikiId)
 }
 
 /** 正文组件。**任何一步失败都退回 `<pre>` 原文**，绝不渲染空白面板。 */

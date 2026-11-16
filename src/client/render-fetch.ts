@@ -46,3 +46,32 @@ export async function fetchRenderFragment(title: string, timeoutMs = 15_000, wik
     return null
   }
 }
+
+/**
+ * Render arbitrary WIKITEXT through the same sanitizing host route (v0.36.0).
+ *
+ * The `/render` route has two branches — `{ title }` and `{ text }` — and both
+ * come back through `sanitizeTwFragment`; the `text` branch additionally runs
+ * `referencesBlockedTitle()` (a `{{…}}` transclusion could otherwise read a
+ * blocked tiddler). This is the only caller of the text branch, so it lives
+ * next to the title one instead of growing a second `POST /render` in the
+ * `.tid` preview or the in-message fence layer.
+ *
+ * Returns the fragment, or `null` on any failure (callers fall back to the raw
+ * text — a blank panel would be a silent failure).
+ */
+export async function fetchRenderText(text: string, timeoutMs = 15_000, wikiId?: string): Promise<string | null> {
+  try {
+    const res = await fetch(withWikiQuery(RENDER_ENDPOINT, wikiId), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-requested-with': 'TiddlyWiki' },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) return null
+    const html = await res.text()
+    return html.trim().length > 0 ? html : null
+  } catch {
+    return null
+  }
+}

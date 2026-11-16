@@ -39,6 +39,10 @@ export const FRAME_MESSAGES: { zh: Record<string, string>; en: Record<string, st
   'frame.tidPreviewWaiting': '等待文件内容…',
   'frame.tidPreviewNoBody': '这个 .tid 只有字段、没有正文。',
   'frame.tidPreviewFallback': '渲染失败，下面是原文：',
+  // 消息内代码块预览（v0.36.0，conversation.chat.markdown.fence）
+  'frame.fenceTitle': 'TiddlyWiki 预览',
+  'frame.fenceShowSource': '看源码',
+  'frame.fenceShowPreview': '看预览',
   },
   en: {
     'frame.syncRestarted': ', TiddlyWiki restarted',
@@ -70,5 +74,9 @@ export const FRAME_MESSAGES: { zh: Record<string, string>; en: Record<string, st
   'frame.tidPreviewWaiting': 'Waiting for file content…',
   'frame.tidPreviewNoBody': 'This .tid has fields but no body text.',
   'frame.tidPreviewFallback': 'Rendering failed; showing the raw text:',
+  // In-message fence preview (v0.36.0, conversation.chat.markdown.fence)
+  'frame.fenceTitle': 'TiddlyWiki preview',
+  'frame.fenceShowSource': 'Show source',
+  'frame.fenceShowPreview': 'Show preview',
   },
 }

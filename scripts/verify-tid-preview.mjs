@@ -133,8 +133,14 @@ test('绝不白屏：有 <pre> 原文兜底 + 失败时给一句人话', () => {
 })
 
 test('渲染走宿主净化管道（铁律 #7），且失败只是回 null 不抛', () => {
-  assert.match(source, /RENDER_ENDPOINT/, '必须走 /dsh-tiddlywiki/render，不得自建渲染')
-  assert.match(source, /catch\s*\{[\s\S]{0,80}return null/, 'renderTidHtml 失败必须回 null（调用方退回原文），不能抛')
+  // v0.36.0：请求本体搬进 `render-fetch.ts`（消息内代码块预览与这里共用同一份
+  // `POST /render` 的 text 分支）。判据因此从「本文件出现 RENDER_ENDPOINT」改成
+  // 「本文件委托给那份唯一实现，且那份实现确实只打宿主端点」——后者更硬，因为它
+  // 顺带保证中间层没有偷偷换成 TW 的原始 /tw/render。
+  assert.match(source, /from '\.\/render-fetch\.ts'/, '必须委托 render-fetch.ts（POST /render 的唯一实现）')
+  const renderFetch = fs.readFileSync(path.join(repoRoot, 'src', 'client', 'render-fetch.ts'), 'utf8')
+  assert.match(renderFetch, /RENDER_ENDPOINT/, 'render-fetch.ts 必须走 /dsh-tiddlywiki/render，不得自建渲染')
+  assert.match(renderFetch, /catch\s*\{[\s\S]{0,80}return null/, 'renderTidHtml/fetchRenderText 失败必须回 null（调用方退回原文），不能抛')
   assert.match(source, /dangerouslySetInnerHTML/, '净化后的 HTML 才允许注入')
 })
 
